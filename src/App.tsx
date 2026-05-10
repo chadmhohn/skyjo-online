@@ -21,6 +21,14 @@ const singlePlayerAiCounts = Array.from(
   (_, index) => singlePlayerAiOpponentRange.min + index
 );
 type DrawIntent = 'place' | 'discard';
+type BoardGridEntry = {
+  player: Player;
+  isLocal: boolean;
+};
+
+const responsiveBoardGridClass = 'grid gap-4 xl:grid-cols-2';
+const fourPlayerDesktopBoardGridClass = 'hidden gap-4 md:grid md:grid-cols-2';
+const fourPlayerMobileBoardGridClass = 'grid gap-4 md:hidden';
 
 function Home() {
   return (
@@ -123,6 +131,35 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
         ))}
       </div>
     </section>
+  );
+}
+
+interface PlayerBoardGridProps {
+  entries: BoardGridEntry[];
+  state: GameState;
+  drawIntent: DrawIntent;
+  className?: string;
+  onCardClick: (index: number) => void;
+}
+
+function PlayerBoardGrid({ entries, state, drawIntent, className = responsiveBoardGridClass, onCardClick }: PlayerBoardGridProps) {
+  return (
+    <div className={className}>
+      {entries.map(({ player, isLocal }) => {
+        const index = state.players.findIndex((item) => item.id === player.id);
+        return (
+          <PlayerGrid
+            drawIntent={drawIntent}
+            isCurrent={index === state.currentPlayerIndex}
+            isLocal={isLocal}
+            key={player.id}
+            onCardClick={onCardClick}
+            player={player}
+            state={state}
+          />
+        );
+      })}
+    </div>
   );
 }
 
@@ -282,6 +319,10 @@ function SinglePlayer() {
   const winner = useMemo(() => state.players.find((player) => player.id === state.winnerId), [state.players, state.winnerId]);
   const localPlayers = state.players.filter((player) => player.kind === 'human');
   const opponentPlayers = state.players.filter((player) => player.kind !== 'human');
+  const localBoardEntries = localPlayers.map((player) => ({ player, isLocal: true }));
+  const opponentBoardEntries = opponentPlayers.map((player) => ({ player, isLocal: false }));
+  const hasFourPlayerDesktopGrid = state.players.length === 4;
+  const fourPlayerBoardEntries = [...opponentBoardEntries, ...localBoardEntries];
   const aiOpponentSummary = `${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
 
   useEffect(() => {
@@ -329,7 +370,11 @@ function SinglePlayer() {
   return (
     <main className="skyjo-surface px-4 py-5">
       <div className="skyjo-shell grid gap-5 lg:grid-cols-[1fr_330px]">
-        <section className="space-y-4 lg:col-start-1 lg:row-start-1">
+        <section
+          className={`space-y-4 ${
+            hasFourPlayerDesktopGrid ? 'lg:col-span-2 lg:row-start-1' : 'lg:col-start-1 lg:row-start-1'
+          }`}
+        >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
@@ -366,27 +411,28 @@ function SinglePlayer() {
             </div>
           </div>
 
-          {opponentPlayers.length > 0 ? (
-            <div className="grid gap-4 xl:grid-cols-2">
-              {opponentPlayers.map((player) => {
-                const index = state.players.findIndex((item) => item.id === player.id);
-                return (
-                  <PlayerGrid
-                    drawIntent={drawIntent}
-                    isCurrent={index === state.currentPlayerIndex}
-                    isLocal={false}
-                    key={player.id}
-                    onCardClick={handleCard}
-                    player={player}
-                    state={state}
-                  />
-                );
-              })}
-            </div>
+          {hasFourPlayerDesktopGrid ? (
+            <PlayerBoardGrid
+              className={fourPlayerDesktopBoardGridClass}
+              drawIntent={drawIntent}
+              entries={fourPlayerBoardEntries}
+              onCardClick={handleCard}
+              state={state}
+            />
+          ) : null}
+
+          {opponentBoardEntries.length > 0 ? (
+            <PlayerBoardGrid
+              className={hasFourPlayerDesktopGrid ? fourPlayerMobileBoardGridClass : responsiveBoardGridClass}
+              drawIntent={drawIntent}
+              entries={opponentBoardEntries}
+              onCardClick={handleCard}
+              state={state}
+            />
           ) : null}
         </section>
 
-        <div className="space-y-4 lg:col-start-2 lg:row-start-1">
+        <div className={`space-y-4 ${hasFourPlayerDesktopGrid ? 'lg:col-start-2 lg:row-start-2' : 'lg:col-start-2 lg:row-start-1'}`}>
           <FinalTurnCallout localPlayerId={localPlayers[0]?.id} state={state} />
           <TableControls
             drawIntent={drawIntent}
@@ -398,26 +444,17 @@ function SinglePlayer() {
           />
         </div>
 
-        <section className="lg:col-start-1 lg:row-start-2">
-          <div className="grid gap-4 xl:grid-cols-2">
-            {localPlayers.map((player) => {
-              const index = state.players.findIndex((item) => item.id === player.id);
-              return (
-                <PlayerGrid
-                  drawIntent={drawIntent}
-                  isCurrent={index === state.currentPlayerIndex}
-                  isLocal
-                  key={player.id}
-                  onCardClick={handleCard}
-                  player={player}
-                  state={state}
-                />
-              );
-            })}
-          </div>
+        <section className={hasFourPlayerDesktopGrid ? 'md:hidden lg:col-start-1 lg:row-start-2' : 'lg:col-start-1 lg:row-start-2'}>
+          <PlayerBoardGrid
+            className={hasFourPlayerDesktopGrid ? fourPlayerMobileBoardGridClass : responsiveBoardGridClass}
+            drawIntent={drawIntent}
+            entries={localBoardEntries}
+            onCardClick={handleCard}
+            state={state}
+          />
         </section>
 
-        <aside className="space-y-4 lg:col-start-2 lg:row-start-2">
+        <aside className={`space-y-4 ${hasFourPlayerDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'}`}>
           {state.phase === 'round-over' || state.phase === 'game-over' ? (
             <section className="skyjo-panel skyjo-panel-current p-4">
               <div className="skyjo-serif text-lg font-bold">{state.phase === 'game-over' ? `${winner?.name} wins the game.` : 'Round complete.'}</div>
@@ -565,6 +602,10 @@ function Lobby() {
   const roomState = room?.state;
   const roomLocalPlayers = roomState?.players.filter((player) => player.id === playerId) || [];
   const roomOpponentPlayers = roomState?.players.filter((player) => player.id !== playerId) || [];
+  const roomLocalBoardEntries = roomLocalPlayers.map((player) => ({ player, isLocal: true }));
+  const roomOpponentBoardEntries = roomOpponentPlayers.map((player) => ({ player, isLocal: false }));
+  const hasFourPlayerRoomDesktopGrid = roomState?.players.length === 4;
+  const fourPlayerRoomBoardEntries = [...roomOpponentBoardEntries, ...roomLocalBoardEntries];
 
   return (
     <main className="skyjo-surface px-4 py-8">
@@ -607,7 +648,11 @@ function Lobby() {
 
         {room ? (
           <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
-            <section className="space-y-4 lg:col-start-1 lg:row-start-1">
+            <section
+              className={`space-y-4 ${
+                hasFourPlayerRoomDesktopGrid ? 'lg:col-span-2 lg:row-start-1' : 'lg:col-start-1 lg:row-start-1'
+              }`}
+            >
               <div className="skyjo-panel p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -637,22 +682,25 @@ function Lobby() {
               </div>
 
               {roomState ? (
-                <div className="grid gap-4 xl:grid-cols-2">
-                  {roomOpponentPlayers.map((player) => {
-                    const index = roomState.players.findIndex((item) => item.id === player.id);
-                    return (
-                      <PlayerGrid
-                        drawIntent={drawIntent}
-                        isCurrent={index === roomState.currentPlayerIndex}
-                        isLocal={false}
-                        key={player.id}
-                        onCardClick={handleCard}
-                        player={player}
-                        state={roomState}
-                      />
-                    );
-                  })}
-                </div>
+                <>
+                  {hasFourPlayerRoomDesktopGrid ? (
+                    <PlayerBoardGrid
+                      className={fourPlayerDesktopBoardGridClass}
+                      drawIntent={drawIntent}
+                      entries={fourPlayerRoomBoardEntries}
+                      onCardClick={handleCard}
+                      state={roomState}
+                    />
+                  ) : null}
+
+                  <PlayerBoardGrid
+                    className={hasFourPlayerRoomDesktopGrid ? fourPlayerMobileBoardGridClass : responsiveBoardGridClass}
+                    drawIntent={drawIntent}
+                    entries={roomOpponentBoardEntries}
+                    onCardClick={handleCard}
+                    state={roomState}
+                  />
+                </>
               ) : (
                 <div className="skyjo-panel p-6 text-[#f5e6c8]/70">
                   Waiting for players. The host can start once at least two people are in the room.
@@ -662,7 +710,11 @@ function Lobby() {
 
             {roomState ? (
               <>
-                <div className="space-y-4 lg:col-start-2 lg:row-start-1">
+                <div
+                  className={`space-y-4 ${
+                    hasFourPlayerRoomDesktopGrid ? 'lg:col-start-2 lg:row-start-2' : 'lg:col-start-2 lg:row-start-1'
+                  }`}
+                >
                   <FinalTurnCallout localPlayerId={playerId} state={roomState} />
                   <TableControls
                     drawIntent={drawIntent}
@@ -674,26 +726,25 @@ function Lobby() {
                   />
                 </div>
 
-                <section className="lg:col-start-1 lg:row-start-2">
-                  <div className="grid gap-4 xl:grid-cols-2">
-                    {roomLocalPlayers.map((player) => {
-                      const index = roomState.players.findIndex((item) => item.id === player.id);
-                      return (
-                        <PlayerGrid
-                          drawIntent={drawIntent}
-                          isCurrent={index === roomState.currentPlayerIndex}
-                          isLocal
-                          key={player.id}
-                          onCardClick={handleCard}
-                          player={player}
-                          state={roomState}
-                        />
-                      );
-                    })}
-                  </div>
+                <section
+                  className={
+                    hasFourPlayerRoomDesktopGrid ? 'md:hidden lg:col-start-1 lg:row-start-2' : 'lg:col-start-1 lg:row-start-2'
+                  }
+                >
+                  <PlayerBoardGrid
+                    className={hasFourPlayerRoomDesktopGrid ? fourPlayerMobileBoardGridClass : responsiveBoardGridClass}
+                    drawIntent={drawIntent}
+                    entries={roomLocalBoardEntries}
+                    onCardClick={handleCard}
+                    state={roomState}
+                  />
                 </section>
 
-                <aside className="space-y-4 lg:col-start-2 lg:row-start-2">
+                <aside
+                  className={`space-y-4 ${
+                    hasFourPlayerRoomDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'
+                  }`}
+                >
                   {roomState.phase === 'round-over' || roomState.phase === 'game-over' ? (
                     <section className="skyjo-panel skyjo-panel-current p-4">
                       <div className="skyjo-serif text-lg font-bold">{roomState.phase === 'game-over' ? 'Game complete.' : 'Round complete.'}</div>
