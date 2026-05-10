@@ -127,6 +127,43 @@ function withLog(state: GameState, message: string): GameState {
   return { ...state, log: [message, ...state.log].slice(0, 8) };
 }
 
+function possessiveName(name: string): string {
+  if (name.toLowerCase() === 'you') return 'Your';
+  return name.endsWith('s') ? `${name}'` : `${name}'s`;
+}
+
+function finalTurnOrder(players: Player[], closerId: string): string[] {
+  const closerIndex = players.findIndex((player) => player.id === closerId);
+  if (closerIndex < 0) return players.map((player) => player.id);
+
+  return Array.from({ length: players.length - 1 }, (_, offset) => {
+    const index = (closerIndex + offset + 1) % players.length;
+    return players[index].id;
+  });
+}
+
+function finishFinalTurn(state: GameState, player: Player): GameState {
+  const remaining = state.finalTurnPlayerIds.filter((playerId) => playerId !== player.id);
+  if (remaining.length === 0) {
+    const closer = state.players.find((item) => item.id === state.roundCloserId) || player;
+    return finishRound({ ...state, finalTurnPlayerIds: [] }, closer);
+  }
+
+  const nextPlayerId = remaining[0];
+  const nextPlayerIndex = state.players.findIndex((item) => item.id === nextPlayerId);
+  return withLog(
+    {
+      ...state,
+      currentPlayerIndex: nextPlayerIndex >= 0 ? nextPlayerIndex : state.currentPlayerIndex,
+      selectedSource: null,
+      drawnCard: null,
+      phase: 'choose-source',
+      finalTurnPlayerIds: remaining
+    },
+    `${state.players[nextPlayerIndex]?.name || 'Next player'} gets a final turn.`
+  );
+}
+
 function finishTurn(state: GameState, player: Player): GameState {
   const clearedGrid = clearMatchingColumns(player.grid);
   const updatedPlayer = {
@@ -136,8 +173,28 @@ function finishTurn(state: GameState, player: Player): GameState {
   };
   const updatedState = updatePlayer(state, updatedPlayer);
 
+  if (state.roundCloserId) {
+    return finishFinalTurn(updatedState, updatedPlayer);
+  }
+
   if (allCardsKnown(clearedGrid)) {
-    return finishRound(updatedState, updatedPlayer);
+    const finalTurns = finalTurnOrder(updatedState.players, updatedPlayer.id);
+    if (finalTurns.length === 0) return finishRound(updatedState, updatedPlayer);
+
+    const nextPlayerId = finalTurns[0];
+    const nextPlayerIndex = updatedState.players.findIndex((item) => item.id === nextPlayerId);
+    return withLog(
+      {
+        ...updatedState,
+        currentPlayerIndex: nextPlayerIndex >= 0 ? nextPlayerIndex : updatedState.currentPlayerIndex,
+        selectedSource: null,
+        drawnCard: null,
+        phase: 'choose-source',
+        roundCloserId: updatedPlayer.id,
+        finalTurnPlayerIds: finalTurns
+      },
+      `${updatedPlayer.name} revealed their last card. Everyone else gets one final turn.`
+    );
   }
 
   return {
@@ -150,7 +207,7 @@ function finishTurn(state: GameState, player: Player): GameState {
 }
 
 function finishRound(state: GameState, closer: Player): GameState {
-  const players = state.players.map((player) => {
+  const scoredPlayers = state.players.map((player) => {
     const revealedGrid = clearMatchingColumns(
       player.grid.map((card) => (card.removed ? card : { ...card, faceUp: true }))
     );
@@ -162,8 +219,23 @@ function finishRound(state: GameState, closer: Player): GameState {
       totalScore: player.totalScore + roundScore
     };
   });
+  const closerScore = scoredPlayers.find((player) => player.id === closer.id)?.roundScore ?? 0;
+  const closerIsStrictLowest = scoredPlayers.every(
+    (player) => player.id === closer.id || closerScore < player.roundScore
+  );
+  const closerScoreDoubled = !closerIsStrictLowest && closerScore > 0;
+  const players = scoredPlayers.map((player) => {
+    if (player.id !== closer.id || !closerScoreDoubled) return player;
+    const adjustedRoundScore = player.roundScore * 2;
+    return {
+      ...player,
+      roundScore: adjustedRoundScore,
+      totalScore: player.totalScore - player.roundScore + adjustedRoundScore
+    };
+  });
   const leader = [...players].sort((a, b) => a.totalScore - b.totalScore)[0];
   const gameOver = players.some((player) => player.totalScore >= winningScore);
+  const doubledNote = closerScoreDoubled ? ` ${possessiveName(closer.name)} round score doubled to ${closerScore * 2}.` : '';
 
   return withLog(
     {
@@ -173,9 +245,11 @@ function finishRound(state: GameState, closer: Player): GameState {
       selectedSource: null,
       drawnCard: null,
       winnerId: gameOver ? leader.id : null,
-      nextStarterId: closer.id
+      nextStarterId: closer.id,
+      roundCloserId: null,
+      finalTurnPlayerIds: []
     },
-    `${closer.name} ended the round. ${leader.name} leads with ${leader.totalScore}.`
+    `${closer.name} ended the round.${doubledNote} ${leader.name} leads with ${leader.totalScore}.`
   );
 }
 
@@ -209,7 +283,9 @@ export function createGameForPlayers(
     round,
     log: [`${starter.name} starts round ${round}. Pick from the discard pile or draw blind.`],
     winnerId: null,
-    nextStarterId: null
+    nextStarterId: null,
+    roundCloserId: null,
+    finalTurnPlayerIds: []
   };
 }
 
