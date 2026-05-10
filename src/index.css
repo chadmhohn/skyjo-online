@@ -1,8 +1,192 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,800;9..144,900&family=Manrope:wght@400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #060c0a;
+}
+
+@layer components {
+  .skyjo-surface {
+    min-height: 100vh;
+    color: #f5e6c8;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% 0%, rgba(245, 230, 200, 0.06) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 80% 90%, rgba(34, 197, 94, 0.06) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 20% 90%, rgba(59, 130, 246, 0.05) 0%, transparent 60%),
+      linear-gradient(180deg, #0a1410 0%, #060c0a 100%);
+  }
+
+  .skyjo-shell {
+    position: relative;
+    width: 100%;
+    max-width: 1120px;
+    margin: 0 auto;
+  }
+
+  .skyjo-shell::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.04;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.85' /></filter><rect width='100%25' height='100%25' filter='url(%23n)' /></svg>");
+  }
+
+  .skyjo-title {
+    font-family: 'Fraunces', Georgia, serif;
+    font-style: italic;
+    font-weight: 900;
+    letter-spacing: 0;
+    line-height: 0.95;
+    color: #f5e6c8;
+  }
+
+  .skyjo-serif {
+    font-family: 'Fraunces', Georgia, serif;
+  }
+
+  .skyjo-kicker {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(245, 230, 200, 0.5);
+  }
+
+  .skyjo-panel {
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.02);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  }
+
+  .skyjo-panel-current {
+    border-color: rgba(245, 230, 200, 0.28);
+    background: linear-gradient(180deg, rgba(245, 230, 200, 0.08) 0%, rgba(245, 230, 200, 0.02) 100%);
+    box-shadow: 0 0 32px rgba(245, 230, 200, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .skyjo-table-glow {
+    border-radius: 16px;
+    background: radial-gradient(ellipse at center, rgba(245, 230, 200, 0.04) 0%, transparent 70%);
+  }
+
+  .skyjo-button {
+    border-radius: 10px;
+    border: 1px solid rgba(245, 230, 200, 0.24);
+    background: rgba(245, 230, 200, 0.08);
+    color: #f5e6c8;
+    font-weight: 800;
+    transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
+  }
+
+  .skyjo-button:hover:not(:disabled) {
+    transform: translateY(-2px);
+    background: rgba(245, 230, 200, 0.15);
+    border-color: rgba(245, 230, 200, 0.4);
+  }
+
+  .skyjo-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  .skyjo-button-primary {
+    border: 0;
+    background: linear-gradient(180deg, #f5e6c8 0%, #e8d4a8 100%);
+    color: #0a1410;
+    box-shadow: 0 4px 20px rgba(245, 230, 200, 0.18);
+  }
+
+  .skyjo-input {
+    border-radius: 10px;
+    border: 1px solid rgba(245, 230, 200, 0.14);
+    background: rgba(6, 12, 10, 0.72);
+    color: #f5e6c8;
+    outline: none;
+  }
+
+  .skyjo-input:focus {
+    border-color: rgba(245, 230, 200, 0.42);
+    box-shadow: 0 0 0 3px rgba(245, 230, 200, 0.08);
+  }
+
+  .skyjo-card {
+    display: flex;
+    width: clamp(58px, 8vw, 92px);
+    aspect-ratio: 3 / 4;
+    min-height: 58px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 11px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: clamp(1.35rem, 4vw, 2.55rem);
+    font-weight: 800;
+    line-height: 1;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+  }
+
+  .skyjo-card-selectable:hover:not(:disabled) {
+    transform: translateY(-3px);
+    box-shadow: 0 0 0 2px #f5e6c8, 0 0 24px rgba(245, 230, 200, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  }
+
+  .skyjo-card-hidden {
+    background: linear-gradient(145deg, #1f2937 0%, #111827 100%);
+    color: rgba(245, 230, 200, 0.55);
+    font-size: clamp(0.6rem, 2vw, 0.86rem);
+    font-style: italic;
+    letter-spacing: 0.18em;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .skyjo-card-removed {
+    border: 1.5px dashed rgba(255, 255, 255, 0.08);
+    background: transparent;
+    color: transparent;
+    box-shadow: none;
+  }
+
+  .skyjo-card-blue-dark {
+    background: linear-gradient(145deg, #1e3a8a 0%, #1e40af 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(59, 130, 246, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
+  }
+
+  .skyjo-card-blue {
+    background: linear-gradient(145deg, #1d4ed8 0%, #2563eb 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(96, 165, 250, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
+  }
+
+  .skyjo-card-cyan {
+    background: linear-gradient(145deg, #0284c7 0%, #0ea5e9 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(125, 211, 252, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
+  }
+
+  .skyjo-card-green {
+    background: linear-gradient(145deg, #15803d 0%, #16a34a 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(74, 222, 128, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
+  }
+
+  .skyjo-card-gold {
+    background: linear-gradient(145deg, #ca8a04 0%, #eab308 100%);
+    color: #1c1917;
+    box-shadow: 0 4px 14px rgba(253, 224, 71, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
+  }
+
+  .skyjo-card-red {
+    background: linear-gradient(145deg, #b91c1c 0%, #dc2626 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(252, 165, 165, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
+  }
 }

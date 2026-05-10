@@ -17,19 +17,19 @@ const columns = [0, 1, 2, 3];
 
 function Home() {
   return (
-    <main className="min-h-screen bg-slate-950 text-white">
-      <section className="mx-auto flex min-h-screen w-full max-w-6xl flex-col justify-center px-5 py-10">
+    <main className="skyjo-surface">
+      <section className="skyjo-shell flex min-h-screen flex-col justify-center px-5 py-10">
         <div className="max-w-2xl">
-          <p className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-sky-300">Private game table</p>
-          <h1 className="text-6xl font-black tracking-normal sm:text-8xl">SKYJO</h1>
-          <p className="mt-5 max-w-xl text-lg leading-8 text-slate-300">
+          <p className="skyjo-kicker mb-3">Private game table</p>
+          <h1 className="skyjo-title text-7xl sm:text-9xl">Skyjo</h1>
+          <p className="mt-5 max-w-xl text-lg leading-8 text-[#f5e6c8]/70">
             Play solo against the house AI or create a private room for friends on the VPS-hosted multiplayer table.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
-            <Link className="rounded-md bg-sky-400 px-5 py-3 font-bold text-slate-950 hover:bg-sky-300" to="/single-player">
+            <Link className="skyjo-button skyjo-button-primary px-5 py-3" to="/single-player">
               Single Player
             </Link>
-            <Link className="rounded-md border border-slate-600 px-5 py-3 font-bold text-slate-100 hover:border-sky-300" to="/lobby">
+            <Link className="skyjo-button px-5 py-3" to="/lobby">
               Multiplayer Lobby
             </Link>
           </div>
@@ -41,17 +41,20 @@ function Home() {
 
 function cardLabel(card: Card) {
   if (card.removed) return '';
-  if (card.faceUp) return card.value;
-  return '?';
+  if (card.faceUp) return card.value < 0 ? `-${Math.abs(card.value)}` : String(card.value);
+  return 'SKYJO';
 }
 
 function cardClass(card: Card, isSelectable: boolean) {
-  const base =
-    'flex aspect-[3/4] min-h-16 items-center justify-center rounded-md border text-xl font-black shadow-sm transition sm:text-2xl';
-  if (card.removed) return `${base} border-slate-800 bg-slate-950 text-slate-950`;
-  if (!card.faceUp) return `${base} border-sky-700 bg-sky-950 text-sky-200`;
-  const color = card.value <= 0 ? 'border-emerald-500 bg-emerald-100 text-emerald-950' : 'border-slate-300 bg-white text-slate-950';
-  return `${base} ${color} ${isSelectable ? 'hover:-translate-y-1 hover:border-amber-300' : ''}`;
+  const base = `skyjo-card ${isSelectable ? 'skyjo-card-selectable cursor-pointer' : 'cursor-default'}`;
+  if (card.removed) return `${base} skyjo-card-removed`;
+  if (!card.faceUp) return `${base} skyjo-card-hidden`;
+  if (card.value === -2) return `${base} skyjo-card-blue-dark`;
+  if (card.value === -1) return `${base} skyjo-card-blue`;
+  if (card.value === 0) return `${base} skyjo-card-cyan`;
+  if (card.value <= 4) return `${base} skyjo-card-green`;
+  if (card.value <= 8) return `${base} skyjo-card-gold`;
+  return `${base} skyjo-card-red`;
 }
 
 interface GridProps {
@@ -70,15 +73,17 @@ function PlayerGrid({ player, isCurrent, isLocal, state, onCardClick }: GridProp
     (state.selectedSource === 'discard' || state.selectedSource === 'draw');
 
   return (
-    <section className={`rounded-lg border p-4 ${isCurrent ? 'border-sky-400 bg-slate-900' : 'border-slate-800 bg-slate-900/70'}`}>
+    <section className={`skyjo-panel p-4 sm:p-5 ${isCurrent ? 'skyjo-panel-current' : ''}`}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-bold">{player.name}</h2>
-          <p className="text-sm text-slate-400">{player.kind === 'ai' ? 'AI opponent' : isLocal ? 'You' : 'Player'}</p>
+          <h2 className="skyjo-serif text-xl font-semibold text-[#f5e6c8]">{player.name}</h2>
+          <p className="text-sm text-[#f5e6c8]/45">{player.kind === 'ai' ? 'AI opponent' : isLocal ? 'You' : 'Player'}</p>
         </div>
-        <div className="text-right text-sm">
-          <div className="font-bold text-slate-100">Round {player.roundScore}</div>
-          <div className="text-slate-400">Total {player.totalScore}</div>
+        <div className="flex items-baseline gap-2 text-right text-sm">
+          <span className="skyjo-kicker">Shown</span>
+          <span className="font-bold tabular-nums text-[#f5e6c8]">{player.roundScore}</span>
+          <span className="skyjo-kicker ml-1">Total</span>
+          <span className="font-bold tabular-nums text-[#f5e6c8]">{player.totalScore}</span>
         </div>
       </div>
       <div className="grid gap-2">
@@ -120,38 +125,44 @@ function TableControls({ state, localTurn, onChooseDiscard, onDraw, onReveal }: 
   const activePlayer = state.players[state.currentPlayerIndex];
 
   return (
-    <section className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <h2 className="mb-3 text-lg font-bold">Table</h2>
-      <div className="grid grid-cols-2 gap-3">
+    <section className="skyjo-panel skyjo-table-glow p-4">
+      <h2 className="skyjo-serif mb-3 text-xl font-semibold">Table</h2>
+      <div className="grid grid-cols-2 gap-4">
         <button
-          className="rounded-md border border-slate-700 bg-slate-950 p-4 text-left disabled:opacity-50"
+          className="skyjo-button p-4 text-center"
           disabled={!localTurn || state.phase !== 'choose-source'}
           onClick={onDraw}
           type="button"
         >
-          <div className="text-sm text-slate-400">Draw pile</div>
-          <div className="mt-2 text-2xl font-black">{state.drawPile.length}</div>
+          <div className="skyjo-kicker">Deck</div>
+          <div className="skyjo-card skyjo-card-hidden mx-auto mt-2 w-20">SKYJO</div>
+          <div className="mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.drawPile.length} cards</div>
         </button>
         <button
-          className="rounded-md border border-slate-700 bg-white p-4 text-left text-slate-950 disabled:opacity-50"
+          className="skyjo-button p-4 text-center"
           disabled={!localTurn || state.phase !== 'choose-source' || !topDiscard}
           onClick={onChooseDiscard}
           type="button"
         >
-          <div className="text-sm text-slate-600">Discard</div>
-          <div className="mt-2 text-2xl font-black">{topDiscard?.value ?? '-'}</div>
+          <div className="skyjo-kicker">Discard</div>
+          {topDiscard ? (
+            <div className={`${cardClass(topDiscard, false)} mx-auto mt-2 w-20`}>{cardLabel(topDiscard)}</div>
+          ) : (
+            <div className="skyjo-card skyjo-card-removed mx-auto mt-2 w-20" />
+          )}
+          <div className="mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.discardPile.length} cards</div>
         </button>
       </div>
 
       {state.drawnCard && localTurn ? (
-        <div className="mt-4 rounded-md border border-amber-300 bg-amber-100 p-3 text-slate-950">
-          <div className="text-sm font-semibold">You drew</div>
-          <div className="text-3xl font-black">{state.drawnCard.value}</div>
-          <p className="mt-2 text-sm">Click one of your cards to replace it, or reveal a hidden card instead.</p>
+        <div className="mt-4 rounded-xl border border-[#f5e6c8]/25 bg-[#f5e6c8]/10 p-3">
+          <div className="skyjo-kicker">Drawn</div>
+          <div className={`${cardClass(state.drawnCard, false)} mt-2 w-20`}>{cardLabel(state.drawnCard)}</div>
+          <p className="mt-3 text-sm text-[#f5e6c8]/75">Replace a card, or discard this and reveal one hidden card.</p>
           <div className="mt-3 grid grid-cols-4 gap-2">
             {activePlayer.grid.map((card, index) => (
               <button
-                className="rounded bg-slate-900 px-2 py-2 text-sm font-bold text-white disabled:opacity-30"
+                className="skyjo-button px-2 py-2 text-sm"
                 disabled={card.faceUp || card.removed}
                 key={card.id}
                 onClick={() => onReveal(index)}
@@ -169,11 +180,11 @@ function TableControls({ state, localTurn, onChooseDiscard, onDraw, onReveal }: 
 
 function MoveLog({ state }: { state: GameState }) {
   return (
-    <section className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <h2 className="mb-3 text-lg font-bold">Move Log</h2>
-      <div className="space-y-2 text-sm text-slate-300">
+    <section className="skyjo-panel p-4">
+      <h2 className="skyjo-serif mb-3 text-xl font-semibold">Move Log</h2>
+      <div className="space-y-2 text-sm text-[#f5e6c8]/72">
         {state.log.map((entry) => (
-          <div className="rounded bg-slate-950 px-3 py-2" key={entry}>
+          <div className="rounded-lg border border-white/[0.04] bg-white/[0.025] px-3 py-2" key={entry}>
             {entry}
           </div>
         ))}
@@ -208,18 +219,18 @@ function SinglePlayer() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-5 text-slate-100">
-      <div className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[1fr_320px]">
+    <main className="skyjo-surface px-4 py-5">
+      <div className="skyjo-shell grid gap-5 lg:grid-cols-[1fr_330px]">
         <section className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <Link className="text-sm text-sky-300 hover:text-sky-200" to="/">
+              <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
                 Back
               </Link>
-              <h1 className="text-3xl font-black">Single Player</h1>
-              <p className="text-slate-400">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
+              <h1 className="skyjo-title mt-2 text-5xl">Single Player</h1>
+              <p className="mt-1 text-[#f5e6c8]/55">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
             </div>
-            <button className="rounded-md border border-slate-700 px-4 py-2 font-semibold hover:border-sky-300" onClick={() => setState(startFreshGame())} type="button">
+            <button className="skyjo-button px-4 py-2" onClick={() => setState(startFreshGame())} type="button">
               New Game
             </button>
           </div>
@@ -248,10 +259,10 @@ function SinglePlayer() {
           />
 
           {state.phase === 'round-over' || state.phase === 'game-over' ? (
-            <section className="rounded-lg border border-sky-500 bg-sky-950 p-4">
-              <div className="font-bold">{state.phase === 'game-over' ? `${winner?.name} wins the game.` : 'Round complete.'}</div>
+            <section className="skyjo-panel skyjo-panel-current p-4">
+              <div className="skyjo-serif text-lg font-bold">{state.phase === 'game-over' ? `${winner?.name} wins the game.` : 'Round complete.'}</div>
               <button
-                className="mt-3 w-full rounded-md bg-sky-400 px-4 py-2 font-bold text-slate-950 hover:bg-sky-300"
+                className="skyjo-button skyjo-button-primary mt-3 w-full px-4 py-3"
                 onClick={() => setState(state.phase === 'game-over' ? startFreshGame() : startNextRound(state))}
                 type="button"
               >
@@ -374,61 +385,61 @@ function Lobby() {
   const localPlayer = room?.players.find((player) => player.id === playerId);
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-8 text-slate-100">
-      <div className="mx-auto max-w-7xl space-y-4">
+    <main className="skyjo-surface px-4 py-8">
+      <div className="skyjo-shell space-y-5">
         <div>
-          <Link className="text-sm text-sky-300 hover:text-sky-200" to="/">
+          <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
             Back
           </Link>
-          <h1 className="mt-2 text-3xl font-black">Multiplayer Lobby</h1>
-          <p className="text-slate-400">Rooms run entirely on this VPS over WebSockets. Share the room code with friends.</p>
+          <h1 className="skyjo-title mt-2 text-5xl">Multiplayer Lobby</h1>
+          <p className="mt-1 text-[#f5e6c8]/55">Rooms run entirely on this VPS over WebSockets. Share the room code with friends.</p>
         </div>
 
         {!room ? (
-          <section className="grid gap-4 rounded-lg border border-slate-800 bg-slate-900 p-5 md:grid-cols-[1fr_1fr_auto]">
-            <label className="grid gap-2 text-sm font-semibold">
+          <section className="skyjo-panel grid gap-4 p-5 md:grid-cols-[1fr_1fr_auto]">
+            <label className="grid gap-2 text-sm font-semibold text-[#f5e6c8]/75">
               Display name
-              <input className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2" onChange={(event) => setName(event.target.value)} value={name} />
+              <input className="skyjo-input px-3 py-2" onChange={(event) => setName(event.target.value)} value={name} />
             </label>
-            <label className="grid gap-2 text-sm font-semibold">
+            <label className="grid gap-2 text-sm font-semibold text-[#f5e6c8]/75">
               Room code
               <input
-                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 uppercase"
+                className="skyjo-input px-3 py-2 uppercase"
                 onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
                 placeholder="ABCDE"
                 value={joinCode}
               />
             </label>
             <div className="flex flex-wrap items-end gap-2">
-              <button className="rounded-md bg-sky-400 px-4 py-2 font-bold text-slate-950" disabled={connection === 'connecting'} onClick={() => connect('create-room')} type="button">
+              <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={connection === 'connecting'} onClick={() => connect('create-room')} type="button">
                 Create Room
               </button>
-              <button className="rounded-md border border-slate-600 px-4 py-2 font-bold" disabled={connection === 'connecting'} onClick={() => connect('join-room')} type="button">
+              <button className="skyjo-button px-4 py-2" disabled={connection === 'connecting'} onClick={() => connect('join-room')} type="button">
                 Join
               </button>
             </div>
           </section>
         ) : null}
 
-        {error ? <div className="rounded-md border border-red-500 bg-red-950 px-4 py-3 text-red-100">{error}</div> : null}
+        {error ? <div className="rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-3 text-red-100">{error}</div> : null}
 
         {room ? (
-          <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+          <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
             <section className="space-y-4">
-              <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+              <div className="skyjo-panel p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm text-slate-400">Room code</div>
-                    <div className="text-4xl font-black tracking-normal text-sky-300">{room.code}</div>
+                    <div className="skyjo-kicker">Room code</div>
+                    <div className="skyjo-serif text-5xl font-black tracking-normal text-[#f5e6c8]">{room.code}</div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {localPlayer?.host && room.status === 'waiting' ? (
-                      <button className="rounded-md bg-sky-400 px-4 py-2 font-bold text-slate-950 disabled:opacity-50" disabled={room.players.length < 2} onClick={startRoomGame} type="button">
+                      <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={room.players.length < 2} onClick={startRoomGame} type="button">
                         Start Game
                       </button>
                     ) : null}
                     {localPlayer?.host ? (
-                      <button className="rounded-md border border-slate-700 px-4 py-2 font-semibold" onClick={() => send({ type: 'reset-room' })} type="button">
+                      <button className="skyjo-button px-4 py-2" onClick={() => send({ type: 'reset-room' })} type="button">
                         Reset Room
                       </button>
                     ) : null}
@@ -436,7 +447,7 @@ function Lobby() {
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {room.players.map((player) => (
-                    <span className="rounded-full border border-slate-700 px-3 py-1 text-sm" key={player.id}>
+                    <span className="rounded-full border border-[#f5e6c8]/15 bg-white/[0.025] px-3 py-1 text-sm text-[#f5e6c8]/75" key={player.id}>
                       {player.name} {player.host ? 'host' : ''} {player.connected ? 'online' : 'offline'}
                     </span>
                   ))}
@@ -457,7 +468,7 @@ function Lobby() {
                   ))}
                 </div>
               ) : (
-                <div className="rounded-lg border border-slate-800 bg-slate-900 p-6 text-slate-300">
+                <div className="skyjo-panel p-6 text-[#f5e6c8]/70">
                   Waiting for players. The host can start once at least two people are in the room.
                 </div>
               )}
@@ -474,10 +485,10 @@ function Lobby() {
                     state={room.state}
                   />
                   {room.state.phase === 'round-over' || room.state.phase === 'game-over' ? (
-                    <section className="rounded-lg border border-sky-500 bg-sky-950 p-4">
-                      <div className="font-bold">{room.state.phase === 'game-over' ? 'Game complete.' : 'Round complete.'}</div>
+                    <section className="skyjo-panel skyjo-panel-current p-4">
+                      <div className="skyjo-serif text-lg font-bold">{room.state.phase === 'game-over' ? 'Game complete.' : 'Round complete.'}</div>
                       {localPlayer?.host ? (
-                        <button className="mt-3 w-full rounded-md bg-sky-400 px-4 py-2 font-bold text-slate-950 hover:bg-sky-300" onClick={handleNextRound} type="button">
+                        <button className="skyjo-button skyjo-button-primary mt-3 w-full px-4 py-3" onClick={handleNextRound} type="button">
                           {room.state.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
                         </button>
                       ) : null}
@@ -486,7 +497,7 @@ function Lobby() {
                   <MoveLog state={room.state} />
                 </>
               ) : (
-                <section className="rounded-lg border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">
+                <section className="skyjo-panel p-4 text-sm text-[#f5e6c8]/70">
                   Keep this tab open while friends join.
                 </section>
               )}
