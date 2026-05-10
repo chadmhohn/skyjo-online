@@ -396,7 +396,7 @@ export function createMultiplayerGame(
     })),
     round,
     startPlayerId,
-    true
+    false
   );
 }
 

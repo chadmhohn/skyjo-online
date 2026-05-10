@@ -615,7 +615,7 @@ function Lobby() {
             Back
           </Link>
           <h1 className="skyjo-title mt-2 text-5xl">Multiplayer Lobby</h1>
-          <p className="mt-1 text-[#f5e6c8]/55">Rooms run entirely on this VPS over WebSockets. Share the room code with friends.</p>
+          <p className="mt-1 text-[#f5e6c8]/55">Create a private room and share the code with friends.</p>
         </div>
 
         {!room ? (
