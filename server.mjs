@@ -4,6 +4,11 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
+import {
+  createInitialRoomState,
+  createNextRoundRoomState,
+  validateMultiplayerStateUpdate
+} from './server-dist/serverValidation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(__dirname, 'dist');
@@ -360,14 +365,36 @@ wss.on('connection', (ws) => {
         sendJson(ws, { type: 'error', message: 'Only the host can start the game.' });
         return;
       }
-      if (!message.state || room.players.length < 2) {
+      if (room.status === 'waiting') {
+        if (room.players.length < 2) {
+          sendJson(ws, { type: 'error', message: 'Need at least two players.' });
+          return;
+        }
+        room.state = createInitialRoomState(room.players);
+        room.status = 'playing';
+        room.updatedAt = Date.now();
+        broadcastRoom(room);
+        return;
+      }
+      if (room.state?.phase === 'round-over') {
+        room.state = createNextRoundRoomState(room.state);
+        room.status = 'playing';
+        room.updatedAt = Date.now();
+        broadcastRoom(room);
+        return;
+      }
+      if (room.state?.phase === 'game-over' || room.status === 'finished') {
+        room.state = createInitialRoomState(room.players);
+        room.status = 'playing';
+        room.updatedAt = Date.now();
+        broadcastRoom(room);
+        return;
+      }
+      if (room.players.length < 2) {
         sendJson(ws, { type: 'error', message: 'Need at least two players.' });
         return;
       }
-      room.state = message.state;
-      room.status = 'playing';
-      room.updatedAt = Date.now();
-      broadcastRoom(room);
+      sendJson(ws, { type: 'error', message: 'The current game is not ready for a new round.' });
       return;
     }
 
@@ -379,6 +406,11 @@ wss.on('connection', (ws) => {
       const activePlayerId = room.state?.players?.[room.state.currentPlayerIndex]?.id;
       if (activePlayerId && activePlayerId !== player.id) {
         sendJson(ws, { type: 'error', message: 'It is not your turn.' });
+        return;
+      }
+      const validation = validateMultiplayerStateUpdate(room.state, message.state, player.id);
+      if (!validation.ok) {
+        sendJson(ws, { type: 'error', message: validation.message || 'That move is not legal.' });
         return;
       }
       room.state = message.state;

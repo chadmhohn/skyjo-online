@@ -37,7 +37,7 @@ Current notes:
 
 ## Phase 2: Multiplayer Lobby and Rooms
 
-Status: MVP complete; validation hardening in progress
+Status: MVP complete; validation hardening complete
 GitHub issue: #3
 
 Deliverables:
@@ -46,7 +46,7 @@ Deliverables:
 - Room codes/links that can be shared with friends.
 - VPS-hosted WebSocket room state.
 - Player presence, ready state, and host start controls.
-- Server-side turn ownership checks; deeper move-shape validation remains in Phase 4 hardening.
+- Server-side turn ownership checks and move-shape validation against legal shared-engine transitions.
 
 Acceptance:
 
@@ -78,8 +78,8 @@ Acceptance:
 
 Current notes:
 
-- Game state is synchronized optimistically from the current player's browser after the VPS verifies room membership and turn ownership.
-- The next hardening pass should move more move validation into the server before treating this as abuse-resistant.
+- Game state is synchronized from the current player's browser after the VPS verifies room membership, turn ownership, and legal move shape.
+- Host start, next-round, new-game, and reset boundaries are enforced server-side for the friends-only MVP.
 
 ## Phase 4: Polish and Hardening
 
@@ -93,6 +93,7 @@ Deliverables:
 - Animations and clearer card states.
 - Spectator-safe error handling and loading states.
 - WebSocket room authorization and stale-room cleanup review.
+- Server-side move-shape validation is complete; remaining hardening should focus on playtest findings and deployment smoke coverage.
 - Smoke test checklist for VPS deployment.
 
 Acceptance:

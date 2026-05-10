@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import {
   chooseDiscard,
-  createMultiplayerGame,
   discardDrawnAndReveal,
   drawBlind,
   getBestAiMove,
@@ -564,8 +563,7 @@ function Lobby() {
 
   function startRoomGame() {
     if (!room || room.players.length < 2) return;
-    const game = createMultiplayerGame(room.players.map((player) => ({ id: player.id, name: player.name })));
-    send({ type: 'start-game', state: game });
+    send({ type: 'start-game' });
   }
 
   function updateGame(nextState: GameState) {
@@ -589,12 +587,7 @@ function Lobby() {
 
   function handleNextRound() {
     if (!room?.state) return;
-    const next = createMultiplayerGame(
-      room.state.players.map((player) => ({ id: player.id, name: player.name, totalScore: player.totalScore })),
-      room.state.round + 1,
-      room.state.nextStarterId
-    );
-    send({ type: 'start-game', state: next });
+    send({ type: 'start-game' });
   }
 
   const localTurn = Boolean(room?.state && room.state.players[room.state.currentPlayerIndex]?.id === playerId);
