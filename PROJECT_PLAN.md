@@ -83,7 +83,7 @@ Current notes:
 
 ## Phase 4: Polish and Hardening
 
-Status: in progress
+Status: deployment smoke coverage complete; remaining polish in progress
 GitHub issue: #2
 
 Deliverables:
@@ -94,7 +94,7 @@ Deliverables:
 - Spectator-safe error handling and loading states.
 - WebSocket room authorization and stale-room cleanup review.
 - Server-side move-shape validation is complete; remaining hardening should focus on playtest findings and deployment smoke coverage.
-- Smoke test checklist for VPS deployment.
+- Smoke test checklist for VPS deployment is complete in #14.
 
 Acceptance:
 
@@ -106,3 +106,4 @@ Current notes:
 - Rules are available from compact in-game buttons on both the single-player and multiplayer routes.
 - Issue #11 polish is complete: the play surface now calls out opening reveals, local vs waiting turns, drawn-card decisions, eligible cards, final-lap state, disabled action reasons, and round scoring.
 - Issue #12 AI strategy is complete; `npm run smoke:ai` covers source choices, replacement targets, reveal targets, final-turn pressure, and removed-card safety.
+- Issue #14 deployment smoke checklist is complete; `docs/deployment-smoke-checklist.md` covers local release checks, health endpoints, login/static bundle verification, single-player and two-client multiplayer smoke, restart guidance, and persistence-aware server-side release notes.

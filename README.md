@@ -42,6 +42,9 @@ Example systemd files live in `deploy/`:
 Generate a session secret with:
 `openssl rand -base64 48`
 
+Release smoke checklist:
+[docs/deployment-smoke-checklist.md](docs/deployment-smoke-checklist.md)
+
 ## Tech Stack
 - React 18 + TypeScript
 - Vite
