@@ -37,6 +37,7 @@ Current notes:
 ## Phase 2: Multiplayer Lobby and Rooms
 
 Status: planned
+GitHub issue: #3
 
 Deliverables:
 
@@ -55,6 +56,7 @@ Acceptance:
 ## Phase 3: Multiplayer Game Completion
 
 Status: planned
+GitHub issue: #1
 
 Deliverables:
 
@@ -70,6 +72,7 @@ Acceptance:
 ## Phase 4: Polish and Hardening
 
 Status: planned
+GitHub issue: #2
 
 Deliverables:
 
