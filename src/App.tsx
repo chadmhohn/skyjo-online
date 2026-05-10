@@ -77,7 +77,7 @@ function Home() {
           <p className="skyjo-kicker mb-3">Private game table</p>
           <h1 className="skyjo-title text-7xl sm:text-9xl">Skyjo</h1>
           <p className="mt-5 max-w-xl text-lg leading-8 text-[#f5e6c8]/70">
-            Play solo against the house AI or create a private room for friends on the VPS-hosted multiplayer table.
+            Play solo against the house AI or create a private room for friends at the multiplayer table.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link className="skyjo-button skyjo-button-primary px-5 py-3" to="/single-player">
