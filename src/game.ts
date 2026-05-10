@@ -84,7 +84,7 @@ function revealOpeningCards(grid: Card[]): Card[] {
   return grid.map((card, index) => (indexes.includes(index) ? { ...card, faceUp: true } : card));
 }
 
-function makePlayer(id: string, name: string, kind: Player['kind'], deck: Card[]): { player: Player; deck: Card[] } {
+function makePlayer(id: string, name: string, kind: Player['kind'], deck: Card[], totalScore = 0): { player: Player; deck: Card[] } {
   const grid = revealOpeningCards(deck.slice(0, rows * columns));
   return {
     player: {
@@ -92,7 +92,7 @@ function makePlayer(id: string, name: string, kind: Player['kind'], deck: Card[]
       name,
       kind,
       grid,
-      totalScore: 0,
+      totalScore,
       roundScore: visibleScore(grid)
     },
     deck: deck.slice(rows * columns)
@@ -165,21 +165,21 @@ function finishRound(state: GameState, closer: Player): GameState {
   );
 }
 
-export function createGame(existingPlayers?: Player[], round = 1): GameState {
+export function createGameForPlayers(players: Array<Pick<Player, 'id' | 'name' | 'kind'> & Partial<Pick<Player, 'totalScore'>>>, round = 1): GameState {
   let deck = makeDeck();
-  const human = makePlayer('human', 'You', 'human', deck);
-  deck = human.deck;
-  const ai = makePlayer('ai-1', 'Nova', 'ai', deck);
-  deck = ai.deck;
+  const dealtPlayers: Player[] = [];
+
+  for (const player of players) {
+    const dealt = makePlayer(player.id, player.name, player.kind, deck, player.totalScore || 0);
+    dealtPlayers.push(dealt.player);
+    deck = dealt.deck;
+  }
+
   const discard = { ...deck[0], faceUp: true };
   const drawPile = deck.slice(1);
-  const previousScores = new Map((existingPlayers || []).map((player) => [player.id, player.totalScore]));
 
   return {
-    players: [human.player, ai.player].map((player) => ({
-      ...player,
-      totalScore: previousScores.get(player.id) || 0
-    })),
+    players: dealtPlayers,
     drawPile,
     discardPile: [discard],
     currentPlayerIndex: 0,
@@ -190,6 +190,29 @@ export function createGame(existingPlayers?: Player[], round = 1): GameState {
     log: ['New round started. Pick from the discard pile or draw blind.'],
     winnerId: null
   };
+}
+
+export function createGame(existingPlayers?: Player[], round = 1): GameState {
+  const previousScores = new Map((existingPlayers || []).map((player) => [player.id, player.totalScore]));
+  return createGameForPlayers(
+    [
+      { id: 'human', name: 'You', kind: 'human', totalScore: previousScores.get('human') || 0 },
+      { id: 'ai-1', name: 'Nova', kind: 'ai', totalScore: previousScores.get('ai-1') || 0 }
+    ],
+    round
+  );
+}
+
+export function createMultiplayerGame(players: Array<Pick<Player, 'id' | 'name'> & Partial<Pick<Player, 'totalScore'>>>, round = 1): GameState {
+  return createGameForPlayers(
+    players.map((player) => ({
+      id: player.id,
+      name: player.name,
+      kind: 'human',
+      totalScore: player.totalScore || 0
+    })),
+    round
+  );
 }
 
 export function startFreshGame(): GameState {

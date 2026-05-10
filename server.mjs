@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WebSocketServer } from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(__dirname, 'dist');
@@ -13,6 +14,7 @@ const sessionSecret = process.env.SKYJO_SESSION_SECRET;
 const cookieName = process.env.SKYJO_COOKIE_NAME || 'skyjo_session';
 const sessionTtlMs = Number(process.env.SKYJO_SESSION_TTL_HOURS || 24 * 14) * 60 * 60 * 1000;
 const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
+const rooms = new Map();
 
 const mimeTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -84,6 +86,45 @@ function send(res, status, body, headers = {}) {
     ...headers
   });
   res.end(body);
+}
+
+function makeRoomCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let index = 0; index < 5; index += 1) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return rooms.has(code) ? makeRoomCode() : code;
+}
+
+function publicRoom(room) {
+  return {
+    code: room.code,
+    hostId: room.hostId,
+    players: room.players,
+    state: room.state,
+    status: room.status,
+    updatedAt: room.updatedAt
+  };
+}
+
+function sendJson(ws, payload) {
+  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
+}
+
+function broadcastRoom(room) {
+  const payload = JSON.stringify({ type: 'room', room: publicRoom(room) });
+  for (const client of room.clients) {
+    if (client.readyState === client.OPEN) client.send(payload);
+  }
+}
+
+function roomPlayer(ws) {
+  if (!ws.roomCode || !ws.playerId) return null;
+  const room = rooms.get(ws.roomCode);
+  if (!room) return null;
+  const player = room.players.find((item) => item.id === ws.playerId);
+  return player ? { room, player } : null;
 }
 
 function renderLogin(error = false) {
@@ -228,6 +269,159 @@ const server = http.createServer(async (req, res) => {
     send(res, 500, 'Internal server error', { 'Content-Type': 'text/plain; charset=utf-8' });
   }
 });
+
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url || '/', 'http://localhost');
+  if (url.pathname !== '/rooms' || !hasValidSession(req)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
+
+wss.on('connection', (ws) => {
+  ws.on('message', (raw) => {
+    let message;
+    try {
+      message = JSON.parse(String(raw));
+    } catch {
+      sendJson(ws, { type: 'error', message: 'Invalid message.' });
+      return;
+    }
+
+    if (message.type === 'create-room') {
+      const code = makeRoomCode();
+      const playerId = crypto.randomUUID();
+      const name = String(message.name || 'Player').trim().slice(0, 24) || 'Player';
+      const room = {
+        code,
+        hostId: playerId,
+        players: [{ id: playerId, name, connected: true, host: true }],
+        state: null,
+        status: 'waiting',
+        updatedAt: Date.now(),
+        clients: new Set([ws])
+      };
+      rooms.set(code, room);
+      ws.roomCode = code;
+      ws.playerId = playerId;
+      sendJson(ws, { type: 'joined', playerId, room: publicRoom(room) });
+      broadcastRoom(room);
+      return;
+    }
+
+    if (message.type === 'join-room') {
+      const code = String(message.code || '').trim().toUpperCase();
+      const room = rooms.get(code);
+      if (!room) {
+        sendJson(ws, { type: 'error', message: 'Room not found.' });
+        return;
+      }
+      if (room.status !== 'waiting' && !message.playerId) {
+        sendJson(ws, { type: 'error', message: 'That game has already started.' });
+        return;
+      }
+      const name = String(message.name || 'Player').trim().slice(0, 24) || 'Player';
+      let player = message.playerId ? room.players.find((item) => item.id === message.playerId) : null;
+      if (!player) {
+        if (room.players.length >= 8) {
+          sendJson(ws, { type: 'error', message: 'Room is full.' });
+          return;
+        }
+        player = { id: crypto.randomUUID(), name, connected: true, host: false };
+        room.players.push(player);
+      }
+      player.name = name;
+      player.connected = true;
+      room.clients.add(ws);
+      room.updatedAt = Date.now();
+      ws.roomCode = code;
+      ws.playerId = player.id;
+      sendJson(ws, { type: 'joined', playerId: player.id, room: publicRoom(room) });
+      broadcastRoom(room);
+      return;
+    }
+
+    const context = roomPlayer(ws);
+    if (!context) {
+      sendJson(ws, { type: 'error', message: 'Join or create a room first.' });
+      return;
+    }
+    const { room, player } = context;
+
+    if (message.type === 'start-game') {
+      if (!player.host) {
+        sendJson(ws, { type: 'error', message: 'Only the host can start the game.' });
+        return;
+      }
+      if (!message.state || room.players.length < 2) {
+        sendJson(ws, { type: 'error', message: 'Need at least two players.' });
+        return;
+      }
+      room.state = message.state;
+      room.status = 'playing';
+      room.updatedAt = Date.now();
+      broadcastRoom(room);
+      return;
+    }
+
+    if (message.type === 'update-state') {
+      if (!message.state || room.status !== 'playing') {
+        sendJson(ws, { type: 'error', message: 'No active game.' });
+        return;
+      }
+      const activePlayerId = room.state?.players?.[room.state.currentPlayerIndex]?.id;
+      if (activePlayerId && activePlayerId !== player.id) {
+        sendJson(ws, { type: 'error', message: 'It is not your turn.' });
+        return;
+      }
+      room.state = message.state;
+      room.status = message.state.phase === 'game-over' ? 'finished' : 'playing';
+      room.updatedAt = Date.now();
+      broadcastRoom(room);
+      return;
+    }
+
+    if (message.type === 'reset-room') {
+      if (!player.host) {
+        sendJson(ws, { type: 'error', message: 'Only the host can reset the room.' });
+        return;
+      }
+      room.state = null;
+      room.status = 'waiting';
+      room.updatedAt = Date.now();
+      broadcastRoom(room);
+      return;
+    }
+  });
+
+  ws.on('close', () => {
+    const context = roomPlayer(ws);
+    if (!context) return;
+    const { room, player } = context;
+    room.clients.delete(ws);
+    player.connected = false;
+    room.updatedAt = Date.now();
+    if (room.clients.size === 0 && room.status === 'waiting') {
+      rooms.delete(room.code);
+      return;
+    }
+    broadcastRoom(room);
+  });
+});
+
+setInterval(() => {
+  const cutoff = Date.now() - 1000 * 60 * 60 * 6;
+  for (const [code, room] of rooms.entries()) {
+    if (room.updatedAt < cutoff && room.clients.size === 0) rooms.delete(code);
+  }
+}, 1000 * 60 * 30).unref();
 
 server.listen(port, host, () => {
   console.log(`Skyjo Online serving ${distDir}`);

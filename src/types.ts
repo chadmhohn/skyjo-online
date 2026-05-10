@@ -24,6 +24,22 @@ export interface GameRoom {
   password?: string;
 }
 
+export interface RoomPlayer {
+  id: string;
+  name: string;
+  connected: boolean;
+  host: boolean;
+}
+
+export interface MultiplayerRoom {
+  code: string;
+  hostId: string;
+  players: RoomPlayer[];
+  state: GameState | null;
+  status: 'waiting' | 'playing' | 'finished';
+  updatedAt: number;
+}
+
 export type TurnPhase = 'choose-source' | 'choose-replacement' | 'round-over' | 'game-over';
 
 export interface GameState {

@@ -6,12 +6,12 @@ Multiplayer online version of the popular card game Skyjo.
 - Real-time multiplayer rooms (2-8 players)
 - Single player mode vs AI
 - Password protected access
-- Built with React + Vite + TypeScript + Tailwind + Firebase
+- Built with React + Vite + TypeScript + Tailwind + a VPS-native WebSocket server
 
 ## Quick Start
 1. Clone the repo
 2. `npm install`
-3. Copy `.env.example` to `.env` and add your Firebase config
+3. Copy `.env.example` to `.env` and set the shared access password
 4. `npm run dev`
 
 ## VPS Deployment
@@ -23,12 +23,6 @@ The VPS deployment uses the normal Vite build plus a small Node server with a sh
 2. Create `/etc/skyjo-online.env` or another service env file with:
    - `SKYJO_ACCESS_PASSWORD`
    - `SKYJO_SESSION_SECRET`
-   - `VITE_FIREBASE_API_KEY`
-   - `VITE_FIREBASE_AUTH_DOMAIN`
-   - `VITE_FIREBASE_PROJECT_ID`
-   - `VITE_FIREBASE_STORAGE_BUCKET`
-   - `VITE_FIREBASE_MESSAGING_SENDER_ID`
-   - `VITE_FIREBASE_APP_ID`
    - `HOST=127.0.0.1`
    - `PORT=4180`
 3. Load the env file and build:
@@ -52,7 +46,7 @@ Generate a session secret with:
 - React 18 + TypeScript
 - Vite
 - Tailwind CSS + daisyUI
-- Firebase (Realtime Database / Firestore for game state)
+- Node WebSocket rooms for multiplayer state
 - React Router for navigation
 
 ## Game Rules Summary

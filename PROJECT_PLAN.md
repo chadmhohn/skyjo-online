@@ -8,6 +8,7 @@ Build a private, password-gated Skyjo-style web app for friends with:
 - Multiplayer rooms for 2-8 players.
 - Mobile-friendly play surface.
 - VPS deployment behind the shared-password access gate.
+- VPS-native realtime room sync with the Node server and WebSockets.
 
 ## Phase 1: Playable Single-Player MVP
 
@@ -36,16 +37,16 @@ Current notes:
 
 ## Phase 2: Multiplayer Lobby and Rooms
 
-Status: planned
+Status: MVP complete; validation hardening in progress
 GitHub issue: #3
 
 Deliverables:
 
 - Lobby route with create-room and join-room flows.
 - Room codes/links that can be shared with friends.
-- Firebase Realtime Database room state.
+- VPS-hosted WebSocket room state.
 - Player presence, ready state, and host start controls.
-- Validation to prevent invalid or out-of-turn moves.
+- Server-side turn ownership checks; deeper move-shape validation remains in Phase 4 hardening.
 
 Acceptance:
 
@@ -53,9 +54,15 @@ Acceptance:
 - Only the current player can make a move.
 - Players can reconnect to an active room.
 
+Current notes:
+
+- Multiplayer lobby route is `/lobby`.
+- Rooms are stored in memory on the VPS process for the friends-only MVP.
+- A service restart clears active rooms; persistence can be added later if needed.
+
 ## Phase 3: Multiplayer Game Completion
 
-Status: planned
+Status: MVP complete; multi-browser playtest and persistence refinement in progress
 GitHub issue: #1
 
 Deliverables:
@@ -69,6 +76,11 @@ Acceptance:
 
 - A friend group can complete a multi-round game from room creation to winner.
 
+Current notes:
+
+- Game state is synchronized optimistically from the current player's browser after the VPS verifies room membership and turn ownership.
+- The next hardening pass should move more move validation into the server before treating this as abuse-resistant.
+
 ## Phase 4: Polish and Hardening
 
 Status: planned
@@ -80,10 +92,10 @@ Deliverables:
 - Rules/help overlay.
 - Animations and clearer card states.
 - Spectator-safe error handling and loading states.
-- Firebase security rules review.
+- WebSocket room authorization and stale-room cleanup review.
 - Smoke test checklist for VPS deployment.
 
 Acceptance:
 
 - The app is understandable without instructions in Slack.
-- Public hostname remains password gated, and game data access is scoped to intended rooms.
+- Public hostname remains password gated, and room access is scoped to room codes.
