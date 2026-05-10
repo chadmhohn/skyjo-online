@@ -32,7 +32,7 @@ Acceptance:
 Current notes:
 
 - Single-player route is `/single-player`.
-- AI is intentionally simple; better strategy belongs in Phase 4.
+- Single-player AI uses deterministic MVP heuristics for visible values, hidden-card risk, discard/drawn card value, column clears, and final turns.
 - Opening cards are manually selected by the human and automatically selected by AI players.
 
 ## Phase 2: Multiplayer Lobby and Rooms
@@ -88,7 +88,7 @@ GitHub issue: #2
 
 Deliverables:
 
-- Better AI strategy.
+- Better single-player AI strategy is complete in #12.
 - Rules/help overlay is complete in #10.
 - Animations and clearer card states.
 - Spectator-safe error handling and loading states.
@@ -105,3 +105,4 @@ Current notes:
 
 - Rules are available from compact in-game buttons on both the single-player and multiplayer routes.
 - Issue #11 polish is complete: the play surface now calls out opening reveals, local vs waiting turns, drawn-card decisions, eligible cards, final-lap state, disabled action reasons, and round scoring.
+- Issue #12 AI strategy is complete; `npm run smoke:ai` covers source choices, replacement targets, reveal targets, final-turn pressure, and removed-card safety.

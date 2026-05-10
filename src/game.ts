@@ -3,8 +3,37 @@ import type { Card, GameState, MoveResult, Player } from './types';
 const rows = 3;
 const columns = 4;
 const winningScore = 100;
+const endgameHiddenCardCount = 2;
+const columnClearTieBonus = 0.35;
+
+const cardValueCounts = [
+  { value: -2, count: 5 },
+  { value: -1, count: 10 },
+  { value: 0, count: 15 },
+  ...Array.from({ length: 12 }, (_, index) => ({ value: index + 1, count: 10 }))
+] as const;
+
+const deckCardCount = cardValueCounts.reduce((total, { count }) => total + count, 0);
+const deckValueTotal = cardValueCounts.reduce((total, { value, count }) => total + value * count, 0);
+const defaultHiddenCardEstimate = deckValueTotal / deckCardCount;
 
 type PlayerSeed = Pick<Player, 'id' | 'name' | 'kind'> & Partial<Pick<Player, 'totalScore'>>;
+type AiMove = { action: 'discard' | 'draw' | 'replace' | 'reveal'; index?: number };
+
+interface AiRoundContext {
+  hiddenCount: number;
+  isFinalTurn: boolean;
+  isLateRound: boolean;
+  visibleTotal: number;
+}
+
+interface AiReplacementTarget {
+  index: number;
+  estimatedCurrentValue: number;
+  gain: number;
+  score: number;
+  faceUp: boolean;
+}
 
 export const singlePlayerAiOpponents = [
   { id: 'ai-1', name: 'Luke', kind: 'ai' },
@@ -54,12 +83,7 @@ function shuffle<T>(items: T[]): T[] {
 }
 
 function makeDeck(): Card[] {
-  const values = [
-    ...Array(5).fill(-2),
-    ...Array(10).fill(-1),
-    ...Array(15).fill(0),
-    ...Array.from({ length: 12 }, (_, index) => Array(10).fill(index + 1)).flat()
-  ];
+  const values = cardValueCounts.flatMap(({ value, count }) => Array<number>(count).fill(value));
 
   return shuffle(
     values.map((value, index) => ({
@@ -536,29 +560,239 @@ export function discardDrawnAndReveal(state: GameState, cardIndex: number): Game
   return finishTurn(nextState, nextPlayer);
 }
 
-export function getBestAiMove(state: GameState): { action: 'discard' | 'draw' | 'replace' | 'reveal'; index?: number } {
-  const player = currentPlayer(state);
-  const hiddenIndex = player.grid.findIndex((card) => !card.faceUp && !card.removed);
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function columnIndexesFor(cardIndex: number): number[] {
+  const column = cardIndex % columns;
+  return [column, column + columns, column + columns * 2];
+}
+
+function getAiRoundContext(state: GameState, player: Player): AiRoundContext {
+  const hiddenCount = player.grid.filter((card) => !card.faceUp && !card.removed).length;
+  const opponentHiddenCounts = state.players
+    .filter((item) => item.id !== player.id)
+    .map((item) => item.grid.filter((card) => !card.faceUp && !card.removed).length);
+  const fewestOpponentHiddenCount = opponentHiddenCounts.length > 0 ? Math.min(...opponentHiddenCounts) : hiddenCount;
+  const isFinalTurn = Boolean(state.roundCloserId && state.finalTurnPlayerIds.includes(player.id));
+
+  return {
+    hiddenCount,
+    isFinalTurn,
+    isLateRound: isFinalTurn || hiddenCount <= endgameHiddenCardCount || fewestOpponentHiddenCount <= 1,
+    visibleTotal: visibleScore(player.grid)
+  };
+}
+
+function estimatedRemainingHiddenCardValue(state: GameState): number {
+  const remainingCounts = new Map(cardValueCounts.map(({ value, count }) => [value, count]));
+  const knownValues = [
+    ...state.players.flatMap((player) =>
+      player.grid.filter((card) => card.faceUp || card.removed).map((card) => card.value)
+    ),
+    ...state.discardPile.map((card) => card.value),
+    ...(state.drawnCard ? [state.drawnCard.value] : [])
+  ];
+
+  for (const value of knownValues) {
+    const count = remainingCounts.get(value);
+    if (count && count > 0) remainingCounts.set(value, count - 1);
+  }
+
+  const remaining = [...remainingCounts].reduce(
+    (total, [value, count]) => ({
+      count: total.count + count,
+      value: total.value + value * count
+    }),
+    { count: 0, value: 0 }
+  );
+
+  return remaining.count > 0 ? remaining.value / remaining.count : defaultHiddenCardEstimate;
+}
+
+function visibleColumnPartners(player: Player, cardIndex: number): Card[] {
+  return columnIndexesFor(cardIndex)
+    .filter((index) => index !== cardIndex)
+    .map((index) => player.grid[index])
+    .filter((card): card is Card => Boolean(card && card.faceUp && !card.removed));
+}
+
+function estimateHiddenSlotValue(
+  player: Player,
+  cardIndex: number,
+  hiddenEstimate: number,
+  context: AiRoundContext
+): number {
+  const partners = visibleColumnPartners(player, cardIndex);
+  const partnerAverage =
+    partners.length > 0 ? partners.reduce((total, card) => total + card.value, 0) / partners.length : hiddenEstimate;
+  const columnPressure = (partnerAverage - hiddenEstimate) * 0.18;
+  const adjustedColumnPressure = context.isFinalTurn ? Math.max(0, columnPressure) : columnPressure;
+  const lateRoundRisk = context.isFinalTurn ? 0.55 : context.isLateRound ? 0.25 : 0;
+
+  return clamp(hiddenEstimate + adjustedColumnPressure + lateRoundRisk, 3.75, 6.75);
+}
+
+function estimatedSlotValue(player: Player, cardIndex: number, hiddenEstimate: number, context: AiRoundContext): number {
+  const card = player.grid[cardIndex];
+  if (!card || card.removed) return Number.NEGATIVE_INFINITY;
+  return card.faceUp ? card.value : estimateHiddenSlotValue(player, cardIndex, hiddenEstimate, context);
+}
+
+function replacementClearsColumn(player: Player, cardIndex: number, replacementValue: number): boolean {
+  return columnIndexesFor(cardIndex).every((index) => {
+    const card = player.grid[index];
+    if (!card || card.removed) return false;
+    if (index === cardIndex) return true;
+    return card.faceUp && card.value === replacementValue;
+  });
+}
+
+function estimatedColumnValue(
+  player: Player,
+  cardIndex: number,
+  hiddenEstimate: number,
+  context: AiRoundContext
+): number {
+  return columnIndexesFor(cardIndex).reduce(
+    (total, index) => total + estimatedSlotValue(player, index, hiddenEstimate, context),
+    0
+  );
+}
+
+function scoreReplacementTarget(
+  player: Player,
+  cardIndex: number,
+  replacementValue: number,
+  hiddenEstimate: number,
+  context: AiRoundContext
+): AiReplacementTarget | null {
+  const card = player.grid[cardIndex];
+  if (!card || card.removed) return null;
+
+  const estimatedCurrentValue = estimatedSlotValue(player, cardIndex, hiddenEstimate, context);
+  const clearsColumn = replacementClearsColumn(player, cardIndex, replacementValue);
+  const gain = clearsColumn
+    ? estimatedColumnValue(player, cardIndex, hiddenEstimate, context)
+    : estimatedCurrentValue - replacementValue;
+
+  return {
+    index: cardIndex,
+    estimatedCurrentValue,
+    gain,
+    score: gain + (clearsColumn ? columnClearTieBonus : 0) + (card.faceUp ? 0.05 : 0),
+    faceUp: card.faceUp
+  };
+}
+
+function findBestReplacementTarget(
+  player: Player,
+  replacementValue: number,
+  hiddenEstimate: number,
+  context: AiRoundContext
+): AiReplacementTarget | null {
+  const targets = player.grid
+    .map((_, index) => scoreReplacementTarget(player, index, replacementValue, hiddenEstimate, context))
+    .filter((target): target is AiReplacementTarget => Boolean(target))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (b.estimatedCurrentValue !== a.estimatedCurrentValue) return b.estimatedCurrentValue - a.estimatedCurrentValue;
+      if (a.faceUp !== b.faceUp) return a.faceUp ? -1 : 1;
+      return a.index - b.index;
+    });
+
+  return targets[0] ?? null;
+}
+
+function firstAvailableReplacementIndex(player: Player): number {
+  const index = player.grid.findIndex((card) => !card.removed);
+  return index >= 0 ? index : 0;
+}
+
+function findBestRevealIndex(player: Player, hiddenEstimate: number, context: AiRoundContext): number | null {
   const candidates = player.grid
-    .map((card, index) => ({ card, index, score: card.faceUp ? card.value : 6 }))
-    .filter(({ card }) => !card.removed)
-    .sort((a, b) => b.score - a.score);
-  const worst = candidates[0];
+    .map((card, index) => {
+      if (card.faceUp || card.removed) return null;
+
+      const partners = visibleColumnPartners(player, index);
+      const positivePartnerTotal = partners.reduce((total, partner) => total + Math.max(0, partner.value), 0);
+      const matchingPairBonus =
+        partners.length === 2 && partners[0].value === partners[1].value ? Math.max(0, partners[0].value) * 0.2 : 0;
+      const pressureBonus = context.isLateRound ? 0.3 : 0;
+
+      return {
+        index,
+        score:
+          estimateHiddenSlotValue(player, index, hiddenEstimate, context) +
+          positivePartnerTotal * 0.08 +
+          matchingPairBonus +
+          pressureBonus
+      };
+    })
+    .filter((candidate): candidate is { index: number; score: number } => Boolean(candidate))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.index - b.index;
+    });
+
+  return candidates[0]?.index ?? null;
+}
+
+function drawSourceScore(player: Player, hiddenEstimate: number, context: AiRoundContext): number {
+  const expectedDrawTarget = findBestReplacementTarget(player, hiddenEstimate, hiddenEstimate, context);
+  const revealFallback = context.hiddenCount > 0 ? (context.isLateRound ? 1.1 : 0.65) : Number.NEGATIVE_INFINITY;
+  return Math.max(expectedDrawTarget?.gain ?? Number.NEGATIVE_INFINITY, revealFallback);
+}
+
+function discardSourceMargin(discardValue: number, hiddenEstimate: number, context: AiRoundContext): number {
+  const base = context.isFinalTurn ? 0.1 : context.isLateRound ? 0.45 : 0.85;
+  if (discardValue <= 1) return Math.max(0.05, base - 0.35);
+  if (discardValue >= hiddenEstimate + 3) return base + 0.75;
+  return base;
+}
+
+function drawnCardPlacementThreshold(drawnValue: number, hiddenEstimate: number, context: AiRoundContext): number {
+  const visiblePressure = context.visibleTotal >= 24 ? -0.35 : 0;
+  const base = context.isFinalTurn ? 0.2 : context.isLateRound ? 0.55 : drawnValue <= hiddenEstimate ? 1 : 1.45;
+  return Math.max(0.2, base + visiblePressure);
+}
+
+export function getBestAiMove(state: GameState): AiMove {
+  const player = currentPlayer(state);
+  const hiddenEstimate = estimatedRemainingHiddenCardValue(state);
+  const context = getAiRoundContext(state, player);
 
   if (state.phase === 'choose-source') {
     const topDiscard = state.discardPile[0];
-    if (topDiscard && worst && topDiscard.value < worst.score) return { action: 'discard' };
+    if (!topDiscard) return { action: 'draw' };
+
+    const discardTarget = findBestReplacementTarget(player, topDiscard.value, hiddenEstimate, context);
+    const discardValueBias = clamp((hiddenEstimate - topDiscard.value) * 0.15, -0.8, 0.8);
+    const discardScore = (discardTarget?.score ?? Number.NEGATIVE_INFINITY) + discardValueBias;
+    const drawScore = drawSourceScore(player, hiddenEstimate, context);
+    const margin = discardSourceMargin(topDiscard.value, hiddenEstimate, context);
+
+    if (discardTarget && discardTarget.gain > 0 && discardScore >= drawScore + margin) return { action: 'discard' };
     return { action: 'draw' };
   }
 
   if (state.selectedSource === 'discard') {
-    return { action: 'replace', index: worst?.index || 0 };
+    const topDiscard = state.discardPile[0];
+    const target = topDiscard ? findBestReplacementTarget(player, topDiscard.value, hiddenEstimate, context) : null;
+    return { action: 'replace', index: target?.index ?? firstAvailableReplacementIndex(player) };
   }
 
-  if (state.drawnCard && worst && state.drawnCard.value < worst.score) {
-    return { action: 'replace', index: worst.index };
+  if (state.drawnCard) {
+    const target = findBestReplacementTarget(player, state.drawnCard.value, hiddenEstimate, context);
+    const placementThreshold = drawnCardPlacementThreshold(state.drawnCard.value, hiddenEstimate, context);
+    if (target && target.gain >= placementThreshold) return { action: 'replace', index: target.index };
+
+    const revealIndex = findBestRevealIndex(player, hiddenEstimate, context);
+    if (revealIndex !== null) return { action: 'reveal', index: revealIndex };
+
+    return { action: 'replace', index: target?.index ?? firstAvailableReplacementIndex(player) };
   }
 
-  if (hiddenIndex >= 0) return { action: 'reveal', index: hiddenIndex };
-  return { action: 'replace', index: worst?.index || 0 };
+  return { action: 'replace', index: firstAvailableReplacementIndex(player) };
 }
