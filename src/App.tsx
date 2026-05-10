@@ -7,6 +7,7 @@ import {
   drawBlind,
   getBestAiMove,
   replaceCard,
+  revealOpeningCard,
   startFreshGame,
   startNextRound
 } from './game';
@@ -68,7 +69,9 @@ interface GridProps {
 }
 
 function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', onCardClick }: GridProps) {
-  const canSelect =
+  const canSelectOpening =
+    isLocal && isCurrent && state.phase === 'opening-reveal' && (state.openingRevealCounts[player.id] ?? 0) < 2;
+  const canSelectReplacement =
     isLocal &&
     isCurrent &&
     state.phase === 'choose-replacement' &&
@@ -95,7 +98,10 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
               const index = row * 4 + column;
               const card = player.grid[index];
               const revealAfterDiscard = state.selectedSource === 'draw' && state.drawnCard && drawIntent === 'discard';
-              const selectable = Boolean(canSelect && !card.removed && (!revealAfterDiscard || !card.faceUp));
+              const selectable = Boolean(
+                !card.removed &&
+                  ((canSelectOpening && !card.faceUp) || (canSelectReplacement && (!revealAfterDiscard || !card.faceUp)))
+              );
               return (
                 <button
                   className={cardClass(card, selectable)}
@@ -128,10 +134,19 @@ function TableControls({ state, localTurn, drawIntent, onChooseDiscard, onDraw, 
   const topDiscard = state.discardPile[0];
   const activePlayer = state.players[state.currentPlayerIndex];
   const hasHiddenCard = activePlayer.grid.some((card) => !card.faceUp && !card.removed);
+  const openingPlayer = state.phase === 'opening-reveal' ? activePlayer : null;
+  const openingCount = openingPlayer ? state.openingRevealCounts[openingPlayer.id] ?? 0 : 0;
 
   return (
     <section className="skyjo-panel skyjo-table-glow p-4">
       <h2 className="skyjo-serif mb-3 text-xl font-semibold">Table</h2>
+      {openingPlayer ? (
+        <div className="mb-4 rounded-xl border border-[#f5e6c8]/25 bg-[#f5e6c8]/10 p-3 text-sm text-[#f5e6c8]/75">
+          {openingPlayer.kind === 'human'
+            ? `Tap ${2 - openingCount} card${2 - openingCount === 1 ? '' : 's'} on your board to reveal.`
+            : `${openingPlayer.name} is choosing opening cards.`}
+        </div>
+      ) : null}
       <div className="grid grid-cols-2 gap-4">
         <button
           className="skyjo-button p-4 text-center"
@@ -233,6 +248,11 @@ function SinglePlayer() {
     if (activePlayer.kind !== 'ai' || state.phase === 'round-over' || state.phase === 'game-over') return;
     const timer = window.setTimeout(() => {
       setState((current) => {
+        if (current.phase === 'opening-reveal') {
+          const aiPlayer = current.players[current.currentPlayerIndex];
+          const index = aiPlayer.grid.findIndex((card) => !card.faceUp && !card.removed);
+          return revealOpeningCard(current, index);
+        }
         const move = getBestAiMove(current);
         if (move.action === 'discard') return chooseDiscard(current);
         if (move.action === 'draw') return drawBlind(current);
@@ -244,7 +264,11 @@ function SinglePlayer() {
   }, [activePlayer.kind, state]);
 
   function handleCard(index: number) {
-    if (!humanTurn || state.phase !== 'choose-replacement') return;
+    if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
+    if (state.phase === 'opening-reveal') {
+      setState((current) => revealOpeningCard(current, index));
+      return;
+    }
     setState((current) =>
       drawIntent === 'discard' && current.selectedSource === 'draw' && current.drawnCard
         ? discardDrawnAndReveal(current, index)
@@ -438,9 +462,13 @@ function Lobby() {
   }
 
   function handleCard(index: number) {
-    if (!room?.state || room.state.phase !== 'choose-replacement') return;
+    if (!room?.state || (room.state.phase !== 'opening-reveal' && room.state.phase !== 'choose-replacement')) return;
     const active = room.state.players[room.state.currentPlayerIndex];
     if (active.id !== playerId) return;
+    if (room.state.phase === 'opening-reveal') {
+      updateGame(revealOpeningCard(room.state, index));
+      return;
+    }
     updateGame(
       drawIntent === 'discard' && room.state.selectedSource === 'draw' && room.state.drawnCard
         ? discardDrawnAndReveal(room.state, index)

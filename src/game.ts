@@ -79,13 +79,20 @@ function clearMatchingColumns(grid: Card[]): Card[] {
   return next;
 }
 
-function revealOpeningCards(grid: Card[]): Card[] {
+function revealRandomOpeningCards(grid: Card[]): Card[] {
   const indexes = shuffle(Array.from({ length: rows * columns }, (_, index) => index)).slice(0, 2);
   return grid.map((card, index) => (indexes.includes(index) ? { ...card, faceUp: true } : card));
 }
 
-function makePlayer(id: string, name: string, kind: Player['kind'], deck: Card[], totalScore = 0): { player: Player; deck: Card[] } {
-  const grid = revealOpeningCards(deck.slice(0, rows * columns));
+function makePlayer(
+  id: string,
+  name: string,
+  kind: Player['kind'],
+  deck: Card[],
+  totalScore = 0,
+  autoRevealOpeningCards = false
+): { player: Player; deck: Card[] } {
+  const grid = autoRevealOpeningCards ? revealRandomOpeningCards(deck.slice(0, rows * columns)) : deck.slice(0, rows * columns);
   return {
     player: {
       id,
@@ -121,6 +128,18 @@ function openingStarterIndex(players: Player[], startPlayerId?: string | null): 
     const score = visibleScore(player.grid);
     return score > bestScore ? index : bestIndex;
   }, 0);
+}
+
+function openingRevealCount(player: Player): number {
+  return player.grid.filter((card) => card.faceUp && !card.removed).length;
+}
+
+function openingRevealCounts(players: Player[]): Record<string, number> {
+  return Object.fromEntries(players.map((player) => [player.id, openingRevealCount(player)]));
+}
+
+function firstPlayerNeedingOpeningReveal(players: Player[]): number {
+  return players.findIndex((player) => openingRevealCount(player) < 2);
 }
 
 function withLog(state: GameState, message: string): GameState {
@@ -256,36 +275,45 @@ function finishRound(state: GameState, closer: Player): GameState {
 export function createGameForPlayers(
   players: Array<Pick<Player, 'id' | 'name' | 'kind'> & Partial<Pick<Player, 'totalScore'>>>,
   round = 1,
-  startPlayerId?: string | null
+  startPlayerId?: string | null,
+  autoRevealOpeningCards = true
 ): GameState {
   let deck = makeDeck();
   const dealtPlayers: Player[] = [];
 
   for (const player of players) {
-    const dealt = makePlayer(player.id, player.name, player.kind, deck, player.totalScore || 0);
+    const dealt = makePlayer(player.id, player.name, player.kind, deck, player.totalScore || 0, autoRevealOpeningCards);
     dealtPlayers.push(dealt.player);
     deck = dealt.deck;
   }
 
-  const currentPlayerIndex = openingStarterIndex(dealtPlayers, round > 1 ? startPlayerId : null);
+  const openingIndex = firstPlayerNeedingOpeningReveal(dealtPlayers);
+  const hasOpeningReveals = openingIndex < 0;
+  const currentPlayerIndex = hasOpeningReveals ? openingStarterIndex(dealtPlayers, round > 1 ? startPlayerId : null) : openingIndex;
   const starter = dealtPlayers[currentPlayerIndex];
   const discard = { ...deck[0], faceUp: true };
   const drawPile = deck.slice(1);
+  const phase = hasOpeningReveals ? 'choose-source' : 'opening-reveal';
 
   return {
     players: dealtPlayers,
     drawPile,
     discardPile: [discard],
     currentPlayerIndex,
-    phase: 'choose-source',
+    phase,
     selectedSource: null,
     drawnCard: null,
     round,
-    log: [`${starter.name} starts round ${round}. Pick from the discard pile or draw blind.`],
+    log: [
+      hasOpeningReveals
+        ? `${starter.name} starts round ${round}. Pick from the discard pile or draw blind.`
+        : `${starter.name} chooses two opening cards to reveal.`
+    ],
     winnerId: null,
-    nextStarterId: null,
+    nextStarterId: hasOpeningReveals ? null : round > 1 ? startPlayerId || null : null,
     roundCloserId: null,
-    finalTurnPlayerIds: []
+    finalTurnPlayerIds: [],
+    openingRevealCounts: openingRevealCounts(dealtPlayers)
   };
 }
 
@@ -297,7 +325,8 @@ export function createGame(existingPlayers?: Player[], round = 1, startPlayerId?
       { id: 'ai-1', name: 'Nova', kind: 'ai', totalScore: previousScores.get('ai-1') || 0 }
     ],
     round,
-    startPlayerId
+    startPlayerId,
+    false
   );
 }
 
@@ -314,7 +343,8 @@ export function createMultiplayerGame(
       totalScore: player.totalScore || 0
     })),
     round,
-    startPlayerId
+    startPlayerId,
+    true
   );
 }
 
@@ -324,6 +354,57 @@ export function startFreshGame(): GameState {
 
 export function startNextRound(state: GameState): GameState {
   return createGame(state.players, state.round + 1, state.nextStarterId);
+}
+
+export function revealOpeningCard(state: GameState, cardIndex: number): GameState {
+  if (state.phase !== 'opening-reveal') return state;
+  const player = currentPlayer(state);
+  const card = player.grid[cardIndex];
+  const currentCount = state.openingRevealCounts[player.id] ?? openingRevealCount(player);
+  if (!card || card.faceUp || card.removed || currentCount >= 2) return state;
+
+  const grid = player.grid.map((item, index) => (index === cardIndex ? { ...item, faceUp: true } : item));
+  const nextPlayer = { ...player, grid, roundScore: visibleScore(grid) };
+  const updatedState = updatePlayer(
+    {
+      ...state,
+      openingRevealCounts: {
+        ...state.openingRevealCounts,
+        [player.id]: currentCount + 1
+      }
+    },
+    nextPlayer
+  );
+  const nextCount = currentCount + 1;
+
+  if (nextCount < 2) {
+    return withLog(updatedState, `${player.name} revealed an opening card.`);
+  }
+
+  const nextPlayerIndex = updatedState.players.findIndex((item) => (updatedState.openingRevealCounts[item.id] ?? 0) < 2);
+  if (nextPlayerIndex >= 0) {
+    return withLog(
+      {
+        ...updatedState,
+        currentPlayerIndex: nextPlayerIndex
+      },
+      `${player.name} finished opening reveals. ${updatedState.players[nextPlayerIndex].name} chooses two opening cards.`
+    );
+  }
+
+  const starterIndex = openingStarterIndex(updatedState.players, updatedState.nextStarterId);
+  const starter = updatedState.players[starterIndex];
+  return withLog(
+    {
+      ...updatedState,
+      currentPlayerIndex: starterIndex,
+      phase: 'choose-source',
+      selectedSource: null,
+      drawnCard: null,
+      nextStarterId: null
+    },
+    `${starter.name} starts round ${state.round}. Pick from the discard pile or draw blind.`
+  );
 }
 
 export function chooseDiscard(state: GameState): GameState {

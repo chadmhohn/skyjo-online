@@ -40,7 +40,7 @@ export interface MultiplayerRoom {
   updatedAt: number;
 }
 
-export type TurnPhase = 'choose-source' | 'choose-replacement' | 'round-over' | 'game-over';
+export type TurnPhase = 'opening-reveal' | 'choose-source' | 'choose-replacement' | 'round-over' | 'game-over';
 
 export interface GameState {
   players: Player[];
@@ -56,6 +56,7 @@ export interface GameState {
   nextStarterId: string | null;
   roundCloserId: string | null;
   finalTurnPlayerIds: string[];
+  openingRevealCounts: Record<string, number>;
 }
 
 export interface MoveResult {
