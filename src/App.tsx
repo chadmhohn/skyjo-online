@@ -24,10 +24,43 @@ type BoardGridEntry = {
   player: Player;
   isLocal: boolean;
 };
+type RulesHelpSection = {
+  title: string;
+  items: string[];
+};
 
 const responsiveBoardGridClass = 'grid gap-4 xl:grid-cols-2';
 const fourPlayerDesktopBoardGridClass = 'hidden gap-4 md:grid md:grid-cols-2';
 const fourPlayerMobileBoardGridClass = 'grid gap-4 md:hidden';
+const rulesHelpSections: RulesHelpSection[] = [
+  {
+    title: 'Starting a round',
+    items: [
+      'Everyone gets 12 face-down cards and chooses two opening cards to reveal.',
+      'For the first round, the highest shown opening-card sum starts.',
+      'After later rounds, the player who ended the previous round starts once opening cards are revealed.'
+    ]
+  },
+  {
+    title: 'Taking a turn',
+    items: [
+      'Take the top discard if you want that card, or draw blind from the deck.',
+      'If you draw blind, either place it on your board or discard it and reveal one hidden card.'
+    ]
+  },
+  {
+    title: 'Clearing columns',
+    items: ['Three matching values in one column clear that column. Cleared cards stop counting against you.']
+  },
+  {
+    title: 'Ending and scoring',
+    items: [
+      'When someone reveals their last card, everyone else gets one final turn.',
+      "If the closer's positive round score is not strictly lowest, that score doubles.",
+      'The game ends when someone reaches 100 or more total points. Lowest total wins.'
+    ]
+  }
+];
 
 function Home() {
   return (
@@ -50,6 +83,101 @@ function Home() {
         </div>
       </section>
     </main>
+  );
+}
+
+function RulesHelpButton({ className = '' }: { className?: string }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setIsOpen(false);
+      }
+    };
+
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen]);
+
+  return (
+    <>
+      <button
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
+        className={`skyjo-button px-4 py-2 text-sm ${className}`}
+        onClick={() => setIsOpen(true)}
+        type="button"
+      >
+        Rules
+      </button>
+
+      {isOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:items-center sm:px-5"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setIsOpen(false);
+          }}
+        >
+          <section
+            aria-describedby="skyjo-rules-help-intro"
+            aria-labelledby="skyjo-rules-help-title"
+            aria-modal="true"
+            className="skyjo-panel w-full max-w-2xl overflow-hidden rounded-2xl bg-[#09110e]/95 shadow-2xl"
+            role="dialog"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-[#f5e6c8]/10 p-4 sm:p-5">
+              <div className="min-w-0">
+                <p className="skyjo-kicker">Help</p>
+                <h2 className="skyjo-serif mt-1 text-2xl font-black leading-tight text-[#f5e6c8] sm:text-3xl" id="skyjo-rules-help-title">
+                  Skyjo Rules
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-[#f5e6c8]/68" id="skyjo-rules-help-intro">
+                  Quick reminders for playing at this table.
+                </p>
+              </div>
+              <button
+                aria-label="Close rules and help"
+                className="skyjo-button shrink-0 px-3 py-2 text-sm"
+                onClick={() => setIsOpen(false)}
+                ref={closeButtonRef}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="max-h-[min(74vh,720px)] overflow-y-auto p-4 sm:p-5">
+              <div className="grid gap-3 sm:grid-cols-2">
+                {rulesHelpSections.map((section) => (
+                  <section className="rounded-xl border border-[#f5e6c8]/12 bg-white/[0.025] p-3 sm:p-4" key={section.title}>
+                    <h3 className="skyjo-serif text-lg font-bold leading-tight text-[#f5e6c8]">{section.title}</h3>
+                    <ul className="mt-2 list-disc space-y-2 pl-5 text-sm leading-6 text-[#f5e6c8]/76">
+                      {section.items.map((item) => (
+                        <li className="break-words" key={item}>
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -375,37 +503,40 @@ function SinglePlayer() {
           }`}
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
+            <div className="min-w-0">
               <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
                 Back
               </Link>
               <h1 className="skyjo-title mt-2 text-5xl">Single Player</h1>
               <p className="mt-1 text-[#f5e6c8]/55">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
             </div>
-            <div className="w-full rounded-2xl border border-[#f5e6c8]/15 bg-white/[0.025] p-3 sm:w-auto">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="skyjo-kicker">AI opponents</div>
-                  <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
-                </div>
-                <button className="skyjo-button px-4 py-2 text-sm" onClick={startSelectedGame} type="button">
-                  New Game
-                </button>
-              </div>
-              <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
-                {singlePlayerAiCounts.map((count) => (
-                  <button
-                    aria-pressed={count === aiOpponentCount}
-                    className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
-                      count === aiOpponentCount ? 'skyjo-button-primary' : ''
-                    }`}
-                    key={count}
-                    onClick={() => setAiOpponentCount(count)}
-                    type="button"
-                  >
-                    {count}
+            <div className="flex w-full flex-col gap-3 sm:w-auto sm:items-end">
+              <RulesHelpButton className="self-start sm:self-end" />
+              <div className="w-full rounded-2xl border border-[#f5e6c8]/15 bg-white/[0.025] p-3 sm:w-auto">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="skyjo-kicker">AI opponents</div>
+                    <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
+                  </div>
+                  <button className="skyjo-button px-4 py-2 text-sm" onClick={startSelectedGame} type="button">
+                    New Game
                   </button>
-                ))}
+                </div>
+                <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
+                  {singlePlayerAiCounts.map((count) => (
+                    <button
+                      aria-pressed={count === aiOpponentCount}
+                      className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
+                        count === aiOpponentCount ? 'skyjo-button-primary' : ''
+                      }`}
+                      key={count}
+                      onClick={() => setAiOpponentCount(count)}
+                      type="button"
+                    >
+                      {count}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -603,12 +734,15 @@ function Lobby() {
   return (
     <main className="skyjo-surface px-4 py-8">
       <div className="skyjo-shell space-y-5">
-        <div>
-          <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
-            Back
-          </Link>
-          <h1 className="skyjo-title mt-2 text-5xl">Multiplayer Lobby</h1>
-          <p className="mt-1 text-[#f5e6c8]/55">Create a private room and share the code with friends.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
+              Back
+            </Link>
+            <h1 className="skyjo-title mt-2 text-5xl">Multiplayer Lobby</h1>
+            <p className="mt-1 text-[#f5e6c8]/55">Create a private room and share the code with friends.</p>
+          </div>
+          <RulesHelpButton />
         </div>
 
         {!room ? (

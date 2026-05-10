@@ -83,13 +83,13 @@ Current notes:
 
 ## Phase 4: Polish and Hardening
 
-Status: planned
+Status: in progress
 GitHub issue: #2
 
 Deliverables:
 
 - Better AI strategy.
-- Rules/help overlay.
+- Rules/help overlay is complete in #10.
 - Animations and clearer card states.
 - Spectator-safe error handling and loading states.
 - WebSocket room authorization and stale-room cleanup review.
@@ -100,3 +100,7 @@ Acceptance:
 
 - The app is understandable without instructions in Slack.
 - Public hostname remains password gated, and room access is scoped to room codes.
+
+Current notes:
+
+- Rules are available from compact in-game buttons on both the single-player and multiplayer routes.
