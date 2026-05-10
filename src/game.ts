@@ -4,6 +4,46 @@ const rows = 3;
 const columns = 4;
 const winningScore = 100;
 
+type PlayerSeed = Pick<Player, 'id' | 'name' | 'kind'> & Partial<Pick<Player, 'totalScore'>>;
+
+export const singlePlayerAiOpponents = [
+  { id: 'ai-1', name: 'Luke', kind: 'ai' },
+  { id: 'ai-2', name: 'Leia', kind: 'ai' },
+  { id: 'ai-3', name: 'Han', kind: 'ai' },
+  { id: 'ai-4', name: 'Chewie', kind: 'ai' },
+  { id: 'ai-5', name: 'Lando', kind: 'ai' },
+  { id: 'ai-6', name: 'Rey', kind: 'ai' },
+  { id: 'ai-7', name: 'Grogu', kind: 'ai' }
+] as const satisfies readonly PlayerSeed[];
+
+export const singlePlayerAiOpponentRange = {
+  min: 1,
+  max: singlePlayerAiOpponents.length
+} as const;
+
+export interface SinglePlayerGameOptions {
+  aiOpponentCount?: number;
+}
+
+function normalizeSinglePlayerAiOpponentCount(aiOpponentCount: number = singlePlayerAiOpponentRange.min): number {
+  if (!Number.isFinite(aiOpponentCount)) return singlePlayerAiOpponentRange.min;
+  return Math.min(singlePlayerAiOpponentRange.max, Math.max(singlePlayerAiOpponentRange.min, Math.trunc(aiOpponentCount)));
+}
+
+function createSinglePlayerRoster(
+  aiOpponentCount: number = singlePlayerAiOpponentRange.min,
+  previousScores = new Map<string, number>()
+): PlayerSeed[] {
+  const count = normalizeSinglePlayerAiOpponentCount(aiOpponentCount);
+  return [
+    { id: 'human', name: 'You', kind: 'human', totalScore: previousScores.get('human') ?? 0 },
+    ...singlePlayerAiOpponents.slice(0, count).map((player) => ({
+      ...player,
+      totalScore: previousScores.get(player.id) ?? 0
+    }))
+  ];
+}
+
 function shuffle<T>(items: T[]): T[] {
   const copy = [...items];
   for (let i = copy.length - 1; i > 0; i -= 1) {
@@ -273,7 +313,7 @@ function finishRound(state: GameState, closer: Player): GameState {
 }
 
 export function createGameForPlayers(
-  players: Array<Pick<Player, 'id' | 'name' | 'kind'> & Partial<Pick<Player, 'totalScore'>>>,
+  players: PlayerSeed[],
   round = 1,
   startPlayerId?: string | null,
   autoRevealOpeningCards = true
@@ -282,7 +322,7 @@ export function createGameForPlayers(
   const dealtPlayers: Player[] = [];
 
   for (const player of players) {
-    const dealt = makePlayer(player.id, player.name, player.kind, deck, player.totalScore || 0, autoRevealOpeningCards);
+    const dealt = makePlayer(player.id, player.name, player.kind, deck, player.totalScore ?? 0, autoRevealOpeningCards);
     dealtPlayers.push(dealt.player);
     deck = dealt.deck;
   }
@@ -317,13 +357,25 @@ export function createGameForPlayers(
   };
 }
 
-export function createGame(existingPlayers?: Player[], round = 1, startPlayerId?: string | null): GameState {
+export function createGame(
+  existingPlayers?: Player[],
+  round = 1,
+  startPlayerId?: string | null,
+  options: SinglePlayerGameOptions = {}
+): GameState {
   const previousScores = new Map((existingPlayers || []).map((player) => [player.id, player.totalScore]));
+  const players =
+    existingPlayers && existingPlayers.length > 0 && options.aiOpponentCount === undefined
+      ? existingPlayers.map((player) => ({
+          id: player.id,
+          name: player.name,
+          kind: player.kind,
+          totalScore: player.totalScore
+        }))
+      : createSinglePlayerRoster(options.aiOpponentCount ?? existingPlayers?.filter((player) => player.kind === 'ai').length, previousScores);
+
   return createGameForPlayers(
-    [
-      { id: 'human', name: 'You', kind: 'human', totalScore: previousScores.get('human') || 0 },
-      { id: 'ai-1', name: 'Nova', kind: 'ai', totalScore: previousScores.get('ai-1') || 0 }
-    ],
+    players,
     round,
     startPlayerId,
     false
@@ -340,7 +392,7 @@ export function createMultiplayerGame(
       id: player.id,
       name: player.name,
       kind: 'human',
-      totalScore: player.totalScore || 0
+      totalScore: player.totalScore ?? 0
     })),
     round,
     startPlayerId,
@@ -348,8 +400,8 @@ export function createMultiplayerGame(
   );
 }
 
-export function startFreshGame(): GameState {
-  return createGame();
+export function startFreshGame(options: SinglePlayerGameOptions = {}): GameState {
+  return createGame(undefined, 1, null, options);
 }
 
 export function startNextRound(state: GameState): GameState {

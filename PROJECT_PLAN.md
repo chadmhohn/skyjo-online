@@ -17,7 +17,7 @@ Status: MVP complete; refinement in progress
 Deliverables:
 
 - Shared game engine for deck creation, dealing, turns, replacement, reveal, column removal, scoring, and round end.
-- Single-player route with a human player and one AI opponent.
+- Single-player route with a human player and 1-7 configurable AI opponents.
 - Clear turn controls for draw pile, discard pile, replacement, and reveal actions.
 - Round score summary and new-round/new-game flow.
 - Build/lint/deploy verification.
@@ -33,7 +33,7 @@ Current notes:
 
 - Single-player route is `/single-player`.
 - AI is intentionally simple; better strategy belongs in Phase 4.
-- Opening cards are auto-revealed for speed in the first MVP.
+- Opening cards are manually selected by the human and automatically selected by AI players.
 
 ## Phase 2: Multiplayer Lobby and Rooms
 

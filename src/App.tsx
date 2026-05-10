@@ -8,6 +8,7 @@ import {
   getBestAiMove,
   replaceCard,
   revealOpeningCard,
+  singlePlayerAiOpponentRange,
   startFreshGame,
   startNextRound
 } from './game';
@@ -15,6 +16,10 @@ import type { Card, GameState, MultiplayerRoom, Player } from './types';
 
 const rows = [0, 1, 2];
 const columns = [0, 1, 2, 3];
+const singlePlayerAiCounts = Array.from(
+  { length: singlePlayerAiOpponentRange.max - singlePlayerAiOpponentRange.min + 1 },
+  (_, index) => singlePlayerAiOpponentRange.min + index
+);
 type DrawIntent = 'place' | 'discard';
 
 function Home() {
@@ -230,13 +235,15 @@ function MoveLog({ state }: { state: GameState }) {
 }
 
 function SinglePlayer() {
-  const [state, setState] = useState<GameState>(() => startFreshGame());
+  const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
+  const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
   const winner = useMemo(() => state.players.find((player) => player.id === state.winnerId), [state.players, state.winnerId]);
   const localPlayers = state.players.filter((player) => player.kind === 'human');
   const opponentPlayers = state.players.filter((player) => player.kind !== 'human');
+  const aiOpponentSummary = `${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
 
   useEffect(() => {
     if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
@@ -276,11 +283,15 @@ function SinglePlayer() {
     );
   }
 
+  function startSelectedGame() {
+    setState(startFreshGame({ aiOpponentCount }));
+  }
+
   return (
     <main className="skyjo-surface px-4 py-5">
       <div className="skyjo-shell grid gap-5 lg:grid-cols-[1fr_330px]">
         <section className="space-y-4 lg:col-start-1 lg:row-start-1">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
                 Back
@@ -288,9 +299,32 @@ function SinglePlayer() {
               <h1 className="skyjo-title mt-2 text-5xl">Single Player</h1>
               <p className="mt-1 text-[#f5e6c8]/55">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
             </div>
-            <button className="skyjo-button px-4 py-2" onClick={() => setState(startFreshGame())} type="button">
-              New Game
-            </button>
+            <div className="w-full rounded-2xl border border-[#f5e6c8]/15 bg-white/[0.025] p-3 sm:w-auto">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="skyjo-kicker">AI opponents</div>
+                  <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
+                </div>
+                <button className="skyjo-button px-4 py-2 text-sm" onClick={startSelectedGame} type="button">
+                  New Game
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
+                {singlePlayerAiCounts.map((count) => (
+                  <button
+                    aria-pressed={count === aiOpponentCount}
+                    className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
+                      count === aiOpponentCount ? 'skyjo-button-primary' : ''
+                    }`}
+                    key={count}
+                    onClick={() => setAiOpponentCount(count)}
+                    type="button"
+                  >
+                    {count}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {opponentPlayers.length > 0 ? (
@@ -349,7 +383,7 @@ function SinglePlayer() {
               <div className="skyjo-serif text-lg font-bold">{state.phase === 'game-over' ? `${winner?.name} wins the game.` : 'Round complete.'}</div>
               <button
                 className="skyjo-button skyjo-button-primary mt-3 w-full px-4 py-3"
-                onClick={() => setState(state.phase === 'game-over' ? startFreshGame() : startNextRound(state))}
+                onClick={() => setState(state.phase === 'game-over' ? startFreshGame({ aiOpponentCount }) : startNextRound(state))}
                 type="button"
               >
                 {state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
