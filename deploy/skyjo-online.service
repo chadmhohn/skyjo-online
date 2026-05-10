@@ -1,0 +1,15 @@
+[Unit]
+Description=Skyjo Online
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.openclaw/workspace/skyjo-online
+EnvironmentFile=/etc/skyjo-online.env
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

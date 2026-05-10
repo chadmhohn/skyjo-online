@@ -14,6 +14,40 @@ Multiplayer online version of the popular card game Skyjo.
 3. Copy `.env.example` to `.env` and add your Firebase config
 4. `npm run dev`
 
+## VPS Deployment
+
+The VPS deployment uses the normal Vite build plus a small Node server with a shared-password gate.
+
+1. Install dependencies:
+   `npm install`
+2. Create `/etc/skyjo-online.env` or another service env file with:
+   - `SKYJO_ACCESS_PASSWORD`
+   - `SKYJO_SESSION_SECRET`
+   - `VITE_FIREBASE_API_KEY`
+   - `VITE_FIREBASE_AUTH_DOMAIN`
+   - `VITE_FIREBASE_PROJECT_ID`
+   - `VITE_FIREBASE_STORAGE_BUCKET`
+   - `VITE_FIREBASE_MESSAGING_SENDER_ID`
+   - `VITE_FIREBASE_APP_ID`
+   - `HOST=127.0.0.1`
+   - `PORT=4180`
+3. Load the env file and build:
+   `set -a && . /etc/skyjo-online.env && set +a && npm run build`
+4. Start the production server:
+   `set -a && . /etc/skyjo-online.env && set +a && npm start`
+
+Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets a signed, HttpOnly cookie. Keep the actual password and session secret out of git.
+
+Health check:
+`curl http://127.0.0.1:4180/healthz`
+
+Example systemd files live in `deploy/`:
+- `deploy/skyjo-online.env.example`
+- `deploy/skyjo-online.service`
+
+Generate a session secret with:
+`openssl rand -base64 48`
+
 ## Tech Stack
 - React 18 + TypeScript
 - Vite
