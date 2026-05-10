@@ -14,6 +14,7 @@ import type { Card, GameState, MultiplayerRoom, Player } from './types';
 
 const rows = [0, 1, 2];
 const columns = [0, 1, 2, 3];
+type DrawIntent = 'place' | 'discard';
 
 function Home() {
   return (
@@ -62,10 +63,11 @@ interface GridProps {
   isCurrent: boolean;
   isLocal: boolean;
   state: GameState;
+  drawIntent?: DrawIntent;
   onCardClick?: (index: number) => void;
 }
 
-function PlayerGrid({ player, isCurrent, isLocal, state, onCardClick }: GridProps) {
+function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', onCardClick }: GridProps) {
   const canSelect =
     isLocal &&
     isCurrent &&
@@ -92,7 +94,8 @@ function PlayerGrid({ player, isCurrent, isLocal, state, onCardClick }: GridProp
             {columns.map((column) => {
               const index = row * 4 + column;
               const card = player.grid[index];
-              const selectable = Boolean(canSelect && !card.removed && (state.selectedSource !== 'draw' || state.drawnCard || !card.faceUp));
+              const revealAfterDiscard = state.selectedSource === 'draw' && state.drawnCard && drawIntent === 'discard';
+              const selectable = Boolean(canSelect && !card.removed && (!revealAfterDiscard || !card.faceUp));
               return (
                 <button
                   className={cardClass(card, selectable)}
@@ -115,14 +118,16 @@ function PlayerGrid({ player, isCurrent, isLocal, state, onCardClick }: GridProp
 interface TableControlsProps {
   state: GameState;
   localTurn: boolean;
+  drawIntent: DrawIntent;
   onChooseDiscard: () => void;
   onDraw: () => void;
-  onReveal: (index: number) => void;
+  onSetDrawIntent: (intent: DrawIntent) => void;
 }
 
-function TableControls({ state, localTurn, onChooseDiscard, onDraw, onReveal }: TableControlsProps) {
+function TableControls({ state, localTurn, drawIntent, onChooseDiscard, onDraw, onSetDrawIntent }: TableControlsProps) {
   const topDiscard = state.discardPile[0];
   const activePlayer = state.players[state.currentPlayerIndex];
+  const hasHiddenCard = activePlayer.grid.some((card) => !card.faceUp && !card.removed);
 
   return (
     <section className="skyjo-panel skyjo-table-glow p-4">
@@ -158,20 +163,31 @@ function TableControls({ state, localTurn, onChooseDiscard, onDraw, onReveal }: 
         <div className="mt-4 rounded-xl border border-[#f5e6c8]/25 bg-[#f5e6c8]/10 p-3">
           <div className="skyjo-kicker">Drawn</div>
           <div className={`${cardClass(state.drawnCard, false)} mt-2 w-20`}>{cardLabel(state.drawnCard)}</div>
-          <p className="mt-3 text-sm text-[#f5e6c8]/75">Replace a card, or discard this and reveal one hidden card.</p>
-          <div className="mt-3 grid grid-cols-4 gap-2">
-            {activePlayer.grid.map((card, index) => (
-              <button
-                className="skyjo-button px-2 py-2 text-sm"
-                disabled={card.faceUp || card.removed}
-                key={card.id}
-                onClick={() => onReveal(index)}
-                type="button"
-              >
-                {index + 1}
-              </button>
-            ))}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              className={`skyjo-button px-3 py-2 text-sm ${drawIntent === 'place' ? 'skyjo-button-primary' : ''}`}
+              onClick={() => onSetDrawIntent('place')}
+              type="button"
+            >
+              Place
+            </button>
+            <button
+              className={`skyjo-button px-3 py-2 text-sm ${drawIntent === 'discard' ? 'skyjo-button-primary' : ''}`}
+              disabled={!hasHiddenCard}
+              onClick={() => onSetDrawIntent('discard')}
+              type="button"
+            >
+              Discard
+            </button>
           </div>
+          {drawIntent === 'discard' ? (
+            <button className="skyjo-button mt-2 w-full px-3 py-2 text-sm" onClick={() => onSetDrawIntent('place')} type="button">
+              Undo discard
+            </button>
+          ) : null}
+          <p className="mt-3 text-sm text-[#f5e6c8]/70">
+            {drawIntent === 'discard' ? 'Select a hidden card on your board to reveal.' : 'Select a card on your board to replace.'}
+          </p>
         </div>
       ) : null}
     </section>
@@ -181,23 +197,37 @@ function TableControls({ state, localTurn, onChooseDiscard, onDraw, onReveal }: 
 function MoveLog({ state }: { state: GameState }) {
   return (
     <section className="skyjo-panel p-4">
-      <h2 className="skyjo-serif mb-3 text-xl font-semibold">Move Log</h2>
-      <div className="space-y-2 text-sm text-[#f5e6c8]/72">
-        {state.log.map((entry) => (
-          <div className="rounded-lg border border-white/[0.04] bg-white/[0.025] px-3 py-2" key={entry}>
-            {entry}
-          </div>
-        ))}
-      </div>
+      <details>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+          <span className="skyjo-serif text-xl font-semibold">Move Log</span>
+          <span className="skyjo-kicker">{state.log.length} moves</span>
+        </summary>
+        <div className="mt-3 space-y-2 text-sm text-[#f5e6c8]/72">
+          {state.log.map((entry) => (
+            <div className="rounded-lg border border-white/[0.04] bg-white/[0.025] px-3 py-2" key={entry}>
+              {entry}
+            </div>
+          ))}
+        </div>
+      </details>
     </section>
   );
 }
 
 function SinglePlayer() {
   const [state, setState] = useState<GameState>(() => startFreshGame());
+  const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
   const winner = useMemo(() => state.players.find((player) => player.id === state.winnerId), [state.players, state.winnerId]);
+  const localPlayers = state.players.filter((player) => player.kind === 'human');
+  const opponentPlayers = state.players.filter((player) => player.kind !== 'human');
+
+  useEffect(() => {
+    if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
+      setDrawIntent('place');
+    }
+  }, [state.drawnCard, state.phase, state.selectedSource]);
 
   useEffect(() => {
     if (activePlayer.kind !== 'ai' || state.phase === 'round-over' || state.phase === 'game-over') return;
@@ -215,13 +245,17 @@ function SinglePlayer() {
 
   function handleCard(index: number) {
     if (!humanTurn || state.phase !== 'choose-replacement') return;
-    setState((current) => replaceCard(current, index));
+    setState((current) =>
+      drawIntent === 'discard' && current.selectedSource === 'draw' && current.drawnCard
+        ? discardDrawnAndReveal(current, index)
+        : replaceCard(current, index)
+    );
   }
 
   return (
     <main className="skyjo-surface px-4 py-5">
       <div className="skyjo-shell grid gap-5 lg:grid-cols-[1fr_330px]">
-        <section className="space-y-4">
+        <section className="space-y-4 lg:col-start-1 lg:row-start-1">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
@@ -235,29 +269,57 @@ function SinglePlayer() {
             </button>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
-            {state.players.map((player, index) => (
-              <PlayerGrid
-                isCurrent={index === state.currentPlayerIndex}
-                isLocal={player.kind === 'human'}
-                key={player.id}
-                onCardClick={handleCard}
-                player={player}
-                state={state}
-              />
-            ))}
-          </div>
+          {opponentPlayers.length > 0 ? (
+            <div className="grid gap-4 xl:grid-cols-2">
+              {opponentPlayers.map((player) => {
+                const index = state.players.findIndex((item) => item.id === player.id);
+                return (
+                  <PlayerGrid
+                    drawIntent={drawIntent}
+                    isCurrent={index === state.currentPlayerIndex}
+                    isLocal={false}
+                    key={player.id}
+                    onCardClick={handleCard}
+                    player={player}
+                    state={state}
+                  />
+                );
+              })}
+            </div>
+          ) : null}
         </section>
 
-        <aside className="space-y-4">
+        <div className="space-y-4 lg:col-start-2 lg:row-start-1">
           <TableControls
+            drawIntent={drawIntent}
             localTurn={humanTurn}
             onChooseDiscard={() => setState((current) => chooseDiscard(current))}
             onDraw={() => setState((current) => drawBlind(current))}
-            onReveal={(index) => setState((current) => discardDrawnAndReveal(current, index))}
+            onSetDrawIntent={setDrawIntent}
             state={state}
           />
+        </div>
 
+        <section className="lg:col-start-1 lg:row-start-2">
+          <div className="grid gap-4 xl:grid-cols-2">
+            {localPlayers.map((player) => {
+              const index = state.players.findIndex((item) => item.id === player.id);
+              return (
+                <PlayerGrid
+                  drawIntent={drawIntent}
+                  isCurrent={index === state.currentPlayerIndex}
+                  isLocal
+                  key={player.id}
+                  onCardClick={handleCard}
+                  player={player}
+                  state={state}
+                />
+              );
+            })}
+          </div>
+        </section>
+
+        <aside className="space-y-4 lg:col-start-2 lg:row-start-2">
           {state.phase === 'round-over' || state.phase === 'game-over' ? (
             <section className="skyjo-panel skyjo-panel-current p-4">
               <div className="skyjo-serif text-lg font-bold">{state.phase === 'game-over' ? `${winner?.name} wins the game.` : 'Round complete.'}</div>
@@ -293,8 +355,18 @@ function Lobby() {
   const [room, setRoom] = useState<MultiplayerRoom | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('idle');
   const [error, setError] = useState('');
+  const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
+  const hasPendingDrawDecision = Boolean(
+    room?.state && room.state.phase === 'choose-replacement' && room.state.selectedSource === 'draw' && room.state.drawnCard
+  );
 
   useEffect(() => () => wsRef.current?.close(), []);
+
+  useEffect(() => {
+    if (!hasPendingDrawDecision) {
+      setDrawIntent('place');
+    }
+  }, [hasPendingDrawDecision]);
 
   function connect(action: 'create-room' | 'join-room') {
     const cleanedName = name.trim() || 'Player';
@@ -369,20 +441,28 @@ function Lobby() {
     if (!room?.state || room.state.phase !== 'choose-replacement') return;
     const active = room.state.players[room.state.currentPlayerIndex];
     if (active.id !== playerId) return;
-    updateGame(replaceCard(room.state, index));
+    updateGame(
+      drawIntent === 'discard' && room.state.selectedSource === 'draw' && room.state.drawnCard
+        ? discardDrawnAndReveal(room.state, index)
+        : replaceCard(room.state, index)
+    );
   }
 
   function handleNextRound() {
     if (!room?.state) return;
     const next = createMultiplayerGame(
       room.state.players.map((player) => ({ id: player.id, name: player.name, totalScore: player.totalScore })),
-      room.state.round + 1
+      room.state.round + 1,
+      room.state.nextStarterId
     );
     send({ type: 'start-game', state: next });
   }
 
   const localTurn = Boolean(room?.state && room.state.players[room.state.currentPlayerIndex]?.id === playerId);
   const localPlayer = room?.players.find((player) => player.id === playerId);
+  const roomState = room?.state;
+  const roomLocalPlayers = roomState?.players.filter((player) => player.id === playerId) || [];
+  const roomOpponentPlayers = roomState?.players.filter((player) => player.id !== playerId) || [];
 
   return (
     <main className="skyjo-surface px-4 py-8">
@@ -425,7 +505,7 @@ function Lobby() {
 
         {room ? (
           <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
-            <section className="space-y-4">
+            <section className="space-y-4 lg:col-start-1 lg:row-start-1">
               <div className="skyjo-panel p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -454,18 +534,22 @@ function Lobby() {
                 </div>
               </div>
 
-              {room.state ? (
+              {roomState ? (
                 <div className="grid gap-4 xl:grid-cols-2">
-                  {room.state.players.map((player, index) => (
-                    <PlayerGrid
-                      isCurrent={index === room.state?.currentPlayerIndex}
-                      isLocal={player.id === playerId}
-                      key={player.id}
-                      onCardClick={handleCard}
-                      player={player}
-                      state={room.state as GameState}
-                    />
-                  ))}
+                  {roomOpponentPlayers.map((player) => {
+                    const index = roomState.players.findIndex((item) => item.id === player.id);
+                    return (
+                      <PlayerGrid
+                        drawIntent={drawIntent}
+                        isCurrent={index === roomState.currentPlayerIndex}
+                        isLocal={false}
+                        key={player.id}
+                        onCardClick={handleCard}
+                        player={player}
+                        state={roomState}
+                      />
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="skyjo-panel p-6 text-[#f5e6c8]/70">
@@ -474,34 +558,57 @@ function Lobby() {
               )}
             </section>
 
-            <aside className="space-y-4">
-              {room.state ? (
-                <>
+            {roomState ? (
+              <>
+                <div className="space-y-4 lg:col-start-2 lg:row-start-1">
                   <TableControls
+                    drawIntent={drawIntent}
                     localTurn={localTurn}
-                    onChooseDiscard={() => updateGame(chooseDiscard(room.state as GameState))}
-                    onDraw={() => updateGame(drawBlind(room.state as GameState))}
-                    onReveal={(index) => updateGame(discardDrawnAndReveal(room.state as GameState, index))}
-                    state={room.state}
+                    onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
+                    onDraw={() => updateGame(drawBlind(roomState))}
+                    onSetDrawIntent={setDrawIntent}
+                    state={roomState}
                   />
-                  {room.state.phase === 'round-over' || room.state.phase === 'game-over' ? (
+                </div>
+
+                <section className="lg:col-start-1 lg:row-start-2">
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    {roomLocalPlayers.map((player) => {
+                      const index = roomState.players.findIndex((item) => item.id === player.id);
+                      return (
+                        <PlayerGrid
+                          drawIntent={drawIntent}
+                          isCurrent={index === roomState.currentPlayerIndex}
+                          isLocal
+                          key={player.id}
+                          onCardClick={handleCard}
+                          player={player}
+                          state={roomState}
+                        />
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <aside className="space-y-4 lg:col-start-2 lg:row-start-2">
+                  {roomState.phase === 'round-over' || roomState.phase === 'game-over' ? (
                     <section className="skyjo-panel skyjo-panel-current p-4">
-                      <div className="skyjo-serif text-lg font-bold">{room.state.phase === 'game-over' ? 'Game complete.' : 'Round complete.'}</div>
+                      <div className="skyjo-serif text-lg font-bold">{roomState.phase === 'game-over' ? 'Game complete.' : 'Round complete.'}</div>
                       {localPlayer?.host ? (
                         <button className="skyjo-button skyjo-button-primary mt-3 w-full px-4 py-3" onClick={handleNextRound} type="button">
-                          {room.state.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
+                          {roomState.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
                         </button>
                       ) : null}
                     </section>
                   ) : null}
-                  <MoveLog state={room.state} />
-                </>
-              ) : (
-                <section className="skyjo-panel p-4 text-sm text-[#f5e6c8]/70">
-                  Keep this tab open while friends join.
-                </section>
-              )}
-            </aside>
+                  <MoveLog state={roomState} />
+                </aside>
+              </>
+            ) : (
+              <aside className="space-y-4 lg:col-start-2 lg:row-start-1">
+                <section className="skyjo-panel p-4 text-sm text-[#f5e6c8]/70">Keep this tab open while friends join.</section>
+              </aside>
+            )}
           </div>
         ) : null}
       </div>

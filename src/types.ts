@@ -53,6 +53,7 @@ export interface GameState {
   round: number;
   log: string[];
   winnerId: string | null;
+  nextStarterId: string | null;
 }
 
 export interface MoveResult {

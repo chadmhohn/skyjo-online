@@ -110,6 +110,19 @@ function currentPlayer(state: GameState): Player {
   return state.players[state.currentPlayerIndex];
 }
 
+function openingStarterIndex(players: Player[], startPlayerId?: string | null): number {
+  if (startPlayerId) {
+    const preferredIndex = players.findIndex((player) => player.id === startPlayerId);
+    if (preferredIndex >= 0) return preferredIndex;
+  }
+
+  return players.reduce((bestIndex, player, index) => {
+    const bestScore = visibleScore(players[bestIndex].grid);
+    const score = visibleScore(player.grid);
+    return score > bestScore ? index : bestIndex;
+  }, 0);
+}
+
 function withLog(state: GameState, message: string): GameState {
   return { ...state, log: [message, ...state.log].slice(0, 8) };
 }
@@ -159,13 +172,18 @@ function finishRound(state: GameState, closer: Player): GameState {
       phase: gameOver ? 'game-over' : 'round-over',
       selectedSource: null,
       drawnCard: null,
-      winnerId: gameOver ? leader.id : null
+      winnerId: gameOver ? leader.id : null,
+      nextStarterId: closer.id
     },
     `${closer.name} ended the round. ${leader.name} leads with ${leader.totalScore}.`
   );
 }
 
-export function createGameForPlayers(players: Array<Pick<Player, 'id' | 'name' | 'kind'> & Partial<Pick<Player, 'totalScore'>>>, round = 1): GameState {
+export function createGameForPlayers(
+  players: Array<Pick<Player, 'id' | 'name' | 'kind'> & Partial<Pick<Player, 'totalScore'>>>,
+  round = 1,
+  startPlayerId?: string | null
+): GameState {
   let deck = makeDeck();
   const dealtPlayers: Player[] = [];
 
@@ -175,6 +193,8 @@ export function createGameForPlayers(players: Array<Pick<Player, 'id' | 'name' |
     deck = dealt.deck;
   }
 
+  const currentPlayerIndex = openingStarterIndex(dealtPlayers, round > 1 ? startPlayerId : null);
+  const starter = dealtPlayers[currentPlayerIndex];
   const discard = { ...deck[0], faceUp: true };
   const drawPile = deck.slice(1);
 
@@ -182,28 +202,34 @@ export function createGameForPlayers(players: Array<Pick<Player, 'id' | 'name' |
     players: dealtPlayers,
     drawPile,
     discardPile: [discard],
-    currentPlayerIndex: 0,
+    currentPlayerIndex,
     phase: 'choose-source',
     selectedSource: null,
     drawnCard: null,
     round,
-    log: ['New round started. Pick from the discard pile or draw blind.'],
-    winnerId: null
+    log: [`${starter.name} starts round ${round}. Pick from the discard pile or draw blind.`],
+    winnerId: null,
+    nextStarterId: null
   };
 }
 
-export function createGame(existingPlayers?: Player[], round = 1): GameState {
+export function createGame(existingPlayers?: Player[], round = 1, startPlayerId?: string | null): GameState {
   const previousScores = new Map((existingPlayers || []).map((player) => [player.id, player.totalScore]));
   return createGameForPlayers(
     [
       { id: 'human', name: 'You', kind: 'human', totalScore: previousScores.get('human') || 0 },
       { id: 'ai-1', name: 'Nova', kind: 'ai', totalScore: previousScores.get('ai-1') || 0 }
     ],
-    round
+    round,
+    startPlayerId
   );
 }
 
-export function createMultiplayerGame(players: Array<Pick<Player, 'id' | 'name'> & Partial<Pick<Player, 'totalScore'>>>, round = 1): GameState {
+export function createMultiplayerGame(
+  players: Array<Pick<Player, 'id' | 'name'> & Partial<Pick<Player, 'totalScore'>>>,
+  round = 1,
+  startPlayerId?: string | null
+): GameState {
   return createGameForPlayers(
     players.map((player) => ({
       id: player.id,
@@ -211,7 +237,8 @@ export function createMultiplayerGame(players: Array<Pick<Player, 'id' | 'name'>
       kind: 'human',
       totalScore: player.totalScore || 0
     })),
-    round
+    round,
+    startPlayerId
   );
 }
 
@@ -220,7 +247,7 @@ export function startFreshGame(): GameState {
 }
 
 export function startNextRound(state: GameState): GameState {
-  return createGame(state.players, state.round + 1);
+  return createGame(state.players, state.round + 1, state.nextStarterId);
 }
 
 export function chooseDiscard(state: GameState): GameState {
