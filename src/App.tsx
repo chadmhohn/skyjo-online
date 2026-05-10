@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import {
   chooseDiscard,
@@ -20,6 +20,7 @@ const singlePlayerAiCounts = Array.from(
   (_, index) => singlePlayerAiOpponentRange.min + index
 );
 type DrawIntent = 'place' | 'discard';
+type TurnStatusTone = 'local' | 'waiting' | 'neutral';
 type BoardGridEntry = {
   player: Player;
   isLocal: boolean;
@@ -27,6 +28,12 @@ type BoardGridEntry = {
 type RulesHelpSection = {
   title: string;
   items: string[];
+};
+type TurnStatus = {
+  eyebrow: string;
+  title: string;
+  description: string;
+  tone: TurnStatusTone;
 };
 
 const responsiveBoardGridClass = 'grid gap-4 xl:grid-cols-2';
@@ -199,6 +206,156 @@ function cardClass(card: Card, isSelectable: boolean) {
   return `${base} skyjo-card-red`;
 }
 
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function hiddenCardCount(player: Player) {
+  return player.grid.filter((card) => !card.faceUp && !card.removed).length;
+}
+
+function openingRevealCount(state: GameState, player: Player) {
+  return Math.min(state.openingRevealCounts[player.id] ?? 0, 2);
+}
+
+function getTurnStatus(state: GameState, localTurn: boolean): TurnStatus {
+  const activePlayer = state.players[state.currentPlayerIndex];
+  const activeName = activePlayer?.name || 'Current player';
+
+  if (state.phase === 'round-over') {
+    return {
+      eyebrow: 'Round over',
+      title: 'Round scoring is complete',
+      description: 'Check the round score and total score, then start the next round when ready.',
+      tone: 'neutral'
+    };
+  }
+
+  if (state.phase === 'game-over') {
+    return {
+      eyebrow: 'Game over',
+      title: 'Final totals are in',
+      description: 'The lowest total score wins the game.',
+      tone: 'neutral'
+    };
+  }
+
+  if (state.phase === 'opening-reveal') {
+    const remaining = Math.max(0, 2 - openingRevealCount(state, activePlayer));
+    return localTurn
+      ? {
+          eyebrow: 'Your move',
+          title: 'Choose two face-down cards',
+          description: `${pluralize(remaining, 'opening card')} left. Each player reveals exactly two cards before the round starts.`,
+          tone: 'local'
+        }
+      : {
+          eyebrow: 'Waiting',
+          title: `Waiting on ${activeName}`,
+          description: `${activeName} is choosing two face-down cards. Each player reveals exactly two cards before the round starts.`,
+          tone: 'waiting'
+        };
+  }
+
+  if (state.phase === 'choose-source') {
+    return localTurn
+      ? {
+          eyebrow: 'Your turn',
+          title: 'Choose a source',
+          description: 'Take the visible discard card or draw blind from the deck.',
+          tone: 'local'
+        }
+      : {
+          eyebrow: 'Waiting',
+          title: `Waiting on ${activeName}`,
+          description: `${activeName} is choosing the discard pile or the deck.`,
+          tone: 'waiting'
+        };
+  }
+
+  if (state.selectedSource === 'draw' && state.drawnCard) {
+    return localTurn
+      ? {
+          eyebrow: 'Your turn',
+          title: 'Drawn card waiting',
+          description: 'Place the drawn card on your board, or discard it and reveal one hidden card.',
+          tone: 'local'
+        }
+      : {
+          eyebrow: 'Waiting',
+          title: `Waiting on ${activeName}`,
+          description: `${activeName} must place the drawn card or discard it and reveal a hidden card.`,
+          tone: 'waiting'
+        };
+  }
+
+  return localTurn
+    ? {
+        eyebrow: 'Your turn',
+        title: 'Place the discard card',
+        description: 'Select any highlighted card on your board to replace.',
+        tone: 'local'
+      }
+    : {
+        eyebrow: 'Waiting',
+        title: `Waiting on ${activeName}`,
+        description: `${activeName} is choosing which board card to replace.`,
+        tone: 'waiting'
+      };
+}
+
+function sourceDisabledReason(state: GameState, localTurn: boolean, source: 'deck' | 'discard') {
+  const activePlayer = state.players[state.currentPlayerIndex];
+
+  if (state.phase === 'opening-reveal') return 'Opening reveals must finish before the piles are available.';
+  if (state.phase === 'round-over') return 'Round scoring is complete.';
+  if (state.phase === 'game-over') return 'Game is complete.';
+  if (state.phase === 'choose-replacement') {
+    return state.selectedSource === 'draw' && state.drawnCard
+      ? 'Choose whether to place the drawn card or discard it first.'
+      : 'Select a highlighted board card to finish this move.';
+  }
+  if (!localTurn) return `Waiting for ${activePlayer?.name || 'the current player'}.`;
+  if (source === 'discard' && !state.discardPile[0]) return 'The discard pile is empty.';
+  return '';
+}
+
+function cardAffordanceLabel({
+  card,
+  canSelectOpening,
+  canSelectReplacement,
+  drawIntent,
+  index,
+  isCurrent,
+  isLocal,
+  player,
+  selectable,
+  state
+}: {
+  card: Card;
+  canSelectOpening: boolean;
+  canSelectReplacement: boolean;
+  drawIntent: DrawIntent;
+  index: number;
+  isCurrent: boolean;
+  isLocal: boolean;
+  player: Player;
+  selectable: boolean;
+  state: GameState;
+}) {
+  if (card.removed) return `Cleared slot ${index + 1} on ${player.name}'s board.`;
+  if (selectable && canSelectOpening) return `Reveal opening card ${index + 1}.`;
+  if (selectable && state.selectedSource === 'discard') return `Replace card ${index + 1} with the discard card.`;
+  if (selectable && drawIntent === 'discard') return `Reveal hidden card ${index + 1} after discarding the drawn card.`;
+  if (selectable) return `Replace card ${index + 1} with the drawn card.`;
+  if (!isLocal) return `${player.name}'s card is not on your board.`;
+  if (!isCurrent) return 'Waiting for your turn.';
+  if (canSelectOpening && card.faceUp) return 'Already revealed. Choose a face-down card.';
+  if (canSelectReplacement && drawIntent === 'discard' && card.faceUp) return 'Choose a hidden card to reveal after discarding.';
+  if (state.phase === 'choose-source') return 'Choose the deck or discard pile first.';
+  return 'This card is not selectable right now.';
+}
+
 interface GridProps {
   player: Player;
   isCurrent: boolean;
@@ -216,13 +373,27 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
     isCurrent &&
     state.phase === 'choose-replacement' &&
     (state.selectedSource === 'discard' || state.selectedSource === 'draw');
+  const selectionMode = canSelectOpening || canSelectReplacement;
+  const playerRole = player.kind === 'ai' ? 'AI opponent' : isLocal ? 'You' : 'Player';
+  const playerStatus = isCurrent ? (isLocal ? 'Your move now' : 'Current turn') : isLocal ? 'Waiting for your turn' : 'Waiting';
+  const openingRemaining = Math.max(0, 2 - openingRevealCount(state, player));
 
   return (
     <section className={`skyjo-panel p-4 sm:p-5 ${isCurrent ? 'skyjo-panel-current' : ''}`}>
       <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="skyjo-serif text-xl font-semibold text-[#f5e6c8]">{player.name}</h2>
-          <p className="text-sm text-[#f5e6c8]/45">{player.kind === 'ai' ? 'AI opponent' : isLocal ? 'You' : 'Player'}</p>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="skyjo-serif text-xl font-semibold text-[#f5e6c8]">{player.name}</h2>
+            {isCurrent ? (
+              <span className={`skyjo-turn-pill ${isLocal ? 'skyjo-turn-pill-local' : ''}`}>
+                {isLocal ? 'Your turn' : 'Current turn'}
+              </span>
+            ) : null}
+            {canSelectOpening ? <span className="skyjo-selection-pill">{openingRemaining}/2 opening picks</span> : null}
+          </div>
+          <p className="mt-1 text-sm text-[#f5e6c8]/55">
+            {playerRole} - {playerStatus}
+          </p>
         </div>
         <div className="flex items-baseline gap-2 text-right text-sm">
           <span className="skyjo-kicker">Shown</span>
@@ -242,12 +413,29 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
                 !card.removed &&
                   ((canSelectOpening && !card.faceUp) || (canSelectReplacement && (!revealAfterDiscard || !card.faceUp)))
               );
+              const dimDuringSelection = selectionMode && !selectable && !card.removed;
+              const affordanceLabel = cardAffordanceLabel({
+                card,
+                canSelectOpening,
+                canSelectReplacement,
+                drawIntent,
+                index,
+                isCurrent,
+                isLocal,
+                player,
+                selectable,
+                state
+              });
               return (
                 <button
-                  className={cardClass(card, selectable)}
+                  aria-label={affordanceLabel}
+                  className={`${cardClass(card, selectable)} ${selectable ? 'skyjo-card-eligible' : ''} ${
+                    dimDuringSelection ? 'skyjo-card-ineligible' : ''
+                  }`}
                   disabled={!selectable}
                   key={card.id}
                   onClick={() => onCardClick?.(index)}
+                  title={affordanceLabel}
                   type="button"
                 >
                   {cardLabel(card)}
@@ -294,33 +482,72 @@ interface TableControlsProps {
   state: GameState;
   localTurn: boolean;
   drawIntent: DrawIntent;
+  localPlayerId?: string;
   onChooseDiscard: () => void;
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
 }
 
-function TableControls({ state, localTurn, drawIntent, onChooseDiscard, onDraw, onSetDrawIntent }: TableControlsProps) {
+function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDiscard, onDraw, onSetDrawIntent }: TableControlsProps) {
   const topDiscard = state.discardPile[0];
   const activePlayer = state.players[state.currentPlayerIndex];
-  const hasHiddenCard = activePlayer.grid.some((card) => !card.faceUp && !card.removed);
-  const openingPlayer = state.phase === 'opening-reveal' ? activePlayer : null;
-  const openingCount = openingPlayer ? state.openingRevealCounts[openingPlayer.id] ?? 0 : 0;
+  const hasHiddenCard = hiddenCardCount(activePlayer) > 0;
+  const status = getTurnStatus(state, localTurn);
+  const deckDisabledReason = sourceDisabledReason(state, localTurn, 'deck');
+  const discardDisabledReason = sourceDisabledReason(state, localTurn, 'discard');
+  const commonDisabledReason =
+    deckDisabledReason && discardDisabledReason && deckDisabledReason === discardDisabledReason ? deckDisabledReason : '';
+  const selectedDiscard = localTurn && state.phase === 'choose-replacement' && state.selectedSource === 'discard';
 
   return (
     <section className="skyjo-panel skyjo-table-glow p-4">
-      <h2 className="skyjo-serif mb-3 text-xl font-semibold">Table</h2>
-      {openingPlayer ? (
-        <div className="mb-4 rounded-xl border border-[#f5e6c8]/25 bg-[#f5e6c8]/10 p-3 text-sm text-[#f5e6c8]/75">
-          {openingPlayer.kind === 'human'
-            ? `Tap ${2 - openingCount} card${2 - openingCount === 1 ? '' : 's'} on your board to reveal.`
-            : `${openingPlayer.name} is choosing opening cards.`}
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="skyjo-serif text-xl font-semibold">Table</h2>
+        <span className="skyjo-kicker text-right">Round {state.round}</span>
+      </div>
+
+      <div className={`skyjo-turn-status skyjo-turn-status-${status.tone}`} aria-live="polite">
+        <div className="skyjo-kicker">{status.eyebrow}</div>
+        <h3 className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]">{status.title}</h3>
+        <p className="mt-2 text-sm leading-6 text-[#f5e6c8]/72">{status.description}</p>
+      </div>
+
+      {state.phase === 'opening-reveal' ? (
+        <div className="skyjo-opening-tracker mt-3" aria-label="Opening reveal progress">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="skyjo-kicker">Opening reveal</div>
+              <p className="mt-1 text-sm font-bold text-[#f5e6c8]">Each player chooses two face-down cards.</p>
+            </div>
+            <span className="rounded-full border border-[#f5e6c8]/18 px-3 py-1 text-xs font-extrabold text-[#f5e6c8]/70">
+              {activePlayer.name}'s pick
+            </span>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {state.players.map((player) => {
+              const count = openingRevealCount(state, player);
+              const active = player.id === activePlayer.id;
+              const local = player.id === localPlayerId;
+              return (
+                <div className={`skyjo-opening-row ${active ? 'skyjo-opening-row-active' : ''}`} key={player.id}>
+                  <span className="min-w-0 truncate">
+                    {player.name}
+                    {local ? ' (you)' : ''}
+                  </span>
+                  <span className="tabular-nums">{count}/2</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       ) : null}
-      <div className="grid grid-cols-2 gap-4">
+
+      <div className="mt-4 grid grid-cols-2 gap-4">
         <button
           className="skyjo-button p-4 text-center"
-          disabled={!localTurn || state.phase !== 'choose-source'}
+          disabled={Boolean(deckDisabledReason)}
           onClick={onDraw}
+          title={deckDisabledReason || 'Draw blind from the deck.'}
           type="button"
         >
           <div className="skyjo-kicker">Deck</div>
@@ -329,8 +556,9 @@ function TableControls({ state, localTurn, drawIntent, onChooseDiscard, onDraw, 
         </button>
         <button
           className="skyjo-button p-4 text-center"
-          disabled={!localTurn || state.phase !== 'choose-source' || !topDiscard}
+          disabled={Boolean(discardDisabledReason)}
           onClick={onChooseDiscard}
+          title={discardDisabledReason || 'Take the top discard card.'}
           type="button"
         >
           <div className="skyjo-kicker">Discard</div>
@@ -342,37 +570,58 @@ function TableControls({ state, localTurn, drawIntent, onChooseDiscard, onDraw, 
           <div className="mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.discardPile.length} cards</div>
         </button>
       </div>
+      {commonDisabledReason ? (
+        <p className="skyjo-disabled-note mt-3">
+          <span>Action unavailable:</span> {commonDisabledReason}
+        </p>
+      ) : !commonDisabledReason && discardDisabledReason && !deckDisabledReason ? (
+        <p className="skyjo-disabled-note mt-3">
+          <span>Discard unavailable:</span> {discardDisabledReason}
+        </p>
+      ) : null}
 
       {state.drawnCard && localTurn ? (
-        <div className="mt-4 rounded-xl border border-[#f5e6c8]/25 bg-[#f5e6c8]/10 p-3">
-          <div className="skyjo-kicker">Drawn</div>
-          <div className={`${cardClass(state.drawnCard, false)} mt-2 w-20`}>{cardLabel(state.drawnCard)}</div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="skyjo-drawn-decision mt-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="skyjo-kicker">Drawn card waiting</div>
+              <h3 className="skyjo-serif mt-1 text-xl font-bold text-[#f5e6c8]">Place it or discard it</h3>
+              <p className="mt-2 text-sm leading-6 text-[#f5e6c8]/72">Choose a mode, then select a highlighted card on your board.</p>
+            </div>
+            <div className={`${cardClass(state.drawnCard, false)} shrink-0 w-20`}>{cardLabel(state.drawnCard)}</div>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <button
-              className={`skyjo-button px-3 py-2 text-sm ${drawIntent === 'place' ? 'skyjo-button-primary' : ''}`}
+              aria-pressed={drawIntent === 'place'}
+              className={`skyjo-choice-button ${drawIntent === 'place' ? 'skyjo-choice-button-active' : ''}`}
               onClick={() => onSetDrawIntent('place')}
               type="button"
             >
-              Place
+              <span>Place drawn card</span>
+              <small>Replace any non-cleared card.</small>
             </button>
             <button
-              className={`skyjo-button px-3 py-2 text-sm ${drawIntent === 'discard' ? 'skyjo-button-primary' : ''}`}
+              aria-pressed={drawIntent === 'discard'}
+              className={`skyjo-choice-button ${drawIntent === 'discard' ? 'skyjo-choice-button-active' : ''}`}
               disabled={!hasHiddenCard}
               onClick={() => onSetDrawIntent('discard')}
+              title={hasHiddenCard ? 'Discard the drawn card and reveal a hidden card.' : 'No hidden cards remain to reveal.'}
               type="button"
             >
-              Discard
+              <span>Discard + reveal</span>
+              <small>{hasHiddenCard ? 'Reveal one hidden card.' : 'No hidden cards remain.'}</small>
             </button>
           </div>
-          {drawIntent === 'discard' ? (
-            <button className="skyjo-button mt-2 w-full px-3 py-2 text-sm" onClick={() => onSetDrawIntent('place')} type="button">
-              Undo discard
-            </button>
-          ) : null}
-          <p className="mt-3 text-sm text-[#f5e6c8]/70">
-            {drawIntent === 'discard' ? 'Select a hidden card on your board to reveal.' : 'Select a card on your board to replace.'}
+          <p className="skyjo-action-hint mt-3">
+            {drawIntent === 'discard'
+              ? 'Discard mode active: select a highlighted hidden card to reveal.'
+              : 'Place mode active: select a highlighted card to replace with the drawn card.'}
           </p>
         </div>
+      ) : null}
+
+      {selectedDiscard ? (
+        <p className="skyjo-action-hint mt-4">Discard card selected: choose any highlighted card on your board to replace.</p>
       ) : null}
     </section>
   );
@@ -405,11 +654,11 @@ function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPla
           !
         </div>
         <div className="min-w-0">
-          <div className="skyjo-kicker text-amber-100/75">Final turn lap</div>
+          <div className="skyjo-kicker text-amber-100/75">Final lap active</div>
           <h2 className="skyjo-serif mt-1 text-xl font-bold leading-tight text-[#fff6df]">{closerName} went out.</h2>
           <p className="mt-2 text-sm font-extrabold leading-5 text-amber-100">{turnMessage}</p>
           <p className="mt-1 text-xs leading-5 text-[#f5e6c8]/68">
-            {closerName} revealed their last card. The round scores after this lap.
+            {closerName} revealed their last card. No full turns remain after this final lap.
           </p>
         </div>
       </div>
@@ -437,13 +686,76 @@ function MoveLog({ state }: { state: GameState }) {
   );
 }
 
+interface RoundSummaryProps {
+  state: GameState;
+  actionLabel?: string;
+  actionDisabledReason?: string;
+  onAction?: () => void;
+}
+
+function RoundSummary({ state, actionLabel, actionDisabledReason, onAction }: RoundSummaryProps) {
+  const rankedPlayers = [...state.players].sort((a, b) => a.totalScore - b.totalScore || a.roundScore - b.roundScore);
+  const leader = rankedPlayers[0];
+  const winner = state.winnerId ? state.players.find((player) => player.id === state.winnerId) : null;
+  const headline = state.phase === 'game-over' ? `${winner?.name || leader.name} wins the game.` : 'Round complete.';
+  const outcome =
+    state.phase === 'game-over'
+      ? `${winner?.name || leader.name} finished lowest at ${(winner || leader).totalScore} total.`
+      : `${leader.name} leads at ${leader.totalScore} total.`;
+  const latestScoringNote = state.log[0];
+
+  return (
+    <section className="skyjo-panel skyjo-score-panel p-4">
+      <div className="skyjo-kicker">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</div>
+      <h2 className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]">{headline}</h2>
+      <p className="mt-2 text-sm font-bold text-[#f5e6c8]/78">{outcome}</p>
+      {latestScoringNote ? <p className="mt-1 text-xs leading-5 text-[#f5e6c8]/58">{latestScoringNote}</p> : null}
+
+      <div className="skyjo-score-list mt-4" aria-label="Round score and total score">
+        {rankedPlayers.map((player, index) => {
+          const isWinner = winner ? player.id === winner.id : index === 0;
+          return (
+            <div className={`skyjo-score-row ${isWinner ? 'skyjo-score-row-leader' : ''}`} key={player.id}>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="skyjo-score-rank">#{index + 1}</span>
+                  <span className="truncate font-extrabold text-[#f5e6c8]">{player.name}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-right tabular-nums">
+                <div>
+                  <div className="skyjo-score-label">Round score</div>
+                  <div className="font-black text-[#f5e6c8]">{player.roundScore}</div>
+                </div>
+                <div>
+                  <div className="skyjo-score-label">Total score</div>
+                  <div className="font-black text-[#f5e6c8]">{player.totalScore}</div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {onAction && actionLabel ? (
+        <button className="skyjo-button skyjo-button-primary mt-4 w-full px-4 py-3" onClick={onAction} type="button">
+          {actionLabel}
+        </button>
+      ) : actionDisabledReason ? (
+        <p className="skyjo-disabled-note mt-4">
+          <span>Action unavailable:</span> {actionDisabledReason}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function SinglePlayer() {
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
-  const winner = useMemo(() => state.players.find((player) => player.id === state.winnerId), [state.players, state.winnerId]);
   const localPlayers = state.players.filter((player) => player.kind === 'human');
   const opponentPlayers = state.players.filter((player) => player.kind !== 'human');
   const localBoardEntries = localPlayers.map((player) => ({ player, isLocal: true }));
@@ -566,6 +878,7 @@ function SinglePlayer() {
           <FinalTurnCallout localPlayerId={localPlayers[0]?.id} state={state} />
           <TableControls
             drawIntent={drawIntent}
+            localPlayerId={localPlayers[0]?.id}
             localTurn={humanTurn}
             onChooseDiscard={() => setState((current) => chooseDiscard(current))}
             onDraw={() => setState((current) => drawBlind(current))}
@@ -586,16 +899,11 @@ function SinglePlayer() {
 
         <aside className={`space-y-4 ${hasFourPlayerDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'}`}>
           {state.phase === 'round-over' || state.phase === 'game-over' ? (
-            <section className="skyjo-panel skyjo-panel-current p-4">
-              <div className="skyjo-serif text-lg font-bold">{state.phase === 'game-over' ? `${winner?.name} wins the game.` : 'Round complete.'}</div>
-              <button
-                className="skyjo-button skyjo-button-primary mt-3 w-full px-4 py-3"
-                onClick={() => setState(state.phase === 'game-over' ? startFreshGame({ aiOpponentCount }) : startNextRound(state))}
-                type="button"
-              >
-                {state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
-              </button>
-            </section>
+            <RoundSummary
+              actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
+              onAction={() => setState(state.phase === 'game-over' ? startFreshGame({ aiOpponentCount }) : startNextRound(state))}
+              state={state}
+            />
           ) : null}
 
           <MoveLog state={state} />
@@ -730,6 +1038,7 @@ function Lobby() {
   const roomOpponentBoardEntries = roomOpponentPlayers.map((player) => ({ player, isLocal: false }));
   const hasFourPlayerRoomDesktopGrid = roomState?.players.length === 4;
   const fourPlayerRoomBoardEntries = [...roomOpponentBoardEntries, ...roomLocalBoardEntries];
+  const startGameDisabledReason = room && room.players.length < 2 ? 'Need at least two players to start.' : '';
 
   return (
     <main className="skyjo-surface px-4 py-8">
@@ -761,10 +1070,22 @@ function Lobby() {
               />
             </label>
             <div className="flex flex-wrap items-end gap-2">
-              <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={connection === 'connecting'} onClick={() => connect('create-room')} type="button">
+              <button
+                className="skyjo-button skyjo-button-primary px-4 py-2"
+                disabled={connection === 'connecting'}
+                onClick={() => connect('create-room')}
+                title={connection === 'connecting' ? 'Connecting to the room server.' : 'Create a private room.'}
+                type="button"
+              >
                 Create Room
               </button>
-              <button className="skyjo-button px-4 py-2" disabled={connection === 'connecting'} onClick={() => connect('join-room')} type="button">
+              <button
+                className="skyjo-button px-4 py-2"
+                disabled={connection === 'connecting'}
+                onClick={() => connect('join-room')}
+                title={connection === 'connecting' ? 'Connecting to the room server.' : 'Join the room code.'}
+                type="button"
+              >
                 Join
               </button>
             </div>
@@ -788,7 +1109,13 @@ function Lobby() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {localPlayer?.host && room.status === 'waiting' ? (
-                      <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={room.players.length < 2} onClick={startRoomGame} type="button">
+                      <button
+                        className="skyjo-button skyjo-button-primary px-4 py-2"
+                        disabled={Boolean(startGameDisabledReason)}
+                        onClick={startRoomGame}
+                        title={startGameDisabledReason || 'Start the multiplayer game.'}
+                        type="button"
+                      >
                         Start Game
                       </button>
                     ) : null}
@@ -806,6 +1133,11 @@ function Lobby() {
                     </span>
                   ))}
                 </div>
+                {localPlayer?.host && startGameDisabledReason ? (
+                  <p className="skyjo-disabled-note mt-3">
+                    <span>Action unavailable:</span> {startGameDisabledReason}
+                  </p>
+                ) : null}
               </div>
 
               {roomState ? (
@@ -845,6 +1177,7 @@ function Lobby() {
                   <FinalTurnCallout localPlayerId={playerId} state={roomState} />
                   <TableControls
                     drawIntent={drawIntent}
+                    localPlayerId={playerId}
                     localTurn={localTurn}
                     onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
                     onDraw={() => updateGame(drawBlind(roomState))}
@@ -873,14 +1206,18 @@ function Lobby() {
                   }`}
                 >
                   {roomState.phase === 'round-over' || roomState.phase === 'game-over' ? (
-                    <section className="skyjo-panel skyjo-panel-current p-4">
-                      <div className="skyjo-serif text-lg font-bold">{roomState.phase === 'game-over' ? 'Game complete.' : 'Round complete.'}</div>
-                      {localPlayer?.host ? (
-                        <button className="skyjo-button skyjo-button-primary mt-3 w-full px-4 py-3" onClick={handleNextRound} type="button">
-                          {roomState.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
-                        </button>
-                      ) : null}
-                    </section>
+                    <RoundSummary
+                      actionDisabledReason={
+                        localPlayer?.host
+                          ? undefined
+                          : roomState.phase === 'game-over'
+                            ? 'Only the host can restart the game.'
+                            : 'Only the host can start the next round.'
+                      }
+                      actionLabel={roomState.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
+                      onAction={localPlayer?.host ? handleNextRound : undefined}
+                      state={roomState}
+                    />
                   ) : null}
                   <MoveLog state={roomState} />
                 </aside>

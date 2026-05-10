@@ -104,3 +104,4 @@ Acceptance:
 Current notes:
 
 - Rules are available from compact in-game buttons on both the single-player and multiplayer routes.
+- Issue #11 polish is complete: the play surface now calls out opening reveals, local vs waiting turns, drawn-card decisions, eligible cards, final-lap state, disabled action reasons, and round scoring.
