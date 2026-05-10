@@ -57,8 +57,8 @@ Acceptance:
 Current notes:
 
 - Multiplayer lobby route is `/lobby`.
-- Rooms are stored in memory on the VPS process for the friends-only MVP.
-- A service restart clears active rooms; persistence can be added later if needed.
+- Rooms are stored in memory on the VPS process and persisted to local JSON at `.data/rooms.json` by default, with `SKYJO_ROOMS_FILE` available for deployments that want a different path.
+- Persisted rooms restore after a service restart without socket handles; players come back offline until their browsers rejoin, and stale offline rooms are pruned after six hours.
 
 ## Phase 3: Multiplayer Game Completion
 

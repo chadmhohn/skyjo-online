@@ -9,6 +9,12 @@ import {
   createNextRoundRoomState,
   validateMultiplayerStateUpdate
 } from './server-dist/serverValidation.js';
+import {
+  loadRoomsFromDisk,
+  resolveRoomsFilePath,
+  ROOM_STALE_MS,
+  saveRoomsToDisk
+} from './server-room-persistence.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(__dirname, 'dist');
@@ -20,6 +26,11 @@ const cookieName = process.env.SKYJO_COOKIE_NAME || 'skyjo_session';
 const sessionTtlMs = Number(process.env.SKYJO_SESSION_TTL_HOURS || 24 * 14) * 60 * 60 * 1000;
 const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
 const rooms = new Map();
+const roomsFile = resolveRoomsFilePath();
+const roomsSaveDebounceMs = 250;
+let roomsSaveTimer = null;
+let roomsSaveQueue = Promise.resolve();
+let shuttingDown = false;
 
 const mimeTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -124,6 +135,42 @@ function broadcastRoom(room) {
   }
 }
 
+function queueRoomsSave() {
+  roomsSaveQueue = roomsSaveQueue
+    .catch(() => {})
+    .then(() => saveRoomsToDisk(rooms, roomsFile))
+    .catch((error) => {
+      console.error('Failed to persist rooms:', error);
+    });
+  return roomsSaveQueue;
+}
+
+function persistRoomsSoon() {
+  if (roomsSaveTimer) return;
+  roomsSaveTimer = setTimeout(() => {
+    roomsSaveTimer = null;
+    void queueRoomsSave();
+  }, roomsSaveDebounceMs);
+  roomsSaveTimer.unref();
+}
+
+async function flushRoomPersistence() {
+  if (roomsSaveTimer) {
+    clearTimeout(roomsSaveTimer);
+    roomsSaveTimer = null;
+  }
+  await queueRoomsSave();
+}
+
+function markAllPlayersDisconnected() {
+  for (const room of rooms.values()) {
+    room.clients.clear();
+    for (const player of room.players) {
+      player.connected = false;
+    }
+  }
+}
+
 function roomPlayer(ws) {
   if (!ws.roomCode || !ws.playerId) return null;
   const room = rooms.get(ws.roomCode);
@@ -224,6 +271,19 @@ async function serveStatic(req, res) {
   }
 }
 
+try {
+  const restoredRooms = await loadRoomsFromDisk(roomsFile, { staleMs: ROOM_STALE_MS });
+  for (const room of restoredRooms) {
+    rooms.set(room.code, room);
+  }
+  if (restoredRooms.length > 0) {
+    console.log(`Restored ${restoredRooms.length} persisted room(s) from ${roomsFile}`);
+    await saveRoomsToDisk(rooms, roomsFile);
+  }
+} catch (error) {
+  console.error('Failed to load persisted rooms:', error);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -316,6 +376,7 @@ wss.on('connection', (ws) => {
       rooms.set(code, room);
       ws.roomCode = code;
       ws.playerId = playerId;
+      persistRoomsSoon();
       sendJson(ws, { type: 'joined', playerId, room: publicRoom(room) });
       broadcastRoom(room);
       return;
@@ -348,6 +409,7 @@ wss.on('connection', (ws) => {
       room.updatedAt = Date.now();
       ws.roomCode = code;
       ws.playerId = player.id;
+      persistRoomsSoon();
       sendJson(ws, { type: 'joined', playerId: player.id, room: publicRoom(room) });
       broadcastRoom(room);
       return;
@@ -373,6 +435,7 @@ wss.on('connection', (ws) => {
         room.state = createInitialRoomState(room.players);
         room.status = 'playing';
         room.updatedAt = Date.now();
+        persistRoomsSoon();
         broadcastRoom(room);
         return;
       }
@@ -380,6 +443,7 @@ wss.on('connection', (ws) => {
         room.state = createNextRoundRoomState(room.state);
         room.status = 'playing';
         room.updatedAt = Date.now();
+        persistRoomsSoon();
         broadcastRoom(room);
         return;
       }
@@ -387,6 +451,7 @@ wss.on('connection', (ws) => {
         room.state = createInitialRoomState(room.players);
         room.status = 'playing';
         room.updatedAt = Date.now();
+        persistRoomsSoon();
         broadcastRoom(room);
         return;
       }
@@ -416,6 +481,7 @@ wss.on('connection', (ws) => {
       room.state = message.state;
       room.status = message.state.phase === 'game-over' ? 'finished' : 'playing';
       room.updatedAt = Date.now();
+      persistRoomsSoon();
       broadcastRoom(room);
       return;
     }
@@ -428,12 +494,14 @@ wss.on('connection', (ws) => {
       room.state = null;
       room.status = 'waiting';
       room.updatedAt = Date.now();
+      persistRoomsSoon();
       broadcastRoom(room);
       return;
     }
   });
 
   ws.on('close', () => {
+    if (shuttingDown) return;
     const context = roomPlayer(ws);
     if (!context) return;
     const { room, player } = context;
@@ -442,20 +510,53 @@ wss.on('connection', (ws) => {
     room.updatedAt = Date.now();
     if (room.clients.size === 0 && room.status === 'waiting') {
       rooms.delete(room.code);
+      persistRoomsSoon();
       return;
     }
+    persistRoomsSoon();
     broadcastRoom(room);
   });
 });
 
 setInterval(() => {
-  const cutoff = Date.now() - 1000 * 60 * 60 * 6;
+  const cutoff = Date.now() - ROOM_STALE_MS;
+  let removedRoom = false;
   for (const [code, room] of rooms.entries()) {
-    if (room.updatedAt < cutoff && room.clients.size === 0) rooms.delete(code);
+    if (room.updatedAt < cutoff && room.clients.size === 0) {
+      rooms.delete(code);
+      removedRoom = true;
+    }
   }
+  if (removedRoom) persistRoomsSoon();
 }, 1000 * 60 * 30).unref();
 
 server.listen(port, host, () => {
   console.log(`Skyjo Online serving ${distDir}`);
   console.log(`Listening on http://${host}:${port}`);
+});
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}; persisting rooms before shutdown.`);
+  markAllPlayersDisconnected();
+  await flushRoomPersistence();
+  for (const client of wss.clients) {
+    client.close(1001, 'Server shutting down');
+  }
+  wss.close(() => {});
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => {
+    process.exit(0);
+  }, 3000).unref();
+}
+
+process.once('SIGTERM', () => {
+  void shutdown('SIGTERM');
+});
+
+process.once('SIGINT', () => {
+  void shutdown('SIGINT');
 });
