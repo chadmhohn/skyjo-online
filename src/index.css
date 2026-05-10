@@ -76,6 +76,30 @@ body {
     background: radial-gradient(ellipse at center, rgba(245, 230, 200, 0.04) 0%, transparent 70%);
   }
 
+  .skyjo-final-turn-callout {
+    border-color: rgba(251, 191, 36, 0.55);
+    background:
+      linear-gradient(135deg, rgba(251, 191, 36, 0.2) 0%, rgba(245, 230, 200, 0.075) 52%, rgba(34, 197, 94, 0.09) 100%),
+      rgba(255, 255, 255, 0.025);
+    box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12), 0 16px 36px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  .skyjo-final-turn-mark {
+    display: flex;
+    width: 2.25rem;
+    height: 2.25rem;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    border: 1px solid rgba(253, 230, 138, 0.52);
+    background: rgba(251, 191, 36, 0.18);
+    color: #fef3c7;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
+
   .skyjo-button {
     border-radius: 10px;
     border: 1px solid rgba(245, 230, 200, 0.24);

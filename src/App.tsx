@@ -214,6 +214,45 @@ function TableControls({ state, localTurn, drawIntent, onChooseDiscard, onDraw, 
   );
 }
 
+function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPlayerId?: string }) {
+  const activeFinalLap =
+    Boolean(state.roundCloserId) && (state.phase === 'choose-source' || state.phase === 'choose-replacement');
+  if (!activeFinalLap) return null;
+
+  const closer = state.players.find((player) => player.id === state.roundCloserId);
+  const currentPlayer = state.players[state.currentPlayerIndex];
+  const currentPlayerHasFinalTurn = Boolean(currentPlayer && state.finalTurnPlayerIds.includes(currentPlayer.id));
+  const localPlayerHasFinalTurn = Boolean(localPlayerId && state.finalTurnPlayerIds.includes(localPlayerId));
+  const closerName = closer?.name || 'A player';
+  let turnMessage = 'Everyone else gets one final turn before scoring.';
+
+  if (currentPlayerHasFinalTurn && currentPlayer?.id === localPlayerId) {
+    turnMessage = 'This is your last move of the round.';
+  } else if (currentPlayerHasFinalTurn && currentPlayer) {
+    turnMessage = `${currentPlayer.name} is taking a final turn.`;
+  } else if (localPlayerHasFinalTurn) {
+    turnMessage = 'Your final turn is still coming up.';
+  }
+
+  return (
+    <section aria-live="polite" className="skyjo-panel skyjo-final-turn-callout p-4" role="status">
+      <div className="flex items-start gap-3">
+        <div className="skyjo-final-turn-mark" aria-hidden="true">
+          !
+        </div>
+        <div className="min-w-0">
+          <div className="skyjo-kicker text-amber-100/75">Final turn lap</div>
+          <h2 className="skyjo-serif mt-1 text-xl font-bold leading-tight text-[#fff6df]">{closerName} went out.</h2>
+          <p className="mt-2 text-sm font-extrabold leading-5 text-amber-100">{turnMessage}</p>
+          <p className="mt-1 text-xs leading-5 text-[#f5e6c8]/68">
+            {closerName} revealed their last card. The round scores after this lap.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function MoveLog({ state }: { state: GameState }) {
   return (
     <section className="skyjo-panel p-4">
@@ -348,6 +387,7 @@ function SinglePlayer() {
         </section>
 
         <div className="space-y-4 lg:col-start-2 lg:row-start-1">
+          <FinalTurnCallout localPlayerId={localPlayers[0]?.id} state={state} />
           <TableControls
             drawIntent={drawIntent}
             localTurn={humanTurn}
@@ -623,6 +663,7 @@ function Lobby() {
             {roomState ? (
               <>
                 <div className="space-y-4 lg:col-start-2 lg:row-start-1">
+                  <FinalTurnCallout localPlayerId={playerId} state={roomState} />
                   <TableControls
                     drawIntent={drawIntent}
                     localTurn={localTurn}
