@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import {
   chooseDiscard,
@@ -11,7 +11,7 @@ import {
   startFreshGame,
   startNextRound
 } from './game';
-import type { Card, GameState, MultiplayerRoom, Player } from './types';
+import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from './types';
 
 const rows = [0, 1, 2];
 const columns = [0, 1, 2, 3];
@@ -686,6 +686,117 @@ function MoveLog({ state }: { state: GameState }) {
   );
 }
 
+function formatChatTime(createdAt: number) {
+  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(createdAt));
+}
+
+interface RoomChatProps {
+  messages: RoomChatMessage[];
+  playerId: string;
+  isOpen: boolean;
+  unreadCount: number;
+  onToggle: () => void;
+  onSend: (text: string) => void;
+}
+
+function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }: RoomChatProps) {
+  const [draft, setDraft] = useState('');
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+  const latestMessage = messages[messages.length - 1];
+
+  useEffect(() => {
+    if (!isOpen) return;
+    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
+  }, [isOpen, messages.length]);
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!text) return;
+    onSend(text);
+    setDraft('');
+  }
+
+  return (
+    <section className="skyjo-panel p-4">
+      <button
+        aria-expanded={isOpen}
+        className="flex w-full items-center justify-between gap-3 text-left"
+        onClick={onToggle}
+        type="button"
+      >
+        <span className="min-w-0">
+          <span className="skyjo-serif block text-xl font-semibold text-[#f5e6c8]">Table Chat</span>
+          <span className="mt-1 block truncate text-sm text-[#f5e6c8]/55">
+            {latestMessage ? `${latestMessage.playerName}: ${latestMessage.text}` : 'No messages yet'}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          {unreadCount > 0 ? (
+            <span className="rounded-full border border-amber-200/35 bg-amber-400/18 px-2 py-1 text-xs font-black text-amber-100">
+              {unreadCount}
+            </span>
+          ) : null}
+          <span className="skyjo-kicker">{isOpen ? 'Hide' : 'Open'}</span>
+        </span>
+      </button>
+
+      {isOpen ? (
+        <div className="mt-3 grid gap-3">
+          <div
+            aria-live="polite"
+            className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-[#f5e6c8]/10 bg-black/10 p-2"
+            ref={messagesRef}
+          >
+            {messages.length > 0 ? (
+              messages.map((message) => {
+                const mine = message.playerId === playerId;
+                return (
+                  <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`} key={message.id}>
+                    <div
+                      className={`max-w-[88%] rounded-xl border px-3 py-2 text-sm ${
+                        mine
+                          ? 'border-amber-200/24 bg-amber-300/12 text-amber-50'
+                          : 'border-[#f5e6c8]/10 bg-white/[0.035] text-[#f5e6c8]/82'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span className="font-black text-[#f5e6c8]">{mine ? 'You' : message.playerName}</span>
+                        <time className="text-xs font-bold text-[#f5e6c8]/42" dateTime={new Date(message.createdAt).toISOString()}>
+                          {formatChatTime(message.createdAt)}
+                        </time>
+                      </div>
+                      <p className="mt-1 break-words leading-5">{message.text}</p>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="rounded-lg border border-dashed border-[#f5e6c8]/14 px-3 py-5 text-center text-sm font-bold text-[#f5e6c8]/45">
+                Say hello when people join the table.
+              </div>
+            )}
+          </div>
+
+          <form className="flex gap-2" onSubmit={handleSubmit}>
+            <input
+              aria-label="Message"
+              className="skyjo-input min-w-0 flex-1 px-3 py-2 text-sm"
+              maxLength={280}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="Message players"
+              value={draft}
+            />
+            <button className="skyjo-button skyjo-button-primary px-4 py-2 text-sm" disabled={!draft.trim()} type="submit">
+              Send
+            </button>
+          </form>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 interface RoundSummaryProps {
   state: GameState;
   actionLabel?: string;
@@ -922,18 +1033,44 @@ function roomSocketUrl() {
 
 function Lobby() {
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const roomCodeRef = useRef(window.localStorage.getItem('skyjo-room-code') || '');
+  const playerIdRef = useRef(window.localStorage.getItem('skyjo-player-id') || '');
   const [name, setName] = useState(() => window.localStorage.getItem('skyjo-player-name') || 'Player');
-  const [joinCode, setJoinCode] = useState('');
+  const [joinCode, setJoinCode] = useState(() => window.localStorage.getItem('skyjo-room-code') || '');
+  const [roomCode, setRoomCode] = useState(() => window.localStorage.getItem('skyjo-room-code') || '');
   const [playerId, setPlayerId] = useState(() => window.localStorage.getItem('skyjo-player-id') || '');
   const [room, setRoom] = useState<MultiplayerRoom | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('idle');
   const [error, setError] = useState('');
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
+  const [chatOpen, setChatOpen] = useState(false);
+  const [lastSeenChatMessageId, setLastSeenChatMessageId] = useState('');
+  const lastSeenChatRoomCodeRef = useRef('');
   const hasPendingDrawDecision = Boolean(
     room?.state && room.state.phase === 'choose-replacement' && room.state.selectedSource === 'draw' && room.state.drawnCard
   );
+  const chatMessages = room?.chatMessages ?? [];
+  const latestChatMessage = chatMessages[chatMessages.length - 1];
+  const roomChatCode = room?.code || '';
+  const lastSeenChatIndex = chatMessages.findIndex((message) => message.id === lastSeenChatMessageId);
+  const unreadChatCount = chatMessages.reduce(
+    (count, message, index) => (index > lastSeenChatIndex && message.playerId !== playerId ? count + 1 : count),
+    0
+  );
 
-  useEffect(() => () => wsRef.current?.close(), []);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      wsRef.current?.close();
+    },
+    []
+  );
 
   useEffect(() => {
     if (!hasPendingDrawDecision) {
@@ -941,13 +1078,42 @@ function Lobby() {
     }
   }, [hasPendingDrawDecision]);
 
-  function connect(action: 'create-room' | 'join-room') {
+  useEffect(() => {
+    roomCodeRef.current = roomCode;
+  }, [roomCode]);
+
+  useEffect(() => {
+    playerIdRef.current = playerId;
+  }, [playerId]);
+
+  useEffect(() => {
+    if (!roomChatCode) return;
+    const latestId = latestChatMessage?.id || '';
+    if (lastSeenChatRoomCodeRef.current !== roomChatCode) {
+      lastSeenChatRoomCodeRef.current = roomChatCode;
+      setLastSeenChatMessageId(latestId);
+      return;
+    }
+    if (chatOpen || latestChatMessage?.playerId === playerId) {
+      setLastSeenChatMessageId(latestId);
+    }
+  }, [chatOpen, latestChatMessage?.id, latestChatMessage?.playerId, playerId, roomChatCode]);
+
+  function clearReconnectTimer() {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }
+
+  function connect(action: 'create-room' | 'join-room', codeOverride?: string) {
     const cleanedName = name.trim() || 'Player';
-    const cleanedCode = joinCode.trim().toUpperCase();
+    const cleanedCode = (codeOverride ?? joinCode).trim().toUpperCase();
     if (action === 'join-room' && !cleanedCode) {
       setError('Enter a room code.');
       return;
     }
+    clearReconnectTimer();
     window.localStorage.setItem('skyjo-player-name', cleanedName);
     setConnection('connecting');
     setError('');
@@ -969,7 +1135,12 @@ function Lobby() {
       const message = JSON.parse(String(event.data));
       if (message.type === 'joined') {
         setPlayerId(message.playerId);
+        playerIdRef.current = message.playerId;
         window.localStorage.setItem('skyjo-player-id', message.playerId);
+        setRoomCode(message.room.code);
+        roomCodeRef.current = message.room.code;
+        window.localStorage.setItem('skyjo-room-code', message.room.code);
+        setJoinCode(message.room.code);
         setRoom(message.room);
         setConnection('connected');
         return;
@@ -986,10 +1157,59 @@ function Lobby() {
     });
 
     ws.addEventListener('close', () => {
-      setConnection((current) => (current === 'connected' ? 'error' : current));
+      if (!mountedRef.current) return;
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+      setConnection('idle');
+      if (roomCodeRef.current && playerIdRef.current) {
+        setError('');
+        return;
+      }
       setError('Room connection closed. Rejoin to continue.');
     });
   }
+
+  const connectRef = useRef<((action: 'create-room' | 'join-room', codeOverride?: string) => void) | null>(null);
+  connectRef.current = connect;
+
+  useEffect(() => {
+    function reconnectRoom() {
+      const savedRoomCode = roomCodeRef.current;
+      const savedPlayerId = playerIdRef.current;
+      if (!savedRoomCode || !savedPlayerId) return;
+      const ws = wsRef.current;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      if (reconnectTimerRef.current !== null) return;
+
+      reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (!mountedRef.current) return;
+        const currentWs = wsRef.current;
+        if (currentWs && (currentWs.readyState === WebSocket.OPEN || currentWs.readyState === WebSocket.CONNECTING)) return;
+        connectRef.current?.('join-room', roomCodeRef.current);
+      }, 250);
+    }
+
+    const handleResume = () => {
+      if (!mountedRef.current) return;
+      if (document.visibilityState !== 'visible') return;
+      reconnectRoom();
+    };
+
+    window.addEventListener('focus', handleResume);
+    window.addEventListener('pageshow', handleResume);
+    document.addEventListener('visibilitychange', handleResume);
+
+    reconnectRoom();
+
+    return () => {
+      window.removeEventListener('focus', handleResume);
+      window.removeEventListener('pageshow', handleResume);
+      document.removeEventListener('visibilitychange', handleResume);
+    };
+    // Reconnect when the saved room session changes or the tab becomes active again.
+  }, [playerId, roomCode]);
 
   function send(payload: unknown) {
     const ws = wsRef.current;
@@ -1007,6 +1227,11 @@ function Lobby() {
 
   function updateGame(nextState: GameState) {
     send({ type: 'update-state', state: nextState });
+  }
+
+  function sendChatMessage(text: string) {
+    send({ type: 'send-chat-message', text });
+    setChatOpen(true);
   }
 
   function handleCard(index: number) {
@@ -1205,6 +1430,14 @@ function Lobby() {
                     hasFourPlayerRoomDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'
                   }`}
                 >
+                  <RoomChat
+                    isOpen={chatOpen}
+                    messages={chatMessages}
+                    onSend={sendChatMessage}
+                    onToggle={() => setChatOpen((current) => !current)}
+                    playerId={playerId}
+                    unreadCount={unreadChatCount}
+                  />
                   {roomState.phase === 'round-over' || roomState.phase === 'game-over' ? (
                     <RoundSummary
                       actionDisabledReason={
@@ -1225,6 +1458,14 @@ function Lobby() {
             ) : (
               <aside className="space-y-4 lg:col-start-2 lg:row-start-1">
                 <section className="skyjo-panel p-4 text-sm text-[#f5e6c8]/70">Keep this tab open while friends join.</section>
+                <RoomChat
+                  isOpen={chatOpen}
+                  messages={chatMessages}
+                  onSend={sendChatMessage}
+                  onToggle={() => setChatOpen((current) => !current)}
+                  playerId={playerId}
+                  unreadCount={unreadChatCount}
+                />
               </aside>
             )}
           </div>

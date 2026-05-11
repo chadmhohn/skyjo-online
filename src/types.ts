@@ -31,10 +31,19 @@ export interface RoomPlayer {
   host: boolean;
 }
 
+export interface RoomChatMessage {
+  id: string;
+  playerId: string;
+  playerName: string;
+  text: string;
+  createdAt: number;
+}
+
 export interface MultiplayerRoom {
   code: string;
   hostId: string;
   players: RoomPlayer[];
+  chatMessages: RoomChatMessage[];
   state: GameState | null;
   status: 'waiting' | 'playing' | 'finished';
   updatedAt: number;

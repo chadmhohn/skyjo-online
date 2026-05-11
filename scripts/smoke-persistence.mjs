@@ -26,6 +26,15 @@ try {
       { id: 'host-1', name: 'Ada', connected: true, host: true },
       { id: 'player-2', name: 'Grace', connected: true, host: false }
     ],
+    chatMessages: [
+      {
+        id: 'chat-1',
+        playerId: 'host-1',
+        playerName: 'Ada',
+        text: 'Ready for the next round?',
+        createdAt: now
+      }
+    ],
     state: {
       players: [],
       drawPile: [],
@@ -51,12 +60,15 @@ try {
   assert.equal(serialized.rooms.length, 1);
   assert.equal('clients' in serialized.rooms[0], false, 'socket clients must not be persisted');
   assert.equal(serialized.rooms[0].players[0].connected, true, 'runtime presence can be written');
+  assert.equal(serialized.rooms[0].chatMessages.length, 1, 'room chat history is serialized');
+  assert.equal(serialized.rooms[0].chatMessages[0].text, 'Ready for the next round?');
 
   await saveRoomsToDisk(new Map([[room.code, room]]), roomsFile);
   const saved = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
   assert.equal(saved.version, 1);
   assert.equal(saved.rooms[0].code, room.code);
   assert.equal('clients' in saved.rooms[0], false, 'saved JSON must not contain clients');
+  assert.equal(saved.rooms[0].chatMessages[0].playerName, 'Ada', 'saved room includes chat sender names');
 
   const restored = await loadRoomsFromDisk(roomsFile, { now: now + 1000, staleMs: ROOM_STALE_MS });
   assert.equal(restored.length, 1);
@@ -64,13 +76,14 @@ try {
   assert.equal(restored[0].clients.size, 0, 'restored clients start empty');
   assert.equal(restored[0].players.every((player) => player.connected === false), true, 'restored players start offline');
   assert.equal(restored[0].players.find((player) => player.id === room.hostId)?.host, true, 'host flag is restored from hostId');
+  assert.equal(restored[0].chatMessages[0].text, 'Ready for the next round?', 'restored rooms keep chat history');
 
   const staleRoom = { ...room, code: 'OLD12', updatedAt: now - ROOM_STALE_MS - 1 };
   await saveRoomsToDisk(new Map([[staleRoom.code, staleRoom]]), roomsFile);
   const staleRestored = await loadRoomsFromDisk(roomsFile, { now, staleMs: ROOM_STALE_MS });
   assert.equal(staleRestored.length, 0, 'stale rooms are dropped on load');
 
-  console.log('persistence smoke passed: env path, atomic JSON save, socket-free serialization, offline restore, and stale load pruning');
+  console.log('persistence smoke passed: env path, atomic JSON save, socket-free serialization, chat restore, offline restore, and stale load pruning');
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }

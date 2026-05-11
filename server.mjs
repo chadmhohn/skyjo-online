@@ -28,6 +28,8 @@ const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
 const rooms = new Map();
 const roomsFile = resolveRoomsFilePath();
 const roomsSaveDebounceMs = 250;
+const maxRoomChatMessages = 80;
+const maxRoomChatMessageLength = 280;
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
 let shuttingDown = false;
@@ -118,6 +120,7 @@ function publicRoom(room) {
     code: room.code,
     hostId: room.hostId,
     players: room.players,
+    chatMessages: room.chatMessages || [],
     state: room.state,
     status: room.status,
     updatedAt: room.updatedAt
@@ -177,6 +180,32 @@ function roomPlayer(ws) {
   if (!room) return null;
   const player = room.players.find((item) => item.id === ws.playerId);
   return player ? { room, player } : null;
+}
+
+function hasLiveReplacementClient(room, playerId, currentWs) {
+  for (const client of room.clients) {
+    if (client === currentWs) continue;
+    if (client.roomCode !== room.code || client.playerId !== playerId) continue;
+    if (client.readyState === client.OPEN) return true;
+  }
+  return false;
+}
+
+function cleanChatText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxRoomChatMessageLength);
+}
+
+function appendRoomChatMessage(room, player, text) {
+  const message = {
+    id: crypto.randomUUID(),
+    playerId: player.id,
+    playerName: player.name,
+    text,
+    createdAt: Date.now()
+  };
+  const currentMessages = Array.isArray(room.chatMessages) ? room.chatMessages : [];
+  room.chatMessages = [...currentMessages, message].slice(-maxRoomChatMessages);
+  return message;
 }
 
 function renderLogin(error = false) {
@@ -368,6 +397,7 @@ wss.on('connection', (ws) => {
         code,
         hostId: playerId,
         players: [{ id: playerId, name, connected: true, host: true }],
+        chatMessages: [],
         state: null,
         status: 'waiting',
         updatedAt: Date.now(),
@@ -421,6 +451,19 @@ wss.on('connection', (ws) => {
       return;
     }
     const { room, player } = context;
+
+    if (message.type === 'send-chat-message') {
+      const text = cleanChatText(message.text);
+      if (!text) {
+        sendJson(ws, { type: 'error', message: 'Enter a message before sending.' });
+        return;
+      }
+      appendRoomChatMessage(room, player, text);
+      room.updatedAt = Date.now();
+      persistRoomsSoon();
+      broadcastRoom(room);
+      return;
+    }
 
     if (message.type === 'start-game') {
       if (!player.host) {
@@ -506,7 +549,9 @@ wss.on('connection', (ws) => {
     if (!context) return;
     const { room, player } = context;
     room.clients.delete(ws);
-    player.connected = false;
+    if (!hasLiveReplacementClient(room, player.id, ws)) {
+      player.connected = false;
+    }
     room.updatedAt = Date.now();
     if (room.clients.size === 0 && room.status === 'waiting') {
       rooms.delete(room.code);
