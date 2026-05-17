@@ -109,6 +109,11 @@ body {
     display: none;
   }
 
+  .skyjo-mobile-final-lap-slot,
+  .skyjo-mobile-header-log {
+    display: none;
+  }
+
   .skyjo-final-turn-callout {
     overflow: hidden;
     border-color: rgba(251, 191, 36, 0.55);
@@ -534,6 +539,18 @@ body {
       gap: 0.45rem;
     }
 
+    .skyjo-header-controls {
+      align-items: end;
+    }
+
+    .skyjo-header-actions {
+      align-items: flex-start;
+    }
+
+    .skyjo-mobile-header-log {
+      display: block;
+    }
+
     .skyjo-game-header .skyjo-button {
       min-height: 2rem;
       padding: 0.42rem 0.62rem;
@@ -599,7 +616,7 @@ body {
 
     .skyjo-mobile-play-surface {
       display: grid;
-      order: 4;
+      order: 5;
       flex: 0 0 auto;
       grid-template-columns: minmax(0, 1fr) minmax(6.25rem, 7.4rem);
       align-items: start;
@@ -682,7 +699,7 @@ body {
 
     .skyjo-opponent-stack {
       display: grid !important;
-      order: 3;
+      order: 4;
       flex: 1 1 auto;
       grid-template-columns: 1fr;
       gap: 0.55rem;
@@ -695,6 +712,58 @@ body {
 
     .skyjo-opponent-stack > .skyjo-player-grid {
       width: 100%;
+    }
+
+    .skyjo-opponent-stack-two {
+      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+      align-content: start;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent {
+      padding: 0.42rem;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent .skyjo-player-grid-header {
+      align-items: flex-start;
+      gap: 0.25rem;
+      margin-bottom: 0.28rem;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent h2 {
+      font-size: 0.78rem;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent .skyjo-turn-pill {
+      padding: 0.14rem 0.3rem;
+      font-size: 0.48rem;
+      letter-spacing: 0.08em;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent .skyjo-player-grid-scores {
+      font-size: 0.56rem;
+      gap: 0.06rem 0.22rem;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent .skyjo-player-grid-scores .skyjo-kicker {
+      font-size: 0.4rem;
+      letter-spacing: 0.08em;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent .skyjo-player-card-rows,
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent .skyjo-player-card-row {
+      gap: 0.14rem;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent .skyjo-card {
+      width: clamp(24px, 6.1vw, 28px);
+      min-height: 30px;
+      border-radius: 6px;
+      font-size: 0.68rem;
+    }
+
+    .skyjo-opponent-stack-two .skyjo-player-grid-opponent .skyjo-card-hidden {
+      font-size: 0.3rem;
+      letter-spacing: 0.08em;
     }
 
     .skyjo-player-grid-opponent {
@@ -1005,24 +1074,49 @@ body {
       padding: 0.58rem;
     }
 
-    .skyjo-final-turn-callout {
-      position: fixed;
-      top: calc(env(safe-area-inset-top) + 0.65rem);
-      right: 0.65rem;
-      left: 0.65rem;
-      z-index: 70;
+    .skyjo-mobile-final-lap-slot {
+      display: block;
+      order: 3;
+      flex: 0 0 auto;
+    }
+
+    .skyjo-mobile-final-lap-slot:empty {
+      display: none;
+    }
+
+    .skyjo-mobile-final-lap-slot .skyjo-final-turn-callout {
+      position: static;
+      top: auto;
+      right: auto;
+      left: auto;
+      z-index: auto;
       border-radius: 14px;
-      padding: 0.72rem;
+      padding: 0.58rem;
     }
 
-    .skyjo-final-turn-callout h2 {
+    .skyjo-mobile-final-lap-slot .skyjo-final-turn-callout .flex {
+      gap: 0.55rem;
+    }
+
+    .skyjo-mobile-final-lap-slot .skyjo-final-turn-mark {
+      width: 1.82rem;
+      height: 1.82rem;
+      border-radius: 9px;
+      font-size: 1rem;
+    }
+
+    .skyjo-mobile-final-lap-slot .skyjo-final-turn-callout h2 {
       margin-top: 0.1rem;
-      font-size: 1.05rem;
+      font-size: 0.96rem;
     }
 
-    .skyjo-final-turn-callout p {
+    .skyjo-mobile-final-lap-slot .skyjo-final-turn-callout p {
       margin-top: 0.25rem;
       line-height: 1.3;
+    }
+
+    .skyjo-mobile-final-lap-slot .skyjo-final-turn-callout p:last-child {
+      display: none;
     }
 
     .skyjo-room-status-panel {
@@ -1143,6 +1237,10 @@ body {
       display: none;
     }
 
+    .skyjo-active-mobile-shell .skyjo-secondary-stack > .skyjo-move-log-panel {
+      display: none;
+    }
+
     .skyjo-move-log-panel,
     .skyjo-room-chat-panel,
     .skyjo-round-summary-panel,
@@ -1160,6 +1258,63 @@ body {
       max-height: 12rem;
       overflow-y: auto;
       padding-right: 0.15rem;
+    }
+
+    .skyjo-mobile-header-log .skyjo-move-log-panel,
+    .skyjo-mobile-header-log .skyjo-move-log-panel:not(:has(details[open])) {
+      position: static;
+      right: auto;
+      bottom: auto;
+      z-index: auto;
+      width: auto;
+      max-width: none;
+      max-height: none;
+      overflow: visible;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      padding: 0;
+      backdrop-filter: none;
+    }
+
+    .skyjo-mobile-header-log .skyjo-panel-summary,
+    .skyjo-mobile-header-log .skyjo-move-log-panel:not(:has(details[open])) .skyjo-panel-summary {
+      min-height: 2rem;
+      gap: 0.38rem;
+      border: 1px solid rgba(245, 230, 200, 0.14);
+      border-radius: 10px;
+      background: rgba(245, 230, 200, 0.045);
+      padding: 0.42rem 0.6rem;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+    }
+
+    .skyjo-mobile-header-log .skyjo-move-log-panel summary span:first-child,
+    .skyjo-mobile-header-log .skyjo-move-log-panel:not(:has(details[open])) summary span:first-child {
+      font-size: 0.76rem;
+      line-height: 1;
+    }
+
+    .skyjo-mobile-header-log .skyjo-kicker,
+    .skyjo-mobile-header-log .skyjo-move-log-panel:not(:has(details[open])) .skyjo-kicker {
+      display: none;
+    }
+
+    .skyjo-mobile-header-log .skyjo-move-log-list {
+      position: fixed;
+      top: calc(env(safe-area-inset-top) + 3.55rem);
+      right: 0.55rem;
+      z-index: 90;
+      width: min(20rem, calc(100vw - 1.1rem));
+      max-height: min(58vh, 28rem);
+      overflow-y: auto;
+      border: 1px solid rgba(245, 230, 200, 0.14);
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, rgba(10, 20, 16, 0.98) 0%, rgba(6, 12, 10, 0.96) 100%),
+        rgba(6, 12, 10, 0.96);
+      box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      padding: 0.55rem;
+      backdrop-filter: blur(14px);
     }
 
     .skyjo-move-log-list > div {
