@@ -590,7 +590,7 @@ body {
       text-overflow: ellipsis;
       white-space: nowrap;
       font-size: 1.28rem;
-      line-height: 1;
+      line-height: 1.14;
     }
 
     .skyjo-active-mobile-shell .skyjo-back-link {
