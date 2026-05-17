@@ -35,19 +35,107 @@ interface AiReplacementTarget {
   faceUp: boolean;
 }
 
-export const singlePlayerAiOpponents = [
-  { id: 'ai-1', name: 'Luke', kind: 'ai' },
-  { id: 'ai-2', name: 'Leia', kind: 'ai' },
-  { id: 'ai-3', name: 'Han', kind: 'ai' },
-  { id: 'ai-4', name: 'Chewie', kind: 'ai' },
-  { id: 'ai-5', name: 'Lando', kind: 'ai' },
-  { id: 'ai-6', name: 'Rey', kind: 'ai' },
-  { id: 'ai-7', name: 'Grogu', kind: 'ai' }
-] as const satisfies readonly PlayerSeed[];
+const singlePlayerAiOpponentSlots = 7;
+
+export const singlePlayerAiNames = [
+  'Picard',
+  'Riker',
+  'Data',
+  'Worf',
+  'Geordi',
+  'Beverly',
+  'Troi',
+  'Sisko',
+  'Kira',
+  'Dax',
+  'Odo',
+  'Quark',
+  'Janeway',
+  'Seven',
+  'Tuvok',
+  'Kirk',
+  'Spock',
+  'Uhura',
+  'Sulu',
+  'Scotty',
+  'Bones',
+  'Pike',
+  'Saru',
+  'Burnham',
+  'Mariner',
+  'Boimler',
+  'Adama',
+  'Roslin',
+  'Starbuck',
+  'Apollo',
+  'Boomer',
+  'Athena',
+  'Helo',
+  'Tyrol',
+  'Tigh',
+  'Baltar',
+  'Six',
+  'Anders',
+  'Gaeta',
+  'Dualla',
+  'TChalla',
+  'Shuri',
+  'Okoye',
+  'Wanda',
+  'Vision',
+  'Natasha',
+  'Clint',
+  'Thor',
+  'Loki',
+  'Valkyrie',
+  'Carol',
+  'Monica',
+  'Kamala',
+  'Strange',
+  'Wong',
+  'Peter',
+  'Miles',
+  'Gwen',
+  'Logan',
+  'Ororo',
+  'Rogue',
+  'Gambit',
+  'Jean',
+  'Scott',
+  'Hank',
+  'Doom',
+  'Reed',
+  'Sue',
+  'Ben',
+  'Johnny',
+  'Ripley',
+  'Hicks',
+  'Vasquez',
+  'Sarah',
+  'Neo',
+  'Trinity',
+  'Morpheus',
+  'Luke',
+  'Leia',
+  'Han',
+  'Chewie',
+  'Lando',
+  'Rey',
+  'Finn',
+  'Poe',
+  'Ahsoka',
+  'Grogu'
+] as const;
+
+export const singlePlayerAiOpponents = singlePlayerAiNames.slice(0, singlePlayerAiOpponentSlots).map((name, index) => ({
+  id: 'ai-' + (index + 1),
+  name,
+  kind: 'ai' as const
+})) satisfies readonly PlayerSeed[];
 
 export const singlePlayerAiOpponentRange = {
   min: 1,
-  max: singlePlayerAiOpponents.length
+  max: singlePlayerAiOpponentSlots
 } as const;
 
 export interface SinglePlayerGameOptions {
@@ -64,12 +152,18 @@ function createSinglePlayerRoster(
   previousScores = new Map<string, number>()
 ): PlayerSeed[] {
   const count = normalizeSinglePlayerAiOpponentCount(aiOpponentCount);
+  const selectedAiNames = shuffle([...singlePlayerAiNames]).slice(0, count);
   return [
     { id: 'human', name: 'You', kind: 'human', totalScore: previousScores.get('human') ?? 0 },
-    ...singlePlayerAiOpponents.slice(0, count).map((player) => ({
-      ...player,
-      totalScore: previousScores.get(player.id) ?? 0
-    }))
+    ...selectedAiNames.map((name, index) => {
+      const id = 'ai-' + (index + 1);
+      return {
+        id,
+        name,
+        kind: 'ai' as const,
+        totalScore: previousScores.get(id) ?? 0
+      };
+    })
   ];
 }
 

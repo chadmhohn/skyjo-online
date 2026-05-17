@@ -1580,7 +1580,22 @@ body {
       z-index: 40;
       max-height: min(70vh, 34rem);
       overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
       box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+    }
+
+    .skyjo-round-summary-mode .skyjo-round-summary-panel {
+      position: fixed;
+      top: calc(env(safe-area-inset-top) + 3.55rem);
+      right: 0.55rem;
+      bottom: calc(env(safe-area-inset-bottom) + 0.65rem);
+      left: 0.55rem;
+      z-index: 85;
+      max-height: none;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      touch-action: pan-y;
     }
 
     .skyjo-round-summary-panel h2 {
