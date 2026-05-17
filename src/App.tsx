@@ -1023,6 +1023,7 @@ function SinglePlayer() {
   const fourPlayerBoardEntries = [...opponentBoardEntries, ...localBoardEntries];
   const aiOpponentSummary = `${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
   const aiOpponentCompactSummary = `${aiOpponentCount} AI`;
+  const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
 
   useEffect(() => {
     if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
@@ -1068,8 +1069,12 @@ function SinglePlayer() {
   }
 
   return (
-    <main className="skyjo-surface px-4 py-5">
-      <div className="skyjo-shell skyjo-active-mobile-shell grid gap-5 lg:grid-cols-[1fr_330px]">
+    <main className={`skyjo-surface px-4 py-5 ${isScoringPhase ? 'skyjo-round-summary-surface' : ''}`}>
+      <div
+        className={`skyjo-shell skyjo-active-mobile-shell ${
+          isScoringPhase ? 'skyjo-round-summary-mode' : ''
+        } grid gap-5 lg:grid-cols-[1fr_330px]`}
+      >
         <section
           className={`skyjo-mobile-game-stack space-y-4 ${
             hasFourPlayerDesktopGrid ? 'lg:col-span-2 lg:row-start-1' : 'lg:col-start-1 lg:row-start-1'
@@ -1225,7 +1230,7 @@ function SinglePlayer() {
         </section>
 
         <aside className={`skyjo-secondary-stack space-y-4 ${hasFourPlayerDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'}`}>
-          {state.phase === 'round-over' || state.phase === 'game-over' ? (
+          {isScoringPhase ? (
             <RoundSummary
               actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
               onAction={() => setState(state.phase === 'game-over' ? startFreshGame({ aiOpponentCount }) : startNextRound(state))}
@@ -1480,10 +1485,11 @@ function Lobby() {
   const hasFourPlayerRoomDesktopGrid = roomState?.players.length === 4;
   const fourPlayerRoomBoardEntries = [...roomOpponentBoardEntries, ...roomLocalBoardEntries];
   const startGameDisabledReason = room && room.players.length < 2 ? 'Need at least two players to start.' : '';
+  const roomScoringPhase = roomState?.phase === 'round-over' || roomState?.phase === 'game-over';
 
   return (
-    <main className="skyjo-surface px-4 py-8">
-      <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} space-y-5`}>
+    <main className={`skyjo-surface px-4 py-8 ${roomScoringPhase ? 'skyjo-round-summary-surface' : ''}`}>
+      <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} ${roomScoringPhase ? 'skyjo-round-summary-mode' : ''} space-y-5`}>
         <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
           <div className="skyjo-game-heading min-w-0">
             <Link aria-label="Back to home" className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
@@ -1680,7 +1686,7 @@ function Lobby() {
                     state={roomState}
                     unreadCount={unreadChatCount}
                   />
-                  {roomState.phase === 'round-over' || roomState.phase === 'game-over' ? (
+                  {roomScoringPhase ? (
                     <RoundSummary
                       actionDisabledReason={
                         localPlayer?.host
