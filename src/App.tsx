@@ -504,6 +504,7 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
   const commonDisabledReason =
     deckDisabledReason && discardDisabledReason && deckDisabledReason === discardDisabledReason ? deckDisabledReason : '';
   const selectedDiscard = localTurn && state.phase === 'choose-replacement' && state.selectedSource === 'discard';
+  const hasLocalDrawnDecision = Boolean(state.drawnCard && localTurn);
 
   return (
     <section className="skyjo-panel skyjo-table-controls skyjo-table-glow">
@@ -576,17 +577,17 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
           <div className="skyjo-table-count mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.discardPile.length} cards</div>
         </button>
       </div>
-      {commonDisabledReason ? (
+      {!hasLocalDrawnDecision && commonDisabledReason ? (
         <p className="skyjo-disabled-note mt-3">
           <span>Action unavailable:</span> {commonDisabledReason}
         </p>
-      ) : !commonDisabledReason && discardDisabledReason && !deckDisabledReason ? (
+      ) : !hasLocalDrawnDecision && !commonDisabledReason && discardDisabledReason && !deckDisabledReason ? (
         <p className="skyjo-disabled-note mt-3">
           <span>Discard unavailable:</span> {discardDisabledReason}
         </p>
       ) : null}
 
-      {state.drawnCard && localTurn ? (
+      {hasLocalDrawnDecision && state.drawnCard ? (
         <div className="skyjo-drawn-decision mt-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
@@ -674,13 +675,13 @@ function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPla
 
 function MoveLog({ state }: { state: GameState }) {
   return (
-    <section className="skyjo-panel p-4">
+    <section className="skyjo-panel skyjo-move-log-panel">
       <details>
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+        <summary className="skyjo-panel-summary flex cursor-pointer list-none items-center justify-between gap-3">
           <span className="skyjo-serif text-xl font-semibold">Move Log</span>
           <span className="skyjo-kicker">{state.log.length} moves</span>
         </summary>
-        <div className="mt-3 space-y-2 text-sm text-[#f5e6c8]/72">
+        <div className="skyjo-move-log-list mt-3 space-y-2 text-sm text-[#f5e6c8]/72">
           {state.log.map((entry) => (
             <div className="rounded-lg border border-white/[0.04] bg-white/[0.025] px-3 py-2" key={entry}>
               {entry}
@@ -724,10 +725,10 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
   }
 
   return (
-    <section className="skyjo-panel p-4">
+    <section className="skyjo-panel skyjo-room-chat-panel">
       <button
         aria-expanded={isOpen}
-        className="flex w-full items-center justify-between gap-3 text-left"
+        className="skyjo-chat-toggle flex w-full items-center justify-between gap-3 text-left"
         onClick={onToggle}
         type="button"
       >
@@ -748,10 +749,10 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
       </button>
 
       {isOpen ? (
-        <div className="mt-3 grid gap-3">
+        <div className="skyjo-chat-body mt-3 grid gap-3">
           <div
             aria-live="polite"
-            className="max-h-64 space-y-2 overflow-y-auto rounded-xl border border-[#f5e6c8]/10 bg-black/10 p-2"
+            className="skyjo-chat-messages max-h-64 space-y-2 overflow-y-auto rounded-xl border border-[#f5e6c8]/10 bg-black/10 p-2"
             ref={messagesRef}
           >
             {messages.length > 0 ? (
@@ -784,7 +785,7 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
             )}
           </div>
 
-          <form className="flex gap-2" onSubmit={handleSubmit}>
+          <form className="skyjo-chat-form flex gap-2" onSubmit={handleSubmit}>
             <input
               aria-label="Message"
               className="skyjo-input min-w-0 flex-1 px-3 py-2 text-sm"
@@ -822,7 +823,7 @@ function RoundSummary({ state, actionLabel, actionDisabledReason, onAction }: Ro
   const latestScoringNote = state.log[0];
 
   return (
-    <section className="skyjo-panel skyjo-score-panel p-4">
+    <section className="skyjo-panel skyjo-score-panel skyjo-round-summary-panel">
       <div className="skyjo-kicker">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</div>
       <h2 className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]">{headline}</h2>
       <p className="mt-2 text-sm font-bold text-[#f5e6c8]/78">{outcome}</p>
@@ -1014,7 +1015,7 @@ function SinglePlayer() {
           />
         </section>
 
-        <aside className={`space-y-4 ${hasFourPlayerDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'}`}>
+        <aside className={`skyjo-secondary-stack space-y-4 ${hasFourPlayerDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'}`}>
           {state.phase === 'round-over' || state.phase === 'game-over' ? (
             <RoundSummary
               actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
@@ -1332,13 +1333,13 @@ function Lobby() {
                 hasFourPlayerRoomDesktopGrid ? 'lg:col-span-2 lg:row-start-1' : 'lg:col-start-1 lg:row-start-1'
               }`}
             >
-              <div className="skyjo-panel skyjo-room-status-panel">
+              <div className={`skyjo-panel skyjo-room-status-panel ${roomState ? 'skyjo-room-status-panel-active' : ''}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="skyjo-kicker">Room code</div>
                     <div className="skyjo-serif skyjo-room-code text-5xl font-black tracking-normal text-[#f5e6c8]">{room.code}</div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="skyjo-room-actions flex flex-wrap gap-2">
                     {localPlayer?.host && room.status === 'waiting' ? (
                       <button
                         className="skyjo-button skyjo-button-primary px-4 py-2"
@@ -1357,7 +1358,7 @@ function Lobby() {
                     ) : null}
                   </div>
                 </div>
-                <div className="mt-4 flex flex-wrap gap-2">
+                <div className="skyjo-room-roster mt-4 flex flex-wrap gap-2">
                   {room.players.map((player) => (
                     <span className="rounded-full border border-[#f5e6c8]/15 bg-white/[0.025] px-3 py-1 text-sm text-[#f5e6c8]/75" key={player.id}>
                       {player.name} {player.host ? 'host' : ''} {player.connected ? 'online' : 'offline'}
@@ -1431,8 +1432,8 @@ function Lobby() {
                   />
                 </section>
 
-                <aside
-                  className={`space-y-4 ${
+               <aside
+                  className={`skyjo-secondary-stack space-y-4 ${
                     hasFourPlayerRoomDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'
                   }`}
                 >
@@ -1462,8 +1463,8 @@ function Lobby() {
                 </aside>
               </>
             ) : (
-              <aside className="space-y-4 lg:col-start-2 lg:row-start-1">
-                <section className="skyjo-panel p-4 text-sm text-[#f5e6c8]/70">Keep this tab open while friends join.</section>
+              <aside className="skyjo-secondary-stack space-y-4 lg:col-start-2 lg:row-start-1">
+                <section className="skyjo-panel skyjo-waiting-note-panel text-sm text-[#f5e6c8]/70">Keep this tab open while friends join.</section>
                 <RoomChat
                   isOpen={chatOpen}
                   messages={chatMessages}

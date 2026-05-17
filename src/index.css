@@ -80,7 +80,11 @@ body {
   .skyjo-player-grid,
   .skyjo-table-controls,
   .skyjo-final-turn-callout,
-  .skyjo-room-status-panel {
+  .skyjo-room-status-panel,
+  .skyjo-move-log-panel,
+  .skyjo-room-chat-panel,
+  .skyjo-round-summary-panel,
+  .skyjo-waiting-note-panel {
     padding: 1rem;
   }
 
@@ -258,6 +262,10 @@ body {
     background:
       linear-gradient(180deg, rgba(245, 230, 200, 0.07) 0%, rgba(245, 230, 200, 0.02) 100%),
       rgba(255, 255, 255, 0.018);
+  }
+
+  .skyjo-panel-summary::-webkit-details-marker {
+    display: none;
   }
 
   .skyjo-score-list {
@@ -696,9 +704,125 @@ body {
       padding: 0.75rem;
     }
 
+    .skyjo-room-status-panel-active {
+      display: grid;
+      gap: 0.6rem;
+    }
+
+    .skyjo-room-status-panel-active > .flex:first-child {
+      align-items: center;
+      gap: 0.55rem;
+    }
+
     .skyjo-room-code {
       font-size: 2rem;
       line-height: 0.95;
+    }
+
+    .skyjo-room-status-panel-active .skyjo-room-code {
+      font-size: 1.45rem;
+    }
+
+    .skyjo-room-actions {
+      gap: 0.4rem;
+    }
+
+    .skyjo-room-actions .skyjo-button {
+      padding: 0.4rem 0.58rem;
+      font-size: 0.74rem;
+      line-height: 1.1;
+    }
+
+    .skyjo-room-roster {
+      flex-wrap: nowrap;
+      gap: 0.4rem;
+      margin-top: 0;
+      overflow-x: auto;
+      padding-bottom: 0.05rem;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .skyjo-room-roster span {
+      flex: 0 0 auto;
+      padding: 0.22rem 0.5rem;
+      font-size: 0.72rem;
+      white-space: nowrap;
+    }
+
+    .skyjo-secondary-stack {
+      display: grid;
+      gap: 0.7rem;
+    }
+
+    .skyjo-move-log-panel,
+    .skyjo-room-chat-panel,
+    .skyjo-round-summary-panel,
+    .skyjo-waiting-note-panel {
+      padding: 0.75rem;
+    }
+
+    .skyjo-move-log-panel summary span:first-child,
+    .skyjo-room-chat-panel .skyjo-serif {
+      font-size: 1rem;
+      line-height: 1.15;
+    }
+
+    .skyjo-move-log-list {
+      max-height: 12rem;
+      overflow-y: auto;
+      padding-right: 0.15rem;
+    }
+
+    .skyjo-move-log-list > div {
+      padding: 0.45rem 0.55rem;
+      font-size: 0.76rem;
+      line-height: 1.35;
+    }
+
+    .skyjo-chat-toggle .text-sm {
+      font-size: 0.76rem;
+    }
+
+    .skyjo-chat-body {
+      gap: 0.55rem;
+    }
+
+    .skyjo-chat-messages {
+      max-height: 12rem;
+    }
+
+    .skyjo-chat-form {
+      gap: 0.45rem;
+    }
+
+    .skyjo-chat-form .skyjo-input {
+      padding: 0.48rem 0.62rem;
+    }
+
+    .skyjo-chat-form .skyjo-button {
+      padding: 0.48rem 0.72rem;
+    }
+
+    .skyjo-round-summary-panel {
+      position: sticky;
+      bottom: calc(env(safe-area-inset-bottom) + 0.65rem);
+      z-index: 40;
+      max-height: min(70vh, 34rem);
+      overflow-y: auto;
+      box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+    }
+
+    .skyjo-round-summary-panel h2 {
+      font-size: 1.25rem;
+    }
+
+    .skyjo-round-summary-panel .skyjo-score-list {
+      gap: 0.4rem;
+      margin-top: 0.75rem;
+    }
+
+    .skyjo-round-summary-panel .skyjo-score-row {
+      padding: 0.5rem 0.58rem;
     }
 
     .skyjo-score-row {
