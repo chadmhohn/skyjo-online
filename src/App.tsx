@@ -1432,7 +1432,7 @@ function Lobby() {
                   />
                 </section>
 
-               <aside
+                <aside
                   className={`skyjo-secondary-stack space-y-4 ${
                     hasFourPlayerRoomDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'
                   }`}
