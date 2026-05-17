@@ -973,9 +973,9 @@ function SinglePlayer() {
 
   return (
     <main className="skyjo-surface px-4 py-5">
-      <div className="skyjo-shell grid gap-5 lg:grid-cols-[1fr_330px]">
+      <div className="skyjo-shell skyjo-active-mobile-shell grid gap-5 lg:grid-cols-[1fr_330px]">
         <section
-          className={`space-y-4 ${
+          className={`skyjo-mobile-game-stack space-y-4 ${
             hasFourPlayerDesktopGrid ? 'lg:col-span-2 lg:row-start-1' : 'lg:col-start-1 lg:row-start-1'
           }`}
         >
@@ -990,30 +990,59 @@ function SinglePlayer() {
             <div className="flex w-full flex-col gap-3 sm:w-auto sm:items-end">
               <RulesHelpButton className="self-start sm:self-end" />
               <div className="skyjo-single-settings w-full rounded-2xl border border-[#f5e6c8]/15 bg-white/[0.025] sm:w-auto">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="skyjo-kicker">AI opponents</div>
-                    <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
+                <div className="skyjo-ai-settings-desktop">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="skyjo-kicker">AI opponents</div>
+                      <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
+                    </div>
+                    <button className="skyjo-button skyjo-new-game-button text-sm" onClick={startSelectedGame} type="button">
+                      New Game
+                    </button>
                   </div>
-                  <button className="skyjo-button skyjo-new-game-button text-sm" onClick={startSelectedGame} type="button">
+                  <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
+                    {singlePlayerAiCounts.map((count) => (
+                      <button
+                        aria-pressed={count === aiOpponentCount}
+                        className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
+                          count === aiOpponentCount ? 'skyjo-button-primary' : ''
+                        }`}
+                        key={count}
+                        onClick={() => setAiOpponentCount(count)}
+                        type="button"
+                      >
+                        {count}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <details className="skyjo-ai-settings-mobile">
+                  <summary className="skyjo-ai-settings-summary">
+                    <span>
+                      <span className="skyjo-kicker">AI opponents</span>
+                      <span className="block text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</span>
+                    </span>
+                    <span className="skyjo-kicker">Settings</span>
+                  </summary>
+                  <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
+                    {singlePlayerAiCounts.map((count) => (
+                      <button
+                        aria-pressed={count === aiOpponentCount}
+                        className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
+                          count === aiOpponentCount ? 'skyjo-button-primary' : ''
+                        }`}
+                        key={count}
+                        onClick={() => setAiOpponentCount(count)}
+                        type="button"
+                      >
+                        {count}
+                      </button>
+                    ))}
+                  </div>
+                  <button className="skyjo-button skyjo-new-game-button mt-3 w-full text-sm" onClick={startSelectedGame} type="button">
                     New Game
                   </button>
-                </div>
-                <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
-                  {singlePlayerAiCounts.map((count) => (
-                    <button
-                      aria-pressed={count === aiOpponentCount}
-                      className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
-                        count === aiOpponentCount ? 'skyjo-button-primary' : ''
-                      }`}
-                      key={count}
-                      onClick={() => setAiOpponentCount(count)}
-                      type="button"
-                    >
-                      {count}
-                    </button>
-                  ))}
-                </div>
+                </details>
               </div>
             </div>
           </div>
@@ -1337,7 +1366,7 @@ function Lobby() {
 
   return (
     <main className="skyjo-surface px-4 py-8">
-      <div className="skyjo-shell space-y-5">
+      <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} space-y-5`}>
         <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
@@ -1390,9 +1419,9 @@ function Lobby() {
         {error ? <div className="rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-3 text-red-100">{error}</div> : null}
 
         {room ? (
-          <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
+          <div className="skyjo-active-room-grid grid gap-5 lg:grid-cols-[1fr_330px]">
             <section
-              className={`space-y-4 ${
+              className={`skyjo-mobile-game-stack space-y-4 ${
                 hasFourPlayerRoomDesktopGrid ? 'lg:col-span-2 lg:row-start-1' : 'lg:col-start-1 lg:row-start-1'
               }`}
             >
