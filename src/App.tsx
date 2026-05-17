@@ -223,6 +223,10 @@ function hiddenCardCount(player: Player) {
   return player.grid.filter((card) => !card.faceUp && !card.removed).length;
 }
 
+function knownCardCount(player: Player) {
+  return player.grid.filter((card) => card.faceUp || card.removed).length;
+}
+
 function openingRevealCount(state: GameState, player: Player) {
   return Math.min(state.openingRevealCounts[player.id] ?? 0, 2);
 }
@@ -386,6 +390,7 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
   const playerRole = player.kind === 'ai' ? 'AI opponent' : isLocal ? 'You' : 'Player';
   const playerStatus = isCurrent ? (isLocal ? 'Your move now' : 'Current turn') : isLocal ? 'Waiting for your turn' : 'Waiting';
   const openingRemaining = Math.max(0, 2 - openingRevealCount(state, player));
+  const knownCards = knownCardCount(player);
 
   return (
     <section
@@ -398,6 +403,10 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="skyjo-serif text-xl font-semibold text-[#f5e6c8]">{player.name}</h2>
+            <span className="skyjo-flipped-pill" title={`${knownCards} of 12 cards flipped`} aria-label={`${knownCards} of 12 cards flipped`}>
+              <span>{knownCards}/12</span>
+              <span className="skyjo-flipped-pill-label"> flipped</span>
+            </span>
             {isCurrent ? (
               <span className={`skyjo-turn-pill ${isLocal ? 'skyjo-turn-pill-local' : ''}`}>
                 {isLocal ? 'Your turn' : 'Current turn'}
@@ -808,14 +817,16 @@ interface RoomChatProps {
   messages: RoomChatMessage[];
   playerId: string;
   isOpen: boolean;
+  state?: GameState | null;
   unreadCount: number;
   onToggle: () => void;
   onSend: (text: string) => void;
 }
 
-function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }: RoomChatProps) {
+function RoomChat({ messages, playerId, isOpen, state, unreadCount, onToggle, onSend }: RoomChatProps) {
   const [draft, setDraft] = useState('');
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
   const latestMessage = messages[messages.length - 1];
 
   useEffect(() => {
@@ -831,8 +842,22 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
     setDraft('');
   }
 
+  function flippedSummaryForPlayer(messagePlayerId: string) {
+    const player = state?.players.find((item) => item.id === messagePlayerId);
+    return player ? `${knownCardCount(player)}/12` : '';
+  }
+
+  function handleInputFocus() {
+    window.requestAnimationFrame(() => {
+      panelRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }
+
   return (
-    <section className={`skyjo-panel skyjo-room-chat-panel ${isOpen ? 'skyjo-room-chat-panel-open' : 'skyjo-room-chat-panel-closed'}`}>
+    <section
+      className={`skyjo-panel skyjo-room-chat-panel ${isOpen ? 'skyjo-room-chat-panel-open' : 'skyjo-room-chat-panel-closed'}`}
+      ref={panelRef}
+    >
       <button
         aria-expanded={isOpen}
         className="skyjo-chat-toggle flex w-full items-center justify-between gap-3 text-left"
@@ -866,6 +891,7 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
             {messages.length > 0 ? (
               messages.map((message) => {
                 const mine = message.playerId === playerId;
+                const flippedSummary = flippedSummaryForPlayer(message.playerId);
                 return (
                   <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`} key={message.id}>
                     <div
@@ -877,6 +903,11 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
                     >
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                         <span className="font-black text-[#f5e6c8]">{mine ? 'You' : message.playerName}</span>
+                        {flippedSummary ? (
+                          <span className="skyjo-chat-flipped-pill" title={`${flippedSummary} cards flipped`} aria-label={`${flippedSummary} cards flipped`}>
+                            {flippedSummary}
+                          </span>
+                        ) : null}
                         <time className="text-xs font-bold text-[#f5e6c8]/42" dateTime={new Date(message.createdAt).toISOString()}>
                           {formatChatTime(message.createdAt)}
                         </time>
@@ -899,6 +930,7 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
               className="skyjo-input min-w-0 flex-1 px-3 py-2 text-sm"
               maxLength={280}
               onChange={(event) => setDraft(event.target.value)}
+              onFocus={handleInputFocus}
               placeholder="Message players"
               value={draft}
             />
@@ -990,6 +1022,7 @@ function SinglePlayer() {
   const hasFourPlayerDesktopGrid = state.players.length === 4;
   const fourPlayerBoardEntries = [...opponentBoardEntries, ...localBoardEntries];
   const aiOpponentSummary = `${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
+  const aiOpponentCompactSummary = `${aiOpponentCount} AI`;
 
   useEffect(() => {
     if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
@@ -1043,8 +1076,8 @@ function SinglePlayer() {
           }`}
         >
           <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
+            <div className="skyjo-game-heading min-w-0">
+              <Link aria-label="Back to home" className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
                 Back
               </Link>
               <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Single Player</h1>
@@ -1092,31 +1125,36 @@ function SinglePlayer() {
                   <summary className="skyjo-ai-settings-summary">
                     <span>
                       <span className="skyjo-kicker">AI opponents</span>
-                      <span className="block text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</span>
+                      <span className="skyjo-ai-settings-count block text-sm font-bold text-[#f5e6c8]/75">
+                        <span className="skyjo-ai-settings-count-full">{aiOpponentSummary}</span>
+                        <span className="skyjo-ai-settings-count-compact">{aiOpponentCompactSummary}</span>
+                      </span>
                     </span>
                     <span className="skyjo-summary-meta">
                       <span className="skyjo-kicker">Settings</span>
                       <span className="skyjo-summary-caret" aria-hidden="true" />
                     </span>
                   </summary>
-                  <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
-                    {singlePlayerAiCounts.map((count) => (
-                      <button
-                        aria-pressed={count === aiOpponentCount}
-                        className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
-                          count === aiOpponentCount ? 'skyjo-button-primary' : ''
-                        }`}
-                        key={count}
-                        onClick={() => setAiOpponentCount(count)}
-                        type="button"
-                      >
-                        {count}
-                      </button>
-                    ))}
+                  <div className="skyjo-ai-settings-menu mt-3">
+                    <div className="grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
+                      {singlePlayerAiCounts.map((count) => (
+                        <button
+                          aria-pressed={count === aiOpponentCount}
+                          className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
+                            count === aiOpponentCount ? 'skyjo-button-primary' : ''
+                          }`}
+                          key={count}
+                          onClick={() => setAiOpponentCount(count)}
+                          type="button"
+                        >
+                          {count}
+                        </button>
+                      ))}
+                    </div>
+                    <button className="skyjo-button skyjo-new-game-button mt-3 w-full text-sm" onClick={startSelectedGame} type="button">
+                      New Game
+                    </button>
                   </div>
-                  <button className="skyjo-button skyjo-new-game-button mt-3 w-full text-sm" onClick={startSelectedGame} type="button">
-                    New Game
-                  </button>
                 </details>
               </div>
             </div>
@@ -1447,8 +1485,8 @@ function Lobby() {
     <main className="skyjo-surface px-4 py-8">
       <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} space-y-5`}>
         <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
+          <div className="skyjo-game-heading min-w-0">
+            <Link aria-label="Back to home" className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
               Back
             </Link>
             <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Multiplayer Lobby</h1>
@@ -1639,6 +1677,7 @@ function Lobby() {
                     onSend={sendChatMessage}
                     onToggle={() => setChatOpen((current) => !current)}
                     playerId={playerId}
+                    state={roomState}
                     unreadCount={unreadChatCount}
                   />
                   {roomState.phase === 'round-over' || roomState.phase === 'game-over' ? (
