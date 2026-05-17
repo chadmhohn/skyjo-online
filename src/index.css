@@ -538,6 +538,18 @@ body {
       padding: 0.55rem 0.55rem calc(env(safe-area-inset-bottom) + 2.35rem) !important;
     }
 
+    main.skyjo-round-summary-surface::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      background:
+        linear-gradient(180deg, rgba(0, 0, 0, 0.82) 0%, rgba(2, 6, 5, 0.9) 100%),
+        rgba(0, 0, 0, 0.86);
+      backdrop-filter: blur(10px);
+      pointer-events: auto;
+    }
+
     .skyjo-active-mobile-shell {
       height: 100%;
       min-height: 0;
@@ -1596,6 +1608,13 @@ body {
       overflow-y: auto;
       overscroll-behavior: contain;
       touch-action: pan-y;
+      border-color: rgba(245, 230, 200, 0.24);
+      background:
+        linear-gradient(180deg, rgba(13, 25, 20, 0.99) 0%, rgba(5, 11, 9, 0.99) 100%),
+        #050b09;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(245, 230, 200, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.045);
+      backdrop-filter: none;
     }
 
     .skyjo-round-summary-panel h2 {
