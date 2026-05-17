@@ -37,10 +37,9 @@ type TurnStatus = {
 };
 
 const responsiveBoardGridClass = 'grid gap-4 xl:grid-cols-2';
-const opponentBoardGridClass = 'skyjo-opponent-strip grid gap-4 xl:grid-cols-2';
+const opponentBoardGridClass = 'skyjo-opponent-stack grid gap-4 xl:grid-cols-2';
 const fourPlayerDesktopBoardGridClass = 'hidden gap-4 md:grid md:grid-cols-2';
-const fourPlayerMobileOpponentGridClass = 'skyjo-opponent-strip grid gap-3 md:hidden';
-const fourPlayerMobileLocalGridClass = 'grid gap-4 md:hidden';
+const fourPlayerMobileOpponentGridClass = 'skyjo-opponent-stack grid gap-3 md:hidden';
 const rulesHelpSections: RulesHelpSection[] = [
   {
     title: 'Starting a round',
@@ -634,6 +633,54 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
   );
 }
 
+interface MobilePlaySurfaceProps {
+  state: GameState;
+  localEntries: BoardGridEntry[];
+  drawIntent: DrawIntent;
+  localPlayerId?: string;
+  localTurn: boolean;
+  onCardClick: (index: number) => void;
+  onChooseDiscard: () => void;
+  onDraw: () => void;
+  onSetDrawIntent: (intent: DrawIntent) => void;
+}
+
+function MobilePlaySurface({
+  state,
+  localEntries,
+  drawIntent,
+  localPlayerId,
+  localTurn,
+  onCardClick,
+  onChooseDiscard,
+  onDraw,
+  onSetDrawIntent
+}: MobilePlaySurfaceProps) {
+  return (
+    <section className="skyjo-mobile-play-surface" aria-label="Your board and table piles">
+      <PlayerBoardGrid
+        className="skyjo-mobile-local-board"
+        drawIntent={drawIntent}
+        entries={localEntries}
+        onCardClick={onCardClick}
+        state={state}
+      />
+      <div className="skyjo-mobile-table-rail">
+        <FinalTurnCallout localPlayerId={localPlayerId} state={state} />
+        <TableControls
+          drawIntent={drawIntent}
+          localPlayerId={localPlayerId}
+          localTurn={localTurn}
+          onChooseDiscard={onChooseDiscard}
+          onDraw={onDraw}
+          onSetDrawIntent={onSetDrawIntent}
+          state={state}
+        />
+      </div>
+    </section>
+  );
+}
+
 function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPlayerId?: string }) {
   const activeFinalLap =
     Boolean(state.roundCloserId) && (state.phase === 'choose-source' || state.phase === 'choose-replacement');
@@ -725,7 +772,7 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
   }
 
   return (
-    <section className="skyjo-panel skyjo-room-chat-panel">
+    <section className={`skyjo-panel skyjo-room-chat-panel ${isOpen ? 'skyjo-room-chat-panel-open' : 'skyjo-room-chat-panel-closed'}`}>
       <button
         aria-expanded={isOpen}
         className="skyjo-chat-toggle flex w-full items-center justify-between gap-3 text-left"
@@ -932,7 +979,7 @@ function SinglePlayer() {
             hasFourPlayerDesktopGrid ? 'lg:col-span-2 lg:row-start-1' : 'lg:col-start-1 lg:row-start-1'
           }`}
         >
-          <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
                 Back
@@ -981,6 +1028,18 @@ function SinglePlayer() {
             />
           ) : null}
 
+          <MobilePlaySurface
+            drawIntent={drawIntent}
+            localEntries={localBoardEntries}
+            localPlayerId={localPlayers[0]?.id}
+            localTurn={humanTurn}
+            onCardClick={handleCard}
+            onChooseDiscard={() => setState((current) => chooseDiscard(current))}
+            onDraw={() => setState((current) => drawBlind(current))}
+            onSetDrawIntent={setDrawIntent}
+            state={state}
+          />
+
           {opponentBoardEntries.length > 0 ? (
             <PlayerBoardGrid
               className={hasFourPlayerDesktopGrid ? fourPlayerMobileOpponentGridClass : opponentBoardGridClass}
@@ -992,7 +1051,11 @@ function SinglePlayer() {
           ) : null}
         </section>
 
-        <div className={`space-y-4 ${hasFourPlayerDesktopGrid ? 'lg:col-start-2 lg:row-start-2' : 'lg:col-start-2 lg:row-start-1'}`}>
+        <div
+          className={`skyjo-desktop-table-stack space-y-4 ${
+            hasFourPlayerDesktopGrid ? 'lg:col-start-2 lg:row-start-2' : 'lg:col-start-2 lg:row-start-1'
+          }`}
+        >
           <FinalTurnCallout localPlayerId={localPlayers[0]?.id} state={state} />
           <TableControls
             drawIntent={drawIntent}
@@ -1005,9 +1068,9 @@ function SinglePlayer() {
           />
         </div>
 
-        <section className={hasFourPlayerDesktopGrid ? 'md:hidden lg:col-start-1 lg:row-start-2' : 'lg:col-start-1 lg:row-start-2'}>
+        <section className={hasFourPlayerDesktopGrid ? 'skyjo-desktop-local-board md:hidden lg:col-start-1 lg:row-start-2' : 'skyjo-desktop-local-board lg:col-start-1 lg:row-start-2'}>
           <PlayerBoardGrid
-            className={hasFourPlayerDesktopGrid ? fourPlayerMobileLocalGridClass : responsiveBoardGridClass}
+            className={responsiveBoardGridClass}
             drawIntent={drawIntent}
             entries={localBoardEntries}
             onCardClick={handleCard}
@@ -1275,7 +1338,7 @@ function Lobby() {
   return (
     <main className="skyjo-surface px-4 py-8">
       <div className="skyjo-shell space-y-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <Link className="text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
               Back
@@ -1384,6 +1447,18 @@ function Lobby() {
                     />
                   ) : null}
 
+                  <MobilePlaySurface
+                    drawIntent={drawIntent}
+                    localEntries={roomLocalBoardEntries}
+                    localPlayerId={playerId}
+                    localTurn={localTurn}
+                    onCardClick={handleCard}
+                    onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
+                    onDraw={() => updateGame(drawBlind(roomState))}
+                    onSetDrawIntent={setDrawIntent}
+                    state={roomState}
+                  />
+
                   <PlayerBoardGrid
                     className={hasFourPlayerRoomDesktopGrid ? fourPlayerMobileOpponentGridClass : opponentBoardGridClass}
                     drawIntent={drawIntent}
@@ -1402,7 +1477,7 @@ function Lobby() {
             {roomState ? (
               <>
                 <div
-                  className={`space-y-4 ${
+                  className={`skyjo-desktop-table-stack space-y-4 ${
                     hasFourPlayerRoomDesktopGrid ? 'lg:col-start-2 lg:row-start-2' : 'lg:col-start-2 lg:row-start-1'
                   }`}
                 >
@@ -1420,11 +1495,13 @@ function Lobby() {
 
                 <section
                   className={
-                    hasFourPlayerRoomDesktopGrid ? 'md:hidden lg:col-start-1 lg:row-start-2' : 'lg:col-start-1 lg:row-start-2'
+                    hasFourPlayerRoomDesktopGrid
+                      ? 'skyjo-desktop-local-board md:hidden lg:col-start-1 lg:row-start-2'
+                      : 'skyjo-desktop-local-board lg:col-start-1 lg:row-start-2'
                   }
                 >
                   <PlayerBoardGrid
-                    className={hasFourPlayerRoomDesktopGrid ? fourPlayerMobileLocalGridClass : responsiveBoardGridClass}
+                    className={responsiveBoardGridClass}
                     drawIntent={drawIntent}
                     entries={roomLocalBoardEntries}
                     onCardClick={handleCard}
@@ -1433,7 +1510,7 @@ function Lobby() {
                 </section>
 
                 <aside
-                  className={`skyjo-secondary-stack space-y-4 ${
+                  className={`skyjo-secondary-stack ${chatOpen ? 'skyjo-secondary-stack-chat-open' : ''} space-y-4 ${
                     hasFourPlayerRoomDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'
                   }`}
                 >
