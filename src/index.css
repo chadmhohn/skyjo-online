@@ -13,6 +13,7 @@ body {
 @layer components {
   .skyjo-surface {
     min-height: 100vh;
+    overflow-x: hidden;
     color: #f5e6c8;
     background:
       radial-gradient(ellipse 80% 50% at 50% 0%, rgba(245, 230, 200, 0.06) 0%, transparent 60%),
@@ -74,6 +75,26 @@ body {
   .skyjo-table-glow {
     border-radius: 16px;
     background: radial-gradient(ellipse at center, rgba(245, 230, 200, 0.04) 0%, transparent 70%);
+  }
+
+  .skyjo-player-grid,
+  .skyjo-table-controls,
+  .skyjo-final-turn-callout,
+  .skyjo-room-status-panel {
+    padding: 1rem;
+  }
+
+  .skyjo-player-card-rows {
+    gap: 0.5rem;
+  }
+
+  .skyjo-player-card-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .skyjo-single-settings {
+    padding: 0.75rem;
   }
 
   .skyjo-final-turn-callout {
@@ -312,6 +333,10 @@ body {
     box-shadow: 0 4px 20px rgba(245, 230, 200, 0.18);
   }
 
+  .skyjo-new-game-button {
+    padding: 0.5rem 1rem;
+  }
+
   .skyjo-input {
     border-radius: 10px;
     border: 1px solid rgba(245, 230, 200, 0.14);
@@ -340,6 +365,11 @@ body {
     line-height: 1;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
     transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+  }
+
+  .skyjo-table-card,
+  .skyjo-drawn-card {
+    width: 5rem;
   }
 
   .skyjo-card:disabled {
@@ -416,11 +446,259 @@ body {
     box-shadow: 0 4px 14px rgba(252, 165, 165, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
   }
 
+  @media (min-width: 640px) {
+    .skyjo-player-grid {
+      padding: 1.25rem;
+    }
+  }
+
   @media (max-width: 640px) {
+    .skyjo-game-title {
+      font-size: 2.35rem;
+      line-height: 0.9;
+    }
+
+    .skyjo-game-subtitle {
+      display: none;
+    }
+
+    .skyjo-single-settings {
+      padding: 0.6rem;
+    }
+
+    .skyjo-single-settings > .flex {
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+
+    .skyjo-single-settings .skyjo-kicker {
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+    }
+
+    .skyjo-single-settings .grid-cols-7 {
+      gap: 0.25rem;
+      margin-top: 0.45rem;
+      overflow-x: auto;
+      padding-bottom: 0.05rem;
+    }
+
+    .skyjo-single-settings .skyjo-button {
+      min-height: 1.85rem;
+      padding-right: 0.55rem;
+      padding-left: 0.55rem;
+      white-space: nowrap;
+    }
+
+    .skyjo-new-game-button {
+      padding: 0.42rem 0.58rem;
+      font-size: 0.76rem;
+    }
+
+    .skyjo-opponent-strip {
+      display: flex !important;
+      gap: 0.6rem;
+      overflow-x: auto;
+      padding-bottom: 0.15rem;
+      scroll-padding-left: 0.15rem;
+      scroll-snap-type: x proximity;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .skyjo-opponent-strip > .skyjo-player-grid {
+      flex: 0 0 min(58vw, 212px);
+      scroll-snap-align: start;
+    }
+
+    .skyjo-player-grid-opponent {
+      border-radius: 14px;
+      padding: 0.7rem;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-player-grid-header {
+      margin-bottom: 0.5rem;
+      gap: 0.45rem;
+    }
+
+    .skyjo-player-grid-opponent h2 {
+      font-size: 1rem;
+      line-height: 1.1;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-player-grid-subtitle {
+      display: none;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-player-grid-scores {
+      display: grid;
+      grid-template-columns: auto auto;
+      gap: 0.1rem 0.35rem;
+      font-size: 0.72rem;
+      line-height: 1.05;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-player-grid-scores .skyjo-kicker {
+      font-size: 0.48rem;
+      letter-spacing: 0.1em;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-player-grid-scores .ml-1 {
+      margin-left: 0;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-player-card-rows,
+    .skyjo-player-grid-opponent .skyjo-player-card-row {
+      gap: 0.24rem;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-player-card-row {
+      grid-template-columns: repeat(4, max-content);
+      justify-content: space-between;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-card {
+      width: clamp(32px, 10.5vw, 38px);
+      min-height: 38px;
+      border-radius: 8px;
+      font-size: 0.92rem;
+    }
+
+    .skyjo-player-grid-opponent .skyjo-card-hidden {
+      font-size: 0.46rem;
+      letter-spacing: 0.12em;
+    }
+
+    .skyjo-table-controls {
+      position: sticky;
+      top: 0.45rem;
+      z-index: 45;
+      border-radius: 14px;
+      padding: 0.75rem;
+      background:
+        linear-gradient(180deg, rgba(10, 20, 16, 0.97) 0%, rgba(6, 12, 10, 0.93) 100%),
+        rgba(6, 12, 10, 0.96);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+      backdrop-filter: blur(14px);
+    }
+
+    .skyjo-table-controls * {
+      min-width: 0;
+    }
+
+    .skyjo-table-controls p {
+      overflow-wrap: break-word;
+    }
+
+    .skyjo-table-header {
+      margin-bottom: 0.55rem;
+    }
+
+    .skyjo-table-header .skyjo-kicker {
+      display: none;
+    }
+
     .skyjo-turn-status,
     .skyjo-opening-tracker,
     .skyjo-drawn-decision {
+      padding: 0.65rem;
+    }
+
+    .skyjo-table-controls .skyjo-turn-status h3 {
+      margin-top: 0.15rem;
+      font-size: 1.05rem;
+      line-height: 1.1;
+    }
+
+    .skyjo-table-controls .skyjo-turn-status p {
+      display: none;
+    }
+
+    .skyjo-opening-tracker p {
+      display: none;
+    }
+
+    .skyjo-opening-tracker .rounded-full {
+      display: none;
+    }
+
+    .skyjo-opening-tracker .mt-3 {
+      grid-template-columns: repeat(auto-fit, minmax(5.8rem, 1fr));
+      gap: 0.35rem;
+      margin-top: 0.55rem;
+    }
+
+    .skyjo-opening-row {
+      gap: 0.45rem;
+      padding: 0.38rem 0.48rem;
+      font-size: 0.72rem;
+    }
+
+    .skyjo-table-piles {
+      gap: 0.55rem;
+      margin-top: 0.55rem;
+    }
+
+    .skyjo-pile-button {
+      min-height: 7.1rem;
+      padding: 0.55rem;
+    }
+
+    .skyjo-table-card {
+      width: 3.35rem;
+      margin-top: 0.35rem;
+    }
+
+    .skyjo-table-count {
+      margin-top: 0.35rem;
+      font-size: 0.72rem;
+    }
+
+    .skyjo-drawn-card {
+      width: 3.5rem;
+    }
+
+    .skyjo-drawn-decision h3 {
+      font-size: 1rem;
+      line-height: 1.15;
+    }
+
+    .skyjo-drawn-decision p,
+    .skyjo-drawn-decision small {
+      font-size: 0.75rem;
+      line-height: 1.35;
+    }
+
+    .skyjo-choice-button {
+      padding: 0.58rem;
+    }
+
+    .skyjo-final-turn-callout {
+      position: fixed;
+      top: calc(env(safe-area-inset-top) + 0.65rem);
+      right: 0.65rem;
+      left: 0.65rem;
+      z-index: 70;
+      border-radius: 14px;
+      padding: 0.72rem;
+    }
+
+    .skyjo-final-turn-callout h2 {
+      margin-top: 0.1rem;
+      font-size: 1.05rem;
+    }
+
+    .skyjo-final-turn-callout p {
+      margin-top: 0.25rem;
+      line-height: 1.3;
+    }
+
+    .skyjo-room-status-panel {
       padding: 0.75rem;
+    }
+
+    .skyjo-room-code {
+      font-size: 2rem;
+      line-height: 0.95;
     }
 
     .skyjo-score-row {
