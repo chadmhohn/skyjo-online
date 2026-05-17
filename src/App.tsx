@@ -73,7 +73,8 @@ const rulesHelpSections: RulesHelpSection[] = [
 
 function opponentBoardClass(entryCount: number, mobileOnly = false) {
   const baseClass = mobileOnly ? fourPlayerMobileOpponentGridClass : opponentBoardGridClass;
-  return entryCount === 2 ? `${baseClass} skyjo-opponent-stack-two` : baseClass;
+  if (entryCount < 2) return baseClass;
+  return `${baseClass} skyjo-opponent-stack-multi ${entryCount % 2 === 1 ? 'skyjo-opponent-stack-odd' : ''}`.trim();
 }
 
 function Home() {
