@@ -354,8 +354,41 @@ body {
     box-shadow: 0 4px 20px rgba(245, 230, 200, 0.18);
   }
 
+  .skyjo-button-disclosure {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+  }
+
   .skyjo-new-game-button {
     padding: 0.5rem 1rem;
+  }
+
+  .skyjo-summary-meta {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.42rem;
+  }
+
+  .skyjo-disclosure-caret,
+  .skyjo-summary-caret {
+    display: inline-block;
+    width: 0.46rem;
+    height: 0.46rem;
+    flex: 0 0 auto;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    color: rgba(245, 230, 200, 0.68);
+    transform: rotate(45deg);
+    transition: transform 0.18s ease, color 0.18s ease;
+  }
+
+  .skyjo-disclosure-caret-open,
+  details[open] > summary .skyjo-summary-caret {
+    color: #f5e6c8;
+    transform: rotate(-135deg);
   }
 
   .skyjo-input {

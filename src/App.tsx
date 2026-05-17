@@ -131,11 +131,12 @@ function RulesHelpButton({ className = '' }: { className?: string }) {
       <button
         aria-expanded={isOpen}
         aria-haspopup="dialog"
-        className={`skyjo-button px-4 py-2 text-sm ${className}`}
+        className={`skyjo-button skyjo-button-disclosure px-4 py-2 text-sm ${className}`}
         onClick={() => setIsOpen(true)}
         type="button"
       >
-        Rules
+        <span>Rules</span>
+        <span className={`skyjo-disclosure-caret ${isOpen ? 'skyjo-disclosure-caret-open' : ''}`} aria-hidden="true" />
       </button>
 
       {isOpen ? (
@@ -782,7 +783,10 @@ function MoveLog({ state, label = 'Move Log' }: { state: GameState; label?: stri
       <details>
         <summary className="skyjo-panel-summary flex cursor-pointer list-none items-center justify-between gap-3">
           <span className="skyjo-serif text-xl font-semibold">{label}</span>
-          <span className="skyjo-kicker">{state.log.length} moves</span>
+          <span className="skyjo-summary-meta">
+            <span className="skyjo-kicker">{state.log.length} moves</span>
+            <span className="skyjo-summary-caret" aria-hidden="true" />
+          </span>
         </summary>
         <div className="skyjo-move-log-list mt-3 space-y-2 text-sm text-[#f5e6c8]/72">
           {state.log.map((entry) => (
@@ -848,6 +852,7 @@ function RoomChat({ messages, playerId, isOpen, unreadCount, onToggle, onSend }:
             </span>
           ) : null}
           <span className="skyjo-kicker">{isOpen ? 'Hide' : 'Open'}</span>
+          <span className={`skyjo-disclosure-caret ${isOpen ? 'skyjo-disclosure-caret-open' : ''}`} aria-hidden="true" />
         </span>
       </button>
 
@@ -975,6 +980,7 @@ function SinglePlayer() {
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
   const localPlayers = state.players.filter((player) => player.kind === 'human');
@@ -1025,6 +1031,7 @@ function SinglePlayer() {
 
   function startSelectedGame() {
     setState(startFreshGame({ aiOpponentCount }));
+    setAiSettingsOpen(false);
   }
 
   return (
@@ -1077,13 +1084,20 @@ function SinglePlayer() {
                     ))}
                   </div>
                 </div>
-                <details className="skyjo-ai-settings-mobile">
+                <details
+                  className="skyjo-ai-settings-mobile"
+                  onToggle={(event) => setAiSettingsOpen(event.currentTarget.open)}
+                  open={aiSettingsOpen}
+                >
                   <summary className="skyjo-ai-settings-summary">
                     <span>
                       <span className="skyjo-kicker">AI opponents</span>
                       <span className="block text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</span>
                     </span>
-                    <span className="skyjo-kicker">Settings</span>
+                    <span className="skyjo-summary-meta">
+                      <span className="skyjo-kicker">Settings</span>
+                      <span className="skyjo-summary-caret" aria-hidden="true" />
+                    </span>
                   </summary>
                   <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
                     {singlePlayerAiCounts.map((count) => (
