@@ -40,6 +40,7 @@ const responsiveBoardGridClass = 'grid gap-4 xl:grid-cols-2';
 const opponentBoardGridClass = 'skyjo-opponent-stack grid gap-4 xl:grid-cols-2';
 const fourPlayerDesktopBoardGridClass = 'hidden gap-4 md:grid md:grid-cols-2';
 const fourPlayerMobileOpponentGridClass = 'skyjo-opponent-stack grid gap-3 md:hidden';
+const currentPlayerScrollPauseMs = 1800;
 const rulesHelpSections: RulesHelpSection[] = [
   {
     title: 'Starting a round',
@@ -69,6 +70,11 @@ const rulesHelpSections: RulesHelpSection[] = [
     ]
   }
 ];
+
+function opponentBoardClass(entryCount: number, mobileOnly = false) {
+  const baseClass = mobileOnly ? fourPlayerMobileOpponentGridClass : opponentBoardGridClass;
+  return entryCount === 2 ? `${baseClass} skyjo-opponent-stack-two` : baseClass;
+}
 
 function Home() {
   return (
@@ -384,6 +390,7 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
       className={`skyjo-panel skyjo-player-grid ${
         isLocal ? 'skyjo-player-grid-local' : 'skyjo-player-grid-opponent'
       } ${isCurrent ? 'skyjo-panel-current' : ''}`}
+      data-player-id={player.id}
     >
       <div className="skyjo-player-grid-header mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
@@ -463,8 +470,57 @@ interface PlayerBoardGridProps {
 }
 
 function PlayerBoardGrid({ entries, state, drawIntent, className = responsiveBoardGridClass, onCardClick }: PlayerBoardGridProps) {
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const userScrollPausedUntilRef = useRef(0);
+  const isOpponentStack = className.includes('skyjo-opponent-stack');
+  const currentPlayer = state.players[state.currentPlayerIndex];
+  const currentOpponentId =
+    isOpponentStack && currentPlayer && entries.some(({ player, isLocal }) => !isLocal && player.id === currentPlayer.id)
+      ? currentPlayer.id
+      : '';
+
+  useEffect(() => {
+    if (!isOpponentStack) return undefined;
+
+    const element = boardRef.current;
+    if (!element) return undefined;
+
+    const pauseCurrentPlayerScroll = () => {
+      userScrollPausedUntilRef.current = Date.now() + currentPlayerScrollPauseMs;
+    };
+
+    element.addEventListener('wheel', pauseCurrentPlayerScroll, { passive: true });
+    element.addEventListener('touchstart', pauseCurrentPlayerScroll, { passive: true });
+    element.addEventListener('pointerdown', pauseCurrentPlayerScroll, { passive: true });
+
+    return () => {
+      element.removeEventListener('wheel', pauseCurrentPlayerScroll);
+      element.removeEventListener('touchstart', pauseCurrentPlayerScroll);
+      element.removeEventListener('pointerdown', pauseCurrentPlayerScroll);
+    };
+  }, [isOpponentStack]);
+
+  useEffect(() => {
+    if (!isOpponentStack || !currentOpponentId) return undefined;
+
+    const element = boardRef.current;
+    if (!element || Date.now() < userScrollPausedUntilRef.current) return undefined;
+
+    const target = Array.from(element.querySelectorAll<HTMLElement>('[data-player-id]')).find(
+      (item) => item.dataset.playerId === currentOpponentId
+    );
+    if (!target) return undefined;
+
+    const frame = window.requestAnimationFrame(() => {
+      if (Date.now() < userScrollPausedUntilRef.current) return;
+      target.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [currentOpponentId, isOpponentStack, state.log.length, state.phase]);
+
   return (
-    <div className={className}>
+    <div className={className} ref={boardRef}>
       {entries.map(({ player, isLocal }) => {
         const index = state.players.findIndex((item) => item.id === player.id);
         return (
@@ -666,7 +722,6 @@ function MobilePlaySurface({
         state={state}
       />
       <div className="skyjo-mobile-table-rail">
-        <FinalTurnCallout localPlayerId={localPlayerId} state={state} />
         <TableControls
           drawIntent={drawIntent}
           localPlayerId={localPlayerId}
@@ -720,12 +775,12 @@ function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPla
   );
 }
 
-function MoveLog({ state }: { state: GameState }) {
+function MoveLog({ state, label = 'Move Log' }: { state: GameState; label?: string }) {
   return (
     <section className="skyjo-panel skyjo-move-log-panel">
       <details>
         <summary className="skyjo-panel-summary flex cursor-pointer list-none items-center justify-between gap-3">
-          <span className="skyjo-serif text-xl font-semibold">Move Log</span>
+          <span className="skyjo-serif text-xl font-semibold">{label}</span>
           <span className="skyjo-kicker">{state.log.length} moves</span>
         </summary>
         <div className="skyjo-move-log-list mt-3 space-y-2 text-sm text-[#f5e6c8]/72">
@@ -987,8 +1042,13 @@ function SinglePlayer() {
               <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Single Player</h1>
               <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
             </div>
-            <div className="flex w-full flex-col gap-3 sm:w-auto sm:items-end">
-              <RulesHelpButton className="self-start sm:self-end" />
+            <div className="skyjo-header-controls flex w-full flex-col gap-3 sm:w-auto sm:items-end">
+              <div className="skyjo-header-actions flex items-start justify-end gap-2">
+                <RulesHelpButton className="self-start sm:self-end" />
+                <div className="skyjo-mobile-header-log">
+                  <MoveLog label="Log" state={state} />
+                </div>
+              </div>
               <div className="skyjo-single-settings w-full rounded-2xl border border-[#f5e6c8]/15 bg-white/[0.025] sm:w-auto">
                 <div className="skyjo-ai-settings-desktop">
                   <div className="flex items-center justify-between gap-3">
@@ -1047,6 +1107,10 @@ function SinglePlayer() {
             </div>
           </div>
 
+          <div className="skyjo-mobile-final-lap-slot">
+            <FinalTurnCallout localPlayerId={localPlayers[0]?.id} state={state} />
+          </div>
+
           {hasFourPlayerDesktopGrid ? (
             <PlayerBoardGrid
               className={fourPlayerDesktopBoardGridClass}
@@ -1071,7 +1135,7 @@ function SinglePlayer() {
 
           {opponentBoardEntries.length > 0 ? (
             <PlayerBoardGrid
-              className={hasFourPlayerDesktopGrid ? fourPlayerMobileOpponentGridClass : opponentBoardGridClass}
+              className={opponentBoardClass(opponentBoardEntries.length, hasFourPlayerDesktopGrid)}
               drawIntent={drawIntent}
               entries={opponentBoardEntries}
               onCardClick={handleCard}
@@ -1375,7 +1439,14 @@ function Lobby() {
             <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Multiplayer Lobby</h1>
             <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Create a private room and share the code with friends.</p>
           </div>
-          <RulesHelpButton />
+          <div className="skyjo-header-actions flex items-start justify-end gap-2">
+            <RulesHelpButton />
+            {roomState ? (
+              <div className="skyjo-mobile-header-log">
+                <MoveLog label="Log" state={roomState} />
+              </div>
+            ) : null}
+          </div>
         </div>
 
         {!room ? (
@@ -1466,6 +1537,10 @@ function Lobby() {
 
               {roomState ? (
                 <>
+                  <div className="skyjo-mobile-final-lap-slot">
+                    <FinalTurnCallout localPlayerId={playerId} state={roomState} />
+                  </div>
+
                   {hasFourPlayerRoomDesktopGrid ? (
                     <PlayerBoardGrid
                       className={fourPlayerDesktopBoardGridClass}
@@ -1489,7 +1564,7 @@ function Lobby() {
                   />
 
                   <PlayerBoardGrid
-                    className={hasFourPlayerRoomDesktopGrid ? fourPlayerMobileOpponentGridClass : opponentBoardGridClass}
+                    className={opponentBoardClass(roomOpponentBoardEntries.length, hasFourPlayerRoomDesktopGrid)}
                     drawIntent={drawIntent}
                     entries={roomOpponentBoardEntries}
                     onCardClick={handleCard}
