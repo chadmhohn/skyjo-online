@@ -5,6 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
+import { chooseDiscard, drawBlind, replaceCard, revealOpeningCard } from '../server-dist/game.js';
 
 async function getOpenPort() {
   const server = net.createServer();
@@ -73,6 +74,41 @@ function waitForMessage(ws, predicate, label) {
   });
 }
 
+function firstHiddenCardIndex(player) {
+  return player.grid.findIndex((card) => !card.faceUp && !card.removed);
+}
+
+function firstReplacementIndex(player) {
+  const hiddenIndex = firstHiddenCardIndex(player);
+  if (hiddenIndex >= 0) return hiddenIndex;
+  return player.grid.findIndex((card) => !card.removed);
+}
+
+function nextFastMove(state) {
+  const activePlayer = state.players[state.currentPlayerIndex];
+  if (state.phase === 'opening-reveal') return revealOpeningCard(state, firstHiddenCardIndex(activePlayer));
+  if (state.phase === 'choose-source') return state.discardPile.length > 0 ? chooseDiscard(state) : drawBlind(state);
+  if (state.phase === 'choose-replacement') return replaceCard(state, firstReplacementIndex(activePlayer));
+  return state;
+}
+
+async function sendMoveAndWait(socketsByPlayerId, state) {
+  const activePlayer = state.players[state.currentPlayerIndex];
+  const socket = socketsByPlayerId.get(activePlayer.id);
+  assert.ok(socket, `expected socket for ${activePlayer.name}`);
+  const nextState = nextFastMove(state);
+  socket.send(JSON.stringify({ type: 'update-state', state: nextState }));
+  const message = await waitForMessage(
+    socket,
+    (payload) =>
+      payload.type === 'room' &&
+      payload.room.state?.phase === nextState.phase &&
+      payload.room.state?.log?.[0] === nextState.log[0],
+    'game move broadcast'
+  );
+  return message.room.state;
+}
+
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-chat-'));
 const roomsFile = path.join(tempDir, 'rooms.json');
 const port = await getOpenPort();
@@ -113,7 +149,7 @@ try {
 
   guestSocket = await openSocket(baseUrl, cookie);
   guestSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Grace' }));
-  await waitForMessage(guestSocket, (message) => message.type === 'joined', 'guest join');
+  const guestJoined = await waitForMessage(guestSocket, (message) => message.type === 'joined', 'guest join');
 
   hostSocket.send(JSON.stringify({ type: 'send-chat-message', text: '  Good luck   everyone  ' }));
   const hostRoom = await waitForMessage(
@@ -138,7 +174,39 @@ try {
   assert.equal(reconnectJoined.playerId, hostJoined.playerId);
   assert.equal(reconnectJoined.room.chatMessages[0].text, 'Good luck everyone');
 
-  console.log('chat smoke passed: room chat broadcasts live and reconnect returns chat history');
+  hostSocket.send(JSON.stringify({ type: 'start-game' }));
+  let roomState = (await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.state, 'started game')).room.state;
+  const socketsByPlayerId = new Map([
+    [hostJoined.playerId, hostSocket],
+    [guestJoined.playerId, guestSocket]
+  ]);
+  for (let turn = 0; turn < 80 && roomState.phase !== 'round-over' && roomState.phase !== 'game-over'; turn += 1) {
+    roomState = await sendMoveAndWait(socketsByPlayerId, roomState);
+  }
+  assert.ok(['round-over', 'game-over'].includes(roomState.phase), 'fast scripted game should reach scoring');
+  const expectedNewRound = roomState.phase === 'round-over' ? roomState.round + 1 : 1;
+
+  hostSocket.send(JSON.stringify({ type: 'start-game' }));
+  const unreadyError = await waitForMessage(hostSocket, (message) => message.type === 'error', 'unready next round rejection');
+  assert.match(unreadyError.message, /everyone must confirm/i);
+
+  hostSocket.send(JSON.stringify({ type: 'set-next-round-ready', ready: true }));
+  await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.readyForNextRoundPlayerIds?.length === 1, 'host ready');
+  hostSocket.send(JSON.stringify({ type: 'start-game' }));
+  const partiallyReadyError = await waitForMessage(hostSocket, (message) => message.type === 'error', 'partially ready next round rejection');
+  assert.match(partiallyReadyError.message, /everyone must confirm/i);
+
+  guestSocket.send(JSON.stringify({ type: 'set-next-round-ready', ready: true }));
+  await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.readyForNextRoundPlayerIds?.length === 2, 'all ready');
+  hostSocket.send(JSON.stringify({ type: 'start-game' }));
+  const nextRound = await waitForMessage(
+    hostSocket,
+    (message) => message.type === 'room' && message.room.state?.round === expectedNewRound,
+    'next round after ready'
+  );
+  assert.equal(nextRound.room.readyForNextRoundPlayerIds.length, 0);
+
+  console.log('chat smoke passed: room chat, reconnect history, and ready-gated next round');
 } finally {
   reconnectSocket?.close();
   guestSocket?.close();

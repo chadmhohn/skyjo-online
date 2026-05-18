@@ -121,10 +121,35 @@ function publicRoom(room) {
     hostId: room.hostId,
     players: room.players,
     chatMessages: room.chatMessages || [],
+    readyForNextRoundPlayerIds: Array.isArray(room.readyForNextRoundPlayerIds) ? room.readyForNextRoundPlayerIds : [],
     state: room.state,
     status: room.status,
     updatedAt: room.updatedAt
   };
+}
+
+function gamePlayerIds(room) {
+  const players = Array.isArray(room.state?.players) && room.state.players.length > 0 ? room.state.players : room.players;
+  return players.map((player) => player.id);
+}
+
+function normalizedReadyIds(room) {
+  const validIds = new Set(gamePlayerIds(room));
+  const current = Array.isArray(room.readyForNextRoundPlayerIds) ? room.readyForNextRoundPlayerIds : [];
+  return current.filter((id, index, ids) => validIds.has(id) && ids.indexOf(id) === index);
+}
+
+function allPlayersReadyForNextRound(room) {
+  const playerIds = gamePlayerIds(room);
+  const readyIds = new Set(normalizedReadyIds(room));
+  return playerIds.length > 0 && playerIds.every((id) => readyIds.has(id));
+}
+
+function setPlayerReadyForNextRound(room, playerId, ready) {
+  const current = new Set(normalizedReadyIds(room));
+  if (ready) current.add(playerId);
+  else current.delete(playerId);
+  room.readyForNextRoundPlayerIds = [...current];
 }
 
 function sendJson(ws, payload) {
@@ -398,6 +423,7 @@ wss.on('connection', (ws) => {
         hostId: playerId,
         players: [{ id: playerId, name, connected: true, host: true }],
         chatMessages: [],
+        readyForNextRoundPlayerIds: [],
         state: null,
         status: 'waiting',
         updatedAt: Date.now(),
@@ -435,6 +461,7 @@ wss.on('connection', (ws) => {
       }
       player.name = name;
       player.connected = true;
+      room.readyForNextRoundPlayerIds = normalizedReadyIds(room);
       room.clients.add(ws);
       room.updatedAt = Date.now();
       ws.roomCode = code;
@@ -465,6 +492,18 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (message.type === 'set-next-round-ready') {
+      if (room.state?.phase !== 'round-over' && room.state?.phase !== 'game-over') {
+        sendJson(ws, { type: 'error', message: 'The round is not ready for confirmation.' });
+        return;
+      }
+      setPlayerReadyForNextRound(room, player.id, message.ready !== false);
+      room.updatedAt = Date.now();
+      persistRoomsSoon();
+      broadcastRoom(room);
+      return;
+    }
+
     if (message.type === 'start-game') {
       if (!player.host) {
         sendJson(ws, { type: 'error', message: 'Only the host can start the game.' });
@@ -476,6 +515,7 @@ wss.on('connection', (ws) => {
           return;
         }
         room.state = createInitialRoomState(room.players);
+        room.readyForNextRoundPlayerIds = [];
         room.status = 'playing';
         room.updatedAt = Date.now();
         persistRoomsSoon();
@@ -483,7 +523,12 @@ wss.on('connection', (ws) => {
         return;
       }
       if (room.state?.phase === 'round-over') {
+        if (!allPlayersReadyForNextRound(room)) {
+          sendJson(ws, { type: 'error', message: 'Everyone must confirm they are ready before the next round starts.' });
+          return;
+        }
         room.state = createNextRoundRoomState(room.state);
+        room.readyForNextRoundPlayerIds = [];
         room.status = 'playing';
         room.updatedAt = Date.now();
         persistRoomsSoon();
@@ -491,7 +536,12 @@ wss.on('connection', (ws) => {
         return;
       }
       if (room.state?.phase === 'game-over' || room.status === 'finished') {
+        if (room.state && !allPlayersReadyForNextRound(room)) {
+          sendJson(ws, { type: 'error', message: 'Everyone must confirm they are ready before the game restarts.' });
+          return;
+        }
         room.state = createInitialRoomState(room.players);
+        room.readyForNextRoundPlayerIds = [];
         room.status = 'playing';
         room.updatedAt = Date.now();
         persistRoomsSoon();
@@ -522,6 +572,8 @@ wss.on('connection', (ws) => {
         return;
       }
       room.state = message.state;
+      room.readyForNextRoundPlayerIds =
+        message.state.phase === 'round-over' || message.state.phase === 'game-over' ? [] : normalizedReadyIds(room);
       room.status = message.state.phase === 'game-over' ? 'finished' : 'playing';
       room.updatedAt = Date.now();
       persistRoomsSoon();
@@ -535,6 +587,7 @@ wss.on('connection', (ws) => {
         return;
       }
       room.state = null;
+      room.readyForNextRoundPlayerIds = [];
       room.status = 'waiting';
       room.updatedAt = Date.now();
       persistRoomsSoon();

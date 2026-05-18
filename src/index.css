@@ -301,6 +301,39 @@ body {
       rgba(255, 255, 255, 0.018);
   }
 
+  .skyjo-ready-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border-radius: 12px;
+    border: 1px solid rgba(245, 230, 200, 0.12);
+    background: rgba(245, 230, 200, 0.035);
+    padding: 0.75rem;
+  }
+
+  .skyjo-round-summary-chip {
+    position: fixed;
+    top: calc(env(safe-area-inset-top) + 0.65rem);
+    right: 0.65rem;
+    z-index: 70;
+    display: inline-flex;
+    max-width: min(14rem, calc(100vw - 1.3rem));
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border-radius: 12px;
+    border: 1px solid rgba(245, 230, 200, 0.2);
+    background:
+      linear-gradient(180deg, rgba(12, 22, 18, 0.96) 0%, rgba(6, 12, 10, 0.94) 100%),
+      rgba(6, 12, 10, 0.94);
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    color: #f5e6c8;
+    padding: 0.52rem 0.62rem;
+    text-align: left;
+    backdrop-filter: blur(14px);
+  }
+
   .skyjo-panel-summary::-webkit-details-marker {
     display: none;
   }
@@ -1441,7 +1474,7 @@ body {
 
     .skyjo-room-chat-panel {
       position: fixed;
-      bottom: calc(env(safe-area-inset-bottom) + 0.65rem);
+      bottom: calc(env(safe-area-inset-bottom) + 0.45rem);
       left: 0.65rem;
       z-index: 66;
       max-width: calc(100vw - 1.3rem);
@@ -1453,10 +1486,19 @@ body {
     }
 
     .skyjo-room-chat-panel-closed {
-      width: min(12rem, calc(52vw - 0.85rem));
+      width: min(8.8rem, calc(42vw - 0.65rem));
+      padding: 0.45rem 0.52rem;
     }
 
     .skyjo-room-chat-panel-closed .skyjo-chat-toggle .text-sm {
+      display: none;
+    }
+
+    .skyjo-room-chat-panel-closed .skyjo-chat-toggle {
+      gap: 0.45rem;
+    }
+
+    .skyjo-room-chat-panel-closed .skyjo-kicker {
       display: none;
     }
 
@@ -1619,6 +1661,21 @@ body {
 
     .skyjo-round-summary-panel h2 {
       font-size: 1.25rem;
+    }
+
+    .skyjo-round-summary-minimize {
+      padding: 0.42rem 0.55rem;
+    }
+
+    .skyjo-ready-panel {
+      align-items: stretch;
+      gap: 0.55rem;
+      padding: 0.58rem;
+    }
+
+    .skyjo-ready-panel .skyjo-button {
+      flex: 0 0 auto;
+      padding: 0.48rem 0.62rem;
     }
 
     .skyjo-round-summary-panel .skyjo-score-list {

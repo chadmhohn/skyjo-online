@@ -44,6 +44,7 @@ export interface MultiplayerRoom {
   hostId: string;
   players: RoomPlayer[];
   chatMessages: RoomChatMessage[];
+  readyForNextRoundPlayerIds: string[];
   state: GameState | null;
   status: 'waiting' | 'playing' | 'finished';
   updatedAt: number;
