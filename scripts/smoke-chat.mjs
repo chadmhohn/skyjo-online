@@ -35,13 +35,14 @@ async function waitForHealth(url) {
   throw lastError || new Error('server did not become healthy');
 }
 
-async function login(url, password) {
+async function login(url, password, next = '/') {
   const response = await fetch(`${url}/login`, {
     method: 'POST',
-    body: new URLSearchParams({ password }),
+    body: new URLSearchParams({ password, next }),
     redirect: 'manual'
   });
   assert.equal(response.status, 303);
+  assert.equal(response.headers.get('location'), next);
   const cookie = response.headers.get('set-cookie');
   assert.ok(cookie, 'expected a login cookie');
   return cookie.split(';')[0];
@@ -135,11 +136,31 @@ server.stderr.on('data', (data) => serverLogs.push(String(data)));
 
 let hostSocket;
 let guestSocket;
+let parkingHostSocket;
+let parkingGuestSocket;
 let reconnectSocket;
 
 try {
   await waitForHealth(baseUrl);
-  const cookie = await login(baseUrl, password);
+  const protectedShareLink = await fetch(`${baseUrl}/lobby?room=ABCDE`, { redirect: 'manual' });
+  assert.equal(protectedShareLink.status, 302);
+  assert.equal(protectedShareLink.headers.get('location'), '/login?next=%2Flobby%3Froom%3DABCDE');
+  const cookie = await login(baseUrl, password, '/lobby?room=ABCDE');
+
+  parkingHostSocket = await openSocket(baseUrl, cookie);
+  parkingHostSocket.send(JSON.stringify({ type: 'create-room', name: 'Offline Host' }));
+  const parkingHostJoined = await waitForMessage(parkingHostSocket, (message) => message.type === 'joined', 'parking host join');
+  const parkingRoomCode = parkingHostJoined.room.code;
+  parkingHostSocket.close();
+  await new Promise((resolve) => parkingHostSocket.once('close', resolve));
+  parkingHostSocket = null;
+
+  parkingGuestSocket = await openSocket(baseUrl, cookie);
+  parkingGuestSocket.send(JSON.stringify({ type: 'join-room', code: parkingRoomCode, name: 'Early Guest' }));
+  const parkingGuestJoined = await waitForMessage(parkingGuestSocket, (message) => message.type === 'joined', 'guest joins hostless room');
+  assert.equal(parkingGuestJoined.room.code, parkingRoomCode);
+  assert.equal(parkingGuestJoined.room.players.find((player) => player.host)?.connected, false);
+  assert.equal(parkingGuestJoined.room.players.find((player) => player.name === 'Early Guest')?.connected, true);
 
   hostSocket = await openSocket(baseUrl, cookie);
   hostSocket.send(JSON.stringify({ type: 'create-room', name: 'Ada' }));
@@ -206,9 +227,11 @@ try {
   );
   assert.equal(nextRound.room.readyForNextRoundPlayerIds.length, 0);
 
-  console.log('chat smoke passed: room chat, reconnect history, and ready-gated next round');
+  console.log('chat smoke passed: login redirect, hostless waiting rooms, room chat, reconnect history, and ready-gated next round');
 } finally {
   reconnectSocket?.close();
+  parkingGuestSocket?.close();
+  parkingHostSocket?.close();
   guestSocket?.close();
   hostSocket?.close();
   server.kill('SIGTERM');

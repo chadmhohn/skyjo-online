@@ -1293,24 +1293,64 @@ function SinglePlayer() {
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
 
+type InitialLobbySession = {
+  joinCode: string;
+  playerId: string;
+  roomCode: string;
+};
+
 function roomSocketUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/rooms`;
 }
 
+function cleanRoomCode(value: string | null | undefined) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 5);
+}
+
+function getInitialLobbySession(): InitialLobbySession {
+  const savedRoomCode = cleanRoomCode(window.localStorage.getItem('skyjo-room-code'));
+  const savedPlayerId = window.localStorage.getItem('skyjo-player-id') || '';
+  const sharedRoomCode = cleanRoomCode(new URLSearchParams(window.location.search).get('room'));
+  const useSavedSession = !sharedRoomCode || sharedRoomCode === savedRoomCode;
+
+  return {
+    joinCode: sharedRoomCode || savedRoomCode,
+    playerId: useSavedSession ? savedPlayerId : '',
+    roomCode: useSavedSession ? savedRoomCode : ''
+  };
+}
+
+function roomShareUrl(code: string) {
+  const url = new URL(window.location.href);
+  url.pathname = '/lobby';
+  url.search = '';
+  url.hash = '';
+  url.searchParams.set('room', code);
+  return url.toString();
+}
+
 function Lobby() {
+  const initialLobbyRef = useRef<InitialLobbySession | null>(null);
+  if (!initialLobbyRef.current) initialLobbyRef.current = getInitialLobbySession();
+  const initialLobby = initialLobbyRef.current;
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const shareStatusTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
-  const roomCodeRef = useRef(window.localStorage.getItem('skyjo-room-code') || '');
-  const playerIdRef = useRef(window.localStorage.getItem('skyjo-player-id') || '');
+  const roomCodeRef = useRef(initialLobby.roomCode);
+  const playerIdRef = useRef(initialLobby.playerId);
   const [name, setName] = useState(() => window.localStorage.getItem('skyjo-player-name') || 'Player');
-  const [joinCode, setJoinCode] = useState(() => window.localStorage.getItem('skyjo-room-code') || '');
-  const [roomCode, setRoomCode] = useState(() => window.localStorage.getItem('skyjo-room-code') || '');
-  const [playerId, setPlayerId] = useState(() => window.localStorage.getItem('skyjo-player-id') || '');
+  const [joinCode, setJoinCode] = useState(initialLobby.joinCode);
+  const [roomCode, setRoomCode] = useState(initialLobby.roomCode);
+  const [playerId, setPlayerId] = useState(initialLobby.playerId);
   const [room, setRoom] = useState<MultiplayerRoom | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('idle');
   const [error, setError] = useState('');
+  const [shareStatus, setShareStatus] = useState('');
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const [chatOpen, setChatOpen] = useState(false);
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
@@ -1335,6 +1375,10 @@ function Lobby() {
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
+      }
+      if (shareStatusTimerRef.current !== null) {
+        window.clearTimeout(shareStatusTimerRef.current);
+        shareStatusTimerRef.current = null;
       }
       wsRef.current?.close();
     },
@@ -1381,7 +1425,7 @@ function Lobby() {
 
   function connect(action: 'create-room' | 'join-room', codeOverride?: string) {
     const cleanedName = name.trim() || 'Player';
-    const cleanedCode = (codeOverride ?? joinCode).trim().toUpperCase();
+    const cleanedCode = cleanRoomCode(codeOverride ?? joinCode);
     if (action === 'join-room' && !cleanedCode) {
       setError('Enter a room code.');
       return;
@@ -1535,6 +1579,48 @@ function Lobby() {
     send({ type: 'set-next-round-ready', ready: !localReadyForNextRound });
   }
 
+  function setTemporaryShareStatus(message: string) {
+    setShareStatus(message);
+    if (shareStatusTimerRef.current !== null) window.clearTimeout(shareStatusTimerRef.current);
+    shareStatusTimerRef.current = window.setTimeout(() => {
+      setShareStatus('');
+      shareStatusTimerRef.current = null;
+    }, 2200);
+  }
+
+  async function copyRoomLink(text: string) {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard is not available.');
+    await navigator.clipboard.writeText(text);
+    setTemporaryShareStatus('Link copied');
+  }
+
+  async function shareRoomLink() {
+    if (!room) return;
+    const url = roomShareUrl(room.code);
+    const text = `Join my Skyjo room ${room.code}: ${url}`;
+    setError('');
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: 'Skyjo room',
+          text: `Join my Skyjo room ${room.code}.`,
+          url
+        });
+        setTemporaryShareStatus('Share opened');
+        return;
+      }
+      await copyRoomLink(text);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      try {
+        await copyRoomLink(text);
+      } catch {
+        setError('Sharing is not available in this browser. Copy the room code manually.');
+      }
+    }
+  }
+
   const localTurn = Boolean(room?.state && room.state.players[room.state.currentPlayerIndex]?.id === playerId);
   const localPlayer = room?.players.find((player) => player.id === playerId);
   const roomState = room?.state;
@@ -1590,7 +1676,7 @@ function Lobby() {
               Room code
               <input
                 className="skyjo-input px-3 py-2 uppercase"
-                onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
+                onChange={(event) => setJoinCode(cleanRoomCode(event.target.value))}
                 placeholder="ABCDE"
                 value={joinCode}
               />
@@ -1634,6 +1720,14 @@ function Lobby() {
                     <div className="skyjo-serif skyjo-room-code text-5xl font-black tracking-normal text-[#f5e6c8]">{room.code}</div>
                   </div>
                   <div className="skyjo-room-actions flex flex-wrap gap-2">
+                    <button
+                      className="skyjo-button px-4 py-2"
+                      onClick={shareRoomLink}
+                      title="Share or copy a join link for this room."
+                      type="button"
+                    >
+                      Share
+                    </button>
                     {localPlayer?.host && room.status === 'waiting' ? (
                       <button
                         className="skyjo-button skyjo-button-primary px-4 py-2"
@@ -1652,6 +1746,7 @@ function Lobby() {
                     ) : null}
                   </div>
                 </div>
+                {shareStatus ? <p className="skyjo-share-status mt-3 text-sm font-extrabold text-[#f5e6c8]/72">{shareStatus}</p> : null}
                 <div className="skyjo-room-roster mt-4 flex flex-wrap gap-2">
                   {room.players.map((player) => (
                     <span className="rounded-full border border-[#f5e6c8]/15 bg-white/[0.025] px-3 py-1 text-sm text-[#f5e6c8]/75" key={player.id}>
