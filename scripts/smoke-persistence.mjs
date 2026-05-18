@@ -35,6 +35,7 @@ try {
         createdAt: now
       }
     ],
+    readyForNextRoundPlayerIds: ['host-1', 'player-2'],
     state: {
       players: [],
       drawPile: [],
@@ -62,6 +63,7 @@ try {
   assert.equal(serialized.rooms[0].players[0].connected, true, 'runtime presence can be written');
   assert.equal(serialized.rooms[0].chatMessages.length, 1, 'room chat history is serialized');
   assert.equal(serialized.rooms[0].chatMessages[0].text, 'Ready for the next round?');
+  assert.deepEqual(serialized.rooms[0].readyForNextRoundPlayerIds, ['host-1', 'player-2']);
 
   await saveRoomsToDisk(new Map([[room.code, room]]), roomsFile);
   const saved = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
@@ -69,6 +71,7 @@ try {
   assert.equal(saved.rooms[0].code, room.code);
   assert.equal('clients' in saved.rooms[0], false, 'saved JSON must not contain clients');
   assert.equal(saved.rooms[0].chatMessages[0].playerName, 'Ada', 'saved room includes chat sender names');
+  assert.deepEqual(saved.rooms[0].readyForNextRoundPlayerIds, ['host-1', 'player-2']);
 
   const restored = await loadRoomsFromDisk(roomsFile, { now: now + 1000, staleMs: ROOM_STALE_MS });
   assert.equal(restored.length, 1);
@@ -77,6 +80,7 @@ try {
   assert.equal(restored[0].players.every((player) => player.connected === false), true, 'restored players start offline');
   assert.equal(restored[0].players.find((player) => player.id === room.hostId)?.host, true, 'host flag is restored from hostId');
   assert.equal(restored[0].chatMessages[0].text, 'Ready for the next round?', 'restored rooms keep chat history');
+  assert.deepEqual(restored[0].readyForNextRoundPlayerIds, ['host-1', 'player-2'], 'restored rooms keep ready confirmations');
 
   const staleRoom = { ...room, code: 'OLD12', updatedAt: now - ROOM_STALE_MS - 1 };
   await saveRoomsToDisk(new Map([[staleRoom.code, staleRoom]]), roomsFile);

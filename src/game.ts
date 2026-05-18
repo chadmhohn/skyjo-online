@@ -224,17 +224,25 @@ function allCardsKnown(grid: Card[]): boolean {
 }
 
 function clearMatchingColumns(grid: Card[]): Card[] {
+  return clearMatchingColumnsWithDiscards(grid).grid;
+}
+
+function clearMatchingColumnsWithDiscards(grid: Card[]): { grid: Card[]; clearedCards: Card[] } {
   const next = grid.map((card) => ({ ...card }));
+  const clearedCards: Card[] = [];
+
   for (let column = 0; column < columns; column += 1) {
     const indexes = [column, column + columns, column + columns * 2];
     const cards = indexes.map((index) => next[index]);
     if (cards.every((card) => card.faceUp && !card.removed && card.value === cards[0].value)) {
+      clearedCards.push(...cards.map((card) => ({ ...card, faceUp: true, removed: false })));
       for (const index of indexes) {
         next[index] = { ...next[index], removed: true };
       }
     }
   }
-  return next;
+
+  return { grid: next, clearedCards };
 }
 
 function revealRandomOpeningCards(grid: Card[]): Card[] {
@@ -342,13 +350,21 @@ function finishFinalTurn(state: GameState, player: Player): GameState {
 }
 
 function finishTurn(state: GameState, player: Player): GameState {
-  const clearedGrid = clearMatchingColumns(player.grid);
+  const { grid: clearedGrid, clearedCards } = clearMatchingColumnsWithDiscards(player.grid);
   const updatedPlayer = {
     ...player,
     grid: clearedGrid,
     roundScore: visibleScore(clearedGrid)
   };
-  const updatedState = updatePlayer(state, updatedPlayer);
+  const updatedState = updatePlayer(
+    clearedCards.length > 0
+      ? {
+          ...state,
+          discardPile: [...clearedCards, ...state.discardPile]
+        }
+      : state,
+    updatedPlayer
+  );
 
   if (state.roundCloserId) {
     return finishFinalTurn(updatedState, updatedPlayer);

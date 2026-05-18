@@ -62,6 +62,12 @@ function normalizeRoom(value, now, staleMs) {
   const chatMessages = Array.isArray(value.chatMessages)
     ? value.chatMessages.map(normalizeChatMessage).filter(Boolean).slice(-maxPersistedChatMessages)
     : [];
+  const playerIds = new Set(players.map((player) => player.id));
+  const readyForNextRoundPlayerIds = Array.isArray(value.readyForNextRoundPlayerIds)
+    ? value.readyForNextRoundPlayerIds
+        .map((id) => stringValue(id).trim())
+        .filter((id, index, ids) => playerIds.has(id) && ids.indexOf(id) === index)
+    : [];
 
   return {
     code,
@@ -71,6 +77,7 @@ function normalizeRoom(value, now, staleMs) {
       host: player.id === hostId
     })),
     chatMessages,
+    readyForNextRoundPlayerIds,
     state: isRecord(value.state) ? value.state : null,
     status,
     updatedAt,
@@ -95,6 +102,9 @@ export function serializeRoom(room) {
     })),
     chatMessages: Array.isArray(room.chatMessages)
       ? room.chatMessages.map(normalizeChatMessage).filter(Boolean).slice(-maxPersistedChatMessages)
+      : [],
+    readyForNextRoundPlayerIds: Array.isArray(room.readyForNextRoundPlayerIds)
+      ? room.readyForNextRoundPlayerIds.filter((id, index, ids) => ids.indexOf(id) === index)
       : [],
     state: room.state ?? null,
     status: room.status,

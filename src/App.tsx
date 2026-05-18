@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import {
   chooseDiscard,
@@ -949,9 +949,11 @@ interface RoundSummaryProps {
   actionLabel?: string;
   actionDisabledReason?: string;
   onAction?: () => void;
+  onMinimize?: () => void;
+  children?: ReactNode;
 }
 
-function RoundSummary({ state, actionLabel, actionDisabledReason, onAction }: RoundSummaryProps) {
+function RoundSummary({ state, actionLabel, actionDisabledReason, onAction, onMinimize, children }: RoundSummaryProps) {
   const rankedPlayers = [...state.players].sort((a, b) => a.totalScore - b.totalScore || a.roundScore - b.roundScore);
   const leader = rankedPlayers[0];
   const winner = state.winnerId ? state.players.find((player) => player.id === state.winnerId) : null;
@@ -964,10 +966,19 @@ function RoundSummary({ state, actionLabel, actionDisabledReason, onAction }: Ro
 
   return (
     <section className="skyjo-panel skyjo-score-panel skyjo-round-summary-panel">
-      <div className="skyjo-kicker">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</div>
-      <h2 className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]">{headline}</h2>
-      <p className="mt-2 text-sm font-bold text-[#f5e6c8]/78">{outcome}</p>
-      {latestScoringNote ? <p className="mt-1 text-xs leading-5 text-[#f5e6c8]/58">{latestScoringNote}</p> : null}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="skyjo-kicker">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</div>
+          <h2 className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]">{headline}</h2>
+          <p className="mt-2 text-sm font-bold text-[#f5e6c8]/78">{outcome}</p>
+          {latestScoringNote ? <p className="mt-1 text-xs leading-5 text-[#f5e6c8]/58">{latestScoringNote}</p> : null}
+        </div>
+        {onMinimize ? (
+          <button className="skyjo-button skyjo-round-summary-minimize px-3 py-2 text-xs" onClick={onMinimize} type="button">
+            Minimize
+          </button>
+        ) : null}
+      </div>
 
       <div className="skyjo-score-list mt-4" aria-label="Round score and total score">
         {rankedPlayers.map((player, index) => {
@@ -995,11 +1006,20 @@ function RoundSummary({ state, actionLabel, actionDisabledReason, onAction }: Ro
         })}
       </div>
 
-      {onAction && actionLabel ? (
-        <button className="skyjo-button skyjo-button-primary mt-4 w-full px-4 py-3" onClick={onAction} type="button">
+      {children}
+
+      {actionLabel && onAction ? (
+        <button
+          className="skyjo-button skyjo-button-primary mt-4 w-full px-4 py-3"
+          disabled={Boolean(actionDisabledReason)}
+          onClick={onAction}
+          title={actionDisabledReason || actionLabel}
+          type="button"
+        >
           {actionLabel}
         </button>
-      ) : actionDisabledReason ? (
+      ) : null}
+      {actionDisabledReason ? (
         <p className="skyjo-disabled-note mt-4">
           <span>Action unavailable:</span> {actionDisabledReason}
         </p>
@@ -1008,11 +1028,27 @@ function RoundSummary({ state, actionLabel, actionDisabledReason, onAction }: Ro
   );
 }
 
+function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameState; meta?: string; onRestore: () => void }) {
+  return (
+    <button className="skyjo-round-summary-chip" onClick={onRestore} type="button">
+      <span className="min-w-0">
+        <span className="skyjo-kicker block">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</span>
+        <span className="block truncate text-sm font-black text-[#f5e6c8]">{meta || 'Review scores'}</span>
+      </span>
+      <span className="skyjo-summary-meta">
+        <span className="skyjo-kicker">Open</span>
+        <span className="skyjo-disclosure-caret skyjo-disclosure-caret-open" aria-hidden="true" />
+      </span>
+    </button>
+  );
+}
+
 function SinglePlayer() {
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
+  const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
   const localPlayers = state.players.filter((player) => player.kind === 'human');
@@ -1024,6 +1060,7 @@ function SinglePlayer() {
   const aiOpponentSummary = `${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
   const aiOpponentCompactSummary = `${aiOpponentCount} AI`;
   const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
+  const summaryModalOpen = isScoringPhase && roundSummaryOpen;
 
   useEffect(() => {
     if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
@@ -1050,6 +1087,10 @@ function SinglePlayer() {
     return () => window.clearTimeout(timer);
   }, [activePlayer.kind, state]);
 
+  useEffect(() => {
+    setRoundSummaryOpen(isScoringPhase);
+  }, [isScoringPhase, state.round]);
+
   function handleCard(index: number) {
     if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
     if (state.phase === 'opening-reveal') {
@@ -1069,12 +1110,16 @@ function SinglePlayer() {
   }
 
   return (
-    <main className={`skyjo-surface px-4 py-5 ${isScoringPhase ? 'skyjo-round-summary-surface' : ''}`}>
+    <main className={`skyjo-surface px-4 py-5 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}>
       <div
         className={`skyjo-shell skyjo-active-mobile-shell ${
-          isScoringPhase ? 'skyjo-round-summary-mode' : ''
+          summaryModalOpen ? 'skyjo-round-summary-mode' : ''
         } grid gap-5 lg:grid-cols-[1fr_330px]`}
       >
+        {isScoringPhase && !roundSummaryOpen ? (
+          <RoundSummaryRestoreButton state={state} onRestore={() => setRoundSummaryOpen(true)} />
+        ) : null}
+
         <section
           className={`skyjo-mobile-game-stack space-y-4 ${
             hasFourPlayerDesktopGrid ? 'lg:col-span-2 lg:row-start-1' : 'lg:col-start-1 lg:row-start-1'
@@ -1230,9 +1275,10 @@ function SinglePlayer() {
         </section>
 
         <aside className={`skyjo-secondary-stack space-y-4 ${hasFourPlayerDesktopGrid ? 'lg:col-start-1 lg:row-start-2' : 'lg:col-start-2 lg:row-start-2'}`}>
-          {isScoringPhase ? (
+          {isScoringPhase && roundSummaryOpen ? (
             <RoundSummary
               actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
+              onMinimize={() => setRoundSummaryOpen(false)}
               onAction={() => setState(state.phase === 'game-over' ? startFreshGame({ aiOpponentCount }) : startNextRound(state))}
               state={state}
             />
@@ -1267,8 +1313,10 @@ function Lobby() {
   const [error, setError] = useState('');
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const [chatOpen, setChatOpen] = useState(false);
+  const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
   const [lastSeenChatMessageId, setLastSeenChatMessageId] = useState('');
   const lastSeenChatRoomCodeRef = useRef('');
+  const lastResumeSyncRef = useRef(0);
   const hasPendingDrawDecision = Boolean(
     room?.state && room.state.phase === 'choose-replacement' && room.state.selectedSource === 'draw' && room.state.drawnCard
   );
@@ -1298,6 +1346,10 @@ function Lobby() {
       setDrawIntent('place');
     }
   }, [hasPendingDrawDecision]);
+
+  useEffect(() => {
+    setRoundSummaryOpen(false);
+  }, [room?.state?.phase, room?.state?.round]);
 
   useEffect(() => {
     roomCodeRef.current = roomCode;
@@ -1347,7 +1399,7 @@ function Lobby() {
         JSON.stringify(
           action === 'create-room'
             ? { type: 'create-room', name: cleanedName }
-            : { type: 'join-room', code: cleanedCode, name: cleanedName, playerId: playerId || undefined }
+            : { type: 'join-room', code: cleanedCode, name: cleanedName, playerId: playerIdRef.current || playerId || undefined }
         )
       );
     });
@@ -1379,9 +1431,8 @@ function Lobby() {
 
     ws.addEventListener('close', () => {
       if (!mountedRef.current) return;
-      if (wsRef.current === ws) {
-        wsRef.current = null;
-      }
+      if (wsRef.current !== ws) return;
+      wsRef.current = null;
       setConnection('idle');
       if (roomCodeRef.current && playerIdRef.current) {
         setError('');
@@ -1395,27 +1446,30 @@ function Lobby() {
   connectRef.current = connect;
 
   useEffect(() => {
-    function reconnectRoom() {
+    function reconnectRoom(force = false) {
       const savedRoomCode = roomCodeRef.current;
       const savedPlayerId = playerIdRef.current;
       if (!savedRoomCode || !savedPlayerId) return;
       const ws = wsRef.current;
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      if (!force && ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
       if (reconnectTimerRef.current !== null) return;
 
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
         if (!mountedRef.current) return;
         const currentWs = wsRef.current;
-        if (currentWs && (currentWs.readyState === WebSocket.OPEN || currentWs.readyState === WebSocket.CONNECTING)) return;
+        if (!force && currentWs && (currentWs.readyState === WebSocket.OPEN || currentWs.readyState === WebSocket.CONNECTING)) return;
         connectRef.current?.('join-room', roomCodeRef.current);
-      }, 250);
+      }, force ? 50 : 250);
     }
 
     const handleResume = () => {
       if (!mountedRef.current) return;
       if (document.visibilityState !== 'visible') return;
-      reconnectRoom();
+      const now = Date.now();
+      if (now - lastResumeSyncRef.current < 750) return;
+      lastResumeSyncRef.current = now;
+      reconnectRoom(true);
     };
 
     window.addEventListener('focus', handleResume);
@@ -1472,7 +1526,13 @@ function Lobby() {
 
   function handleNextRound() {
     if (!room?.state) return;
+    if (!allPlayersReadyForNextRound) return;
     send({ type: 'start-game' });
+  }
+
+  function toggleNextRoundReady() {
+    if (!roomScoringPhase) return;
+    send({ type: 'set-next-round-ready', ready: !localReadyForNextRound });
   }
 
   const localTurn = Boolean(room?.state && room.state.players[room.state.currentPlayerIndex]?.id === playerId);
@@ -1486,10 +1546,22 @@ function Lobby() {
   const fourPlayerRoomBoardEntries = [...roomOpponentBoardEntries, ...roomLocalBoardEntries];
   const startGameDisabledReason = room && room.players.length < 2 ? 'Need at least two players to start.' : '';
   const roomScoringPhase = roomState?.phase === 'round-over' || roomState?.phase === 'game-over';
+  const readyForNextRoundPlayerIds = room?.readyForNextRoundPlayerIds ?? [];
+  const roundReadyPlayerIds = roomState?.players.map((player) => player.id) ?? [];
+  const readyForNextRoundCount = roundReadyPlayerIds.filter((id) => readyForNextRoundPlayerIds.includes(id)).length;
+  const allPlayersReadyForNextRound =
+    roundReadyPlayerIds.length > 0 && readyForNextRoundCount === roundReadyPlayerIds.length;
+  const localReadyForNextRound = readyForNextRoundPlayerIds.includes(playerId);
+  const readySummary = roomScoringPhase ? `${readyForNextRoundCount}/${roundReadyPlayerIds.length} ready` : undefined;
+  const summaryModalOpen = Boolean(roomScoringPhase && roundSummaryOpen);
 
   return (
-    <main className={`skyjo-surface px-4 py-8 ${roomScoringPhase ? 'skyjo-round-summary-surface' : ''}`}>
-      <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} ${roomScoringPhase ? 'skyjo-round-summary-mode' : ''} space-y-5`}>
+    <main className={`skyjo-surface px-4 py-8 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}>
+      <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} ${summaryModalOpen ? 'skyjo-round-summary-mode' : ''} space-y-5`}>
+        {roomScoringPhase && roomState && !roundSummaryOpen ? (
+          <RoundSummaryRestoreButton meta={readySummary} state={roomState} onRestore={() => setRoundSummaryOpen(true)} />
+        ) : null}
+
         <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
           <div className="skyjo-game-heading min-w-0">
             <Link aria-label="Back to home" className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
@@ -1686,19 +1758,41 @@ function Lobby() {
                     state={roomState}
                     unreadCount={unreadChatCount}
                   />
-                  {roomScoringPhase ? (
+                  {roomScoringPhase && roundSummaryOpen ? (
                     <RoundSummary
                       actionDisabledReason={
                         localPlayer?.host
-                          ? undefined
+                          ? allPlayersReadyForNextRound
+                            ? undefined
+                            : `Waiting for ${roundReadyPlayerIds.length - readyForNextRoundCount} player${
+                                roundReadyPlayerIds.length - readyForNextRoundCount === 1 ? '' : 's'
+                              } to confirm.`
                           : roomState.phase === 'game-over'
                             ? 'Only the host can restart the game.'
                             : 'Only the host can start the next round.'
                       }
                       actionLabel={roomState.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
+                      onMinimize={() => setRoundSummaryOpen(false)}
                       onAction={localPlayer?.host ? handleNextRound : undefined}
                       state={roomState}
-                    />
+                    >
+                      <div className="skyjo-ready-panel mt-4">
+                        <div className="min-w-0">
+                          <div className="skyjo-kicker">Ready check</div>
+                          <div className="text-sm font-extrabold text-[#f5e6c8]">{readySummary}</div>
+                          <p className="mt-1 text-xs leading-5 text-[#f5e6c8]/58">
+                            Review the finished board and chat it through. The host can advance after everyone confirms.
+                          </p>
+                        </div>
+                        <button
+                          className={`skyjo-button ${localReadyForNextRound ? 'skyjo-button-primary' : ''} px-3 py-2 text-sm`}
+                          onClick={toggleNextRoundReady}
+                          type="button"
+                        >
+                          {localReadyForNextRound ? 'Ready' : "I'm Ready"}
+                        </button>
+                      </div>
+                    </RoundSummary>
                   ) : null}
                   <MoveLog state={roomState} />
                 </aside>
