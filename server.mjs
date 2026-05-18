@@ -220,6 +220,21 @@ function cleanChatText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxRoomChatMessageLength);
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeRedirectPath(value) {
+  const path = String(value || '/');
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) return '/';
+  return path;
+}
+
 function appendRoomChatMessage(room, player, text) {
   const message = {
     id: crypto.randomUUID(),
@@ -233,7 +248,8 @@ function appendRoomChatMessage(room, player, text) {
   return message;
 }
 
-function renderLogin(error = false) {
+function renderLogin(error = false, next = '/') {
+  const safeNext = safeRedirectPath(next);
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -273,6 +289,7 @@ function renderLogin(error = false) {
       <h1>SKYJO</h1>
       <p>Enter the shared game password.</p>
       <form method="post" action="/login">
+        <input name="next" type="hidden" value="${escapeHtml(safeNext)}" />
         <input name="password" type="password" autocomplete="current-password" autofocus required />
         <button type="submit">Continue</button>
       </form>
@@ -356,7 +373,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/login' && req.method === 'GET') {
-      send(res, 200, renderLogin(url.searchParams.get('error') === '1'), {
+      send(res, 200, renderLogin(url.searchParams.get('error') === '1', url.searchParams.get('next') || '/'), {
         'Content-Type': 'text/html; charset=utf-8'
       });
       return;
@@ -366,19 +383,21 @@ const server = http.createServer(async (req, res) => {
       const body = await readRequestBody(req);
       const form = new URLSearchParams(body);
       const password = form.get('password') || '';
+      const next = safeRedirectPath(form.get('next') || '/');
       if (!timingSafeEqualString(password, accessPassword)) {
-        send(res, 303, '', { Location: '/login?error=1' });
+        send(res, 303, '', { Location: `/login?error=1&next=${encodeURIComponent(next)}` });
         return;
       }
       send(res, 303, '', {
-        Location: '/',
+        Location: next,
         'Set-Cookie': cookieHeader(createSessionCookie(), Math.floor(sessionTtlMs / 1000))
       });
       return;
     }
 
     if (!hasValidSession(req)) {
-      send(res, 302, '', { Location: '/login' });
+      const next = safeRedirectPath(`${url.pathname}${url.search}`);
+      send(res, 302, '', { Location: `/login?next=${encodeURIComponent(next)}` });
       return;
     }
 
@@ -606,11 +625,6 @@ wss.on('connection', (ws) => {
       player.connected = false;
     }
     room.updatedAt = Date.now();
-    if (room.clients.size === 0 && room.status === 'waiting') {
-      rooms.delete(room.code);
-      persistRoomsSoon();
-      return;
-    }
     persistRoomsSoon();
     broadcastRoom(room);
   });
