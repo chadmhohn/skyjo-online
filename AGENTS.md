@@ -2,20 +2,24 @@
 
 This repository is the source for the private Skyjo-style web app at `https://skyjo.groundworkrevops.com/`. Treat this file as the first stop for Codex/Nova/Hermes handoff work.
 
-Last verified by Codex: 2026-05-20 America/Denver.
+Last verified by Codex: 2026-05-20 America/Denver, after the Skyjo host-path decoupling pass.
 
 ## Current Operating State
 
 - GitHub repo: `chadmhohn/skyjo-online`.
-- Live VPS checkout: `/root/.openclaw/workspace/skyjo-online` on `hostinger-vps`.
-- Production service: `skyjo-online.service`, working directory `/root/.openclaw/workspace/skyjo-online`.
+- Canonical live VPS checkout: `/srv/skyjo-online` on `hostinger-vps`.
+- Compatibility symlink: `/root/.openclaw/workspace/skyjo-online -> /srv/skyjo-online`.
+- Production service: `skyjo-online.service`, working directory `/srv/skyjo-online`.
 - Service env file: `/etc/skyjo-online.env`. Do not print or commit secret values from this file.
+- Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
 - App bind address: `127.0.0.1:4180`.
 - Public hostname: `skyjo.groundworkrevops.com`.
 - Cloudflare zone: `groundworkrevops.com`.
 - Cloudflare DNS: `skyjo.groundworkrevops.com` is a proxied CNAME to tunnel `29eaa972-bcb7-4031-bfa3-950a9708197a.cfargotunnel.com`.
 - Cloudflare Tunnel: `groundwork-nova`, id `29eaa972-bcb7-4031-bfa3-950a9708197a`, remote config enabled. The active Cloudflare-side ingress routes `skyjo.groundworkrevops.com` to `http://localhost:4180`.
 - Local `/etc/cloudflared/config.yml` may not show Skyjo because this tunnel uses Cloudflare remote config. Verify with the Cloudflare API before editing tunnel routes.
+
+The 2026-05-20 decoupling pass moved Skyjo out of the OpenClaw-owned workspace so OpenClaw can later move into Docker without taking Skyjo with it. Backup for that cutover lives at `/root/backups/skyjo-online-decouple-20260521T025019Z`.
 
 As of the verification above, the VPS checkout had local uncommitted work from the most recent Nova pass:
 
@@ -31,7 +35,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 - `src/types.ts`: shared client/server state types.
 - `src/serverValidation.ts`: server-side legal multiplayer state validation. This compiles to `server-dist/` and is loaded by the Node server.
 - `server.mjs`: production Node server. Handles password-gated HTTP, static `dist/` serving, `/healthz`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and persistence flush on shutdown.
-- `server-room-persistence.mjs`: JSON persistence for rooms. Default path is `.data/rooms.json`; production may set `SKYJO_ROOMS_FILE`.
+- `server-room-persistence.mjs`: JSON persistence for rooms. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
 - `src/App.tsx`: React routes and UI for home, single-player, lobby, room play, table chat, rules, scoring, and responsive gameplay shells.
 - `src/index.css`: most layout and visual behavior, including the mobile locked play surface and desktop/tablet responsive rules.
 - `scripts/smoke-*.mjs`: focused release smoke tests for validation, AI, persistence, and room/chat flows.
@@ -40,7 +44,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 ## Safety Rules
 
 - The GitHub repo is public. Never commit `.env`, `/etc/skyjo-online.env`, cookies, passwords, session secrets, tunnel tokens, room dumps with private content, or OpenClaw secrets.
-- Treat `.data/rooms.json` as runtime state, not a disposable build artifact. Back it up before persistence format changes.
+- Treat `/var/lib/skyjo-online/rooms.json` as runtime state, not a disposable build artifact. Back it up before persistence format changes.
 - Do not restart `skyjo-online.service`, Cloudflare Tunnel, Traefik, OpenClaw, Docker, or the VPS unless Chad explicitly approved that disruptive action in the current conversation.
 - Preserve unrelated dirty work. If the dirty files overlap your task, read the diff and build on it; do not reset it away.
 - Do not rely on `curl -I -L /` as a login smoke. `HEAD /login` can redirect again because the server login handler is GET-specific. Use GET checks or `/healthz`.
@@ -48,7 +52,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 ## Standard Workflow
 
 ```sh
-cd /root/.openclaw/workspace/skyjo-online
+cd /srv/skyjo-online
 git status --short --branch
 git log --oneline --decorate -8
 ```
