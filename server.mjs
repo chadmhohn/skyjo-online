@@ -207,6 +207,20 @@ function roomPlayer(ws) {
   return player ? { room, player } : null;
 }
 
+function createWaitingRoom({ code, hostPlayer, ws }) {
+  return {
+    code,
+    hostId: hostPlayer.id,
+    players: [{ id: hostPlayer.id, name: hostPlayer.name, connected: true, host: true }],
+    chatMessages: [],
+    readyForNextRoundPlayerIds: [],
+    state: null,
+    status: 'waiting',
+    updatedAt: Date.now(),
+    clients: new Set([ws])
+  };
+}
+
 function hasLiveReplacementClient(room, playerId, currentWs) {
   for (const client of room.clients) {
     if (client === currentWs) continue;
@@ -437,17 +451,7 @@ wss.on('connection', (ws) => {
       const code = makeRoomCode();
       const playerId = crypto.randomUUID();
       const name = String(message.name || 'Player').trim().slice(0, 24) || 'Player';
-      const room = {
-        code,
-        hostId: playerId,
-        players: [{ id: playerId, name, connected: true, host: true }],
-        chatMessages: [],
-        readyForNextRoundPlayerIds: [],
-        state: null,
-        status: 'waiting',
-        updatedAt: Date.now(),
-        clients: new Set([ws])
-      };
+      const room = createWaitingRoom({ code, hostPlayer: { id: playerId, name }, ws });
       rooms.set(code, room);
       ws.roomCode = code;
       ws.playerId = playerId;
@@ -464,12 +468,13 @@ wss.on('connection', (ws) => {
         sendJson(ws, { type: 'error', message: 'Room not found.' });
         return;
       }
-      if (room.status !== 'waiting' && !message.playerId) {
+      const requestedPlayerId = typeof message.playerId === 'string' ? message.playerId : '';
+      let player = requestedPlayerId ? room.players.find((item) => item.id === requestedPlayerId) : null;
+      if (room.status !== 'waiting' && !player) {
         sendJson(ws, { type: 'error', message: 'That game has already started.' });
         return;
       }
       const name = String(message.name || 'Player').trim().slice(0, 24) || 'Player';
-      let player = message.playerId ? room.players.find((item) => item.id === message.playerId) : null;
       if (!player) {
         if (room.players.length >= 8) {
           sendJson(ws, { type: 'error', message: 'Room is full.' });
@@ -605,12 +610,24 @@ wss.on('connection', (ws) => {
         sendJson(ws, { type: 'error', message: 'Only the host can reset the room.' });
         return;
       }
-      room.state = null;
-      room.readyForNextRoundPlayerIds = [];
-      room.status = 'waiting';
-      room.updatedAt = Date.now();
+      const oldRoom = room;
+      const newCode = makeRoomCode();
+      const newRoom = createWaitingRoom({ code: newCode, hostPlayer: player, ws });
+      for (const client of oldRoom.clients) {
+        if (client === ws) continue;
+        sendJson(client, {
+          type: 'room-reset',
+          message: 'The host reset this room. Ask for the new room link to rejoin.'
+        });
+        client.roomCode = null;
+        client.playerId = null;
+      }
+      rooms.delete(oldRoom.code);
+      rooms.set(newCode, newRoom);
+      ws.roomCode = newCode;
+      ws.playerId = player.id;
       persistRoomsSoon();
-      broadcastRoom(room);
+      sendJson(ws, { type: 'joined', playerId: player.id, room: publicRoom(newRoom) });
       return;
     }
   });

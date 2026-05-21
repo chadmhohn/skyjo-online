@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+import { createPortal } from 'react-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import {
   chooseDiscard,
   discardDrawnAndReveal,
@@ -36,9 +37,9 @@ type TurnStatus = {
   tone: TurnStatusTone;
 };
 
-const responsiveBoardGridClass = 'grid gap-4 xl:grid-cols-2';
+const responsiveBoardGridClass = 'grid gap-4';
 const opponentBoardGridClass = 'skyjo-opponent-stack grid gap-4 xl:grid-cols-2';
-const fourPlayerDesktopBoardGridClass = 'hidden gap-4 md:grid md:grid-cols-2';
+const fourPlayerDesktopBoardGridClass = 'skyjo-four-player-board-grid hidden gap-4 md:grid md:grid-cols-2';
 const fourPlayerMobileOpponentGridClass = 'skyjo-opponent-stack grid gap-3 md:hidden';
 const currentPlayerScrollPauseMs = 1800;
 const rulesHelpSections: RulesHelpSection[] = [
@@ -139,60 +140,63 @@ function RulesHelpButton({ className = '' }: { className?: string }) {
         <span className={`skyjo-disclosure-caret ${isOpen ? 'skyjo-disclosure-caret-open' : ''}`} aria-hidden="true" />
       </button>
 
-      {isOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:items-center sm:px-5"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setIsOpen(false);
-          }}
-        >
-          <section
-            aria-describedby="skyjo-rules-help-intro"
-            aria-labelledby="skyjo-rules-help-title"
-            aria-modal="true"
-            className="skyjo-panel w-full max-w-2xl overflow-hidden rounded-2xl bg-[#09110e]/95 shadow-2xl"
-            role="dialog"
-          >
-            <div className="flex items-start justify-between gap-3 border-b border-[#f5e6c8]/10 p-4 sm:p-5">
-              <div className="min-w-0">
-                <p className="skyjo-kicker">Help</p>
-                <h2 className="skyjo-serif mt-1 text-2xl font-black leading-tight text-[#f5e6c8] sm:text-3xl" id="skyjo-rules-help-title">
-                  Skyjo Rules
-                </h2>
-                <p className="mt-2 text-sm leading-6 text-[#f5e6c8]/68" id="skyjo-rules-help-intro">
-                  Quick reminders for playing at this table.
-                </p>
-              </div>
-              <button
-                aria-label="Close rules and help"
-                className="skyjo-button shrink-0 px-3 py-2 text-sm"
-                onClick={() => setIsOpen(false)}
-                ref={closeButtonRef}
-                type="button"
+      {isOpen
+        ? createPortal(
+            <div
+              className="skyjo-rules-overlay fixed inset-0 flex items-end justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:items-center sm:px-5"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setIsOpen(false);
+              }}
+            >
+              <section
+                aria-describedby="skyjo-rules-help-intro"
+                aria-labelledby="skyjo-rules-help-title"
+                aria-modal="true"
+                className="skyjo-panel skyjo-rules-dialog w-full max-w-2xl overflow-hidden rounded-2xl bg-[#09110e]/95 shadow-2xl"
+                role="dialog"
               >
-                Close
-              </button>
-            </div>
+                <div className="flex items-start justify-between gap-3 border-b border-[#f5e6c8]/10 p-4 sm:p-5">
+                  <div className="min-w-0">
+                    <p className="skyjo-kicker">Help</p>
+                    <h2 className="skyjo-serif mt-1 text-2xl font-black leading-tight text-[#f5e6c8] sm:text-3xl" id="skyjo-rules-help-title">
+                      Skyjo Rules
+                    </h2>
+                    <p className="skyjo-rules-intro mt-2 text-sm leading-6" id="skyjo-rules-help-intro">
+                      Quick reminders for playing at this table.
+                    </p>
+                  </div>
+                  <button
+                    aria-label="Close rules and help"
+                    className="skyjo-button shrink-0 px-3 py-2 text-sm"
+                    onClick={() => setIsOpen(false)}
+                    ref={closeButtonRef}
+                    type="button"
+                  >
+                    Close
+                  </button>
+                </div>
 
-            <div className="max-h-[min(74vh,720px)] overflow-y-auto p-4 sm:p-5">
-              <div className="grid gap-3 sm:grid-cols-2">
-                {rulesHelpSections.map((section) => (
-                  <section className="rounded-xl border border-[#f5e6c8]/12 bg-white/[0.025] p-3 sm:p-4" key={section.title}>
-                    <h3 className="skyjo-serif text-lg font-bold leading-tight text-[#f5e6c8]">{section.title}</h3>
-                    <ul className="mt-2 list-disc space-y-2 pl-5 text-sm leading-6 text-[#f5e6c8]/76">
-                      {section.items.map((item) => (
-                        <li className="break-words" key={item}>
-                          {item}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
-              </div>
-            </div>
-          </section>
-        </div>
-      ) : null}
+                <div className="skyjo-rules-body overflow-y-auto p-4 sm:p-5">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {rulesHelpSections.map((section) => (
+                      <section className="skyjo-rule-card rounded-xl border p-3 sm:p-4" key={section.title}>
+                        <h3 className="skyjo-serif text-lg font-bold leading-tight text-[#f5e6c8]">{section.title}</h3>
+                        <ul className="skyjo-rule-list mt-2 list-disc space-y-2 pl-5 text-sm leading-6">
+                          {section.items.map((item) => (
+                            <li className="break-words" key={item}>
+                              {item}
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            </div>,
+            document.body
+          )
+        : null}
     </>
   );
 }
@@ -659,7 +663,7 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
             <div className="min-w-0">
               <div className="skyjo-kicker">Drawn card waiting</div>
               <h3 className="skyjo-serif mt-1 text-xl font-bold text-[#f5e6c8]">Place it or discard it</h3>
-              <p className="mt-2 text-sm leading-6 text-[#f5e6c8]/72">Choose a mode, then select a highlighted card on your board.</p>
+              <p className="skyjo-drawn-description mt-2 text-sm leading-6 text-[#f5e6c8]/72">Choose a mode, then select a highlighted card on your board.</p>
             </div>
             <div className={`${cardClass(state.drawnCard, false)} skyjo-drawn-card shrink-0`}>{cardLabel(state.drawnCard)}</div>
           </div>
@@ -671,7 +675,7 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
               type="button"
             >
               <span>Place drawn card</span>
-              <small>Replace any non-cleared card.</small>
+              <small className="skyjo-choice-help">Replace any non-cleared card.</small>
             </button>
             <button
               aria-pressed={drawIntent === 'discard'}
@@ -682,19 +686,19 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
               type="button"
             >
               <span>Discard + reveal</span>
-              <small>{hasHiddenCard ? 'Reveal one hidden card.' : 'No hidden cards remain.'}</small>
+              <small className="skyjo-choice-help">{hasHiddenCard ? 'Reveal one hidden card.' : 'No hidden cards remain.'}</small>
             </button>
           </div>
           <p className="skyjo-action-hint mt-3">
             {drawIntent === 'discard'
-              ? 'Discard mode active: select a highlighted hidden card to reveal.'
-              : 'Place mode active: select a highlighted card to replace with the drawn card.'}
+              ? 'Discard mode: select a highlighted hidden card.'
+              : 'Place mode: select a highlighted card.'}
           </p>
         </div>
       ) : null}
 
       {selectedDiscard ? (
-        <p className="skyjo-action-hint mt-4">Discard card selected: choose any highlighted card on your board to replace.</p>
+        <p className="skyjo-action-hint mt-4">Discard selected: choose a highlighted card.</p>
       ) : null}
     </section>
   );
@@ -1238,7 +1242,7 @@ function SinglePlayer() {
 
           {opponentBoardEntries.length > 0 ? (
             <PlayerBoardGrid
-              className={opponentBoardClass(opponentBoardEntries.length, hasFourPlayerDesktopGrid)}
+              className={`${opponentBoardClass(opponentBoardEntries.length, hasFourPlayerDesktopGrid)} skyjo-main-opponent-stack`}
               drawIntent={drawIntent}
               entries={opponentBoardEntries}
               onCardClick={handleCard}
@@ -1334,6 +1338,7 @@ function roomShareUrl(code: string) {
 }
 
 function Lobby() {
+  const location = useLocation();
   const initialLobbyRef = useRef<InitialLobbySession | null>(null);
   if (!initialLobbyRef.current) initialLobbyRef.current = getInitialLobbySession();
   const initialLobby = initialLobbyRef.current;
@@ -1343,6 +1348,7 @@ function Lobby() {
   const mountedRef = useRef(true);
   const roomCodeRef = useRef(initialLobby.roomCode);
   const playerIdRef = useRef(initialLobby.playerId);
+  const lastSharedRoomCodeRef = useRef(cleanRoomCode(new URLSearchParams(location.search).get('room')));
   const [name, setName] = useState(() => window.localStorage.getItem('skyjo-player-name') || 'Player');
   const [joinCode, setJoinCode] = useState(initialLobby.joinCode);
   const [roomCode, setRoomCode] = useState(initialLobby.roomCode);
@@ -1404,6 +1410,27 @@ function Lobby() {
   }, [playerId]);
 
   useEffect(() => {
+    const sharedRoomCode = cleanRoomCode(new URLSearchParams(location.search).get('room'));
+    if (!sharedRoomCode || sharedRoomCode === lastSharedRoomCodeRef.current) return;
+    lastSharedRoomCodeRef.current = sharedRoomCode;
+    if (sharedRoomCode === roomCodeRef.current) return;
+
+    const currentWs = wsRef.current;
+    wsRef.current = null;
+    currentWs?.close();
+    window.localStorage.removeItem('skyjo-player-id');
+    window.localStorage.removeItem('skyjo-room-code');
+    playerIdRef.current = '';
+    roomCodeRef.current = '';
+    setPlayerId('');
+    setRoomCode('');
+    setRoom(null);
+    setJoinCode(sharedRoomCode);
+    setConnection('idle');
+    setError('');
+  }, [location.search]);
+
+  useEffect(() => {
     if (!roomChatCode) return;
     const latestId = latestChatMessage?.id || '';
     if (lastSeenChatRoomCodeRef.current !== roomChatCode) {
@@ -1443,7 +1470,12 @@ function Lobby() {
         JSON.stringify(
           action === 'create-room'
             ? { type: 'create-room', name: cleanedName }
-            : { type: 'join-room', code: cleanedCode, name: cleanedName, playerId: playerIdRef.current || playerId || undefined }
+            : {
+                type: 'join-room',
+                code: cleanedCode,
+                name: cleanedName,
+                playerId: cleanedCode === roomCodeRef.current ? playerIdRef.current || playerId || undefined : undefined
+              }
         )
       );
     });
@@ -1460,16 +1492,31 @@ function Lobby() {
         setJoinCode(message.room.code);
         setRoom(message.room);
         setConnection('connected');
+        setError('');
         return;
       }
       if (message.type === 'room') {
         setRoom(message.room);
         setConnection('connected');
+        setError('');
         return;
       }
       if (message.type === 'error') {
         setError(message.message || 'Room error.');
         setConnection('error');
+      }
+      if (message.type === 'room-reset') {
+        wsRef.current = null;
+        ws.close();
+        window.localStorage.removeItem('skyjo-player-id');
+        window.localStorage.removeItem('skyjo-room-code');
+        playerIdRef.current = '';
+        roomCodeRef.current = '';
+        setPlayerId('');
+        setRoomCode('');
+        setRoom(null);
+        setConnection('idle');
+        setError(message.message || 'The host reset this room. Ask for the new room link to rejoin.');
       }
     });
 
@@ -1790,7 +1837,7 @@ function Lobby() {
                   />
 
                   <PlayerBoardGrid
-                    className={opponentBoardClass(roomOpponentBoardEntries.length, hasFourPlayerRoomDesktopGrid)}
+                    className={`${opponentBoardClass(roomOpponentBoardEntries.length, hasFourPlayerRoomDesktopGrid)} skyjo-main-opponent-stack`}
                     drawIntent={drawIntent}
                     entries={roomOpponentBoardEntries}
                     onCardClick={handleCard}

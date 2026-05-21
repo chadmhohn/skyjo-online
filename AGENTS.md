@@ -2,7 +2,7 @@
 
 This repository is the source for the private Skyjo-style web app at `https://skyjo.groundworkrevops.com/`. Treat this file as the first stop for Codex/Nova/Hermes handoff work.
 
-Last verified by Codex: 2026-05-20 America/Denver, after the Skyjo host-path decoupling pass.
+Last verified by Codex: 2026-05-21 America/Denver, after the tablet-landscape single-player UI pass.
 
 ## Current Operating State
 
@@ -120,6 +120,7 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - Matching revealed columns clear and score zero. Replacement-driven column clears should put the cleared column on top of the replaced card in the discard pile.
 - Single-player supports 1-7 AI opponents with shuffled themed names. New game reshuffles names; next round preserves identities for scoring continuity.
 - Mobile phone layout is intentionally board-first/locked: opponents scroll above, local board and table controls stay anchored. Be careful not to regress this when changing tablet/desktop layouts.
+- Tablet landscape intentionally borrows the compact phone header: Rules, Log, and AI opponents stay as small disclosure buttons; the local "You" board is scaled down and bottom-anchored so opponent boards remain visible above it.
 - Multiplayer rooms are friend-facing and password gated. Shared room links should prefill join without reusing a stale saved player identity for another room.
 
 ## Useful Nova Memory Summary

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import { chooseDiscard, drawBlind, replaceCard, revealOpeningCard } from '../server-dist/game.js';
 
@@ -54,6 +55,11 @@ function openSocket(url, cookie) {
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
   });
+}
+
+function waitForServerClose(serverProcess) {
+  if (serverProcess.exitCode !== null || serverProcess.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => serverProcess.once('close', resolve));
 }
 
 function waitForMessage(ws, predicate, label) {
@@ -115,8 +121,9 @@ const roomsFile = path.join(tempDir, 'rooms.json');
 const port = await getOpenPort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const password = 'test-password';
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const server = spawn(process.execPath, ['server.mjs'], {
-  cwd: path.resolve(new URL('..', import.meta.url).pathname),
+  cwd: repoRoot,
   env: {
     ...process.env,
     HOST: '127.0.0.1',
@@ -138,6 +145,9 @@ let hostSocket;
 let guestSocket;
 let parkingHostSocket;
 let parkingGuestSocket;
+let resetHostSocket;
+let resetGuestSocket;
+let resetShareGuestSocket;
 let reconnectSocket;
 
 try {
@@ -162,6 +172,31 @@ try {
   assert.equal(parkingGuestJoined.room.players.find((player) => player.host)?.connected, false);
   assert.equal(parkingGuestJoined.room.players.find((player) => player.name === 'Early Guest')?.connected, true);
 
+  resetHostSocket = await openSocket(baseUrl, cookie);
+  resetHostSocket.send(JSON.stringify({ type: 'create-room', name: 'Reset Host' }));
+  const resetHostJoined = await waitForMessage(resetHostSocket, (message) => message.type === 'joined', 'reset host join');
+  const resetOldRoomCode = resetHostJoined.room.code;
+  resetGuestSocket = await openSocket(baseUrl, cookie);
+  resetGuestSocket.send(JSON.stringify({ type: 'join-room', code: resetOldRoomCode, name: 'Reset Guest' }));
+  await waitForMessage(resetGuestSocket, (message) => message.type === 'joined', 'reset guest join');
+  const resetNewHostRoomPromise = waitForMessage(resetHostSocket, (message) => message.type === 'joined', 'host reset to new room');
+  const resetGuestNoticePromise = waitForMessage(resetGuestSocket, (message) => message.type === 'room-reset', 'guest reset notice');
+  resetHostSocket.send(JSON.stringify({ type: 'reset-room' }));
+  const [resetNewHostRoom, resetGuestNotice] = await Promise.all([resetNewHostRoomPromise, resetGuestNoticePromise]);
+  assert.notEqual(resetNewHostRoom.room.code, resetOldRoomCode, 'reset creates a fresh room code');
+  assert.equal(resetNewHostRoom.room.status, 'waiting');
+  assert.equal(resetNewHostRoom.room.players.length, 1, 'fresh reset room starts with the host only');
+  assert.match(resetGuestNotice.message, /new room link/i);
+  resetShareGuestSocket = await openSocket(baseUrl, cookie);
+  resetShareGuestSocket.send(JSON.stringify({ type: 'join-room', code: resetNewHostRoom.room.code, name: 'Shared Link Guest' }));
+  const resetShareGuestJoined = await waitForMessage(
+    resetShareGuestSocket,
+    (message) => message.type === 'joined',
+    'share guest joins reset room'
+  );
+  assert.equal(resetShareGuestJoined.room.code, resetNewHostRoom.room.code);
+  assert.equal(resetShareGuestJoined.room.players.find((player) => player.name === 'Shared Link Guest')?.connected, true);
+
   hostSocket = await openSocket(baseUrl, cookie);
   hostSocket.send(JSON.stringify({ type: 'create-room', name: 'Ada' }));
   const hostJoined = await waitForMessage(hostSocket, (message) => message.type === 'joined', 'host join');
@@ -172,17 +207,18 @@ try {
   guestSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Grace' }));
   const guestJoined = await waitForMessage(guestSocket, (message) => message.type === 'joined', 'guest join');
 
-  hostSocket.send(JSON.stringify({ type: 'send-chat-message', text: '  Good luck   everyone  ' }));
-  const hostRoom = await waitForMessage(
+  const hostRoomPromise = waitForMessage(
     hostSocket,
     (message) => message.type === 'room' && message.room.chatMessages?.length === 1,
     'host chat broadcast'
   );
-  const guestRoom = await waitForMessage(
+  const guestRoomPromise = waitForMessage(
     guestSocket,
     (message) => message.type === 'room' && message.room.chatMessages?.length === 1,
     'guest chat broadcast'
   );
+  hostSocket.send(JSON.stringify({ type: 'send-chat-message', text: '  Good luck   everyone  ' }));
+  const [hostRoom, guestRoom] = await Promise.all([hostRoomPromise, guestRoomPromise]);
   const chatMessage = hostRoom.room.chatMessages[0];
   assert.equal(chatMessage.playerId, hostJoined.playerId);
   assert.equal(chatMessage.playerName, 'Ada');
@@ -227,15 +263,21 @@ try {
   );
   assert.equal(nextRound.room.readyForNextRoundPlayerIds.length, 0);
 
-  console.log('chat smoke passed: login redirect, hostless waiting rooms, room chat, reconnect history, and ready-gated next round');
+  console.log(
+    'chat smoke passed: login redirect, hostless waiting rooms, reset share rooms, room chat, reconnect history, and ready-gated next round'
+  );
 } finally {
   reconnectSocket?.close();
+  resetShareGuestSocket?.close();
+  resetGuestSocket?.close();
+  resetHostSocket?.close();
   parkingGuestSocket?.close();
   parkingHostSocket?.close();
   guestSocket?.close();
   hostSocket?.close();
-  server.kill('SIGTERM');
-  await new Promise((resolve) => server.once('close', resolve));
+  const serverClose = waitForServerClose(server);
+  if (server.exitCode === null && server.signalCode === null) server.kill('SIGTERM');
+  await serverClose;
   await fs.rm(tempDir, { recursive: true, force: true });
   if (server.exitCode && server.exitCode !== 0) {
     console.error(serverLogs.join(''));
