@@ -45,6 +45,9 @@ Generate a session secret with:
 Release smoke checklist:
 [docs/deployment-smoke-checklist.md](docs/deployment-smoke-checklist.md)
 
+Agent handoff and operating guide:
+[AGENTS.md](AGENTS.md)
+
 ## Tech Stack
 - React 18 + TypeScript
 - Vite
