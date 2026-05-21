@@ -419,9 +419,13 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
               <span className="skyjo-flipped-info" aria-hidden="true">i</span>
               <span className="sr-only"> cards flipped</span>
             </span>
-            {isCurrent ? (
-              <span className={`skyjo-turn-pill ${isLocal ? 'skyjo-turn-pill-local' : ''}`}>
-                {isLocal ? 'Your turn' : 'Current turn'}
+            {isCurrent || isLocal ? (
+              <span
+                className={`skyjo-turn-pill ${isCurrent && isLocal ? 'skyjo-turn-pill-local' : ''} ${
+                  isLocal && !isCurrent ? 'skyjo-turn-pill-muted' : ''
+                }`}
+              >
+                {isCurrent ? (isLocal ? 'Your turn' : 'Current turn') : 'Waiting'}
               </span>
             ) : null}
             {canSelectOpening ? <span className="skyjo-selection-pill">{openingRemaining}/2 opening picks</span> : null}
