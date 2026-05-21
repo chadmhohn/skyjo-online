@@ -1449,7 +1449,7 @@ body {
     .skyjo-active-mobile-shell:not(:has(.skyjo-active-room-grid)):has(.skyjo-desktop-local-board),
     .skyjo-active-room-grid {
       grid-template-columns: minmax(0, 1fr) minmax(16rem, 18.5rem) !important;
-      grid-template-rows: auto auto minmax(11rem, 1fr) minmax(14.5rem, 32vh);
+      grid-template-rows: auto auto minmax(9rem, 1fr) minmax(18rem, 40vh);
       gap: 0.5rem;
       justify-content: stretch;
     }
