@@ -654,6 +654,7 @@ function TableControls({
           <div className="skyjo-table-count mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.drawPile.length} cards</div>
         </button>
         <button
+          aria-label={selectedDiscard ? 'Put the discard card back.' : undefined}
           aria-pressed={selectedDiscard}
           className={`skyjo-button skyjo-pile-button text-center ${selectedDiscard ? 'skyjo-pile-button-active' : ''}`}
           disabled={discardButtonDisabled}
@@ -661,13 +662,15 @@ function TableControls({
           title={discardButtonTitle}
           type="button"
         >
-          <div className="skyjo-kicker">{selectedDiscard ? 'Cancel' : 'Discard'}</div>
+          <div className="skyjo-kicker">{selectedDiscard ? 'Undo' : 'Discard'}</div>
           {topDiscard ? (
             <div className={`${cardClass(topDiscard, false)} skyjo-table-card mx-auto mt-2`}>{cardLabel(topDiscard)}</div>
           ) : (
             <div className="skyjo-card skyjo-card-removed skyjo-table-card mx-auto mt-2" />
           )}
-          <div className="skyjo-table-count mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.discardPile.length} cards</div>
+          <div className="skyjo-table-count mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">
+            {selectedDiscard ? 'Tap to put back' : `${state.discardPile.length} cards`}
+          </div>
         </button>
       </div>
       {!selectedDiscard && !hasLocalDrawnDecision && commonDisabledReason ? (
