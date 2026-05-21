@@ -1,4 +1,5 @@
 import {
+  cancelDiscardSelection,
   chooseDiscard,
   createMultiplayerGame,
   discardDrawnAndReveal,
@@ -87,6 +88,9 @@ export function legalMultiplayerStateUpdates(currentState: GameState): GameState
   }
 
   if (currentState.phase === 'choose-replacement') {
+    if (currentState.selectedSource === 'discard') {
+      addCandidate(candidates, currentState, cancelDiscardSelection(currentState));
+    }
     if (currentState.selectedSource === 'discard' && currentState.discardPile.length === 0) return candidates;
     if (currentState.selectedSource === 'draw' && !currentState.drawnCard) return candidates;
 
