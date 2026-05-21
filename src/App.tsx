@@ -407,9 +407,16 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="skyjo-serif text-xl font-semibold text-[#f5e6c8]">{player.name}</h2>
-            <span className="skyjo-flipped-pill" title={`${knownCards} of 12 cards flipped`} aria-label={`${knownCards} of 12 cards flipped`}>
+            <span
+              aria-label={`${knownCards} of 12 cards flipped`}
+              className="skyjo-flipped-pill"
+              data-tooltip={`${knownCards} of 12 cards flipped`}
+              tabIndex={0}
+              title={`${knownCards} of 12 cards flipped`}
+            >
               <span>{knownCards}/12</span>
-              <span className="skyjo-flipped-pill-label"> flipped</span>
+              <span className="skyjo-flipped-info" aria-hidden="true">i</span>
+              <span className="sr-only"> cards flipped</span>
             </span>
             {isCurrent ? (
               <span className={`skyjo-turn-pill ${isLocal ? 'skyjo-turn-pill-local' : ''}`}>
