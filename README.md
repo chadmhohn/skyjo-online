@@ -57,7 +57,8 @@ Agent handoff and operating guide:
 
 ## Game Rules Summary
 - 3x4 grid of cards per player (-2 to 12)
-- Flip 2 cards initially
+- Flip 2 cards at the start of each round
+- Highest visible opening sum starts round one; the player who ended a round starts the next round
 - Draw or take discard, replace a card in your grid
 - Columns of 3 identical cards are removed (score 0)
 - Round ends when one player has all cards face up

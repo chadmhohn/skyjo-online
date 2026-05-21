@@ -216,7 +216,7 @@ body {
     content: attr(data-tooltip);
     position: absolute;
     left: 50%;
-    bottom: calc(100% + 0.42rem);
+    top: calc(100% + 0.42rem);
     z-index: 130;
     width: max-content;
     max-width: 12rem;
@@ -240,6 +240,7 @@ body {
   }
 
   .skyjo-flipped-pill:hover::after,
+  .skyjo-flipped-pill:focus::after,
   .skyjo-flipped-pill:focus-visible::after {
     opacity: 1;
     transform: translate(-50%, 0);
@@ -486,6 +487,18 @@ body {
     opacity: 0.4;
   }
 
+  .skyjo-pile-button-active {
+    border-color: rgba(253, 230, 138, 0.62);
+    background:
+      linear-gradient(180deg, rgba(245, 230, 200, 0.18) 0%, rgba(251, 191, 36, 0.1) 100%),
+      rgba(245, 230, 200, 0.08);
+    box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .skyjo-pile-button-active .skyjo-kicker {
+    color: rgba(254, 243, 199, 0.82);
+  }
+
   .skyjo-button:focus-visible,
   .skyjo-choice-button:focus-visible,
   .skyjo-card:focus-visible {
@@ -597,16 +610,19 @@ body {
   .skyjo-card-hidden {
     background: linear-gradient(145deg, #1f2937 0%, #111827 100%);
     color: rgba(245, 230, 200, 0.55);
-    font-size: clamp(0.6rem, 2vw, 0.86rem);
+    overflow: hidden;
+    padding-inline: 0.14rem;
+    font-size: clamp(0.54rem, 1.65vw, 0.78rem);
     font-style: italic;
-    letter-spacing: 0.18em;
+    letter-spacing: 0.11em;
+    text-align: center;
     white-space: nowrap;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 12px rgba(0, 0, 0, 0.3);
   }
 
   .skyjo-table-card.skyjo-card-hidden {
     font-size: clamp(0.4rem, 1vw, 0.56rem);
-    letter-spacing: 0.07em;
+    letter-spacing: 0.04em;
   }
 
   .skyjo-card-removed {
@@ -872,8 +888,8 @@ body {
 
     .skyjo-active-mobile-shell .skyjo-player-grid-opponent .skyjo-card-hidden,
     .skyjo-active-mobile-shell .skyjo-four-player-board-grid .skyjo-card-hidden {
-      font-size: clamp(0.46rem, 1vw, 0.64rem);
-      letter-spacing: 0.08em;
+      font-size: clamp(0.38rem, 0.82vw, 0.52rem);
+      letter-spacing: 0.04em;
     }
 
     .skyjo-active-mobile-shell .skyjo-secondary-stack {
@@ -1139,8 +1155,8 @@ body {
     }
 
     .skyjo-active-mobile-shell .skyjo-main-opponent-stack .skyjo-card-hidden {
-      font-size: clamp(0.34rem, 0.76vw, 0.52rem);
-      letter-spacing: 0.1em;
+      font-size: clamp(0.32rem, 0.66vw, 0.44rem);
+      letter-spacing: 0.04em;
     }
 
     .skyjo-active-mobile-shell .skyjo-main-opponent-stack .skyjo-flipped-pill {
@@ -1173,7 +1189,8 @@ body {
     }
 
     .skyjo-active-mobile-shell .skyjo-desktop-local-board .skyjo-card-hidden {
-      font-size: clamp(0.52rem, 1.1vw, 0.72rem);
+      font-size: clamp(0.44rem, 0.86vw, 0.58rem);
+      letter-spacing: 0.05em;
     }
 
     .skyjo-active-mobile-shell .skyjo-desktop-table-stack .skyjo-table-controls {
@@ -1249,7 +1266,7 @@ body {
 
     .skyjo-active-mobile-shell .skyjo-desktop-table-stack .skyjo-table-card.skyjo-card-hidden {
       font-size: 0.42rem;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.03em;
     }
 
     .skyjo-active-mobile-shell .skyjo-desktop-table-stack .skyjo-disabled-note,
@@ -1359,7 +1376,7 @@ body {
 
     .skyjo-active-mobile-shell .skyjo-table-card.skyjo-card-hidden {
       font-size: 0.48rem;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.03em;
     }
 
     .skyjo-active-mobile-shell .skyjo-pile-button {
@@ -2035,8 +2052,8 @@ body {
     }
 
     .skyjo-mobile-play-surface .skyjo-player-grid-local .skyjo-card-hidden {
-      font-size: 0.45rem;
-      letter-spacing: 0.11em;
+      font-size: 0.4rem;
+      letter-spacing: 0.05em;
     }
 
     .skyjo-mobile-table-rail {
@@ -2121,8 +2138,8 @@ body {
     }
 
     .skyjo-opponent-stack-multi .skyjo-player-grid-opponent .skyjo-card-hidden {
-      font-size: 0.3rem;
-      letter-spacing: 0.08em;
+      font-size: 0.28rem;
+      letter-spacing: 0.03em;
     }
 
     .skyjo-opponent-stack-odd > .skyjo-player-grid-opponent:last-child {
@@ -2166,8 +2183,8 @@ body {
     }
 
     .skyjo-opponent-stack-odd > .skyjo-player-grid-opponent:last-child .skyjo-card-hidden {
-      font-size: 0.36rem;
-      letter-spacing: 0.1em;
+      font-size: 0.32rem;
+      letter-spacing: 0.04em;
     }
 
     .skyjo-player-grid-opponent {
@@ -2224,8 +2241,8 @@ body {
     }
 
     .skyjo-player-grid-opponent .skyjo-card-hidden {
-      font-size: 0.36rem;
-      letter-spacing: 0.1em;
+      font-size: 0.32rem;
+      letter-spacing: 0.04em;
     }
 
     .skyjo-table-controls {
@@ -2338,6 +2355,7 @@ body {
 
     .skyjo-mobile-table-rail .skyjo-table-card.skyjo-card-hidden {
       font-size: 0.42rem;
+      letter-spacing: 0.03em;
     }
 
     .skyjo-mobile-table-rail .skyjo-table-count {

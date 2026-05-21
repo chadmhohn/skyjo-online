@@ -3,7 +3,7 @@ import {
   createInitialRoomState,
   validateMultiplayerStateUpdate
 } from '../server-dist/serverValidation.js';
-import { chooseDiscard, replaceCard, revealOpeningCard } from '../server-dist/game.js';
+import { cancelDiscardSelection, chooseDiscard, replaceCard, revealOpeningCard } from '../server-dist/game.js';
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -67,6 +67,16 @@ while (state.phase === 'opening-reveal') {
 }
 
 assert.equal(state.phase, 'choose-source');
+
+state = accept(state, chooseDiscard(state));
+assert.equal(state.phase, 'choose-replacement');
+assert.equal(state.selectedSource, 'discard');
+
+const discardSelectedState = state;
+state = accept(state, cancelDiscardSelection(state));
+assert.equal(state.phase, 'choose-source');
+assert.equal(state.selectedSource, null);
+assert.deepEqual(state.discardPile, discardSelectedState.discardPile);
 
 state = accept(state, chooseDiscard(state));
 assert.equal(state.phase, 'choose-replacement');
@@ -157,4 +167,4 @@ assert.deepEqual(
   'cleared column should sit on top of the replaced card and prior discard pile'
 );
 
-console.log('validation smoke passed: accepted legal opening/source/replacement/recycled-draw moves and rejected tampered states');
+console.log('validation smoke passed: accepted legal opening/source/cancel/replacement/recycled-draw moves and rejected tampered states');

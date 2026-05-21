@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { createPortal } from 'react-dom';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import {
+  cancelDiscardSelection,
   chooseDiscard,
   discardDrawnAndReveal,
   drawBlind,
@@ -310,7 +311,7 @@ function getTurnStatus(state: GameState, localTurn: boolean): TurnStatus {
     ? {
         eyebrow: 'Your turn',
         title: 'Place the discard card',
-        description: 'Select any highlighted card on your board to replace.',
+        description: 'Select any highlighted card to replace, or tap discard again to put it back.',
         tone: 'local'
       }
     : {
@@ -567,11 +568,21 @@ interface TableControlsProps {
   drawIntent: DrawIntent;
   localPlayerId?: string;
   onChooseDiscard: () => void;
+  onCancelDiscard: () => void;
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
 }
 
-function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDiscard, onDraw, onSetDrawIntent }: TableControlsProps) {
+function TableControls({
+  state,
+  localTurn,
+  drawIntent,
+  localPlayerId,
+  onChooseDiscard,
+  onCancelDiscard,
+  onDraw,
+  onSetDrawIntent
+}: TableControlsProps) {
   const topDiscard = state.discardPile[0];
   const activePlayer = state.players[state.currentPlayerIndex];
   const hasHiddenCard = hiddenCardCount(activePlayer) > 0;
@@ -582,6 +593,10 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
     deckDisabledReason && discardDisabledReason && deckDisabledReason === discardDisabledReason ? deckDisabledReason : '';
   const selectedDiscard = localTurn && state.phase === 'choose-replacement' && state.selectedSource === 'discard';
   const hasLocalDrawnDecision = Boolean(state.drawnCard && localTurn);
+  const discardButtonDisabled = Boolean(discardDisabledReason && !selectedDiscard);
+  const discardButtonTitle = selectedDiscard
+    ? 'Put the discard card back.'
+    : discardDisabledReason || 'Take the top discard card.';
 
   return (
     <section className="skyjo-panel skyjo-table-controls skyjo-table-glow">
@@ -639,13 +654,14 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
           <div className="skyjo-table-count mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.drawPile.length} cards</div>
         </button>
         <button
-          className="skyjo-button skyjo-pile-button text-center"
-          disabled={Boolean(discardDisabledReason)}
-          onClick={onChooseDiscard}
-          title={discardDisabledReason || 'Take the top discard card.'}
+          aria-pressed={selectedDiscard}
+          className={`skyjo-button skyjo-pile-button text-center ${selectedDiscard ? 'skyjo-pile-button-active' : ''}`}
+          disabled={discardButtonDisabled}
+          onClick={selectedDiscard ? onCancelDiscard : onChooseDiscard}
+          title={discardButtonTitle}
           type="button"
         >
-          <div className="skyjo-kicker">Discard</div>
+          <div className="skyjo-kicker">{selectedDiscard ? 'Cancel' : 'Discard'}</div>
           {topDiscard ? (
             <div className={`${cardClass(topDiscard, false)} skyjo-table-card mx-auto mt-2`}>{cardLabel(topDiscard)}</div>
           ) : (
@@ -654,11 +670,11 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
           <div className="skyjo-table-count mt-2 text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.discardPile.length} cards</div>
         </button>
       </div>
-      {!hasLocalDrawnDecision && commonDisabledReason ? (
+      {!selectedDiscard && !hasLocalDrawnDecision && commonDisabledReason ? (
         <p className="skyjo-disabled-note mt-3">
           <span>Action unavailable:</span> {commonDisabledReason}
         </p>
-      ) : !hasLocalDrawnDecision && !commonDisabledReason && discardDisabledReason && !deckDisabledReason ? (
+      ) : !selectedDiscard && !hasLocalDrawnDecision && !commonDisabledReason && discardDisabledReason && !deckDisabledReason ? (
         <p className="skyjo-disabled-note mt-3">
           <span>Discard unavailable:</span> {discardDisabledReason}
         </p>
@@ -705,7 +721,9 @@ function TableControls({ state, localTurn, drawIntent, localPlayerId, onChooseDi
       ) : null}
 
       {selectedDiscard ? (
-        <p className="skyjo-action-hint mt-4">Discard selected: choose a highlighted card.</p>
+        <p className="sr-only" aria-live="polite">
+          Discard selected. Tap discard again to put it back, or select a highlighted card.
+        </p>
       ) : null}
     </section>
   );
@@ -719,6 +737,7 @@ interface MobilePlaySurfaceProps {
   localTurn: boolean;
   onCardClick: (index: number) => void;
   onChooseDiscard: () => void;
+  onCancelDiscard: () => void;
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
 }
@@ -731,6 +750,7 @@ function MobilePlaySurface({
   localTurn,
   onCardClick,
   onChooseDiscard,
+  onCancelDiscard,
   onDraw,
   onSetDrawIntent
 }: MobilePlaySurfaceProps) {
@@ -748,6 +768,7 @@ function MobilePlaySurface({
           drawIntent={drawIntent}
           localPlayerId={localPlayerId}
           localTurn={localTurn}
+          onCancelDiscard={onCancelDiscard}
           onChooseDiscard={onChooseDiscard}
           onDraw={onDraw}
           onSetDrawIntent={onSetDrawIntent}
@@ -1241,6 +1262,7 @@ function SinglePlayer() {
             localPlayerId={localPlayers[0]?.id}
             localTurn={humanTurn}
             onCardClick={handleCard}
+            onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
             onChooseDiscard={() => setState((current) => chooseDiscard(current))}
             onDraw={() => setState((current) => drawBlind(current))}
             onSetDrawIntent={setDrawIntent}
@@ -1268,6 +1290,7 @@ function SinglePlayer() {
             drawIntent={drawIntent}
             localPlayerId={localPlayers[0]?.id}
             localTurn={humanTurn}
+            onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
             onChooseDiscard={() => setState((current) => chooseDiscard(current))}
             onDraw={() => setState((current) => drawBlind(current))}
             onSetDrawIntent={setDrawIntent}
@@ -1837,6 +1860,7 @@ function Lobby() {
                     localPlayerId={playerId}
                     localTurn={localTurn}
                     onCardClick={handleCard}
+                    onCancelDiscard={() => updateGame(cancelDiscardSelection(roomState))}
                     onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
                     onDraw={() => updateGame(drawBlind(roomState))}
                     onSetDrawIntent={setDrawIntent}
@@ -1870,6 +1894,7 @@ function Lobby() {
                     drawIntent={drawIntent}
                     localPlayerId={playerId}
                     localTurn={localTurn}
+                    onCancelDiscard={() => updateGame(cancelDiscardSelection(roomState))}
                     onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
                     onDraw={() => updateGame(drawBlind(roomState))}
                     onSetDrawIntent={setDrawIntent}

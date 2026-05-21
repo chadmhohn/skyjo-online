@@ -2,7 +2,7 @@
 
 This repository is the source for the private Skyjo-style web app at `https://skyjo.groundworkrevops.com/`. Treat this file as the first stop for Codex/Nova/Hermes handoff work.
 
-Last verified by Codex: 2026-05-21 America/Denver, after the tablet-landscape single-player UI pass.
+Last verified by Codex: 2026-05-21 America/Denver, after the mobile discard-cancel UX pass, official round-start rule check, and tablet tooltip/card-back fit polish.
 
 ## Current Operating State
 
@@ -114,7 +114,8 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 ## Product Rules And UX Notes
 
 - Each player has a 3x4 grid and manually reveals two opening cards.
-- Highest visible opening sum starts round one only; later rounds start with the previous closer.
+- Per the Magilano rules, every round starts with each player revealing two cards. Highest visible opening sum starts round one only; later rounds start with the previous closer.
+- Taking the discard pile is reversible until the player actually replaces a board card. Drawing blind is committed because the drawn card is revealed to that player.
 - Round end begins when a player reveals their last card; every other player gets one final turn.
 - If the closer does not have the strictly lowest round score and their score is positive, the closer's round score doubles.
 - Matching revealed columns clear and score zero. Replacement-driven column clears should put the cleared column on top of the replaced card in the discard pile.

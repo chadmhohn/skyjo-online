@@ -595,7 +595,12 @@ export function revealOpeningCard(state: GameState, cardIndex: number): GameStat
 
 export function chooseDiscard(state: GameState): GameState {
   if (state.phase !== 'choose-source') return state;
-  return withLog({ ...state, selectedSource: 'discard', phase: 'choose-replacement' }, `${currentPlayer(state).name} picked the discard pile.`);
+  return { ...state, selectedSource: 'discard', phase: 'choose-replacement' };
+}
+
+export function cancelDiscardSelection(state: GameState): GameState {
+  if (state.phase !== 'choose-replacement' || state.selectedSource !== 'discard') return state;
+  return { ...state, selectedSource: null, drawnCard: null, phase: 'choose-source' };
 }
 
 export function drawBlind(state: GameState): GameState {
