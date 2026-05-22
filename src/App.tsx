@@ -13,6 +13,7 @@ import {
   startFreshGame,
   startNextRound
 } from './game';
+import { playAudioCue, useAudioSettings, useGameAudio, type AudioSettings } from './audio';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from './types';
 
 const rows = [0, 1, 2];
@@ -79,6 +80,89 @@ function opponentBoardClass(entryCount: number, mobileOnly = false) {
   return `${baseClass} skyjo-opponent-stack-multi ${entryCount % 2 === 1 ? 'skyjo-opponent-stack-odd' : ''}`.trim();
 }
 
+function AudioSettingsPanel() {
+  const [settings, setSettings] = useAudioSettings();
+
+  function updateVolume(key: keyof Pick<AudioSettings, 'musicVolume' | 'soundVolume'>, value: string) {
+    const volume = Number(value) / 100;
+    if (key === 'musicVolume') {
+      setSettings({ musicVolume: volume });
+      return;
+    }
+    setSettings({ soundVolume: volume });
+  }
+
+  return (
+    <section className="skyjo-panel skyjo-home-audio-panel mt-7" aria-labelledby="skyjo-audio-settings-title">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="skyjo-kicker">Settings</p>
+          <h2 className="skyjo-serif mt-1 text-2xl font-bold text-[#f5e6c8]" id="skyjo-audio-settings-title">
+            Audio
+          </h2>
+        </div>
+        <button
+          className="skyjo-button px-3 py-2 text-sm"
+          disabled={!settings.soundEffects}
+          onClick={() => void playAudioCue('flip')}
+          type="button"
+        >
+          Test
+        </button>
+      </div>
+
+      <div className="skyjo-audio-settings-grid mt-4">
+        <label className="skyjo-audio-setting-row">
+          <span>
+            <span className="skyjo-audio-setting-title">Sound effects</span>
+          </span>
+          <input
+            checked={settings.soundEffects}
+            className="skyjo-audio-toggle"
+            onChange={(event) => setSettings({ soundEffects: event.target.checked })}
+            type="checkbox"
+          />
+        </label>
+        <label className="skyjo-audio-setting-slider">
+          <span>Effects volume</span>
+          <input
+            className="skyjo-audio-range"
+            disabled={!settings.soundEffects}
+            max="100"
+            min="0"
+            onChange={(event) => updateVolume('soundVolume', event.target.value)}
+            type="range"
+            value={Math.round(settings.soundVolume * 100)}
+          />
+        </label>
+        <label className="skyjo-audio-setting-row">
+          <span>
+            <span className="skyjo-audio-setting-title">Music</span>
+          </span>
+          <input
+            checked={settings.music}
+            className="skyjo-audio-toggle"
+            onChange={(event) => setSettings({ music: event.target.checked })}
+            type="checkbox"
+          />
+        </label>
+        <label className="skyjo-audio-setting-slider">
+          <span>Music volume</span>
+          <input
+            className="skyjo-audio-range"
+            disabled={!settings.music}
+            max="100"
+            min="0"
+            onChange={(event) => updateVolume('musicVolume', event.target.value)}
+            type="range"
+            value={Math.round(settings.musicVolume * 100)}
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
 function Home() {
   return (
     <main className="skyjo-surface">
@@ -97,6 +181,7 @@ function Home() {
               Multiplayer Lobby
             </Link>
           </div>
+          <AudioSettingsPanel />
         </div>
       </section>
     </main>
@@ -1101,6 +1186,8 @@ function SinglePlayer() {
   const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
   const summaryModalOpen = isScoringPhase && roundSummaryOpen;
 
+  useGameAudio(state);
+
   useEffect(() => {
     if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
       setDrawIntent('place');
@@ -1146,6 +1233,19 @@ function SinglePlayer() {
   function startSelectedGame() {
     setState(startFreshGame({ aiOpponentCount }));
     setAiSettingsOpen(false);
+  }
+
+  function chooseDiscardForSinglePlayer() {
+    void playAudioCue('pickup');
+    setState((current) => chooseDiscard(current));
+  }
+
+  function cancelDiscardForSinglePlayer() {
+    setState((current) => cancelDiscardSelection(current));
+  }
+
+  function drawForSinglePlayer() {
+    setState((current) => drawBlind(current));
   }
 
   return (
@@ -1269,9 +1369,9 @@ function SinglePlayer() {
             localPlayerId={localPlayers[0]?.id}
             localTurn={humanTurn}
             onCardClick={handleCard}
-            onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
-            onChooseDiscard={() => setState((current) => chooseDiscard(current))}
-            onDraw={() => setState((current) => drawBlind(current))}
+            onCancelDiscard={cancelDiscardForSinglePlayer}
+            onChooseDiscard={chooseDiscardForSinglePlayer}
+            onDraw={drawForSinglePlayer}
             onSetDrawIntent={setDrawIntent}
             state={state}
           />
@@ -1297,9 +1397,9 @@ function SinglePlayer() {
             drawIntent={drawIntent}
             localPlayerId={localPlayers[0]?.id}
             localTurn={humanTurn}
-            onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
-            onChooseDiscard={() => setState((current) => chooseDiscard(current))}
-            onDraw={() => setState((current) => drawBlind(current))}
+            onCancelDiscard={cancelDiscardForSinglePlayer}
+            onChooseDiscard={chooseDiscardForSinglePlayer}
+            onDraw={drawForSinglePlayer}
             onSetDrawIntent={setDrawIntent}
             state={state}
           />
@@ -1708,6 +1808,7 @@ function Lobby() {
   const localTurn = Boolean(room?.state && room.state.players[room.state.currentPlayerIndex]?.id === playerId);
   const localPlayer = room?.players.find((player) => player.id === playerId);
   const roomState = room?.state;
+  useGameAudio(roomState);
   const roomLocalPlayers = roomState?.players.filter((player) => player.id === playerId) || [];
   const roomOpponentPlayers = roomState?.players.filter((player) => player.id !== playerId) || [];
   const roomLocalBoardEntries = roomLocalPlayers.map((player) => ({ player, isLocal: true }));
@@ -1724,6 +1825,22 @@ function Lobby() {
   const localReadyForNextRound = readyForNextRoundPlayerIds.includes(playerId);
   const readySummary = roomScoringPhase ? `${readyForNextRoundCount}/${roundReadyPlayerIds.length} ready` : undefined;
   const summaryModalOpen = Boolean(roomScoringPhase && roundSummaryOpen);
+
+  function chooseDiscardForRoom() {
+    if (!roomState) return;
+    void playAudioCue('pickup');
+    updateGame(chooseDiscard(roomState));
+  }
+
+  function cancelDiscardForRoom() {
+    if (!roomState) return;
+    updateGame(cancelDiscardSelection(roomState));
+  }
+
+  function drawForRoom() {
+    if (!roomState) return;
+    updateGame(drawBlind(roomState));
+  }
 
   return (
     <main className={`skyjo-surface px-4 py-8 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}>
@@ -1867,9 +1984,9 @@ function Lobby() {
                     localPlayerId={playerId}
                     localTurn={localTurn}
                     onCardClick={handleCard}
-                    onCancelDiscard={() => updateGame(cancelDiscardSelection(roomState))}
-                    onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
-                    onDraw={() => updateGame(drawBlind(roomState))}
+                    onCancelDiscard={cancelDiscardForRoom}
+                    onChooseDiscard={chooseDiscardForRoom}
+                    onDraw={drawForRoom}
                     onSetDrawIntent={setDrawIntent}
                     state={roomState}
                   />
@@ -1901,9 +2018,9 @@ function Lobby() {
                     drawIntent={drawIntent}
                     localPlayerId={playerId}
                     localTurn={localTurn}
-                    onCancelDiscard={() => updateGame(cancelDiscardSelection(roomState))}
-                    onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
-                    onDraw={() => updateGame(drawBlind(roomState))}
+                    onCancelDiscard={cancelDiscardForRoom}
+                    onChooseDiscard={chooseDiscardForRoom}
+                    onDraw={drawForRoom}
                     onSetDrawIntent={setDrawIntent}
                     state={roomState}
                   />
@@ -1999,6 +2116,8 @@ function Lobby() {
 }
 
 function App() {
+  useAudioSettings();
+
   return (
     <Router>
       <Routes>

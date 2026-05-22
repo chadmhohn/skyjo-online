@@ -2,7 +2,7 @@
 
 This repository is the source for the private Skyjo-style web app at `https://skyjo.groundworkrevops.com/`. Treat this file as the first stop for Codex/Nova/Hermes handoff work.
 
-Last verified by Codex: 2026-05-21 America/Denver, after the mobile discard-cancel UX pass, official round-start rule check, and tablet tooltip/card-back fit polish.
+Last verified by Codex: 2026-05-22 America/Denver, after the homepage audio/settings pass and release smoke.
 
 ## Current Operating State
 
@@ -37,6 +37,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 - `server.mjs`: production Node server. Handles password-gated HTTP, static `dist/` serving, `/healthz`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and persistence flush on shutdown.
 - `server-room-persistence.mjs`: JSON persistence for rooms. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
 - `src/App.tsx`: React routes and UI for home, single-player, lobby, room play, table chat, rules, scoring, and responsive gameplay shells.
+- `src/audio.ts`: client-only Web Audio settings and generated cues. Sound effects are on by default, background music is off by default, and settings persist in browser `localStorage`.
 - `src/index.css`: most layout and visual behavior, including the mobile locked play surface and desktop/tablet responsive rules.
 - `scripts/smoke-*.mjs`: focused release smoke tests for validation, AI, persistence, and room/chat flows.
 - `docs/deployment-smoke-checklist.md`: operational release and smoke checklist.
@@ -116,6 +117,7 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - Each player has a 3x4 grid and manually reveals two opening cards.
 - Per the Magilano rules, every round starts with each player revealing two cards. Highest visible opening sum starts round one only; later rounds start with the previous closer.
 - Taking the discard pile is reversible until the player actually replaces a board card. Drawing blind is committed because the drawn card is revealed to that player.
+- Audio cues are intentionally lightweight and asset-free in `src/audio.ts`: visible discard pickup plays immediately, while draw, placement, and flip cues generally follow game-log changes. Keep music opt-in.
 - Round end begins when a player reveals their last card; every other player gets one final turn.
 - If the closer does not have the strictly lowest round score and their score is positive, the closer's round score doubles.
 - Matching revealed columns clear and score zero. Replacement-driven column clears should put the cleared column on top of the replaced card in the discard pile.
