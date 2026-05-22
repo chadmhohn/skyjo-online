@@ -569,6 +569,135 @@ body {
     box-shadow: 0 0 0 3px rgba(245, 230, 200, 0.08);
   }
 
+  .skyjo-account-card,
+  .skyjo-history-row,
+  .skyjo-admin-user-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    border-radius: 12px;
+    border: 1px solid rgba(245, 230, 200, 0.1);
+    background: rgba(6, 12, 10, 0.42);
+    padding: 0.9rem;
+  }
+
+  .skyjo-account-form {
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .skyjo-account-form label {
+    display: grid;
+    gap: 0.4rem;
+    color: rgba(245, 230, 200, 0.75);
+    font-size: 0.88rem;
+    font-weight: 800;
+  }
+
+  .skyjo-admin-create-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    border-radius: 12px;
+    border: 1px solid rgba(245, 230, 200, 0.1);
+    background: rgba(6, 12, 10, 0.36);
+    padding: 0.9rem;
+  }
+
+  .skyjo-admin-create-form label {
+    display: grid;
+    gap: 0.4rem;
+    color: rgba(245, 230, 200, 0.75);
+    font-size: 0.88rem;
+    font-weight: 800;
+  }
+
+  .skyjo-admin-create-form button {
+    align-self: end;
+  }
+
+  .skyjo-success-note,
+  .skyjo-error-note {
+    border-radius: 12px;
+    border: 1px solid rgba(245, 230, 200, 0.14);
+    padding: 0.8rem 0.95rem;
+    font-size: 0.92rem;
+    font-weight: 800;
+  }
+
+  .skyjo-success-note {
+    background: rgba(22, 101, 52, 0.34);
+    color: #dcfce7;
+  }
+
+  .skyjo-error-note {
+    background: rgba(127, 29, 29, 0.48);
+    color: #fee2e2;
+  }
+
+  .skyjo-stat-tile {
+    min-width: 0;
+    border-radius: 12px;
+    border: 1px solid rgba(245, 230, 200, 0.1);
+    background: rgba(255, 255, 255, 0.025);
+    padding: 0.9rem;
+  }
+
+  .skyjo-history-list,
+  .skyjo-admin-user-list {
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .skyjo-history-row {
+    color: inherit;
+    text-decoration: none;
+    transition: border-color 0.16s ease, background 0.16s ease;
+  }
+
+  .skyjo-history-row:hover {
+    border-color: rgba(245, 230, 200, 0.25);
+    background: rgba(245, 230, 200, 0.055);
+  }
+
+  .skyjo-round-score-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.55rem;
+  }
+
+  .skyjo-round-score-cell {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    border-radius: 10px;
+    border: 1px solid rgba(245, 230, 200, 0.08);
+    background: rgba(255, 255, 255, 0.022);
+    padding: 0.65rem 0.75rem;
+    color: rgba(245, 230, 200, 0.74);
+    font-size: 0.85rem;
+    font-weight: 800;
+  }
+
+  .skyjo-round-score-cell strong {
+    color: #f5e6c8;
+  }
+
+  .skyjo-admin-user-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, auto));
+    gap: 0.5rem;
+    justify-content: end;
+  }
+
+  @media (max-width: 720px) {
+    .skyjo-admin-create-form {
+      grid-template-columns: 1fr;
+    }
+  }
+
   .skyjo-card {
     display: flex;
     width: clamp(58px, 8vw, 92px);

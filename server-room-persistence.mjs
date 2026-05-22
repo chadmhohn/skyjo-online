@@ -23,6 +23,7 @@ function normalizePlayer(value) {
   if (!id) return null;
   return {
     id,
+    userId: stringValue(value.userId).trim() || undefined,
     name,
     connected: false,
     host: value.host === true
@@ -81,6 +82,8 @@ function normalizeRoom(value, now, staleMs) {
     state: isRecord(value.state) ? value.state : null,
     status,
     updatedAt,
+    completedGameId: stringValue(value.completedGameId).trim() || null,
+    gameSessionId: stringValue(value.gameSessionId).trim() || null,
     clients: new Set()
   };
 }
@@ -96,6 +99,7 @@ export function serializeRoom(room) {
     hostId: room.hostId,
     players: room.players.map((player) => ({
       id: player.id,
+      userId: player.userId || undefined,
       name: player.name,
       connected: player.connected === true,
       host: player.host === true
@@ -108,7 +112,9 @@ export function serializeRoom(room) {
       : [],
     state: room.state ?? null,
     status: room.status,
-    updatedAt: room.updatedAt
+    updatedAt: room.updatedAt,
+    completedGameId: room.completedGameId || null,
+    gameSessionId: room.gameSessionId || null
   };
 }
 

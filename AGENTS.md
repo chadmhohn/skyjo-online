@@ -2,7 +2,7 @@
 
 This repository is the source for the private Skyjo-style web app at `https://skyjo.groundworkrevops.com/`. Treat this file as the first stop for Codex/Nova/Hermes handoff work.
 
-Last verified by Codex: 2026-05-21 America/Denver, after the mobile discard-cancel UX pass, official round-start rule check, and tablet tooltip/card-back fit polish.
+Last verified by Codex: 2026-05-22 America/Denver, after the accounts/stats implementation pass.
 
 ## Current Operating State
 
@@ -12,6 +12,8 @@ Last verified by Codex: 2026-05-21 America/Denver, after the mobile discard-canc
 - Production service: `skyjo-online.service`, working directory `/srv/skyjo-online`.
 - Service env file: `/etc/skyjo-online.env`. Do not print or commit secret values from this file.
 - Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
+- Account and game-history database: `/var/lib/skyjo-online/skyjo.sqlite`, via `SKYJO_DB_FILE`.
+- Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. Treat that password as temporary.
 - App bind address: `127.0.0.1:4180`.
 - Public hostname: `skyjo.groundworkrevops.com`.
 - Cloudflare zone: `groundworkrevops.com`.
@@ -35,8 +37,10 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 - `src/types.ts`: shared client/server state types.
 - `src/serverValidation.ts`: server-side legal multiplayer state validation. This compiles to `server-dist/` and is loaded by the Node server.
 - `server.mjs`: production Node server. Handles password-gated HTTP, static `dist/` serving, `/healthz`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and persistence flush on shutdown.
+- `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, and admin user operations.
 - `server-room-persistence.mjs`: JSON persistence for rooms. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
 - `src/App.tsx`: React routes and UI for home, single-player, lobby, room play, table chat, rules, scoring, and responsive gameplay shells.
+- `src/account.tsx`: account context and client API helpers for login/signup/logout, stats, single-player save, and admin actions.
 - `src/index.css`: most layout and visual behavior, including the mobile locked play surface and desktop/tablet responsive rules.
 - `scripts/smoke-*.mjs`: focused release smoke tests for validation, AI, persistence, and room/chat flows.
 - `docs/deployment-smoke-checklist.md`: operational release and smoke checklist.
@@ -44,7 +48,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 ## Safety Rules
 
 - The GitHub repo is public. Never commit `.env`, `/etc/skyjo-online.env`, cookies, passwords, session secrets, tunnel tokens, room dumps with private content, or OpenClaw secrets.
-- Treat `/var/lib/skyjo-online/rooms.json` as runtime state, not a disposable build artifact. Back it up before persistence format changes.
+- Treat `/var/lib/skyjo-online/rooms.json` and `/var/lib/skyjo-online/skyjo.sqlite` as runtime state, not disposable build artifacts. Back them up before persistence format changes.
 - Do not restart `skyjo-online.service`, Cloudflare Tunnel, Traefik, OpenClaw, Docker, or the VPS unless Chad explicitly approved that disruptive action in the current conversation.
 - Preserve unrelated dirty work. If the dirty files overlap your task, read the diff and build on it; do not reset it away.
 - Do not rely on `curl -I -L /` as a login smoke. `HEAD /login` can redirect again because the server login handler is GET-specific. Use GET checks or `/healthz`.
@@ -64,7 +68,7 @@ npm run smoke:release
 npm run smoke:chat
 ```
 
-`npm run smoke:release` includes `git diff --check`, lint, build, high-severity audit, validation smoke, AI smoke, and persistence smoke. A known moderate `ws` advisory may print during audit; the high-severity gate should still pass unless the dependency state changes.
+`npm run smoke:release` includes `git diff --check`, lint, build, high-severity audit, validation smoke, AI smoke, persistence smoke, and account/store smoke. A known moderate `ws` advisory may print during audit; the high-severity gate should still pass unless the dependency state changes.
 
 For layout changes, also perform visual QA at minimum widths around:
 
@@ -94,6 +98,7 @@ curl -sS -D - https://skyjo.groundworkrevops.com/login -o /dev/null
 Restart is normally needed for:
 
 - `server.mjs` changes.
+- `server-account-store.mjs` or account/session/game-history API changes.
 - `server-room-persistence.mjs` changes.
 - `src/serverValidation.ts`, `src/game.ts`, or compiled `server-dist/` changes that the Node server must load.
 - Dependency, lockfile, service unit, or `/etc/skyjo-online.env` changes.
@@ -120,6 +125,8 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - If the closer does not have the strictly lowest round score and their score is positive, the closer's round score doubles.
 - Matching revealed columns clear and score zero. Replacement-driven column clears should put the cleared column on top of the replaced card in the discard pile.
 - Single-player supports 1-7 AI opponents with shuffled themed names. New game reshuffles names; next round preserves identities for scoring continuity.
+- The shared site password remains the outer gate. Single-player is playable without an account, but guest solo games do not save stats. Multiplayer requires a signed-in account, and room seats are tied to account user IDs.
+- Account stats start from the account release forward. Do not attempt historical backfill from `rooms.json` unless Chad explicitly asks for a separate import pass.
 - Mobile phone layout is intentionally board-first/locked: opponents scroll above, local board and table controls stay anchored. Be careful not to regress this when changing tablet/desktop layouts.
 - Tablet landscape intentionally borrows the compact phone header: Rules, Log, and AI opponents stay as small disclosure buttons; the local "You" board is scaled down and bottom-anchored so opponent boards remain visible above it. Opponent boards should not exceed 4 columns in tablet landscape or 3 columns in tablet portrait.
 - Multiplayer rooms are friend-facing and password gated. Shared room links should prefill join without reusing a stale saved player identity for another room.

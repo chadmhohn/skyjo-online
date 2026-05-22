@@ -106,11 +106,11 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 
 ## Server-Side Changes And Room Persistence
 
-Room state persists to `SKYJO_ROOMS_FILE` when set, or `.data/rooms.json` by default. Treat this file as release state, not a disposable build artifact.
+Room state persists to `SKYJO_ROOMS_FILE` when set, or `.data/rooms.json` by default. Account and game-history data persists to `SKYJO_DB_FILE`, or to `skyjo.sqlite` beside an absolute `SKYJO_ROOMS_FILE`. Treat both files as release state, not disposable build artifacts.
 
 - Before server-side room, validation, or persistence changes, identify the active rooms file used by the service environment.
-- Preserve the rooms file and its parent directory across deploys; do not delete `.data/rooms.json` as part of cleanup.
-- Back up the rooms file before deploying persistence format changes.
+- Preserve the rooms file, SQLite database, and their parent directory across deploys; do not delete `.data/rooms.json` or `.data/skyjo.sqlite` as part of cleanup.
+- Back up the rooms file and SQLite database before deploying persistence format changes.
 - On graceful shutdown, the server marks players disconnected and flushes rooms before exiting. After restart, restored rooms have empty socket clients and players appear offline until their browsers reconnect.
 - Rooms older than the stale-room window are pruned on load or later cleanup, so check `updatedAt` before assuming a missing room indicates a deploy failure.
-- After any server-side change, include the multiplayer two-client smoke and a refresh/rejoin check so persisted room state, WebSocket reconnect, and move validation are all exercised.
+- After any server-side change, include the multiplayer two-client smoke and a refresh/rejoin check so persisted room state, WebSocket reconnect, account-gated multiplayer, saved stats, and move validation are all exercised.

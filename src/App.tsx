@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   cancelDiscardSelection,
   chooseDiscard,
@@ -13,6 +13,22 @@ import {
   startFreshGame,
   startNextRound
 } from './game';
+import {
+  AccountProvider,
+  createAdminUser,
+  fetchAdminUsers,
+  fetchPlayerStats,
+  fetchStatsGame,
+  fetchStatsGames,
+  fetchStatsSummary,
+  saveSinglePlayerGame,
+  setAdminUserPassword,
+  updateAdminUser,
+  useAccount,
+  type AccountUser,
+  type StatsGame,
+  type StatsSummary
+} from './account';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from './types';
 
 const rows = [0, 1, 2];
@@ -79,6 +95,68 @@ function opponentBoardClass(entryCount: number, mobileOnly = false) {
   return `${baseClass} skyjo-opponent-stack-multi ${entryCount % 2 === 1 ? 'skyjo-opponent-stack-odd' : ''}`.trim();
 }
 
+function formatDate(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
+}
+
+function accountPath(next?: string) {
+  return next ? `/account?next=${encodeURIComponent(next)}` : '/account';
+}
+
+function AccountLinks() {
+  const { loading, user } = useAccount();
+  if (loading) return null;
+  return (
+    <div className="skyjo-home-account-links mt-6 flex flex-wrap items-center gap-2 text-sm font-bold">
+      {user ? (
+        <>
+          <span className="text-[#f5e6c8]/64">Signed in as {user.displayName}</span>
+          <Link className="skyjo-button px-3 py-2" to="/stats">
+            Stats
+          </Link>
+          <Link className="skyjo-button px-3 py-2" to="/account">
+            Account
+          </Link>
+          {user.role === 'admin' ? (
+            <Link className="skyjo-button px-3 py-2" to="/admin">
+              Admin
+            </Link>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <span className="text-[#f5e6c8]/64">Sign in to save stats and play multiplayer.</span>
+          <Link className="skyjo-button px-3 py-2" to="/account">
+            Account
+          </Link>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RequireAccountPanel({ next, title = 'Sign in to continue' }: { next: string; title?: string }) {
+  return (
+    <main className="skyjo-surface px-4 py-8">
+      <section className="skyjo-shell mx-auto flex min-h-[70vh] max-w-2xl items-center">
+        <div className="skyjo-panel w-full p-6">
+          <p className="skyjo-kicker">Account required</p>
+          <h1 className="skyjo-serif mt-2 text-3xl font-black text-[#f5e6c8]">{title}</h1>
+          <p className="mt-3 leading-7 text-[#f5e6c8]/68">Single-player is open for casual play, but multiplayer and saved stats need a Skyjo account.</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Link className="skyjo-button skyjo-button-primary px-4 py-2" to={accountPath(next)}>
+              Sign In
+            </Link>
+            <Link className="skyjo-button px-4 py-2" to="/">
+              Back Home
+            </Link>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function Home() {
   return (
     <main className="skyjo-surface">
@@ -96,6 +174,556 @@ function Home() {
             <Link className="skyjo-button px-5 py-3" to="/lobby">
               Multiplayer Lobby
             </Link>
+          </div>
+          <AccountLinks />
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function AccountPage() {
+  const account = useAccount();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const next = new URLSearchParams(location.search).get('next') || '/';
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [email, setEmail] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function handleAuth(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      if (mode === 'login') await account.login(email, password);
+      else await account.signup(email, displayName, password, confirmPassword);
+      navigate(next.startsWith('/') ? next : '/');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Account request failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePasswordChange(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await account.changePassword(currentPassword, password, confirmPassword);
+      setCurrentPassword('');
+      setPassword('');
+      setConfirmPassword('');
+      setMessage('Password changed. Sign in again with the new password.');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Password change failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    setBusy(true);
+    setError('');
+    try {
+      await account.logout();
+      navigate('/');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Logout failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="skyjo-surface px-4 py-8">
+      <section className="skyjo-shell mx-auto max-w-3xl space-y-5">
+        <Link className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
+          Back
+        </Link>
+        <div className="skyjo-panel p-5">
+          <p className="skyjo-kicker">Skyjo account</p>
+          <h1 className="skyjo-serif mt-2 text-4xl font-black text-[#f5e6c8]">{account.user ? 'Account' : mode === 'login' ? 'Sign In' : 'Create Account'}</h1>
+          {account.user ? (
+            <div className="mt-5 space-y-4">
+              <div className="skyjo-account-card">
+                <div>
+                  <div className="skyjo-kicker">Signed in</div>
+                  <div className="text-xl font-black text-[#f5e6c8]">{account.user.displayName}</div>
+                  <div className="text-sm text-[#f5e6c8]/58">{account.user.email}</div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Link className="skyjo-button px-3 py-2" to="/stats">
+                    Stats
+                  </Link>
+                  {account.user.role === 'admin' ? (
+                    <Link className="skyjo-button px-3 py-2" to="/admin">
+                      Admin
+                    </Link>
+                  ) : null}
+                  <button className="skyjo-button px-3 py-2" disabled={busy} onClick={handleLogout} type="button">
+                    Logout
+                  </button>
+                </div>
+              </div>
+              <form className="skyjo-account-form" onSubmit={handlePasswordChange}>
+                <label>
+                  Current password
+                  <input className="skyjo-input px-3 py-2" onChange={(event) => setCurrentPassword(event.target.value)} type="password" value={currentPassword} />
+                </label>
+                <label>
+                  New password
+                  <input className="skyjo-input px-3 py-2" onChange={(event) => setPassword(event.target.value)} type="password" value={password} />
+                </label>
+                <label>
+                  Confirm new password
+                  <input className="skyjo-input px-3 py-2" onChange={(event) => setConfirmPassword(event.target.value)} type="password" value={confirmPassword} />
+                </label>
+                <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={busy} type="submit">
+                  Change Password
+                </button>
+              </form>
+            </div>
+          ) : (
+            <form className="skyjo-account-form mt-5" onSubmit={handleAuth}>
+              <label>
+                Email
+                <input className="skyjo-input px-3 py-2" onChange={(event) => setEmail(event.target.value)} type="email" value={email} />
+              </label>
+              {mode === 'signup' ? (
+                <label>
+                  Display name
+                  <input className="skyjo-input px-3 py-2" onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
+                </label>
+              ) : null}
+              <label>
+                Password
+                <input className="skyjo-input px-3 py-2" onChange={(event) => setPassword(event.target.value)} type="password" value={password} />
+              </label>
+              {mode === 'signup' ? (
+                <label>
+                  Confirm password
+                  <input className="skyjo-input px-3 py-2" onChange={(event) => setConfirmPassword(event.target.value)} type="password" value={confirmPassword} />
+                </label>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={busy} type="submit">
+                  {mode === 'login' ? 'Sign In' : 'Create Account'}
+                </button>
+                <button className="skyjo-button px-4 py-2" disabled={busy} onClick={() => setMode(mode === 'login' ? 'signup' : 'login')} type="button">
+                  {mode === 'login' ? 'Create Account' : 'Use Sign In'}
+                </button>
+              </div>
+            </form>
+          )}
+          {message ? <div className="skyjo-success-note mt-4">{message}</div> : null}
+          {error ? <div className="skyjo-error-note mt-4">{error}</div> : null}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function StatTile({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="skyjo-stat-tile">
+      <div className="skyjo-kicker">{label}</div>
+      <div className="mt-1 text-2xl font-black text-[#f5e6c8]">{value}</div>
+    </div>
+  );
+}
+
+function GameRows({ games }: { games: StatsGame[] }) {
+  if (games.length === 0) return <p className="text-sm leading-6 text-[#f5e6c8]/62">No saved games yet.</p>;
+  return (
+    <div className="skyjo-history-list">
+      {games.map((game) => (
+        <Link className="skyjo-history-row" key={game.id} to={`/stats/games/${game.id}`}>
+          <div className="min-w-0">
+            <div className="font-black text-[#f5e6c8]">{game.mode === 'multi' ? `Room ${game.roomCode || 'Multiplayer'}` : 'Single Player'}</div>
+            <div className="text-xs text-[#f5e6c8]/54">{formatDate(game.completedAt)}</div>
+          </div>
+          <div className="text-right text-sm font-extrabold text-[#f5e6c8]/78">
+            <div>{game.winnerName} won</div>
+            <div>{game.roundCount} round{game.roundCount === 1 ? '' : 's'}</div>
+          </div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function StatsPage() {
+  const { loading, user } = useAccount();
+  const [summary, setSummary] = useState<StatsSummary | null>(null);
+  const [games, setGames] = useState<StatsGame[]>([]);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!user) return;
+    Promise.all([fetchStatsSummary(), fetchStatsGames()])
+      .then(([summaryPayload, gamesPayload]) => {
+        setSummary(summaryPayload);
+        setGames(gamesPayload.games);
+      })
+      .catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Could not load stats.'));
+  }, [user]);
+
+  if (loading) return null;
+  if (!user) return <RequireAccountPanel next="/stats" title="Sign in to see stats" />;
+
+  return (
+    <main className="skyjo-surface px-4 py-8">
+      <section className="skyjo-shell mx-auto max-w-5xl space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <Link className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
+              Back
+            </Link>
+            <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Stats</h1>
+          </div>
+          <Link className="skyjo-button px-4 py-2" to="/account">
+            Account
+          </Link>
+        </div>
+        {error ? <div className="skyjo-error-note">{error}</div> : null}
+        {summary ? (
+          <>
+            <section className="skyjo-panel p-5">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <StatTile label="Games" value={summary.self.gamesPlayed} />
+                <StatTile label="Wins" value={summary.self.wins} />
+                <StatTile label="Win rate" value={`${summary.self.winRate}%`} />
+                <StatTile label="Avg score" value={summary.self.averageTotalScore} />
+                <StatTile label="Best score" value={summary.self.bestTotalScore ?? '-'} />
+              </div>
+            </section>
+            <section className="grid gap-5 lg:grid-cols-[1fr_0.85fr]">
+              <div className="skyjo-panel p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="skyjo-kicker">History</p>
+                    <h2 className="skyjo-serif text-2xl font-black text-[#f5e6c8]">Saved games</h2>
+                  </div>
+                </div>
+                <GameRows games={games} />
+              </div>
+              <div className="skyjo-panel p-5">
+                <p className="skyjo-kicker">Co-players</p>
+                <h2 className="skyjo-serif text-2xl font-black text-[#f5e6c8]">People you've played</h2>
+                <div className="skyjo-history-list mt-4">
+                  {summary.coPlayers.length === 0 ? (
+                    <p className="text-sm leading-6 text-[#f5e6c8]/62">Multiplayer stats will show up after completed games.</p>
+                  ) : (
+                    summary.coPlayers.map((player) => (
+                      <Link className="skyjo-history-row" key={player.userId} to={`/stats/players/${player.userId}`}>
+                        <div>
+                          <div className="font-black text-[#f5e6c8]">{player.displayName}</div>
+                          <div className="text-xs text-[#f5e6c8]/54">{player.gamesTogether} shared game{player.gamesTogether === 1 ? '' : 's'}</div>
+                        </div>
+                        <div className="text-right text-sm font-extrabold text-[#f5e6c8]/78">{player.wins} wins</div>
+                      </Link>
+                    ))
+                  )}
+                </div>
+              </div>
+            </section>
+          </>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
+function GameDetailPage() {
+  const { loading, user } = useAccount();
+  const { gameId = '' } = useParams();
+  const [game, setGame] = useState<StatsGame | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!user || !gameId) return;
+    fetchStatsGame(gameId)
+      .then((payload) => setGame(payload.game))
+      .catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Could not load game.'));
+  }, [gameId, user]);
+
+  if (loading) return null;
+  if (!user) return <RequireAccountPanel next={`/stats/games/${gameId}`} title="Sign in to see game history" />;
+
+  return (
+    <main className="skyjo-surface px-4 py-8">
+      <section className="skyjo-shell mx-auto max-w-4xl space-y-5">
+        <Link className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/stats">
+          Back to stats
+        </Link>
+        {error ? <div className="skyjo-error-note">{error}</div> : null}
+        {game ? (
+          <div className="skyjo-panel p-5">
+            <p className="skyjo-kicker">{game.mode === 'multi' ? 'Multiplayer game' : 'Single-player game'}</p>
+            <h1 className="skyjo-serif mt-2 text-3xl font-black text-[#f5e6c8]">{game.winnerName} won</h1>
+            <p className="mt-1 text-sm text-[#f5e6c8]/58">{formatDate(game.completedAt)}</p>
+            <div className="skyjo-history-list mt-5">
+              {game.participants.map((participant) => (
+                <div className="skyjo-history-row" key={participant.id}>
+                  <div>
+                    <div className="font-black text-[#f5e6c8]">#{participant.rank} {participant.displayName}</div>
+                    <div className="text-xs text-[#f5e6c8]/54">{participant.kind === 'ai' ? 'AI' : 'Player'}</div>
+                  </div>
+                  <div className="text-right text-sm font-extrabold text-[#f5e6c8]/78">
+                    <div>Total {participant.totalScore}</div>
+                    <div>Last round {participant.roundScore}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {game.rounds.length > 0 ? (
+              <div className="mt-6">
+                <p className="skyjo-kicker">Round scores</p>
+                <div className="skyjo-round-score-grid mt-3">
+                  {game.rounds.map((round) => (
+                    <div className="skyjo-round-score-cell" key={round.id}>
+                      <span>R{round.round} {round.displayName}</span>
+                      <strong>{round.roundScore}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
+function PlayerStatsPage() {
+  const { loading, user } = useAccount();
+  const { playerId = '' } = useParams();
+  const [playerStats, setPlayerStats] = useState<{ user: AccountUser; summary: StatsSummary['self']; games: StatsGame[] } | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!user || !playerId) return;
+    fetchPlayerStats(playerId)
+      .then(setPlayerStats)
+      .catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Could not load player.'));
+  }, [playerId, user]);
+
+  if (loading) return null;
+  if (!user) return <RequireAccountPanel next={`/stats/players/${playerId}`} title="Sign in to see player stats" />;
+
+  return (
+    <main className="skyjo-surface px-4 py-8">
+      <section className="skyjo-shell mx-auto max-w-4xl space-y-5">
+        <Link className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/stats">
+          Back to stats
+        </Link>
+        {error ? <div className="skyjo-error-note">{error}</div> : null}
+        {playerStats ? (
+          <div className="skyjo-panel p-5">
+            <p className="skyjo-kicker">Player history</p>
+            <h1 className="skyjo-serif mt-2 text-3xl font-black text-[#f5e6c8]">{playerStats.user.displayName}</h1>
+            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+              <StatTile label="Games" value={playerStats.summary.gamesPlayed} />
+              <StatTile label="Wins" value={playerStats.summary.wins} />
+              <StatTile label="Win rate" value={`${playerStats.summary.winRate}%`} />
+              <StatTile label="Avg score" value={playerStats.summary.averageTotalScore} />
+            </div>
+            <div className="mt-5">
+              <GameRows games={playerStats.games} />
+            </div>
+          </div>
+        ) : null}
+      </section>
+    </main>
+  );
+}
+
+function AdminPage() {
+  const { loading, user } = useAccount();
+  const [users, setUsers] = useState<Array<AccountUser & { gamesPlayed: number; wins: number }>>([]);
+  const [passwords, setPasswords] = useState<Record<string, string>>({});
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserConfirmPassword, setNewUserConfirmPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState<'admin' | 'player'>('player');
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  async function refreshUsers() {
+    const payload = await fetchAdminUsers();
+    setUsers(payload.users);
+  }
+
+  useEffect(() => {
+    if (user?.role !== 'admin') return;
+    refreshUsers().catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Could not load users.'));
+  }, [user?.role]);
+
+  async function patchUser(userId: string, patch: Partial<Pick<AccountUser, 'role' | 'disabled'>>) {
+    setError('');
+    setMessage('');
+    try {
+      await updateAdminUser(userId, patch);
+      await refreshUsers();
+      setMessage('User updated.');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'User update failed.');
+    }
+  }
+
+  async function createUserForAdmin(event: FormEvent) {
+    event.preventDefault();
+    setError('');
+    setMessage('');
+    try {
+      const payload = await createAdminUser({
+        confirmPassword: newUserConfirmPassword,
+        displayName: newUserName,
+        email: newUserEmail,
+        password: newUserPassword,
+        role: newUserRole
+      });
+      setNewUserEmail('');
+      setNewUserName('');
+      setNewUserPassword('');
+      setNewUserConfirmPassword('');
+      setNewUserRole('player');
+      await refreshUsers();
+      setMessage(`Created account for ${payload.user.email}.`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'User creation failed.');
+    }
+  }
+
+  async function resetPassword(userId: string) {
+    const password = passwords[userId] || '';
+    setError('');
+    setMessage('');
+    try {
+      await setAdminUserPassword(userId, password, password);
+      setPasswords((current) => ({ ...current, [userId]: '' }));
+      setMessage('Password updated.');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Password update failed.');
+    }
+  }
+
+  if (loading) return null;
+  if (!user) return <RequireAccountPanel next="/admin" title="Sign in for admin tools" />;
+  if (user.role !== 'admin') return <RequireAccountPanel next="/" title="Admin privileges required" />;
+
+  return (
+    <main className="skyjo-surface px-4 py-8">
+      <section className="skyjo-shell mx-auto max-w-5xl space-y-5">
+        <Link className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
+          Back
+        </Link>
+        <div className="skyjo-panel p-5">
+          <p className="skyjo-kicker">Admin</p>
+          <h1 className="skyjo-serif mt-2 text-4xl font-black text-[#f5e6c8]">Users</h1>
+          {message ? <div className="skyjo-success-note mt-4">{message}</div> : null}
+          {error ? <div className="skyjo-error-note mt-4">{error}</div> : null}
+          <form className="skyjo-admin-create-form mt-5" onSubmit={createUserForAdmin}>
+            <label>
+              Email
+              <input
+                className="skyjo-input px-3 py-2"
+                onChange={(event) => setNewUserEmail(event.target.value)}
+                required
+                type="email"
+                value={newUserEmail}
+              />
+            </label>
+            <label>
+              Display name
+              <input
+                className="skyjo-input px-3 py-2"
+                onChange={(event) => setNewUserName(event.target.value)}
+                required
+                value={newUserName}
+              />
+            </label>
+            <label>
+              Temporary password
+              <input
+                className="skyjo-input px-3 py-2"
+                onChange={(event) => setNewUserPassword(event.target.value)}
+                required
+                type="password"
+                value={newUserPassword}
+              />
+            </label>
+            <label>
+              Confirm password
+              <input
+                className="skyjo-input px-3 py-2"
+                onChange={(event) => setNewUserConfirmPassword(event.target.value)}
+                required
+                type="password"
+                value={newUserConfirmPassword}
+              />
+            </label>
+            <label>
+              Role
+              <select
+                className="skyjo-input px-3 py-2"
+                onChange={(event) => setNewUserRole(event.target.value === 'admin' ? 'admin' : 'player')}
+                value={newUserRole}
+              >
+                <option value="player">Player</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <button className="skyjo-button skyjo-button-primary px-4 py-2" type="submit">
+              Create Account
+            </button>
+          </form>
+          <div className="skyjo-admin-user-list mt-5">
+            {users.map((item) => (
+              <div className="skyjo-admin-user-row" key={item.id}>
+                <div className="min-w-0">
+                  <div className="font-black text-[#f5e6c8]">{item.displayName}</div>
+                  <div className="text-xs text-[#f5e6c8]/54">{item.email}</div>
+                  <div className="mt-1 text-xs font-bold text-[#f5e6c8]/68">
+                    {item.role} - {item.disabled ? 'disabled' : 'active'} - {item.gamesPlayed} games - {item.wins} wins
+                  </div>
+                </div>
+                <div className="skyjo-admin-user-actions">
+                  <button className="skyjo-button px-3 py-2 text-sm" onClick={() => patchUser(item.id, { disabled: !item.disabled })} type="button">
+                    {item.disabled ? 'Enable' : 'Disable'}
+                  </button>
+                  <button
+                    className="skyjo-button px-3 py-2 text-sm"
+                    onClick={() => patchUser(item.id, { role: item.role === 'admin' ? 'player' : 'admin' })}
+                    type="button"
+                  >
+                    {item.role === 'admin' ? 'Make Player' : 'Make Admin'}
+                  </button>
+                  <input
+                    className="skyjo-input px-3 py-2 text-sm"
+                    onChange={(event) => setPasswords((current) => ({ ...current, [item.id]: event.target.value }))}
+                    placeholder="New password"
+                    type="password"
+                    value={passwords[item.id] || ''}
+                  />
+                  <button className="skyjo-button skyjo-button-primary px-3 py-2 text-sm" onClick={() => resetPassword(item.id)} type="button">
+                    Set Password
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </section>
@@ -1083,11 +1711,14 @@ function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameStat
 }
 
 function SinglePlayer() {
+  const { user } = useAccount();
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
+  const [statsSaveStatus, setStatsSaveStatus] = useState('');
+  const savedSingleGameKeyRef = useRef('');
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
   const localPlayers = state.players.filter((player) => player.kind === 'human');
@@ -1130,6 +1761,24 @@ function SinglePlayer() {
     setRoundSummaryOpen(isScoringPhase);
   }, [isScoringPhase, state.round]);
 
+  useEffect(() => {
+    if (state.phase !== 'game-over') {
+      savedSingleGameKeyRef.current = '';
+      setStatsSaveStatus('');
+      return;
+    }
+    if (!user) return;
+    const key = `${state.round}:${state.winnerId}:${state.players.map((player) => `${player.id}:${player.totalScore}`).join('|')}`;
+    if (savedSingleGameKeyRef.current === key) return;
+    savedSingleGameKeyRef.current = key;
+    saveSinglePlayerGame(state, key)
+      .then(() => setStatsSaveStatus('Game saved to your stats.'))
+      .catch((error) => {
+        savedSingleGameKeyRef.current = '';
+        setStatsSaveStatus(error instanceof Error ? error.message : 'Could not save stats.');
+      });
+  }, [state, user]);
+
   function handleCard(index: number) {
     if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
     if (state.phase === 'opening-reveal') {
@@ -1171,6 +1820,7 @@ function SinglePlayer() {
               </Link>
               <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Single Player</h1>
               <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
+              {statsSaveStatus ? <p className="mt-2 text-sm font-bold text-[#f5e6c8]/62">{statsSaveStatus}</p> : null}
             </div>
             <div className="skyjo-header-controls flex w-full flex-col gap-3 sm:w-auto sm:items-end">
               <div className="skyjo-header-actions flex items-start justify-end gap-2">
@@ -1375,6 +2025,7 @@ function roomShareUrl(code: string) {
 }
 
 function Lobby() {
+  const { loading: accountLoading, user: accountUser } = useAccount();
   const location = useLocation();
   const initialLobbyRef = useRef<InitialLobbySession | null>(null);
   if (!initialLobbyRef.current) initialLobbyRef.current = getInitialLobbySession();
@@ -1443,6 +2094,12 @@ function Lobby() {
   }, [roomCode]);
 
   useEffect(() => {
+    if (!accountUser) return;
+    setName(accountUser.displayName);
+    window.localStorage.setItem('skyjo-player-name', accountUser.displayName);
+  }, [accountUser]);
+
+  useEffect(() => {
     playerIdRef.current = playerId;
   }, [playerId]);
 
@@ -1488,7 +2145,11 @@ function Lobby() {
   }
 
   function connect(action: 'create-room' | 'join-room', codeOverride?: string) {
-    const cleanedName = name.trim() || 'Player';
+    if (!accountUser) {
+      setError('Sign in to your Skyjo account before joining multiplayer.');
+      return;
+    }
+    const cleanedName = accountUser.displayName || name.trim() || 'Player';
     const cleanedCode = cleanRoomCode(codeOverride ?? joinCode);
     if (action === 'join-room' && !cleanedCode) {
       setError('Enter a room code.');
@@ -1725,6 +2386,9 @@ function Lobby() {
   const readySummary = roomScoringPhase ? `${readyForNextRoundCount}/${roundReadyPlayerIds.length} ready` : undefined;
   const summaryModalOpen = Boolean(roomScoringPhase && roundSummaryOpen);
 
+  if (accountLoading) return null;
+  if (!accountUser) return <RequireAccountPanel next={`/lobby${location.search}`} title="Sign in to play multiplayer" />;
+
   return (
     <main className={`skyjo-surface px-4 py-8 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}>
       <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} ${summaryModalOpen ? 'skyjo-round-summary-mode' : ''} space-y-5`}>
@@ -1752,10 +2416,10 @@ function Lobby() {
 
         {!room ? (
           <section className="skyjo-panel grid gap-4 p-5 md:grid-cols-[1fr_1fr_auto]">
-            <label className="grid gap-2 text-sm font-semibold text-[#f5e6c8]/75">
-              Display name
-              <input className="skyjo-input px-3 py-2" onChange={(event) => setName(event.target.value)} value={name} />
-            </label>
+            <div className="grid gap-2 text-sm font-semibold text-[#f5e6c8]/75">
+              Signed in
+              <div className="skyjo-input flex items-center px-3 py-2">{accountUser.displayName}</div>
+            </div>
             <label className="grid gap-2 text-sm font-semibold text-[#f5e6c8]/75">
               Room code
               <input
@@ -2001,11 +2665,18 @@ function Lobby() {
 function App() {
   return (
     <Router>
-      <Routes>
-        <Route element={<Home />} path="/" />
-        <Route element={<SinglePlayer />} path="/single-player" />
-        <Route element={<Lobby />} path="/lobby" />
-      </Routes>
+      <AccountProvider>
+        <Routes>
+          <Route element={<Home />} path="/" />
+          <Route element={<AccountPage />} path="/account" />
+          <Route element={<StatsPage />} path="/stats" />
+          <Route element={<GameDetailPage />} path="/stats/games/:gameId" />
+          <Route element={<PlayerStatsPage />} path="/stats/players/:playerId" />
+          <Route element={<AdminPage />} path="/admin" />
+          <Route element={<SinglePlayer />} path="/single-player" />
+          <Route element={<Lobby />} path="/lobby" />
+        </Routes>
+      </AccountProvider>
     </Router>
   );
 }

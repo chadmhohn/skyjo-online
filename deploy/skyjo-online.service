@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/.openclaw/workspace/skyjo-online
+WorkingDirectory=/srv/skyjo-online
 EnvironmentFile=/etc/skyjo-online.env
 ExecStart=/usr/bin/npm start
 Restart=on-failure

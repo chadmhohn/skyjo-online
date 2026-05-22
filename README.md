@@ -6,6 +6,7 @@ Multiplayer online version of the popular card game Skyjo.
 - Real-time multiplayer rooms (2-8 players)
 - Single player mode vs AI
 - Password protected access
+- Optional user accounts with saved stats, game history, and admin password resets
 - Built with React + Vite + TypeScript + Tailwind + a VPS-native WebSocket server
 
 ## Quick Start
@@ -23,6 +24,9 @@ The VPS deployment uses the normal Vite build plus a small Node server with a sh
 2. Create `/etc/skyjo-online.env` or another service env file with:
    - `SKYJO_ACCESS_PASSWORD`
    - `SKYJO_SESSION_SECRET`
+   - `SKYJO_DB_FILE=/var/lib/skyjo-online/skyjo.sqlite`
+   - `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com`
+   - `SKYJO_ADMIN_INITIAL_PASSWORD` for first admin bootstrap
    - `HOST=127.0.0.1`
    - `PORT=4180`
 3. Load the env file and build:
@@ -30,7 +34,7 @@ The VPS deployment uses the normal Vite build plus a small Node server with a sh
 4. Start the production server:
    `set -a && . /etc/skyjo-online.env && set +a && npm start`
 
-Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets a signed, HttpOnly cookie. Keep the actual password and session secret out of git.
+Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets signed, HttpOnly cookies for both the shared gate and user accounts. Keep passwords, session secrets, and the SQLite database out of git.
 
 Health check:
 `curl http://127.0.0.1:4180/healthz`
@@ -53,6 +57,7 @@ Agent handoff and operating guide:
 - Vite
 - Tailwind CSS + daisyUI
 - Node WebSocket rooms for multiplayer state
+- SQLite account and game-history store
 - React Router for navigation
 
 ## Game Rules Summary

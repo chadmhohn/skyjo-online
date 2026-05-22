@@ -62,7 +62,10 @@ export function createNextRoundRoomState(state: GameState): GameState {
     name: player.name,
     totalScore: player.totalScore
   }));
-  return createMultiplayerGame(players, state.round + 1, state.nextStarterId);
+  return {
+    ...createMultiplayerGame(players, state.round + 1, state.nextStarterId),
+    roundHistory: state.roundHistory ?? []
+  };
 }
 
 export function legalMultiplayerStateUpdates(currentState: GameState): GameState[] {

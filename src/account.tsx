@@ -1,0 +1,225 @@
+/* eslint-disable react-refresh/only-export-components */
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import type { GameState } from './types';
+
+export interface AccountUser {
+  id: string;
+  email: string;
+  displayName: string;
+  role: 'admin' | 'player';
+  disabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastLoginAt: number | null;
+}
+
+export interface StatsParticipant {
+  id: string;
+  userId: string | null;
+  playerId: string;
+  displayName: string;
+  kind: 'human' | 'ai';
+  rank: number;
+  roundScore: number;
+  totalScore: number;
+  won: boolean;
+}
+
+export interface StatsRoundScore {
+  id: string;
+  round: number;
+  playerId: string;
+  userId: string | null;
+  displayName: string;
+  roundScore: number;
+  totalScore: number;
+}
+
+export interface StatsGame {
+  id: string;
+  mode: 'single' | 'multi';
+  roomCode: string | null;
+  completedAt: number;
+  roundCount: number;
+  winnerName: string;
+  winnerUserId: string | null;
+  participants: StatsParticipant[];
+  rounds: StatsRoundScore[];
+}
+
+export interface StatsSummary {
+  self: {
+    gamesPlayed: number;
+    wins: number;
+    multiplayerGames: number;
+    singlePlayerGames: number;
+    winRate: number;
+    averageTotalScore: number;
+    bestTotalScore: number | null;
+  };
+  coPlayers: Array<{
+    userId: string;
+    displayName: string;
+    gamesTogether: number;
+    wins: number;
+    averageTotalScore: number;
+    latestAt: number;
+  }>;
+  recentGames: StatsGame[];
+  admin: { users: number; games: number } | null;
+}
+
+type AccountContextValue = {
+  loading: boolean;
+  user: AccountUser | null;
+  error: string;
+  clearError: () => void;
+  refresh: () => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
+  signup: (email: string, displayName: string, password: string, confirmPassword: string) => Promise<void>;
+  logout: () => Promise<void>;
+  changePassword: (currentPassword: string, password: string, confirmPassword: string) => Promise<void>;
+};
+
+const AccountContext = createContext<AccountContextValue | null>(null);
+
+async function apiJson<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {})
+    }
+  });
+  const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) throw new Error(payload.error || 'Request failed.');
+  return payload as T;
+}
+
+export function AccountProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<AccountUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  async function refresh() {
+    const payload = await apiJson<{ user: AccountUser | null }>('/api/account/me');
+    setUser(payload.user ?? null);
+  }
+
+  useEffect(() => {
+    refresh()
+      .catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Could not load account.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const value = useMemo<AccountContextValue>(
+    () => ({
+      loading,
+      user,
+      error,
+      clearError: () => setError(''),
+      refresh,
+      async login(email, password) {
+        setError('');
+        const payload = await apiJson<{ user: AccountUser }>('/api/account/login', {
+          method: 'POST',
+          body: JSON.stringify({ email, password })
+        });
+        setUser(payload.user);
+      },
+      async signup(email, displayName, password, confirmPassword) {
+        setError('');
+        const payload = await apiJson<{ user: AccountUser }>('/api/account/signup', {
+          method: 'POST',
+          body: JSON.stringify({ email, displayName, password, confirmPassword })
+        });
+        setUser(payload.user);
+      },
+      async logout() {
+        setError('');
+        await apiJson<{ ok: boolean }>('/api/account/logout', { method: 'POST' });
+        setUser(null);
+      },
+      async changePassword(currentPassword, password, confirmPassword) {
+        setError('');
+        await apiJson<{ ok: boolean }>('/api/account/password', {
+          method: 'POST',
+          body: JSON.stringify({ currentPassword, password, confirmPassword })
+        });
+        setUser(null);
+      }
+    }),
+    [error, loading, user]
+  );
+
+  return <AccountContext.Provider value={value}>{children}</AccountContext.Provider>;
+}
+
+export function useAccount() {
+  const value = useContext(AccountContext);
+  if (!value) throw new Error('useAccount must be used inside AccountProvider.');
+  return value;
+}
+
+export async function saveSinglePlayerGame(state: GameState, clientGameKey: string) {
+  return apiJson<{ game: StatsGame }>('/api/stats/single-player', {
+    method: 'POST',
+    body: JSON.stringify({ state, clientGameKey })
+  });
+}
+
+export async function fetchStatsSummary() {
+  return apiJson<StatsSummary>('/api/stats/summary');
+}
+
+export async function fetchStatsGames() {
+  return apiJson<{ games: StatsGame[] }>('/api/stats/games');
+}
+
+export async function fetchStatsGame(gameId: string) {
+  return apiJson<{ game: StatsGame }>(`/api/stats/games/${encodeURIComponent(gameId)}`);
+}
+
+export async function fetchPlayerStats(userId: string) {
+  return apiJson<{ user: AccountUser; summary: StatsSummary['self']; games: StatsGame[] }>(
+    `/api/stats/players/${encodeURIComponent(userId)}`
+  );
+}
+
+export async function fetchAdminUsers() {
+  return apiJson<{ users: Array<AccountUser & { gamesPlayed: number; wins: number }> }>('/api/admin/users');
+}
+
+export async function createAdminUser({
+  confirmPassword,
+  displayName,
+  email,
+  password,
+  role
+}: {
+  confirmPassword: string;
+  displayName: string;
+  email: string;
+  password: string;
+  role: 'admin' | 'player';
+}) {
+  return apiJson<{ user: AccountUser }>('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify({ confirmPassword, displayName, email, password, role })
+  });
+}
+
+export async function updateAdminUser(userId: string, patch: Partial<Pick<AccountUser, 'displayName' | 'role' | 'disabled'>>) {
+  return apiJson<{ user: AccountUser }>(`/api/admin/users/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch)
+  });
+}
+
+export async function setAdminUserPassword(userId: string, password: string, confirmPassword: string) {
+  return apiJson<{ ok: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+    method: 'POST',
+    body: JSON.stringify({ password, confirmPassword })
+  });
+}

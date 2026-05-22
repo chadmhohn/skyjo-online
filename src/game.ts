@@ -429,6 +429,19 @@ function finishRound(state: GameState, closer: Player): GameState {
   const leader = [...players].sort((a, b) => a.totalScore - b.totalScore)[0];
   const gameOver = players.some((player) => player.totalScore >= winningScore);
   const doubledNote = closerScoreDoubled ? ` ${possessiveName(closer.name)} round score doubled to ${closerScore * 2}.` : '';
+  const roundHistory = [
+    ...(state.roundHistory ?? []),
+    {
+      round: state.round,
+      closerId: closer.id,
+      scores: players.map((player) => ({
+        playerId: player.id,
+        name: player.name,
+        roundScore: player.roundScore,
+        totalScore: player.totalScore
+      }))
+    }
+  ];
 
   return withLog(
     {
@@ -440,7 +453,8 @@ function finishRound(state: GameState, closer: Player): GameState {
       winnerId: gameOver ? leader.id : null,
       nextStarterId: closer.id,
       roundCloserId: null,
-      finalTurnPlayerIds: []
+      finalTurnPlayerIds: [],
+      roundHistory
     },
     `${closer.name} ended the round.${doubledNote} ${leader.name} leads with ${leader.totalScore}.`
   );
@@ -487,7 +501,8 @@ export function createGameForPlayers(
     nextStarterId: hasOpeningReveals ? null : round > 1 ? startPlayerId || null : null,
     roundCloserId: null,
     finalTurnPlayerIds: [],
-    openingRevealCounts: openingRevealCounts(dealtPlayers)
+    openingRevealCounts: openingRevealCounts(dealtPlayers),
+    roundHistory: []
   };
 }
 
@@ -539,7 +554,10 @@ export function startFreshGame(options: SinglePlayerGameOptions = {}): GameState
 }
 
 export function startNextRound(state: GameState): GameState {
-  return createGame(state.players, state.round + 1, state.nextStarterId);
+  return {
+    ...createGame(state.players, state.round + 1, state.nextStarterId),
+    roundHistory: state.roundHistory ?? []
+  };
 }
 
 export function revealOpeningCard(state: GameState, cardIndex: number): GameState {

@@ -49,6 +49,55 @@ async function login(url, password, next = '/') {
   return cookie.split(';')[0];
 }
 
+async function accountRequest(url, siteCookie, path, body) {
+  const response = await fetch(`${url}${path}`, {
+    method: 'POST',
+    headers: {
+      Cookie: siteCookie,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { response, payload };
+}
+
+async function createAccount(url, siteCookie, email, displayName) {
+  const { response, payload } = await accountRequest(url, siteCookie, '/api/account/signup', {
+    email,
+    displayName,
+    password: 'account-secret-123',
+    confirmPassword: 'account-secret-123'
+  });
+  assert.equal(response.status, 201);
+  const accountCookie = response.headers.get('set-cookie');
+  assert.ok(accountCookie, 'expected an account cookie');
+  assert.equal(payload.user.email, email);
+  return {
+    cookie: `${siteCookie}; ${accountCookie.split(';')[0]}`,
+    user: payload.user
+  };
+}
+
+async function loginAccount(url, siteCookie, email, password = 'account-secret-123') {
+  const { response, payload } = await accountRequest(url, siteCookie, '/api/account/login', { email, password });
+  assert.equal(response.status, 200);
+  const accountCookie = response.headers.get('set-cookie');
+  assert.ok(accountCookie, 'expected an account login cookie');
+  assert.equal(payload.user.email, email);
+  return {
+    cookie: `${siteCookie}; ${accountCookie.split(';')[0]}`,
+    user: payload.user
+  };
+}
+
+async function getJson(url, cookie, path) {
+  const response = await fetch(`${url}${path}`, { headers: { Cookie: cookie } });
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  return payload;
+}
+
 function openSocket(url, cookie) {
   const ws = new WebSocket(`${url.replace('http:', 'ws:')}/rooms`, { headers: { Cookie: cookie } });
   return new Promise((resolve, reject) => {
@@ -99,6 +148,60 @@ function nextFastMove(state) {
   return state;
 }
 
+function completedSoloState() {
+  return {
+    players: [
+      {
+        id: 'human-1',
+        kind: 'human',
+        name: 'Ada',
+        grid: [],
+        totalScore: 22,
+        roundScore: 8
+      },
+      {
+        id: 'ai-1',
+        kind: 'ai',
+        name: 'Finn',
+        grid: [],
+        totalScore: 44,
+        roundScore: 17
+      }
+    ],
+    drawPile: [],
+    discardPile: [],
+    currentPlayerIndex: 0,
+    phase: 'game-over',
+    selectedSource: null,
+    drawnCard: null,
+    round: 2,
+    log: ['Ada wins.'],
+    winnerId: 'human-1',
+    nextStarterId: null,
+    roundCloserId: null,
+    finalTurnPlayerIds: [],
+    openingRevealCounts: { 'human-1': 2, 'ai-1': 2 },
+    roundHistory: [
+      {
+        round: 1,
+        closerId: 'human-1',
+        scores: [
+          { playerId: 'human-1', name: 'Ada', roundScore: 14, totalScore: 14 },
+          { playerId: 'ai-1', name: 'Finn', roundScore: 27, totalScore: 27 }
+        ]
+      },
+      {
+        round: 2,
+        closerId: 'ai-1',
+        scores: [
+          { playerId: 'human-1', name: 'Ada', roundScore: 8, totalScore: 22 },
+          { playerId: 'ai-1', name: 'Finn', roundScore: 17, totalScore: 44 }
+        ]
+      }
+    ]
+  };
+}
+
 async function sendMoveAndWait(socketsByPlayerId, state) {
   const activePlayer = state.players[state.currentPlayerIndex];
   const socket = socketsByPlayerId.get(activePlayer.id);
@@ -116,8 +219,18 @@ async function sendMoveAndWait(socketsByPlayerId, state) {
   return message.room.state;
 }
 
+async function playUntilScoring(socketsByPlayerId, state) {
+  let roomState = state;
+  for (let turn = 0; turn < 100 && roomState.phase !== 'round-over' && roomState.phase !== 'game-over'; turn += 1) {
+    roomState = await sendMoveAndWait(socketsByPlayerId, roomState);
+  }
+  assert.ok(['round-over', 'game-over'].includes(roomState.phase), 'fast scripted game should reach scoring');
+  return roomState;
+}
+
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-chat-'));
 const roomsFile = path.join(tempDir, 'rooms.json');
+const dbFile = path.join(tempDir, 'skyjo.sqlite');
 const port = await getOpenPort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const password = 'test-password';
@@ -129,7 +242,9 @@ const server = spawn(process.execPath, ['server.mjs'], {
     HOST: '127.0.0.1',
     PORT: String(port),
     SKYJO_ACCESS_PASSWORD: password,
+    SKYJO_ADMIN_INITIAL_PASSWORD: 'admin-secret-123',
     SKYJO_COOKIE_NAME: 'skyjo_smoke',
+    SKYJO_DB_FILE: dbFile,
     SKYJO_ROOMS_FILE: roomsFile,
     SKYJO_SECURE_COOKIES: 'false',
     SKYJO_SESSION_SECRET: 'chat-smoke-secret'
@@ -156,8 +271,40 @@ try {
   assert.equal(protectedShareLink.status, 302);
   assert.equal(protectedShareLink.headers.get('location'), '/login?next=%2Flobby%3Froom%3DABCDE');
   const cookie = await login(baseUrl, password, '/lobby?room=ABCDE');
+  await assert.rejects(openSocket(baseUrl, cookie), /Unexpected server response|401/, 'multiplayer sockets require account auth');
+  const hostAccount = await createAccount(baseUrl, cookie, 'ada@example.com', 'Ada');
+  const guestAccount = await createAccount(baseUrl, cookie, 'grace@example.com', 'Grace');
+  const adminAccount = await loginAccount(baseUrl, cookie, 'chad.hohn@groundworkrevops.com', 'admin-secret-123');
+  const adminCreated = await accountRequest(baseUrl, adminAccount.cookie, '/api/admin/users', {
+    email: 'created@example.com',
+    displayName: 'Created User',
+    password: 'created-secret-123',
+    confirmPassword: 'created-secret-123',
+    role: 'player'
+  });
+  assert.equal(adminCreated.response.status, 201);
+  assert.equal(adminCreated.payload.user.email, 'created@example.com');
+  const createdLogin = await loginAccount(baseUrl, cookie, 'created@example.com', 'created-secret-123');
+  const changedPassword = await accountRequest(baseUrl, createdLogin.cookie, '/api/account/password', {
+    currentPassword: 'created-secret-123',
+    password: 'created-secret-456',
+    confirmPassword: 'created-secret-456'
+  });
+  assert.equal(changedPassword.response.status, 200);
+  const reloggedCreated = await loginAccount(baseUrl, cookie, 'created@example.com', 'created-secret-456');
+  assert.equal(reloggedCreated.user.email, 'created@example.com');
+  const guestSoloSave = await accountRequest(baseUrl, cookie, '/api/stats/single-player', {
+    state: completedSoloState(),
+    clientGameKey: 'guest-solo'
+  });
+  assert.equal(guestSoloSave.response.status, 401, 'guest single-player games are not saved');
+  const soloSave = await accountRequest(baseUrl, hostAccount.cookie, '/api/stats/single-player', {
+    state: completedSoloState(),
+    clientGameKey: 'host-solo'
+  });
+  assert.equal(soloSave.response.status, 201, 'logged-in single-player games are saved');
 
-  parkingHostSocket = await openSocket(baseUrl, cookie);
+  parkingHostSocket = await openSocket(baseUrl, hostAccount.cookie);
   parkingHostSocket.send(JSON.stringify({ type: 'create-room', name: 'Offline Host' }));
   const parkingHostJoined = await waitForMessage(parkingHostSocket, (message) => message.type === 'joined', 'parking host join');
   const parkingRoomCode = parkingHostJoined.room.code;
@@ -165,18 +312,18 @@ try {
   await new Promise((resolve) => parkingHostSocket.once('close', resolve));
   parkingHostSocket = null;
 
-  parkingGuestSocket = await openSocket(baseUrl, cookie);
+  parkingGuestSocket = await openSocket(baseUrl, guestAccount.cookie);
   parkingGuestSocket.send(JSON.stringify({ type: 'join-room', code: parkingRoomCode, name: 'Early Guest' }));
   const parkingGuestJoined = await waitForMessage(parkingGuestSocket, (message) => message.type === 'joined', 'guest joins hostless room');
   assert.equal(parkingGuestJoined.room.code, parkingRoomCode);
   assert.equal(parkingGuestJoined.room.players.find((player) => player.host)?.connected, false);
-  assert.equal(parkingGuestJoined.room.players.find((player) => player.name === 'Early Guest')?.connected, true);
+  assert.equal(parkingGuestJoined.room.players.find((player) => player.name === 'Grace')?.connected, true);
 
-  resetHostSocket = await openSocket(baseUrl, cookie);
+  resetHostSocket = await openSocket(baseUrl, hostAccount.cookie);
   resetHostSocket.send(JSON.stringify({ type: 'create-room', name: 'Reset Host' }));
   const resetHostJoined = await waitForMessage(resetHostSocket, (message) => message.type === 'joined', 'reset host join');
   const resetOldRoomCode = resetHostJoined.room.code;
-  resetGuestSocket = await openSocket(baseUrl, cookie);
+  resetGuestSocket = await openSocket(baseUrl, guestAccount.cookie);
   resetGuestSocket.send(JSON.stringify({ type: 'join-room', code: resetOldRoomCode, name: 'Reset Guest' }));
   await waitForMessage(resetGuestSocket, (message) => message.type === 'joined', 'reset guest join');
   const resetNewHostRoomPromise = waitForMessage(resetHostSocket, (message) => message.type === 'joined', 'host reset to new room');
@@ -187,7 +334,7 @@ try {
   assert.equal(resetNewHostRoom.room.status, 'waiting');
   assert.equal(resetNewHostRoom.room.players.length, 1, 'fresh reset room starts with the host only');
   assert.match(resetGuestNotice.message, /new room link/i);
-  resetShareGuestSocket = await openSocket(baseUrl, cookie);
+  resetShareGuestSocket = await openSocket(baseUrl, guestAccount.cookie);
   resetShareGuestSocket.send(JSON.stringify({ type: 'join-room', code: resetNewHostRoom.room.code, name: 'Shared Link Guest' }));
   const resetShareGuestJoined = await waitForMessage(
     resetShareGuestSocket,
@@ -195,15 +342,15 @@ try {
     'share guest joins reset room'
   );
   assert.equal(resetShareGuestJoined.room.code, resetNewHostRoom.room.code);
-  assert.equal(resetShareGuestJoined.room.players.find((player) => player.name === 'Shared Link Guest')?.connected, true);
+  assert.equal(resetShareGuestJoined.room.players.find((player) => player.name === 'Grace')?.connected, true);
 
-  hostSocket = await openSocket(baseUrl, cookie);
+  hostSocket = await openSocket(baseUrl, hostAccount.cookie);
   hostSocket.send(JSON.stringify({ type: 'create-room', name: 'Ada' }));
   const hostJoined = await waitForMessage(hostSocket, (message) => message.type === 'joined', 'host join');
   const roomCode = hostJoined.room.code;
   assert.deepEqual(hostJoined.room.chatMessages, []);
 
-  guestSocket = await openSocket(baseUrl, cookie);
+  guestSocket = await openSocket(baseUrl, guestAccount.cookie);
   guestSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Grace' }));
   const guestJoined = await waitForMessage(guestSocket, (message) => message.type === 'joined', 'guest join');
 
@@ -225,7 +372,7 @@ try {
   assert.equal(chatMessage.text, 'Good luck everyone');
   assert.equal(guestRoom.room.chatMessages[0].id, chatMessage.id);
 
-  reconnectSocket = await openSocket(baseUrl, cookie);
+  reconnectSocket = await openSocket(baseUrl, hostAccount.cookie);
   reconnectSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Ada', playerId: hostJoined.playerId }));
   const reconnectJoined = await waitForMessage(reconnectSocket, (message) => message.type === 'joined', 'reconnect join');
   assert.equal(reconnectJoined.playerId, hostJoined.playerId);
@@ -237,10 +384,7 @@ try {
     [hostJoined.playerId, hostSocket],
     [guestJoined.playerId, guestSocket]
   ]);
-  for (let turn = 0; turn < 80 && roomState.phase !== 'round-over' && roomState.phase !== 'game-over'; turn += 1) {
-    roomState = await sendMoveAndWait(socketsByPlayerId, roomState);
-  }
-  assert.ok(['round-over', 'game-over'].includes(roomState.phase), 'fast scripted game should reach scoring');
+  roomState = await playUntilScoring(socketsByPlayerId, roomState);
   const expectedNewRound = roomState.phase === 'round-over' ? roomState.round + 1 : 1;
 
   hostSocket.send(JSON.stringify({ type: 'start-game' }));
@@ -262,9 +406,34 @@ try {
     'next round after ready'
   );
   assert.equal(nextRound.room.readyForNextRoundPlayerIds.length, 0);
+  roomState = nextRound.room.state;
+
+  for (let round = 0; round < 12 && roomState.phase !== 'game-over'; round += 1) {
+    roomState = await playUntilScoring(socketsByPlayerId, roomState);
+    if (roomState.phase === 'game-over') break;
+    const nextExpectedRound = roomState.round + 1;
+    hostSocket.send(JSON.stringify({ type: 'set-next-round-ready', ready: true }));
+    await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.readyForNextRoundPlayerIds?.includes(hostJoined.playerId), 'host ready for stats loop');
+    guestSocket.send(JSON.stringify({ type: 'set-next-round-ready', ready: true }));
+    await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.readyForNextRoundPlayerIds?.length === 2, 'all ready for stats loop');
+    hostSocket.send(JSON.stringify({ type: 'start-game' }));
+    roomState = (
+      await waitForMessage(
+        hostSocket,
+        (message) => message.type === 'room' && message.room.state?.round === nextExpectedRound,
+        'next round in stats loop'
+      )
+    ).room.state;
+  }
+  assert.equal(roomState.phase, 'game-over', 'scripted multiplayer should eventually save a completed game');
+
+  const hostStats = await getJson(baseUrl, hostAccount.cookie, '/api/stats/summary');
+  assert.equal(hostStats.self.singlePlayerGames >= 1, true, 'logged-in single-player stats are saved');
+  assert.equal(hostStats.self.multiplayerGames >= 1, true, 'host multiplayer stats are saved');
+  assert.equal(hostStats.coPlayers.some((player) => player.userId === guestAccount.user.id), true, 'co-player stats are visible');
 
   console.log(
-    'chat smoke passed: login redirect, hostless waiting rooms, reset share rooms, room chat, reconnect history, and ready-gated next round'
+    'chat smoke passed: login redirect, admin-created accounts, account-gated rooms, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
   );
 } finally {
   reconnectSocket?.close();

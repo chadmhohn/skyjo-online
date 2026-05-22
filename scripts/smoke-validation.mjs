@@ -157,7 +157,8 @@ const columnClearBase = {
   nextStarterId: null,
   roundCloserId: null,
   finalTurnPlayerIds: [],
-  openingRevealCounts: { 'player-1': 2, 'player-2': 2 }
+  openingRevealCounts: { 'player-1': 2, 'player-2': 2 },
+  roundHistory: []
 };
 const columnClearMove = replaceCard(columnClearBase, 8);
 accept(columnClearBase, columnClearMove);

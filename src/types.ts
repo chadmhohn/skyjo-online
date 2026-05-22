@@ -26,6 +26,7 @@ export interface GameRoom {
 
 export interface RoomPlayer {
   id: string;
+  userId?: string;
   name: string;
   connected: boolean;
   host: boolean;
@@ -48,6 +49,20 @@ export interface MultiplayerRoom {
   state: GameState | null;
   status: 'waiting' | 'playing' | 'finished';
   updatedAt: number;
+  completedGameId?: string | null;
+}
+
+export interface RoundScoreResult {
+  playerId: string;
+  name: string;
+  roundScore: number;
+  totalScore: number;
+}
+
+export interface RoundHistoryEntry {
+  round: number;
+  closerId: string;
+  scores: RoundScoreResult[];
 }
 
 export type TurnPhase = 'opening-reveal' | 'choose-source' | 'choose-replacement' | 'round-over' | 'game-over';
@@ -67,6 +82,7 @@ export interface GameState {
   roundCloserId: string | null;
   finalTurnPlayerIds: string[];
   openingRevealCounts: Record<string, number>;
+  roundHistory: RoundHistoryEntry[];
 }
 
 export interface MoveResult {
