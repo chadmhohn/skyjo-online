@@ -2,7 +2,7 @@
 
 This repository is the source for the private Skyjo-style web app at `https://skyjo.groundworkrevops.com/`. Treat this file as the first stop for Codex/Nova/Hermes handoff work.
 
-Last verified by Codex: 2026-05-22 America/Denver, after the accounts/stats implementation pass.
+Last verified by Codex: 2026-05-23 America/Denver, after the accounts/stats and homepage audio/settings passes.
 
 ## Current Operating State
 
@@ -41,6 +41,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 - `server-room-persistence.mjs`: JSON persistence for rooms. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
 - `src/App.tsx`: React routes and UI for home, single-player, lobby, room play, table chat, rules, scoring, and responsive gameplay shells.
 - `src/account.tsx`: account context and client API helpers for login/signup/logout, stats, single-player save, and admin actions.
+- `src/audio.ts`: client-only Web Audio settings and generated cues. Sound effects are on by default, background music is off by default, and settings persist in browser `localStorage`.
 - `src/index.css`: most layout and visual behavior, including the mobile locked play surface and desktop/tablet responsive rules.
 - `scripts/smoke-*.mjs`: focused release smoke tests for validation, AI, persistence, and room/chat flows.
 - `docs/deployment-smoke-checklist.md`: operational release and smoke checklist.

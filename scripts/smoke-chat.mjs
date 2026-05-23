@@ -49,9 +49,9 @@ async function login(url, password, next = '/') {
   return cookie.split(';')[0];
 }
 
-async function accountRequest(url, siteCookie, path, body) {
+async function accountRequest(url, siteCookie, path, body, method = 'POST') {
   const response = await fetch(`${url}${path}`, {
-    method: 'POST',
+    method,
     headers: {
       Cookie: siteCookie,
       'Content-Type': 'application/json'
@@ -275,6 +275,22 @@ try {
   const hostAccount = await createAccount(baseUrl, cookie, 'ada@example.com', 'Ada');
   const guestAccount = await createAccount(baseUrl, cookie, 'grace@example.com', 'Grace');
   const adminAccount = await loginAccount(baseUrl, cookie, 'chad.hohn@groundworkrevops.com', 'admin-secret-123');
+  const selfDemote = await accountRequest(
+    baseUrl,
+    adminAccount.cookie,
+    `/api/admin/users/${adminAccount.user.id}`,
+    { role: 'player' },
+    'PATCH'
+  );
+  assert.equal(selfDemote.response.status, 400, 'admins cannot revoke their own admin role');
+  const selfDisable = await accountRequest(
+    baseUrl,
+    adminAccount.cookie,
+    `/api/admin/users/${adminAccount.user.id}`,
+    { disabled: true },
+    'PATCH'
+  );
+  assert.equal(selfDisable.response.status, 400, 'admins cannot disable their own account');
   const adminCreated = await accountRequest(baseUrl, adminAccount.cookie, '/api/admin/users', {
     email: 'created@example.com',
     displayName: 'Created User',
@@ -433,7 +449,7 @@ try {
   assert.equal(hostStats.coPlayers.some((player) => player.userId === guestAccount.user.id), true, 'co-player stats are visible');
 
   console.log(
-    'chat smoke passed: login redirect, admin-created accounts, account-gated rooms, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
+    'chat smoke passed: login redirect, admin-created accounts, self-admin protection, account-gated rooms, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
   );
 } finally {
   reconnectSocket?.close();

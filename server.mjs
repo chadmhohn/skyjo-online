@@ -483,8 +483,13 @@ async function handleApiRequest(req, res, url) {
 
     const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
     if (adminUserMatch && req.method === 'PATCH') {
-      if (!requireAdminForApi(req, res)) return true;
+      const adminUser = requireAdminForApi(req, res);
+      if (!adminUser) return true;
       const body = await readJsonBody(req);
+      if (adminUser.id === adminUserMatch[1] && (body.disabled === true || body.disabled === 1 || body.role === 'player')) {
+        sendApiError(res, 400, 'You cannot revoke your own admin access.');
+        return true;
+      }
       const user = accountStore.patchUser(adminUserMatch[1], {
         displayName: body.displayName,
         role: body.role,

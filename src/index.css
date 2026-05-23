@@ -569,6 +569,93 @@ body {
     box-shadow: 0 0 0 3px rgba(245, 230, 200, 0.08);
   }
 
+  .skyjo-home-audio-panel {
+    max-width: 34rem;
+    border-color: rgba(245, 230, 200, 0.12);
+    background:
+      linear-gradient(180deg, rgba(245, 230, 200, 0.045) 0%, rgba(245, 230, 200, 0.018) 100%),
+      rgba(255, 255, 255, 0.018);
+    padding: 1rem;
+  }
+
+  .skyjo-audio-settings-grid {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .skyjo-audio-setting-row,
+  .skyjo-audio-setting-slider {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    border-radius: 12px;
+    border: 1px solid rgba(245, 230, 200, 0.1);
+    background: rgba(6, 12, 10, 0.42);
+    padding: 0.75rem;
+  }
+
+  .skyjo-audio-setting-title,
+  .skyjo-audio-setting-slider span {
+    display: block;
+    color: rgba(245, 230, 200, 0.84);
+    font-size: 0.9rem;
+    font-weight: 900;
+  }
+
+  .skyjo-audio-toggle {
+    position: relative;
+    width: 2.9rem;
+    height: 1.55rem;
+    flex: 0 0 auto;
+    cursor: pointer;
+    appearance: none;
+    border-radius: 999px;
+    border: 1px solid rgba(245, 230, 200, 0.18);
+    background: rgba(245, 230, 200, 0.1);
+    transition: background 0.18s ease, border-color 0.18s ease;
+  }
+
+  .skyjo-audio-toggle::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0.18rem;
+    width: 1.08rem;
+    height: 1.08rem;
+    border-radius: 999px;
+    background: rgba(245, 230, 200, 0.78);
+    transform: translate(0, -50%);
+    transition: background 0.18s ease, transform 0.18s ease;
+  }
+
+  .skyjo-audio-toggle:checked {
+    border-color: rgba(253, 230, 138, 0.44);
+    background: rgba(251, 191, 36, 0.2);
+  }
+
+  .skyjo-audio-toggle:checked::before {
+    background: #fef3c7;
+    transform: translate(1.32rem, -50%);
+  }
+
+  .skyjo-audio-toggle:focus-visible,
+  .skyjo-audio-range:focus-visible {
+    outline: 2px solid #fef3c7;
+    outline-offset: 3px;
+  }
+
+  .skyjo-audio-range {
+    width: min(13rem, 46vw);
+    accent-color: #f5e6c8;
+  }
+
+  .skyjo-audio-range:disabled,
+  .skyjo-audio-toggle:disabled {
+    cursor: not-allowed;
+    opacity: 0.42;
+  }
+
   .skyjo-account-card,
   .skyjo-history-row,
   .skyjo-admin-user-row {
@@ -695,6 +782,34 @@ body {
   @media (max-width: 720px) {
     .skyjo-admin-create-form {
       grid-template-columns: 1fr;
+      gap: 0.65rem;
+      padding: 0.75rem;
+    }
+
+    .skyjo-admin-user-row {
+      align-items: stretch;
+      flex-direction: column;
+      gap: 0.8rem;
+      padding: 0.8rem;
+    }
+
+    .skyjo-admin-user-actions {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      justify-content: stretch;
+    }
+
+    .skyjo-admin-user-actions .skyjo-input,
+    .skyjo-admin-user-actions .skyjo-button {
+      min-width: 0;
+      width: 100%;
+    }
+
+    .skyjo-admin-user-actions .skyjo-input {
+      grid-column: 1 / -1;
+    }
+
+    .skyjo-admin-user-actions .skyjo-button-primary {
+      grid-column: 1 / -1;
     }
   }
 

@@ -29,6 +29,7 @@ import {
   type StatsGame,
   type StatsSummary
 } from './account';
+import { playAudioCue, useAudioSettings, useGameAudio, type AudioSettings } from './audio';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from './types';
 
 const rows = [0, 1, 2];
@@ -157,6 +158,89 @@ function RequireAccountPanel({ next, title = 'Sign in to continue' }: { next: st
   );
 }
 
+function AudioSettingsPanel() {
+  const [settings, setSettings] = useAudioSettings();
+
+  function updateVolume(key: keyof Pick<AudioSettings, 'musicVolume' | 'soundVolume'>, value: string) {
+    const volume = Number(value) / 100;
+    if (key === 'musicVolume') {
+      setSettings({ musicVolume: volume });
+      return;
+    }
+    setSettings({ soundVolume: volume });
+  }
+
+  return (
+    <section aria-labelledby="skyjo-audio-settings-title" className="skyjo-panel skyjo-home-audio-panel mt-7">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="skyjo-kicker">Settings</p>
+          <h2 className="skyjo-serif mt-1 text-2xl font-bold text-[#f5e6c8]" id="skyjo-audio-settings-title">
+            Audio
+          </h2>
+        </div>
+        <button
+          className="skyjo-button px-3 py-2 text-sm"
+          disabled={!settings.soundEffects}
+          onClick={() => void playAudioCue('flip')}
+          type="button"
+        >
+          Test
+        </button>
+      </div>
+
+      <div className="skyjo-audio-settings-grid mt-4">
+        <label className="skyjo-audio-setting-row">
+          <span>
+            <span className="skyjo-audio-setting-title">Sound effects</span>
+          </span>
+          <input
+            checked={settings.soundEffects}
+            className="skyjo-audio-toggle"
+            onChange={(event) => setSettings({ soundEffects: event.target.checked })}
+            type="checkbox"
+          />
+        </label>
+        <label className="skyjo-audio-setting-slider">
+          <span>Effects volume</span>
+          <input
+            className="skyjo-audio-range"
+            disabled={!settings.soundEffects}
+            max="100"
+            min="0"
+            onChange={(event) => updateVolume('soundVolume', event.target.value)}
+            type="range"
+            value={Math.round(settings.soundVolume * 100)}
+          />
+        </label>
+        <label className="skyjo-audio-setting-row">
+          <span>
+            <span className="skyjo-audio-setting-title">Music</span>
+          </span>
+          <input
+            checked={settings.music}
+            className="skyjo-audio-toggle"
+            onChange={(event) => setSettings({ music: event.target.checked })}
+            type="checkbox"
+          />
+        </label>
+        <label className="skyjo-audio-setting-slider">
+          <span>Music volume</span>
+          <input
+            className="skyjo-audio-range"
+            disabled={!settings.music}
+            max="100"
+            min="0"
+            onChange={(event) => updateVolume('musicVolume', event.target.value)}
+            type="range"
+            value={Math.round(settings.musicVolume * 100)}
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
 function Home() {
   return (
     <main className="skyjo-surface">
@@ -176,6 +260,7 @@ function Home() {
             </Link>
           </div>
           <AccountLinks />
+          <AudioSettingsPanel />
         </div>
       </section>
     </main>
@@ -691,39 +776,51 @@ function AdminPage() {
             </button>
           </form>
           <div className="skyjo-admin-user-list mt-5">
-            {users.map((item) => (
-              <div className="skyjo-admin-user-row" key={item.id}>
-                <div className="min-w-0">
-                  <div className="font-black text-[#f5e6c8]">{item.displayName}</div>
-                  <div className="text-xs text-[#f5e6c8]/54">{item.email}</div>
-                  <div className="mt-1 text-xs font-bold text-[#f5e6c8]/68">
-                    {item.role} - {item.disabled ? 'disabled' : 'active'} - {item.gamesPlayed} games - {item.wins} wins
+            {users.map((item) => {
+              const isSelf = item.id === user.id;
+              return (
+                <div className="skyjo-admin-user-row" key={item.id}>
+                  <div className="min-w-0">
+                    <div className="font-black text-[#f5e6c8]">{item.displayName}</div>
+                    <div className="text-xs text-[#f5e6c8]/54">{item.email}</div>
+                    <div className="mt-1 text-xs font-bold text-[#f5e6c8]/68">
+                      {isSelf ? 'you - ' : ''}
+                      {item.role} - {item.disabled ? 'disabled' : 'active'} - {item.gamesPlayed} games - {item.wins} wins
+                    </div>
+                  </div>
+                  <div className="skyjo-admin-user-actions">
+                    <button
+                      className="skyjo-button px-3 py-2 text-sm"
+                      disabled={isSelf}
+                      onClick={() => patchUser(item.id, { disabled: !item.disabled })}
+                      title={isSelf ? 'You cannot disable your own account.' : item.disabled ? 'Enable user' : 'Disable user'}
+                      type="button"
+                    >
+                      {item.disabled ? 'Enable' : 'Disable'}
+                    </button>
+                    <button
+                      className="skyjo-button px-3 py-2 text-sm"
+                      disabled={isSelf}
+                      onClick={() => patchUser(item.id, { role: item.role === 'admin' ? 'player' : 'admin' })}
+                      title={isSelf ? 'You cannot revoke your own admin role.' : item.role === 'admin' ? 'Make player' : 'Make admin'}
+                      type="button"
+                    >
+                      {item.role === 'admin' ? 'Make Player' : 'Make Admin'}
+                    </button>
+                    <input
+                      className="skyjo-input px-3 py-2 text-sm"
+                      onChange={(event) => setPasswords((current) => ({ ...current, [item.id]: event.target.value }))}
+                      placeholder="New password"
+                      type="password"
+                      value={passwords[item.id] || ''}
+                    />
+                    <button className="skyjo-button skyjo-button-primary px-3 py-2 text-sm" onClick={() => resetPassword(item.id)} type="button">
+                      Set Password
+                    </button>
                   </div>
                 </div>
-                <div className="skyjo-admin-user-actions">
-                  <button className="skyjo-button px-3 py-2 text-sm" onClick={() => patchUser(item.id, { disabled: !item.disabled })} type="button">
-                    {item.disabled ? 'Enable' : 'Disable'}
-                  </button>
-                  <button
-                    className="skyjo-button px-3 py-2 text-sm"
-                    onClick={() => patchUser(item.id, { role: item.role === 'admin' ? 'player' : 'admin' })}
-                    type="button"
-                  >
-                    {item.role === 'admin' ? 'Make Player' : 'Make Admin'}
-                  </button>
-                  <input
-                    className="skyjo-input px-3 py-2 text-sm"
-                    onChange={(event) => setPasswords((current) => ({ ...current, [item.id]: event.target.value }))}
-                    placeholder="New password"
-                    type="password"
-                    value={passwords[item.id] || ''}
-                  />
-                  <button className="skyjo-button skyjo-button-primary px-3 py-2 text-sm" onClick={() => resetPassword(item.id)} type="button">
-                    Set Password
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
@@ -1732,6 +1829,8 @@ function SinglePlayer() {
   const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
   const summaryModalOpen = isScoringPhase && roundSummaryOpen;
 
+  useGameAudio(state);
+
   useEffect(() => {
     if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
       setDrawIntent('place');
@@ -1790,6 +1889,11 @@ function SinglePlayer() {
         ? discardDrawnAndReveal(current, index)
         : replaceCard(current, index)
     );
+  }
+
+  function chooseDiscardForSinglePlayer() {
+    void playAudioCue('pickup');
+    setState((current) => chooseDiscard(current));
   }
 
   function startSelectedGame() {
@@ -1920,7 +2024,7 @@ function SinglePlayer() {
             localTurn={humanTurn}
             onCardClick={handleCard}
             onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
-            onChooseDiscard={() => setState((current) => chooseDiscard(current))}
+            onChooseDiscard={chooseDiscardForSinglePlayer}
             onDraw={() => setState((current) => drawBlind(current))}
             onSetDrawIntent={setDrawIntent}
             state={state}
@@ -1948,7 +2052,7 @@ function SinglePlayer() {
             localPlayerId={localPlayers[0]?.id}
             localTurn={humanTurn}
             onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
-            onChooseDiscard={() => setState((current) => chooseDiscard(current))}
+            onChooseDiscard={chooseDiscardForSinglePlayer}
             onDraw={() => setState((current) => drawBlind(current))}
             onSetDrawIntent={setDrawIntent}
             state={state}
@@ -2386,6 +2490,24 @@ function Lobby() {
   const readySummary = roomScoringPhase ? `${readyForNextRoundCount}/${roundReadyPlayerIds.length} ready` : undefined;
   const summaryModalOpen = Boolean(roomScoringPhase && roundSummaryOpen);
 
+  useGameAudio(roomState);
+
+  function chooseDiscardForRoom() {
+    if (!roomState) return;
+    void playAudioCue('pickup');
+    updateGame(chooseDiscard(roomState));
+  }
+
+  function cancelDiscardForRoom() {
+    if (!roomState) return;
+    updateGame(cancelDiscardSelection(roomState));
+  }
+
+  function drawForRoom() {
+    if (!roomState) return;
+    updateGame(drawBlind(roomState));
+  }
+
   if (accountLoading) return null;
   if (!accountUser) return <RequireAccountPanel next={`/lobby${location.search}`} title="Sign in to play multiplayer" />;
 
@@ -2531,9 +2653,9 @@ function Lobby() {
                     localPlayerId={playerId}
                     localTurn={localTurn}
                     onCardClick={handleCard}
-                    onCancelDiscard={() => updateGame(cancelDiscardSelection(roomState))}
-                    onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
-                    onDraw={() => updateGame(drawBlind(roomState))}
+                    onCancelDiscard={cancelDiscardForRoom}
+                    onChooseDiscard={chooseDiscardForRoom}
+                    onDraw={drawForRoom}
                     onSetDrawIntent={setDrawIntent}
                     state={roomState}
                   />
@@ -2565,9 +2687,9 @@ function Lobby() {
                     drawIntent={drawIntent}
                     localPlayerId={playerId}
                     localTurn={localTurn}
-                    onCancelDiscard={() => updateGame(cancelDiscardSelection(roomState))}
-                    onChooseDiscard={() => updateGame(chooseDiscard(roomState))}
-                    onDraw={() => updateGame(drawBlind(roomState))}
+                    onCancelDiscard={cancelDiscardForRoom}
+                    onChooseDiscard={chooseDiscardForRoom}
+                    onDraw={drawForRoom}
                     onSetDrawIntent={setDrawIntent}
                     state={roomState}
                   />
@@ -2663,6 +2785,8 @@ function Lobby() {
 }
 
 function App() {
+  useAudioSettings();
+
   return (
     <Router>
       <AccountProvider>
