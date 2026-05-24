@@ -3356,4 +3356,156 @@ body {
       border-radius: 10px;
     }
   }
+
+  .skyjo-icon-button.skyjo-button {
+    display: inline-flex;
+    width: 2.6rem;
+    height: 2.6rem;
+    min-height: 2.6rem;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .skyjo-icon {
+    width: 1.12rem;
+    height: 1.12rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.9;
+  }
+
+  .skyjo-settings-overlay {
+    z-index: 140;
+  }
+
+  .skyjo-settings-dialog {
+    display: grid;
+    max-height: min(92dvh, 48rem);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    color: #f5e6c8;
+  }
+
+  .skyjo-settings-dialog:focus {
+    outline: none;
+  }
+
+  .skyjo-settings-intro {
+    color: rgba(245, 230, 200, 0.72);
+  }
+
+  .skyjo-settings-body {
+    min-height: 0;
+    display: grid;
+    gap: 1.1rem;
+    overscroll-behavior: contain;
+    scrollbar-color: rgba(245, 230, 200, 0.48) rgba(245, 230, 200, 0.08);
+  }
+
+  .skyjo-settings-section {
+    display: grid;
+    gap: 0.78rem;
+    border-bottom: 1px solid rgba(245, 230, 200, 0.1);
+    padding-bottom: 1.1rem;
+  }
+
+  .skyjo-settings-section:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .skyjo-settings-section-heading {
+    display: grid;
+    gap: 0.18rem;
+  }
+
+  .skyjo-audio-controls {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .skyjo-audio-test-button {
+    justify-self: start;
+  }
+
+  .skyjo-settings-ai-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .skyjo-settings-ai-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 0.35rem;
+  }
+
+  .skyjo-settings-rules-list {
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .skyjo-settings-dialog .skyjo-move-log-list {
+    max-height: min(28dvh, 14rem);
+    overflow-y: auto;
+    padding-right: 0.15rem;
+  }
+
+  .skyjo-game-header .skyjo-icon-button.skyjo-button {
+    width: 2.45rem;
+    height: 2.45rem;
+    min-height: 2.45rem;
+    padding: 0;
+  }
+
+  @media (min-width: 760px) {
+    .skyjo-settings-body {
+      gap: 1.25rem;
+    }
+
+    .skyjo-settings-rules-list {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 640px) {
+    .skyjo-settings-overlay {
+      padding-right: max(0.75rem, env(safe-area-inset-right));
+      padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+      padding-left: max(0.75rem, env(safe-area-inset-left));
+    }
+
+    .skyjo-settings-dialog {
+      max-height: min(90dvh, 44rem);
+    }
+
+    .skyjo-settings-body {
+      padding: 0.85rem;
+    }
+
+    .skyjo-settings-dialog-header,
+    .skyjo-settings-footer {
+      padding: 0.85rem;
+    }
+
+    .skyjo-settings-ai-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .skyjo-audio-setting-row,
+    .skyjo-audio-setting-slider {
+      align-items: stretch;
+      flex-direction: column;
+      gap: 0.55rem;
+    }
+
+    .skyjo-audio-range {
+      width: 100%;
+    }
+  }
 }

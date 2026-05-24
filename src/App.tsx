@@ -158,7 +158,24 @@ function RequireAccountPanel({ next, title = 'Sign in to continue' }: { next: st
   );
 }
 
-function AudioSettingsPanel() {
+function GearIcon() {
+  return (
+    <svg aria-hidden="true" className="skyjo-icon" focusable="false" viewBox="0 0 24 24">
+      <path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z" />
+      <path d="M18.45 13.45c.08-.47.08-.93 0-1.4l2.02-1.57-1.92-3.32-2.38.95a7.03 7.03 0 0 0-1.22-.7L14.6 4.85h-3.84l-.36 2.56c-.43.18-.84.41-1.22.7l-2.38-.95-1.92 3.32 2.02 1.57a7.2 7.2 0 0 0 0 1.4l-2.02 1.57 1.92 3.32 2.38-.95c.38.29.79.52 1.22.7l.36 2.56h3.84l.35-2.56c.44-.18.85-.41 1.22-.7l2.38.95 1.92-3.32-2.02-1.57Z" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" className="skyjo-icon" focusable="false" viewBox="0 0 24 24">
+      <path d="m6 6 12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+function AudioSettingsControls() {
   const [settings, setSettings] = useAudioSettings();
 
   function updateVolume(key: keyof Pick<AudioSettings, 'musicVolume' | 'soundVolume'>, value: string) {
@@ -171,25 +188,8 @@ function AudioSettingsPanel() {
   }
 
   return (
-    <section aria-labelledby="skyjo-audio-settings-title" className="skyjo-panel skyjo-home-audio-panel mt-7">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="skyjo-kicker">Settings</p>
-          <h2 className="skyjo-serif mt-1 text-2xl font-bold text-[#f5e6c8]" id="skyjo-audio-settings-title">
-            Audio
-          </h2>
-        </div>
-        <button
-          className="skyjo-button px-3 py-2 text-sm"
-          disabled={!settings.soundEffects}
-          onClick={() => void playAudioCue('flip')}
-          type="button"
-        >
-          Test
-        </button>
-      </div>
-
-      <div className="skyjo-audio-settings-grid mt-4">
+    <div className="skyjo-audio-controls">
+      <div className="skyjo-audio-settings-grid">
         <label className="skyjo-audio-setting-row">
           <span>
             <span className="skyjo-audio-setting-title">Sound effects</span>
@@ -236,6 +236,30 @@ function AudioSettingsPanel() {
             value={Math.round(settings.musicVolume * 100)}
           />
         </label>
+      </div>
+      <button
+        className="skyjo-button skyjo-audio-test-button px-3 py-2 text-sm"
+        disabled={!settings.soundEffects}
+        onClick={() => void playAudioCue('flip')}
+        type="button"
+      >
+        Test sound
+      </button>
+    </div>
+  );
+}
+
+function AudioSettingsPanel() {
+  return (
+    <section aria-labelledby="skyjo-audio-settings-title" className="skyjo-panel skyjo-home-audio-panel mt-7">
+      <div>
+        <p className="skyjo-kicker">Settings</p>
+        <h2 className="skyjo-serif mt-1 text-2xl font-bold text-[#f5e6c8]" id="skyjo-audio-settings-title">
+          Audio
+        </h2>
+      </div>
+      <div className="mt-4">
+        <AudioSettingsControls />
       </div>
     </section>
   );
@@ -828,9 +852,24 @@ function AdminPage() {
   );
 }
 
-function RulesHelpButton({ className = '' }: { className?: string }) {
+type GameSettingsButtonProps = {
+  aiOpponentCount?: number;
+  aiOpponentSummary?: string;
+  onAiOpponentCountChange?: (count: number) => void;
+  onNewGame?: () => void;
+  state?: GameState | null;
+};
+
+function GameSettingsButton({
+  aiOpponentCount,
+  aiOpponentSummary,
+  onAiOpponentCountChange,
+  onNewGame,
+  state
+}: GameSettingsButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const hasAiSettings = typeof aiOpponentCount === 'number' && Boolean(aiOpponentSummary && onAiOpponentCountChange && onNewGame);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -845,7 +884,7 @@ function RulesHelpButton({ className = '' }: { className?: string }) {
 
     document.body.style.overflow = 'hidden';
     window.addEventListener('keydown', handleKeyDown);
-    window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    window.setTimeout(() => dialogRef.current?.focus({ preventScroll: true }), 0);
 
     return () => {
       document.body.style.overflow = previousOverflow;
@@ -858,65 +897,125 @@ function RulesHelpButton({ className = '' }: { className?: string }) {
       <button
         aria-expanded={isOpen}
         aria-haspopup="dialog"
-        className={`skyjo-button skyjo-button-disclosure px-4 py-2 text-sm ${className}`}
+        aria-label="Open game settings"
+        className="skyjo-button skyjo-icon-button"
         onClick={() => setIsOpen(true)}
+        title="Game settings"
         type="button"
       >
-        <span>Rules</span>
-        <span className={`skyjo-disclosure-caret ${isOpen ? 'skyjo-disclosure-caret-open' : ''}`} aria-hidden="true" />
+        <GearIcon />
       </button>
 
       {isOpen
         ? createPortal(
             <div
-              className="skyjo-rules-overlay fixed inset-0 flex items-end justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:items-center sm:px-5"
+              className="skyjo-settings-overlay fixed inset-0 flex items-end justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:items-center sm:px-5"
               onMouseDown={(event) => {
                 if (event.target === event.currentTarget) setIsOpen(false);
               }}
             >
               <section
-                aria-describedby="skyjo-rules-help-intro"
-                aria-labelledby="skyjo-rules-help-title"
+                aria-describedby="skyjo-game-settings-intro"
+                aria-labelledby="skyjo-game-settings-title"
                 aria-modal="true"
-                className="skyjo-panel skyjo-rules-dialog w-full max-w-2xl overflow-hidden rounded-2xl bg-[#09110e]/95 shadow-2xl"
+                className="skyjo-panel skyjo-settings-dialog w-full max-w-3xl overflow-hidden rounded-2xl bg-[#09110e]/95 shadow-2xl"
+                ref={dialogRef}
                 role="dialog"
+                tabIndex={-1}
               >
-                <div className="flex items-start justify-between gap-3 border-b border-[#f5e6c8]/10 p-4 sm:p-5">
+                <div className="skyjo-settings-dialog-header flex items-start justify-between gap-3 border-b border-[#f5e6c8]/10 p-4 sm:p-5">
                   <div className="min-w-0">
-                    <p className="skyjo-kicker">Help</p>
-                    <h2 className="skyjo-serif mt-1 text-2xl font-black leading-tight text-[#f5e6c8] sm:text-3xl" id="skyjo-rules-help-title">
-                      Skyjo Rules
+                    <p className="skyjo-kicker">Game</p>
+                    <h2 className="skyjo-serif mt-1 text-2xl font-black leading-tight text-[#f5e6c8] sm:text-3xl" id="skyjo-game-settings-title">
+                      Settings
                     </h2>
-                    <p className="skyjo-rules-intro mt-2 text-sm leading-6" id="skyjo-rules-help-intro">
-                      Quick reminders for playing at this table.
+                    <p className="skyjo-settings-intro mt-2 text-sm leading-6" id="skyjo-game-settings-intro">
+                      Audio, table options, rules, and the move log.
                     </p>
                   </div>
                   <button
-                    aria-label="Close rules and help"
-                    className="skyjo-button shrink-0 px-3 py-2 text-sm"
+                    aria-label="Close game settings"
+                    className="skyjo-button skyjo-icon-button shrink-0"
                     onClick={() => setIsOpen(false)}
-                    ref={closeButtonRef}
                     type="button"
                   >
-                    Close
+                    <CloseIcon />
                   </button>
                 </div>
 
-                <div className="skyjo-rules-body overflow-y-auto p-4 sm:p-5">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {rulesHelpSections.map((section) => (
-                      <section className="skyjo-rule-card rounded-xl border p-3 sm:p-4" key={section.title}>
-                        <h3 className="skyjo-serif text-lg font-bold leading-tight text-[#f5e6c8]">{section.title}</h3>
-                        <ul className="skyjo-rule-list mt-2 list-disc space-y-2 pl-5 text-sm leading-6">
-                          {section.items.map((item) => (
-                            <li className="break-words" key={item}>
-                              {item}
-                            </li>
-                          ))}
-                        </ul>
-                      </section>
-                    ))}
-                  </div>
+                <div className="skyjo-settings-body overflow-y-auto p-4 sm:p-5">
+                  <section className="skyjo-settings-section">
+                    <div className="skyjo-settings-section-heading">
+                      <p className="skyjo-kicker">Audio</p>
+                      <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Sound</h3>
+                    </div>
+                    <AudioSettingsControls />
+                  </section>
+
+                  {hasAiSettings ? (
+                    <section className="skyjo-settings-section">
+                      <div className="skyjo-settings-section-heading">
+                        <p className="skyjo-kicker">Single player</p>
+                        <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">AI opponents</h3>
+                      </div>
+                      <div className="skyjo-settings-ai-toolbar">
+                        <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
+                        <button className="skyjo-button skyjo-new-game-button text-sm" onClick={onNewGame} type="button">
+                          New Game
+                        </button>
+                      </div>
+                      <div className="skyjo-settings-ai-grid mt-3" role="group" aria-label="Choose AI opponent count">
+                        {singlePlayerAiCounts.map((count) => (
+                          <button
+                            aria-pressed={count === aiOpponentCount}
+                            className={`skyjo-button h-9 min-w-0 px-0 text-sm tabular-nums ${count === aiOpponentCount ? 'skyjo-button-primary' : ''}`}
+                            key={count}
+                            onClick={() => onAiOpponentCountChange?.(count)}
+                            type="button"
+                          >
+                            {count}
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+
+                  <section className="skyjo-settings-section">
+                    <div className="skyjo-settings-section-heading">
+                      <p className="skyjo-kicker">Help</p>
+                      <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Rules</h3>
+                    </div>
+                    <div className="skyjo-settings-rules-list">
+                      {rulesHelpSections.map((section) => (
+                        <section className="skyjo-rule-card rounded-xl border p-3" key={section.title}>
+                          <h4 className="skyjo-serif text-base font-bold leading-tight text-[#f5e6c8]">{section.title}</h4>
+                          <ul className="skyjo-rule-list mt-2 list-disc space-y-1.5 pl-5 text-sm leading-6">
+                            {section.items.map((item) => (
+                              <li className="break-words" key={item}>
+                                {item}
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      ))}
+                    </div>
+                  </section>
+
+                  {state ? (
+                    <section className="skyjo-settings-section">
+                      <div className="skyjo-settings-section-heading">
+                        <p className="skyjo-kicker">Table</p>
+                        <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Move Log</h3>
+                      </div>
+                      <MoveLogList state={state} />
+                    </section>
+                  ) : null}
+                </div>
+
+                <div className="skyjo-settings-footer border-t border-[#f5e6c8]/10 p-4 sm:p-5">
+                  <button className="skyjo-button skyjo-button-primary w-full px-4 py-2 text-sm sm:w-auto" onClick={() => setIsOpen(false)} type="button">
+                    Done
+                  </button>
                 </div>
               </section>
             </div>,
@@ -1550,26 +1649,21 @@ function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPla
   );
 }
 
-function MoveLog({ state, label = 'Move Log' }: { state: GameState; label?: string }) {
+function MoveLogList({ state }: { state: GameState }) {
   return (
-    <section className="skyjo-panel skyjo-move-log-panel">
-      <details>
-        <summary className="skyjo-panel-summary flex cursor-pointer list-none items-center justify-between gap-3">
-          <span className="skyjo-serif text-xl font-semibold">{label}</span>
-          <span className="skyjo-summary-meta">
-            <span className="skyjo-kicker">{state.log.length} moves</span>
-            <span className="skyjo-summary-caret" aria-hidden="true" />
-          </span>
-        </summary>
-        <div className="skyjo-move-log-list mt-3 space-y-2 text-sm text-[#f5e6c8]/72">
-          {state.log.map((entry) => (
-            <div className="rounded-lg border border-white/[0.04] bg-white/[0.025] px-3 py-2" key={entry}>
-              {entry}
-            </div>
-          ))}
+    <div className="skyjo-move-log-list space-y-2 text-sm text-[#f5e6c8]/72">
+      {state.log.length > 0 ? (
+        state.log.map((entry, index) => (
+          <div className="rounded-lg border border-white/[0.04] bg-white/[0.025] px-3 py-2" key={`${index}-${entry}`}>
+            {entry}
+          </div>
+        ))
+      ) : (
+        <div className="rounded-lg border border-dashed border-[#f5e6c8]/14 px-3 py-5 text-center text-sm font-bold text-[#f5e6c8]/45">
+          No moves yet.
         </div>
-      </details>
-    </section>
+      )}
+    </div>
   );
 }
 
@@ -1812,7 +1906,6 @@ function SinglePlayer() {
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
-  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
   const [statsSaveStatus, setStatsSaveStatus] = useState('');
   const savedSingleGameKeyRef = useRef('');
@@ -1825,7 +1918,6 @@ function SinglePlayer() {
   const hasFourPlayerDesktopGrid = state.players.length === 4;
   const fourPlayerBoardEntries = [...opponentBoardEntries, ...localBoardEntries];
   const aiOpponentSummary = `${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
-  const aiOpponentCompactSummary = `${aiOpponentCount} AI`;
   const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
   const summaryModalOpen = isScoringPhase && roundSummaryOpen;
 
@@ -1898,7 +1990,6 @@ function SinglePlayer() {
 
   function startSelectedGame() {
     setState(startFreshGame({ aiOpponentCount }));
-    setAiSettingsOpen(false);
   }
 
   return (
@@ -1926,79 +2017,15 @@ function SinglePlayer() {
               <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
               {statsSaveStatus ? <p className="mt-2 text-sm font-bold text-[#f5e6c8]/62">{statsSaveStatus}</p> : null}
             </div>
-            <div className="skyjo-header-controls flex w-full flex-col gap-3 sm:w-auto sm:items-end">
+            <div className="skyjo-header-controls flex w-auto items-start justify-end">
               <div className="skyjo-header-actions flex items-start justify-end gap-2">
-                <RulesHelpButton className="self-start sm:self-end" />
-                <div className="skyjo-mobile-header-log">
-                  <MoveLog label="Log" state={state} />
-                </div>
-              </div>
-              <div className="skyjo-single-settings w-full rounded-2xl border border-[#f5e6c8]/15 bg-white/[0.025] sm:w-auto">
-                <div className="skyjo-ai-settings-desktop">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="skyjo-kicker">AI opponents</div>
-                      <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
-                    </div>
-                    <button className="skyjo-button skyjo-new-game-button text-sm" onClick={startSelectedGame} type="button">
-                      New Game
-                    </button>
-                  </div>
-                  <div className="mt-3 grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
-                    {singlePlayerAiCounts.map((count) => (
-                      <button
-                        aria-pressed={count === aiOpponentCount}
-                        className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
-                          count === aiOpponentCount ? 'skyjo-button-primary' : ''
-                        }`}
-                        key={count}
-                        onClick={() => setAiOpponentCount(count)}
-                        type="button"
-                      >
-                        {count}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <details
-                  className="skyjo-ai-settings-mobile"
-                  onToggle={(event) => setAiSettingsOpen(event.currentTarget.open)}
-                  open={aiSettingsOpen}
-                >
-                  <summary className="skyjo-ai-settings-summary">
-                    <span>
-                      <span className="skyjo-kicker">AI opponents</span>
-                      <span className="skyjo-ai-settings-count block text-sm font-bold text-[#f5e6c8]/75">
-                        <span className="skyjo-ai-settings-count-full">{aiOpponentSummary}</span>
-                        <span className="skyjo-ai-settings-count-compact">{aiOpponentCompactSummary}</span>
-                      </span>
-                    </span>
-                    <span className="skyjo-summary-meta">
-                      <span className="skyjo-kicker">Settings</span>
-                      <span className="skyjo-summary-caret" aria-hidden="true" />
-                    </span>
-                  </summary>
-                  <div className="skyjo-ai-settings-menu mt-3">
-                    <div className="grid grid-cols-7 gap-1" role="group" aria-label="Choose AI opponent count">
-                      {singlePlayerAiCounts.map((count) => (
-                        <button
-                          aria-pressed={count === aiOpponentCount}
-                          className={`skyjo-button h-8 min-w-0 px-0 text-sm tabular-nums ${
-                            count === aiOpponentCount ? 'skyjo-button-primary' : ''
-                          }`}
-                          key={count}
-                          onClick={() => setAiOpponentCount(count)}
-                          type="button"
-                        >
-                          {count}
-                        </button>
-                      ))}
-                    </div>
-                    <button className="skyjo-button skyjo-new-game-button mt-3 w-full text-sm" onClick={startSelectedGame} type="button">
-                      New Game
-                    </button>
-                  </div>
-                </details>
+                <GameSettingsButton
+                  aiOpponentCount={aiOpponentCount}
+                  aiOpponentSummary={aiOpponentSummary}
+                  onAiOpponentCountChange={setAiOpponentCount}
+                  onNewGame={startSelectedGame}
+                  state={state}
+                />
               </div>
             </div>
           </div>
@@ -2078,8 +2105,6 @@ function SinglePlayer() {
               state={state}
             />
           ) : null}
-
-          <MoveLog state={state} />
         </aside>
       </div>
     </main>
@@ -2527,12 +2552,7 @@ function Lobby() {
             <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Create a private room and share the code with friends.</p>
           </div>
           <div className="skyjo-header-actions flex items-start justify-end gap-2">
-            <RulesHelpButton />
-            {roomState ? (
-              <div className="skyjo-mobile-header-log">
-                <MoveLog label="Log" state={roomState} />
-              </div>
-            ) : null}
+            <GameSettingsButton state={roomState} />
           </div>
         </div>
 
@@ -2761,7 +2781,6 @@ function Lobby() {
                       </div>
                     </RoundSummary>
                   ) : null}
-                  <MoveLog state={roomState} />
                 </aside>
               </>
             ) : (
