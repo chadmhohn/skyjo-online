@@ -80,6 +80,7 @@ type AccountContextValue = {
   signup: (email: string, displayName: string, password: string, confirmPassword: string) => Promise<void>;
   logout: () => Promise<void>;
   changePassword: (currentPassword: string, password: string, confirmPassword: string) => Promise<void>;
+  updateProfile: (displayName: string) => Promise<void>;
 };
 
 const AccountContext = createContext<AccountContextValue | null>(null);
@@ -148,6 +149,14 @@ export function AccountProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ currentPassword, password, confirmPassword })
         });
         setUser(null);
+      },
+      async updateProfile(displayName) {
+        setError('');
+        const payload = await apiJson<{ user: AccountUser }>('/api/account/profile', {
+          method: 'PATCH',
+          body: JSON.stringify({ displayName })
+        });
+        setUser(payload.user);
       }
     }),
     [error, loading, user]

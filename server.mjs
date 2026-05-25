@@ -48,6 +48,7 @@ const mimeTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'application/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
+  ['.webmanifest', 'application/manifest+json; charset=utf-8'],
   ['.png', 'image/png'],
   ['.svg', 'image/svg+xml; charset=utf-8'],
   ['.txt', 'text/plain; charset=utf-8'],
@@ -382,6 +383,15 @@ async function handleApiRequest(req, res, url) {
       return true;
     }
 
+    if (url.pathname === '/api/account/profile' && req.method === 'PATCH') {
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      const body = await readJsonBody(req);
+      const updatedUser = accountStore.patchUser(user.id, { displayName: body.displayName });
+      sendJsonResponse(res, 200, { user: updatedUser });
+      return true;
+    }
+
     if (url.pathname === '/api/account/password' && req.method === 'POST') {
       const user = requireAccountForApi(req, res);
       if (!user) return true;
@@ -599,8 +609,12 @@ async function serveStatic(req, res) {
   try {
     const data = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
+    const fileName = path.basename(filePath);
+    const cacheControl = ext === '.html' || ext === '.webmanifest' || fileName === 'sw.js'
+      ? 'no-store'
+      : 'public, max-age=31536000, immutable';
     send(res, 200, data, {
-      'Cache-Control': ext === '.html' ? 'no-store' : 'public, max-age=31536000, immutable',
+      'Cache-Control': cacheControl,
       'Content-Type': mimeTypes.get(ext) || 'application/octet-stream'
     });
   } catch {

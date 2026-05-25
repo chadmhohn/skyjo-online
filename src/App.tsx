@@ -29,7 +29,7 @@ import {
   type StatsGame,
   type StatsSummary
 } from './account';
-import { playAudioCue, useAudioSettings, useGameAudio, type AudioSettings } from './audio';
+import { playAudioCue, playAudioTestCue, primeAudio, useAudioSettings, useGameAudio, type AudioSettings } from './audio';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from './types';
 
 const rows = [0, 1, 2];
@@ -176,7 +176,15 @@ function CloseIcon() {
 }
 
 function AudioSettingsControls() {
-  const [settings, setSettings] = useAudioSettings();
+  const [settings, setSettings, audioStatus] = useAudioSettings();
+  const audioStatusMessage =
+    audioStatus === 'ready'
+      ? 'Audio is ready.'
+      : audioStatus === 'blocked'
+        ? 'Audio is blocked. Tap Test sound or interact with the page to unlock it.'
+        : audioStatus === 'unavailable'
+          ? 'This browser did not expose Web Audio; compatibility sounds will be used when possible.'
+          : 'Tap Test sound to enable audio.';
 
   function updateVolume(key: keyof Pick<AudioSettings, 'musicVolume' | 'soundVolume'>, value: string) {
     const volume = Number(value) / 100;
@@ -188,7 +196,7 @@ function AudioSettingsControls() {
   }
 
   return (
-    <div className="skyjo-audio-controls">
+    <div className="skyjo-audio-controls" onPointerDown={() => void primeAudio()}>
       <div className="skyjo-audio-settings-grid">
         <label className="skyjo-audio-setting-row">
           <span>
@@ -240,11 +248,13 @@ function AudioSettingsControls() {
       <button
         className="skyjo-button skyjo-audio-test-button px-3 py-2 text-sm"
         disabled={!settings.soundEffects}
-        onClick={() => void playAudioCue('flip')}
+        onClick={() => void playAudioTestCue()}
+        onPointerDown={() => void primeAudio()}
         type="button"
       >
         Test sound
       </button>
+      <p className="skyjo-audio-status text-xs font-bold leading-5 text-[#f5e6c8]/58">{audioStatusMessage}</p>
     </div>
   );
 }
@@ -302,9 +312,14 @@ function AccountPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
+  const [profileDisplayName, setProfileDisplayName] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (account.user) setProfileDisplayName(account.user.displayName);
+  }, [account.user]);
 
   async function handleAuth(event: FormEvent) {
     event.preventDefault();
@@ -335,6 +350,21 @@ function AccountPage() {
       setMessage('Password changed. Sign in again with the new password.');
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Password change failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleProfileUpdate(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await account.updateProfile(profileDisplayName);
+      setMessage('Display name updated.');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Profile update failed.');
     } finally {
       setBusy(false);
     }
@@ -384,6 +414,24 @@ function AccountPage() {
                   </button>
                 </div>
               </div>
+              <form className="skyjo-account-form" onSubmit={handleProfileUpdate}>
+                <label>
+                  Display name
+                  <input
+                    className="skyjo-input px-3 py-2"
+                    maxLength={24}
+                    onChange={(event) => setProfileDisplayName(event.target.value)}
+                    value={profileDisplayName}
+                  />
+                </label>
+                <button
+                  className="skyjo-button skyjo-button-primary px-4 py-2"
+                  disabled={busy || profileDisplayName.trim() === account.user.displayName}
+                  type="submit"
+                >
+                  Save Display Name
+                </button>
+              </form>
               <form className="skyjo-account-form" onSubmit={handlePasswordChange}>
                 <label>
                   Current password

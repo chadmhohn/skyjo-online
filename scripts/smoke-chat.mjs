@@ -274,6 +274,9 @@ try {
   await assert.rejects(openSocket(baseUrl, cookie), /Unexpected server response|401/, 'multiplayer sockets require account auth');
   const hostAccount = await createAccount(baseUrl, cookie, 'ada@example.com', 'Ada');
   const guestAccount = await createAccount(baseUrl, cookie, 'grace@example.com', 'Grace');
+  const profileUpdate = await accountRequest(baseUrl, hostAccount.cookie, '/api/account/profile', { displayName: 'Ada Prime' }, 'PATCH');
+  assert.equal(profileUpdate.response.status, 200, 'players can update their display name');
+  assert.equal(profileUpdate.payload.user.displayName, 'Ada Prime');
   const adminAccount = await loginAccount(baseUrl, cookie, 'chad.hohn@groundworkrevops.com', 'admin-secret-123');
   const selfDemote = await accountRequest(
     baseUrl,
@@ -384,12 +387,12 @@ try {
   const [hostRoom, guestRoom] = await Promise.all([hostRoomPromise, guestRoomPromise]);
   const chatMessage = hostRoom.room.chatMessages[0];
   assert.equal(chatMessage.playerId, hostJoined.playerId);
-  assert.equal(chatMessage.playerName, 'Ada');
+  assert.equal(chatMessage.playerName, 'Ada Prime');
   assert.equal(chatMessage.text, 'Good luck everyone');
   assert.equal(guestRoom.room.chatMessages[0].id, chatMessage.id);
 
   reconnectSocket = await openSocket(baseUrl, hostAccount.cookie);
-  reconnectSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Ada', playerId: hostJoined.playerId }));
+  reconnectSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Ada Prime', playerId: hostJoined.playerId }));
   const reconnectJoined = await waitForMessage(reconnectSocket, (message) => message.type === 'joined', 'reconnect join');
   assert.equal(reconnectJoined.playerId, hostJoined.playerId);
   assert.equal(reconnectJoined.room.chatMessages[0].text, 'Good luck everyone');
