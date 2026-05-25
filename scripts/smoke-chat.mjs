@@ -267,6 +267,15 @@ let reconnectSocket;
 
 try {
   await waitForHealth(baseUrl);
+  const publicManifest = await fetch(`${baseUrl}/manifest.webmanifest`);
+  assert.equal(publicManifest.status, 200, 'PWA manifest stays available before the site-password gate');
+  assert.match(publicManifest.headers.get('content-type') || '', /application\/manifest\+json/);
+  const publicAppleIcon = await fetch(`${baseUrl}/skyjo-icon-180.png`);
+  assert.equal(publicAppleIcon.status, 200, 'Apple touch icon stays available before the site-password gate');
+  assert.match(publicAppleIcon.headers.get('content-type') || '', /image\/png/);
+  const publicServiceWorker = await fetch(`${baseUrl}/sw.js`);
+  assert.equal(publicServiceWorker.status, 200, 'Service worker stays available before the site-password gate');
+  assert.match(publicServiceWorker.headers.get('content-type') || '', /application\/javascript/);
   const protectedShareLink = await fetch(`${baseUrl}/lobby?room=ABCDE`, { redirect: 'manual' });
   assert.equal(protectedShareLink.status, 302);
   assert.equal(protectedShareLink.headers.get('location'), '/login?next=%2Flobby%3Froom%3DABCDE');

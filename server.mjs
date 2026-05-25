@@ -130,6 +130,10 @@ function accountToken(req) {
   return parseCookies(req.headers.cookie).get(accountCookieName) || '';
 }
 
+function isPublicPwaAsset(pathname) {
+  return pathname === '/manifest.webmanifest' || pathname === '/sw.js' || pathname.startsWith('/skyjo-icon');
+}
+
 function currentAccountUser(req) {
   const token = accountToken(req);
   if (!token) return null;
@@ -641,6 +645,11 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/healthz') {
       send(res, 200, 'ok', { 'Content-Type': 'text/plain; charset=utf-8' });
+      return;
+    }
+
+    if (isPublicPwaAsset(url.pathname)) {
+      await serveStatic(req, res);
       return;
     }
 
