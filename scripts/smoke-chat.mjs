@@ -280,6 +280,9 @@ try {
   assert.equal(protectedShareLink.status, 302);
   assert.equal(protectedShareLink.headers.get('location'), '/login?next=%2Flobby%3Froom%3DABCDE');
   const cookie = await login(baseUrl, password, '/lobby?room=ABCDE');
+  const cardAudio = await fetch(`${baseUrl}/audio/card-flip.mp3`, { headers: { Cookie: cookie } });
+  assert.equal(cardAudio.status, 200, 'card audio assets are served after shared-password login');
+  assert.match(cardAudio.headers.get('content-type') || '', /audio\/mpeg/);
   await assert.rejects(openSocket(baseUrl, cookie), /Unexpected server response|401/, 'multiplayer sockets require account auth');
   const hostAccount = await createAccount(baseUrl, cookie, 'ada@example.com', 'Ada');
   const guestAccount = await createAccount(baseUrl, cookie, 'grace@example.com', 'Grace');

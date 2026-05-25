@@ -1,4 +1,4 @@
-const skyjoCacheName = 'skyjo-online-v1';
+const skyjoCacheName = 'skyjo-online-v2';
 
 self.addEventListener('install', () => {
   self.skipWaiting();
@@ -21,7 +21,7 @@ self.addEventListener('fetch', (event) => {
     fetch(request)
       .then((response) => {
         if (!response.ok || response.type !== 'basic') return response;
-        if (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/skyjo-icon') || url.pathname === '/manifest.webmanifest') {
+        if (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/audio/') || url.pathname.startsWith('/skyjo-icon') || url.pathname === '/manifest.webmanifest') {
           const responseClone = response.clone();
           caches.open(skyjoCacheName).then((cache) => cache.put(request, responseClone));
         }

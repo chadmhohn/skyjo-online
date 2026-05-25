@@ -183,13 +183,13 @@ function AudioSettingsControls() {
       : audioStatus === 'blocked'
         ? 'Audio is blocked. Tap Test sound or interact with the page to unlock it.'
         : audioStatus === 'unavailable'
-          ? 'This browser did not expose Web Audio; compatibility sounds will be used when possible.'
+          ? 'This browser cannot play audio assets.'
           : 'Tap Test sound to enable audio.';
 
-  function updateVolume(key: keyof Pick<AudioSettings, 'musicVolume' | 'soundVolume'>, value: string) {
+  function updateVolume(key: keyof Pick<AudioSettings, 'ambienceVolume' | 'soundVolume'>, value: string) {
     const volume = Number(value) / 100;
-    if (key === 'musicVolume') {
-      setSettings({ musicVolume: volume });
+    if (key === 'ambienceVolume') {
+      setSettings({ ambienceVolume: volume });
       return;
     }
     setSettings({ soundVolume: volume });
@@ -223,25 +223,26 @@ function AudioSettingsControls() {
         </label>
         <label className="skyjo-audio-setting-row">
           <span>
-            <span className="skyjo-audio-setting-title">Music</span>
+            <span className="skyjo-audio-setting-title">Ambience</span>
+            <span className="block text-xs font-bold text-[#f5e6c8]/50">Quiet room tone</span>
           </span>
           <input
-            checked={settings.music}
+            checked={settings.ambience}
             className="skyjo-audio-toggle"
-            onChange={(event) => setSettings({ music: event.target.checked })}
+            onChange={(event) => setSettings({ ambience: event.target.checked })}
             type="checkbox"
           />
         </label>
         <label className="skyjo-audio-setting-slider">
-          <span>Music volume</span>
+          <span>Ambience volume</span>
           <input
             className="skyjo-audio-range"
-            disabled={!settings.music}
+            disabled={!settings.ambience}
             max="100"
             min="0"
-            onChange={(event) => updateVolume('musicVolume', event.target.value)}
+            onChange={(event) => updateVolume('ambienceVolume', event.target.value)}
             type="range"
-            value={Math.round(settings.musicVolume * 100)}
+            value={Math.round(settings.ambienceVolume * 100)}
           />
         </label>
       </div>

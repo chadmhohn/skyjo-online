@@ -5,39 +5,61 @@ export type AudioCue = 'flip' | 'pickup' | 'place';
 export type AudioStatus = 'idle' | 'ready' | 'blocked' | 'unavailable';
 
 export interface AudioSettings {
-  music: boolean;
-  musicVolume: number;
+  ambience: boolean;
+  ambienceVolume: number;
   soundEffects: boolean;
   soundVolume: number;
 }
 
-const audioSettingsKey = 'skyjo-audio-settings-v1';
+type CueAsset = {
+  src: string;
+  stopAfterMs?: number;
+  volumeScale: number;
+};
+
+const audioSettingsKey = 'skyjo-audio-settings-v2';
+const legacyAudioSettingsKey = 'skyjo-audio-settings-v1';
+const cueAssets: Record<AudioCue, CueAsset> = {
+  flip: { src: '/audio/card-flip.mp3', stopAfterMs: 520, volumeScale: 0.28 },
+  pickup: { src: '/audio/card-pickup.mp3', stopAfterMs: 430, volumeScale: 0.22 },
+  place: { src: '/audio/card-place.mp3', stopAfterMs: 360, volumeScale: 0.16 }
+};
+const ambienceSrc = '/audio/table-ambience.mp3';
 const defaultAudioSettings: AudioSettings = {
-  music: false,
-  musicVolume: 0.32,
+  ambience: false,
+  ambienceVolume: 0.34,
   soundEffects: true,
   soundVolume: 0.72
 };
 const subscribers = new Set<(settings: AudioSettings) => void>();
 const statusSubscribers = new Set<(status: AudioStatus) => void>();
+const cueAudioTemplates = new Map<AudioCue, HTMLAudioElement>();
+const activeCueAudio = new Set<HTMLAudioElement>();
 
 let audioSettings = readStoredAudioSettings();
-let audioContext: AudioContext | null = null;
-let musicGain: GainNode | null = null;
-let musicTimer: number | null = null;
-let musicStep = 0;
 let audioStatus: AudioStatus = 'idle';
-let silentUnlockPlayed = false;
-let fallbackMusicAudio: HTMLAudioElement | null = null;
-let fallbackMusicUrl = '';
-const fallbackCueUrls = new Map<AudioCue, string>();
+let ambienceAudio: HTMLAudioElement | null = null;
+let audioAssetsPreloaded = false;
 
 function isBrowser() {
   return typeof window !== 'undefined';
 }
 
+function hasAudioElement() {
+  return isBrowser() && typeof Audio !== 'undefined';
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeSettings(parsed: Partial<AudioSettings>): AudioSettings {
+  return {
+    ambience: Boolean(parsed.ambience ?? defaultAudioSettings.ambience),
+    ambienceVolume: clamp(Number(parsed.ambienceVolume ?? defaultAudioSettings.ambienceVolume), 0, 1),
+    soundEffects: Boolean(parsed.soundEffects ?? defaultAudioSettings.soundEffects),
+    soundVolume: clamp(Number(parsed.soundVolume ?? defaultAudioSettings.soundVolume), 0, 1)
+  };
 }
 
 function readStoredAudioSettings(): AudioSettings {
@@ -45,14 +67,15 @@ function readStoredAudioSettings(): AudioSettings {
 
   try {
     const stored = window.localStorage.getItem(audioSettingsKey);
-    if (!stored) return defaultAudioSettings;
-    const parsed = JSON.parse(stored) as Partial<AudioSettings>;
-    return {
-      music: Boolean(parsed.music ?? defaultAudioSettings.music),
-      musicVolume: clamp(Number(parsed.musicVolume ?? defaultAudioSettings.musicVolume), 0, 1),
-      soundEffects: Boolean(parsed.soundEffects ?? defaultAudioSettings.soundEffects),
-      soundVolume: clamp(Number(parsed.soundVolume ?? defaultAudioSettings.soundVolume), 0, 1)
-    };
+    if (stored) return normalizeSettings(JSON.parse(stored) as Partial<AudioSettings>);
+
+    const legacyStored = window.localStorage.getItem(legacyAudioSettingsKey);
+    if (!legacyStored) return defaultAudioSettings;
+    const legacyParsed = JSON.parse(legacyStored) as Partial<AudioSettings>;
+    return normalizeSettings({
+      soundEffects: legacyParsed.soundEffects,
+      soundVolume: legacyParsed.soundVolume
+    });
   } catch {
     return defaultAudioSettings;
   }
@@ -77,197 +100,102 @@ function setAudioStatus(status: AudioStatus) {
   notifyStatusSubscribers();
 }
 
-function getAudioContext() {
-  if (!isBrowser()) return null;
-  if (audioContext) return audioContext;
-
-  const AudioContextConstructor =
-    window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextConstructor) {
+function makeAudioElement(src: string) {
+  if (!hasAudioElement()) {
     setAudioStatus('unavailable');
     return null;
   }
+  const audio = new Audio(src);
+  audio.preload = 'auto';
+  return audio;
+}
 
+function cueTemplate(cue: AudioCue) {
+  const existing = cueAudioTemplates.get(cue);
+  if (existing) return existing;
+  const template = makeAudioElement(cueAssets[cue].src);
+  if (!template) return null;
+  cueAudioTemplates.set(cue, template);
+  return template;
+}
+
+function preloadAudioAssets() {
+  if (audioAssetsPreloaded) return;
+  if (!hasAudioElement()) {
+    setAudioStatus('unavailable');
+    return;
+  }
+  audioAssetsPreloaded = true;
+  (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
+    cueTemplate(cue)?.load();
+  });
+  ensureAmbienceAudio()?.load();
+}
+
+function cleanupCueAudio(audio: HTMLAudioElement) {
+  audio.pause();
   try {
-    audioContext = new AudioContextConstructor();
-    return audioContext;
+    audio.currentTime = 0;
   } catch {
-    setAudioStatus('blocked');
-    return null;
+    // Some mobile browsers reject currentTime changes before metadata is ready.
   }
+  activeCueAudio.delete(audio);
 }
 
-async function ensureAudioContext() {
-  const context = getAudioContext();
-  if (!context) return null;
+async function playAsset(src: string, volume: number, stopAfterMs?: number) {
+  const audio = makeAudioElement(src);
+  if (!audio) return;
+  audio.volume = clamp(volume, 0, 1);
+  activeCueAudio.add(audio);
+  audio.addEventListener('ended', () => activeCueAudio.delete(audio), { once: true });
+  if (stopAfterMs) window.setTimeout(() => cleanupCueAudio(audio), stopAfterMs);
 
-  if (context.state === 'suspended') {
-    try {
-      await context.resume();
-    } catch {
-      setAudioStatus('blocked');
-      return null;
-    }
-  }
-
-  if (context.state === 'closed') {
-    setAudioStatus('blocked');
-    return null;
-  }
-
-  if (context.state === 'running') setAudioStatus('ready');
-  else setAudioStatus('blocked');
-
-  return context;
-}
-
-function playSilentUnlock(context: AudioContext) {
-  if (silentUnlockPlayed) return;
-  silentUnlockPlayed = true;
   try {
-    const buffer = context.createBuffer(1, 1, Math.max(1, context.sampleRate));
-    const source = context.createBufferSource();
-    const gainNode = context.createGain();
-    gainNode.gain.setValueAtTime(0.0001, context.currentTime);
-    source.buffer = buffer;
-    source.connect(gainNode);
-    gainNode.connect(context.destination);
-    source.start(0);
+    await audio.play();
+    setAudioStatus('ready');
   } catch {
-    silentUnlockPlayed = false;
+    cleanupCueAudio(audio);
+    setAudioStatus('blocked');
   }
 }
 
-function envelope(gain: GainNode, start: number, peak: number, end: number, duration: number) {
-  gain.gain.cancelScheduledValues(start);
-  gain.gain.setValueAtTime(0.0001, start);
-  gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak), start + 0.012);
-  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-  gain.gain.setValueAtTime(0.0001, start + duration + end);
+export async function playAudioCue(cue: AudioCue) {
+  if (!audioSettings.soundEffects || audioSettings.soundVolume <= 0) return;
+  const asset = cueAssets[cue];
+  const template = cueTemplate(cue);
+  await playAsset(template?.src || asset.src, audioSettings.soundVolume * asset.volumeScale, asset.stopAfterMs);
 }
 
-function playTone(
-  context: AudioContext,
-  {
-    duration,
-    endFrequency,
-    frequency,
-    gain,
-    type
-  }: {
-    duration: number;
-    endFrequency?: number;
-    frequency: number;
-    gain: number;
-    type: OscillatorType;
-  }
-) {
-  const oscillator = context.createOscillator();
-  const gainNode = context.createGain();
-  const start = context.currentTime;
-
-  oscillator.type = type;
-  oscillator.frequency.setValueAtTime(frequency, start);
-  if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(endFrequency, start + duration);
-  envelope(gainNode, start, gain, 0.02, duration);
-  oscillator.connect(gainNode);
-  gainNode.connect(context.destination);
-  oscillator.start(start);
-  oscillator.stop(start + duration + 0.03);
+export function playAudioTestCue() {
+  void primeAudio();
+  void playAudioCue('flip');
+  window.setTimeout(() => void playAudioCue('pickup'), 170);
+  window.setTimeout(() => void playAudioCue('place'), 360);
 }
 
-function playNoise(context: AudioContext, gain: number, duration: number, cutoff: number) {
-  const sampleCount = Math.max(1, Math.floor(context.sampleRate * duration));
-  const buffer = context.createBuffer(1, sampleCount, context.sampleRate);
-  const data = buffer.getChannelData(0);
-
-  for (let index = 0; index < sampleCount; index += 1) {
-    data[index] = (Math.random() * 2 - 1) * (1 - index / sampleCount);
-  }
-
-  const source = context.createBufferSource();
-  const filter = context.createBiquadFilter();
-  const gainNode = context.createGain();
-  const start = context.currentTime;
-
-  filter.type = 'lowpass';
-  filter.frequency.setValueAtTime(cutoff, start);
-  envelope(gainNode, start, gain, 0.02, duration);
-  source.buffer = buffer;
-  source.connect(filter);
-  filter.connect(gainNode);
-  gainNode.connect(context.destination);
-  source.start(start);
+export async function primeAudio() {
+  preloadAudioAssets();
+  if (!hasAudioElement()) return false;
+  if (!audioSettings.ambience) return true;
+  await startAmbience();
+  return audioStatus === 'ready';
 }
 
-function isIosLike() {
-  if (!isBrowser()) return false;
-  return /iPad|iPhone|iPod/.test(window.navigator.userAgent) || (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1);
+function ensureAmbienceAudio() {
+  if (ambienceAudio) return ambienceAudio;
+  const audio = makeAudioElement(ambienceSrc);
+  if (!audio) return null;
+  audio.loop = true;
+  ambienceAudio = audio;
+  return ambienceAudio;
 }
 
-function writeAscii(data: Uint8Array, offset: number, value: string) {
-  for (let index = 0; index < value.length; index += 1) data[offset + index] = value.charCodeAt(index);
-}
-
-function buildToneUrl({
-  duration,
-  frequencies,
-  volume = 0.42
-}: {
-  duration: number;
-  frequencies: number[];
-  volume?: number;
-}) {
-  const sampleRate = 22050;
-  const sampleCount = Math.max(1, Math.floor(sampleRate * duration));
-  const bytes = new Uint8Array(44 + sampleCount * 2);
-  const view = new DataView(bytes.buffer);
-  writeAscii(bytes, 0, 'RIFF');
-  view.setUint32(4, 36 + sampleCount * 2, true);
-  writeAscii(bytes, 8, 'WAVE');
-  writeAscii(bytes, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeAscii(bytes, 36, 'data');
-  view.setUint32(40, sampleCount * 2, true);
-
-  for (let index = 0; index < sampleCount; index += 1) {
-    const time = index / sampleRate;
-    const progress = index / sampleCount;
-    const frequency = frequencies[Math.min(frequencies.length - 1, Math.floor(progress * frequencies.length))];
-    const fadeIn = Math.min(1, progress / 0.05);
-    const fadeOut = Math.min(1, (1 - progress) / 0.08);
-    const envelopeValue = Math.max(0, Math.min(fadeIn, fadeOut));
-    const sample = Math.sin(Math.PI * 2 * frequency * time) * volume * envelopeValue;
-    view.setInt16(44 + index * 2, Math.max(-1, Math.min(1, sample)) * 32767, true);
-  }
-
-  return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
-}
-
-function fallbackCueUrl(cue: AudioCue) {
-  const cached = fallbackCueUrls.get(cue);
-  if (cached) return cached;
-  const url =
-    cue === 'flip'
-      ? buildToneUrl({ duration: 0.24, frequencies: [740, 520], volume: 0.55 })
-      : cue === 'pickup'
-        ? buildToneUrl({ duration: 0.22, frequencies: [880, 660], volume: 0.5 })
-        : buildToneUrl({ duration: 0.28, frequencies: [220, 150], volume: 0.52 });
-  fallbackCueUrls.set(cue, url);
-  return url;
-}
-
-async function playFallbackCue(cue: AudioCue) {
-  if (!isBrowser() || !audioSettings.soundEffects || audioSettings.soundVolume <= 0) return;
+async function startAmbience() {
+  if (!audioSettings.ambience || audioSettings.ambienceVolume <= 0) return;
+  const audio = ensureAmbienceAudio();
+  if (!audio) return;
+  audio.volume = clamp(audioSettings.ambienceVolume * 0.55, 0, 1);
   try {
-    const audio = new Audio(fallbackCueUrl(cue));
-    audio.volume = clamp(audioSettings.soundVolume, 0, 1);
     await audio.play();
     setAudioStatus('ready');
   } catch {
@@ -275,161 +203,24 @@ async function playFallbackCue(cue: AudioCue) {
   }
 }
 
-function fallbackMusicToneUrl() {
-  if (fallbackMusicUrl) return fallbackMusicUrl;
-  fallbackMusicUrl = buildToneUrl({
-    duration: 4.16,
-    frequencies: [196, 246.94, 293.66, 369.99, 329.63, 293.66, 246.94, 220],
-    volume: 0.24
-  });
-  return fallbackMusicUrl;
-}
-
-async function startFallbackMusic() {
-  if (!isBrowser() || !audioSettings.music || audioSettings.musicVolume <= 0) return;
-  if (!fallbackMusicAudio) {
-    fallbackMusicAudio = new Audio(fallbackMusicToneUrl());
-    fallbackMusicAudio.loop = true;
-  }
-  fallbackMusicAudio.volume = clamp(audioSettings.musicVolume * 0.7, 0, 1);
+function stopAmbience() {
+  if (!ambienceAudio) return;
+  ambienceAudio.pause();
   try {
-    await fallbackMusicAudio.play();
-    setAudioStatus('ready');
+    ambienceAudio.currentTime = 0;
   } catch {
-    setAudioStatus('blocked');
+    // Safe to ignore on browsers that only allow seeking after metadata loads.
   }
 }
 
-function stopFallbackMusic() {
-  if (!fallbackMusicAudio) return;
-  fallbackMusicAudio.pause();
-  fallbackMusicAudio.currentTime = 0;
-}
-
-export async function playAudioCue(cue: AudioCue) {
-  if (!audioSettings.soundEffects || audioSettings.soundVolume <= 0) return;
-  if (isIosLike()) {
-    await playFallbackCue(cue);
+function syncAmbience() {
+  if (!audioSettings.ambience || audioSettings.ambienceVolume <= 0) {
+    stopAmbience();
     return;
   }
 
-  const context = await ensureAudioContext();
-  if (!context) {
-    await playFallbackCue(cue);
-    return;
-  }
-  playSilentUnlock(context);
-
-  const gain = clamp(audioSettings.soundVolume, 0, 1);
-
-  if (cue === 'flip') {
-    playNoise(context, 0.16 * gain, 0.1, 2300);
-    playTone(context, { duration: 0.12, endFrequency: 340, frequency: 620, gain: 0.09 * gain, type: 'triangle' });
-    return;
-  }
-
-  if (cue === 'pickup') {
-    playTone(context, { duration: 0.07, endFrequency: 760, frequency: 1120, gain: 0.075 * gain, type: 'square' });
-    window.setTimeout(() => {
-      const currentContext = getAudioContext();
-      if (currentContext) {
-        playTone(currentContext, { duration: 0.06, endFrequency: 520, frequency: 860, gain: 0.055 * gain, type: 'triangle' });
-      }
-    }, 44);
-    return;
-  }
-
-  playTone(context, { duration: 0.13, endFrequency: 86, frequency: 170, gain: 0.14 * gain, type: 'sine' });
-  playNoise(context, 0.07 * gain, 0.07, 900);
-}
-
-export function playAudioTestCue() {
-  void primeAudio();
-  void playAudioCue('flip');
-  window.setTimeout(() => void playAudioCue('pickup'), 150);
-  window.setTimeout(() => void playAudioCue('place'), 320);
-}
-
-export async function primeAudio() {
-  if (isIosLike()) {
-    setAudioStatus('idle');
-    return true;
-  }
-  const context = await ensureAudioContext();
-  if (!context) return false;
-  playSilentUnlock(context);
-  return context.state === 'running';
-}
-
-function scheduleMusicNote(context: AudioContext) {
-  if (!musicGain) return;
-  const notes = [196, 246.94, 293.66, 369.99, 329.63, 293.66, 246.94, 220];
-  const frequency = notes[musicStep % notes.length];
-  const oscillator = context.createOscillator();
-  const gainNode = context.createGain();
-  const start = context.currentTime;
-
-  oscillator.type = 'sine';
-  oscillator.frequency.setValueAtTime(frequency, start);
-  oscillator.connect(gainNode);
-  gainNode.connect(musicGain);
-  gainNode.gain.setValueAtTime(0.0001, start);
-  gainNode.gain.exponentialRampToValueAtTime(0.28, start + 0.04);
-  gainNode.gain.exponentialRampToValueAtTime(0.0001, start + 0.46);
-  oscillator.start(start);
-  oscillator.stop(start + 0.5);
-  musicStep += 1;
-}
-
-async function startMusic() {
-  if (musicTimer !== null || !audioSettings.music || audioSettings.musicVolume <= 0) return;
-  const context = await ensureAudioContext();
-  if (!context || musicTimer !== null) return;
-
-  musicGain = context.createGain();
-  musicGain.gain.setValueAtTime(audioSettings.musicVolume * 0.24, context.currentTime);
-  musicGain.connect(context.destination);
-  playSilentUnlock(context);
-  scheduleMusicNote(context);
-  musicTimer = window.setInterval(() => scheduleMusicNote(context), 520);
-}
-
-function stopMusic() {
-  if (musicTimer !== null) {
-    window.clearInterval(musicTimer);
-    musicTimer = null;
-  }
-  if (!musicGain || !audioContext) return;
-
-  const gainNode = musicGain;
-  const start = audioContext.currentTime;
-  gainNode.gain.cancelScheduledValues(start);
-  gainNode.gain.setValueAtTime(gainNode.gain.value, start);
-  gainNode.gain.exponentialRampToValueAtTime(0.0001, start + 0.12);
-  window.setTimeout(() => {
-    gainNode.disconnect();
-  }, 160);
-  musicGain = null;
-}
-
-function syncMusic() {
-  if (!audioSettings.music || audioSettings.musicVolume <= 0) {
-    stopMusic();
-    stopFallbackMusic();
-    return;
-  }
-
-  if (isIosLike()) {
-    stopMusic();
-    void startFallbackMusic();
-    return;
-  }
-
-  stopFallbackMusic();
-  if (musicGain && audioContext) {
-    musicGain.gain.setValueAtTime(audioSettings.musicVolume * 0.24, audioContext.currentTime);
-  }
-  void startMusic();
+  if (ambienceAudio) ambienceAudio.volume = clamp(audioSettings.ambienceVolume * 0.55, 0, 1);
+  void startAmbience();
 }
 
 export function getAudioSettings() {
@@ -440,12 +231,12 @@ export function setAudioSettings(nextSettings: Partial<AudioSettings>) {
   audioSettings = {
     ...audioSettings,
     ...nextSettings,
-    musicVolume: clamp(Number(nextSettings.musicVolume ?? audioSettings.musicVolume), 0, 1),
+    ambienceVolume: clamp(Number(nextSettings.ambienceVolume ?? audioSettings.ambienceVolume), 0, 1),
     soundVolume: clamp(Number(nextSettings.soundVolume ?? audioSettings.soundVolume), 0, 1)
   };
   writeStoredAudioSettings(audioSettings);
   notifySubscribers();
-  syncMusic();
+  syncAmbience();
 }
 
 export function subscribeAudioSettings(subscriber: (settings: AudioSettings) => void) {
@@ -477,10 +268,11 @@ export function useAudioSettings() {
     if (!isBrowser()) return undefined;
     const unlockAudio = () => {
       void primeAudio();
-      syncMusic();
+      syncAmbience();
     };
 
-    syncMusic();
+    preloadAudioAssets();
+    syncAmbience();
     window.addEventListener('pointerdown', unlockAudio, { passive: true });
     window.addEventListener('keydown', unlockAudio);
 
