@@ -3402,6 +3402,7 @@ body {
     display: grid;
     gap: 1.1rem;
     overscroll-behavior: contain;
+    scrollbar-gutter: stable;
     scrollbar-color: rgba(245, 230, 200, 0.48) rgba(245, 230, 200, 0.08);
   }
 
@@ -3410,7 +3411,8 @@ body {
     top: 0;
     z-index: 1;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(4.75rem, 1fr));
+    grid-auto-rows: 2.35rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.4rem;
     border: 1px solid rgba(245, 230, 200, 0.12);
     border-radius: 14px;
@@ -3419,15 +3421,35 @@ body {
     backdrop-filter: blur(12px);
   }
 
+  .skyjo-settings-tabs-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .skyjo-settings-tabs-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .skyjo-settings-tab {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 100%;
+    height: 2.35rem;
     min-height: 2.35rem;
+    padding: 0 0.45rem;
     border: 1px solid transparent;
     border-radius: 10px;
     background: rgba(245, 230, 200, 0.055);
     color: rgba(245, 230, 200, 0.7);
     font-size: 0.82rem;
     font-weight: 900;
+    line-height: 1;
     outline: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .skyjo-settings-tab-active {
@@ -3532,6 +3554,14 @@ body {
 
     .skyjo-settings-tabs {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .skyjo-settings-tabs-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .skyjo-settings-tabs-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .skyjo-settings-dialog-header,

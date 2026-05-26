@@ -1010,7 +1010,7 @@ function GameSettingsButton({
                 </div>
 
                 <div className="skyjo-settings-body overflow-y-auto p-4 sm:p-5">
-                  <div className="skyjo-settings-tabs" role="tablist" aria-label="Settings sections">
+                  <div className={`skyjo-settings-tabs skyjo-settings-tabs-${settingsPanels.length}`} role="tablist" aria-label="Settings sections">
                     {settingsPanels.map((panel) => (
                       <button
                         aria-controls={`skyjo-settings-panel-${panel.key}`}
