@@ -35,11 +35,14 @@ const defaultAudioSettings: AudioSettings = {
 const subscribers = new Set<(settings: AudioSettings) => void>();
 const statusSubscribers = new Set<(status: AudioStatus) => void>();
 const cueAudioElements = new Map<AudioCue, HTMLAudioElement>();
+const cueAudioBuffers = new Map<AudioCue, AudioBuffer>();
+const cueAudioBufferPromises = new Map<AudioCue, Promise<AudioBuffer | null>>();
 const lastCuePlayedAt = new Map<AudioCue, number>();
 const cuePlayTokens = new Map<AudioCue, number>();
 
 let audioSettings = readStoredAudioSettings();
 let audioStatus: AudioStatus = 'idle';
+let audioContext: AudioContext | null = null;
 let ambienceAudio: HTMLAudioElement | null = null;
 let audioAssetsPreloaded = false;
 let audioBlockedUntil = 0;
@@ -52,6 +55,22 @@ function isBrowser() {
 
 function hasAudioElement() {
   return isBrowser() && typeof Audio !== 'undefined';
+}
+
+function audioContextConstructor() {
+  if (!isBrowser()) return null;
+  return window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext || null;
+}
+
+function hasWebAudio() {
+  return Boolean(audioContextConstructor());
+}
+
+function getAudioContext() {
+  const AudioContextConstructor = audioContextConstructor();
+  if (!AudioContextConstructor) return null;
+  if (!audioContext || audioContext.state === 'closed') audioContext = new AudioContextConstructor();
+  return audioContext;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -126,20 +145,55 @@ function cueElement(cue: AudioCue) {
 
 function preloadAudioAssets() {
   if (audioAssetsPreloaded) return;
-  if (!hasAudioElement()) {
+  if (!hasWebAudio() && !hasAudioElement()) {
     setAudioStatus('unavailable');
     return;
   }
   audioAssetsPreloaded = true;
-  (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
-    cueElement(cue)?.load();
-  });
+  if (hasWebAudio()) {
+    (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
+      void cueBuffer(cue);
+    });
+  } else {
+    (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
+      cueElement(cue)?.load();
+    });
+  }
   ensureAmbienceAudio()?.load();
+}
+
+async function cueBuffer(cue: AudioCue) {
+  const existing = cueAudioBuffers.get(cue);
+  if (existing) return existing;
+  const existingPromise = cueAudioBufferPromises.get(cue);
+  if (existingPromise) return existingPromise;
+
+  const context = getAudioContext();
+  if (!context) return null;
+  const promise = fetch(cueAssets[cue].src)
+    .then((response) => {
+      if (!response.ok) throw new Error(`Could not load audio cue ${cue}`);
+      return response.arrayBuffer();
+    })
+    .then((data) => context.decodeAudioData(data.slice(0)))
+    .then((buffer) => {
+      cueAudioBuffers.set(cue, buffer);
+      return buffer;
+    })
+    .catch(() => null)
+    .finally(() => {
+      cueAudioBufferPromises.delete(cue);
+    });
+  cueAudioBufferPromises.set(cue, promise);
+  return promise;
 }
 
 function resetAudioAfterResume() {
   if (document.visibilityState === 'hidden') {
     stopAmbience();
+    if (audioContext?.state === 'running') void audioContext.suspend().catch(() => undefined);
+    audioBlockedUntil = 0;
+    lastCuePlayedAt.clear();
     return;
   }
   const now = Date.now();
@@ -171,6 +225,10 @@ function cleanupCueAudio(audio: HTMLAudioElement) {
 }
 
 function playCueAsset(cue: AudioCue) {
+  if (hasWebAudio()) {
+    void playCueBuffer(cue);
+    return;
+  }
   if (Date.now() < audioBlockedUntil) return;
   const asset = cueAssets[cue];
   const previousPlayedAt = lastCuePlayedAt.get(cue) ?? 0;
@@ -206,11 +264,54 @@ function playCueAsset(cue: AudioCue) {
       setAudioStatus('ready');
     })
     .catch(() => {
-      audioBlockedUntil = Date.now() + 5000;
+      audioBlockedUntil = Date.now() + 750;
       lastCuePlayedAt.set(cue, 0);
       cleanupCueAudio(audio);
       setAudioStatus('blocked');
     });
+}
+
+async function playCueBuffer(cue: AudioCue) {
+  if (Date.now() < audioBlockedUntil) return;
+  const asset = cueAssets[cue];
+  const previousPlayedAt = lastCuePlayedAt.get(cue) ?? 0;
+  if (Date.now() - previousPlayedAt < asset.minGapMs) return;
+
+  const context = getAudioContext();
+  if (!context) {
+    playCueAsset(cue);
+    return;
+  }
+
+  try {
+    if (context.state === 'suspended') await context.resume();
+    if (context.state !== 'running') throw new Error('Audio context is not running.');
+    const buffer = await cueBuffer(cue);
+    if (!buffer) throw new Error('Audio cue buffer is unavailable.');
+    lastCuePlayedAt.set(cue, Date.now());
+    const source = context.createBufferSource();
+    const gain = context.createGain();
+    source.buffer = buffer;
+    gain.gain.value = clamp(audioSettings.soundVolume * asset.volumeScale, 0, 1);
+    source.connect(gain);
+    gain.connect(context.destination);
+    source.start();
+    if (asset.stopAfterMs) {
+      window.setTimeout(() => {
+        try {
+          source.stop();
+        } catch {
+          // Buffer sources throw if they already ended.
+        }
+      }, asset.stopAfterMs);
+    }
+    audioBlockedUntil = 0;
+    setAudioStatus('ready');
+  } catch {
+    audioBlockedUntil = Date.now() + 750;
+    lastCuePlayedAt.set(cue, 0);
+    setAudioStatus('blocked');
+  }
 }
 
 export function playAudioCue(cue: AudioCue) {
@@ -227,8 +328,17 @@ export function playAudioTestCue() {
 
 export async function primeAudio() {
   preloadAudioAssets();
-  if (!hasAudioElement()) return false;
+  if (!hasWebAudio() && !hasAudioElement()) return false;
   audioBlockedUntil = 0;
+  const context = getAudioContext();
+  if (context?.state === 'suspended') {
+    try {
+      await context.resume();
+      setAudioStatus('ready');
+    } catch {
+      setAudioStatus('blocked');
+    }
+  }
   if (!audioSettings.ambience) return true;
   await startAmbience();
   return audioStatus === 'ready';
@@ -336,6 +446,8 @@ export function useAudioSettings() {
     preloadAudioAssets();
     syncAmbience(false);
     window.addEventListener('pointerdown', unlockAudio, { passive: true });
+    window.addEventListener('touchstart', unlockAudio, { passive: true });
+    window.addEventListener('click', unlockAudio, { passive: true });
     window.addEventListener('keydown', unlockAudio);
     window.addEventListener('focus', resetAudioAfterResume);
     window.addEventListener('pageshow', resetAudioAfterResume);
@@ -343,6 +455,8 @@ export function useAudioSettings() {
 
     return () => {
       window.removeEventListener('pointerdown', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('click', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
       window.removeEventListener('focus', resetAudioAfterResume);
       window.removeEventListener('pageshow', resetAudioAfterResume);
