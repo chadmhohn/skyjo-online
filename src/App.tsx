@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -30,6 +30,7 @@ import {
   type StatsSummary
 } from './account';
 import { playAudioCue, playAudioTestCue, primeAudio, useAudioSettings, useGameAudio, type AudioSettings } from './audio';
+import { disablePushNotifications, enablePushNotifications, loadPushNotificationStatus, type PushUiStatus } from './push';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from './types';
 
 const rows = [0, 1, 2];
@@ -276,6 +277,74 @@ function AudioSettingsPanel() {
   );
 }
 
+function PushSettingsControls() {
+  const [status, setStatus] = useState<PushUiStatus>('checking');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    loadPushNotificationStatus()
+      .then(setStatus)
+      .catch(() => setStatus('error'));
+  }, []);
+
+  const enabled = status === 'subscribed';
+  const statusText =
+    status === 'subscribed'
+      ? 'Enabled'
+      : status === 'denied'
+        ? 'Blocked'
+        : status === 'unsupported'
+          ? 'Unavailable'
+          : status === 'unconfigured'
+            ? 'Not configured'
+            : status === 'error'
+              ? 'Could not check'
+              : 'Off';
+
+  async function handleToggle() {
+    setBusy(true);
+    setMessage('');
+    try {
+      if (enabled) {
+        await disablePushNotifications();
+        setStatus('prompt');
+        setMessage('Notifications disabled.');
+      } else {
+        await enablePushNotifications();
+        setStatus('subscribed');
+        setMessage('Notifications enabled.');
+      }
+    } catch (requestError) {
+      setStatus(status === 'checking' ? 'error' : status);
+      setMessage(requestError instanceof Error ? requestError.message : 'Notification request failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="skyjo-account-card">
+      <div>
+        <div className="skyjo-kicker">Notifications</div>
+        <div className="text-xl font-black text-[#f5e6c8]">Turn alerts</div>
+        <div className="text-sm font-bold text-[#f5e6c8]/58">{statusText}</div>
+      </div>
+      <div className="flex flex-col items-start gap-2 sm:items-end">
+        <button
+          className={`skyjo-button px-3 py-2 ${enabled ? '' : 'skyjo-button-primary'}`}
+          disabled={busy || status === 'checking' || status === 'unsupported' || status === 'unconfigured' || status === 'denied'}
+          onClick={handleToggle}
+          type="button"
+        >
+          {enabled ? 'Disable' : 'Enable'}
+        </button>
+        {message ? <div className="text-xs font-bold text-[#f5e6c8]/58">{message}</div> : null}
+      </div>
+    </div>
+  );
+}
+
 function Home() {
   return (
     <main className="skyjo-surface">
@@ -433,6 +502,7 @@ function AccountPage() {
                   Save Display Name
                 </button>
               </form>
+              <PushSettingsControls />
               <form className="skyjo-account-form" onSubmit={handlePasswordChange}>
                 <label>
                   Current password
@@ -2374,6 +2444,12 @@ function Lobby() {
     }
   }
 
+  const sendPresence = useCallback((visible: boolean) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'set-presence', visible }));
+  }, []);
+
   function connect(action: 'create-room' | 'join-room', codeOverride?: string) {
     if (!accountUser) {
       setError('Sign in to your Skyjo account before joining multiplayer.');
@@ -2485,6 +2561,7 @@ function Lobby() {
     const handleResume = () => {
       if (!mountedRef.current) return;
       if (document.visibilityState !== 'visible') return;
+      sendPresence(true);
       const now = Date.now();
       if (now - lastResumeSyncRef.current < 750) return;
       lastResumeSyncRef.current = now;
@@ -2503,7 +2580,25 @@ function Lobby() {
       document.removeEventListener('visibilitychange', handleResume);
     };
     // Reconnect when the saved room session changes or the tab becomes active again.
-  }, [playerId, roomCode]);
+  }, [playerId, roomCode, sendPresence]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      sendPresence(document.visibilityState === 'visible');
+    };
+    const handlePageHide = () => sendPresence(false);
+    const handlePageShow = () => sendPresence(true);
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('pageshow', handlePageShow);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('pageshow', handlePageShow);
+    };
+  }, [sendPresence]);
 
   function send(payload: unknown) {
     const ws = wsRef.current;
@@ -2744,7 +2839,7 @@ function Lobby() {
                 <div className="skyjo-room-roster mt-4 flex flex-wrap gap-2">
                   {room.players.map((player) => (
                     <span className="rounded-full border border-[#f5e6c8]/15 bg-white/[0.025] px-3 py-1 text-sm text-[#f5e6c8]/75" key={player.id}>
-                      {player.name} {player.host ? 'host' : ''} {player.connected ? 'online' : 'offline'}
+                      {player.name} {player.host ? 'host' : ''} {player.connected ? 'online' : 'away'}
                     </span>
                   ))}
                 </div>

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import webPush from 'web-push';
 import { WebSocketServer } from 'ws';
 import {
   createInitialRoomState,
@@ -33,6 +34,10 @@ const accountSessionTtlMs = Number(process.env.SKYJO_ACCOUNT_SESSION_TTL_HOURS |
 const adminEmail = process.env.SKYJO_ADMIN_EMAIL || 'chad.hohn@groundworkrevops.com';
 const adminInitialPassword = process.env.SKYJO_ADMIN_INITIAL_PASSWORD || '';
 const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
+const vapidPublicKey = process.env.SKYJO_VAPID_PUBLIC_KEY || '';
+const vapidPrivateKey = process.env.SKYJO_VAPID_PRIVATE_KEY || '';
+const vapidSubject = process.env.SKYJO_VAPID_SUBJECT || `mailto:${adminEmail}`;
+const pushNotificationsEnabled = Boolean(vapidPublicKey && vapidPrivateKey);
 const rooms = new Map();
 const roomsFile = resolveRoomsFilePath();
 const accountDatabaseFile = resolveAccountDatabasePath();
@@ -60,6 +65,12 @@ if (!accessPassword || !sessionSecret) {
   console.error('Missing SKYJO_ACCESS_PASSWORD or SKYJO_SESSION_SECRET.');
   console.error('Set both env vars before running npm start.');
   process.exit(1);
+}
+
+if (pushNotificationsEnabled) {
+  webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+} else {
+  console.warn('Web Push is disabled. Set SKYJO_VAPID_PUBLIC_KEY and SKYJO_VAPID_PRIVATE_KEY to enable notifications.');
 }
 
 const accountStore = await createAccountStore({ filePath: accountDatabaseFile });
@@ -274,13 +285,72 @@ function createWaitingRoom({ code, hostPlayer, ws }) {
   };
 }
 
-function hasLiveReplacementClient(room, playerId, currentWs) {
+function hasVisibleLiveClient(room, playerId, currentWs = null) {
   for (const client of room.clients) {
     if (client === currentWs) continue;
     if (client.roomCode !== room.code || client.playerId !== playerId) continue;
-    if (client.readyState === client.OPEN) return true;
+    if (client.readyState === client.OPEN && client.visible !== false) return true;
   }
   return false;
+}
+
+function syncPlayerPresence(room, player) {
+  player.connected = hasVisibleLiveClient(room, player.id);
+}
+
+async function sendPushToUsers(userIds, payload) {
+  if (!pushNotificationsEnabled) return;
+  const subscriptions = accountStore.listPushSubscriptionsForUsers(userIds);
+  if (subscriptions.length === 0) return;
+  await Promise.all(
+    subscriptions.map(async ({ endpoint, subscription }) => {
+      try {
+        await webPush.sendNotification(subscription, JSON.stringify(payload));
+      } catch (error) {
+        if (error?.statusCode === 404 || error?.statusCode === 410) {
+          accountStore.deletePushSubscription(endpoint);
+          return;
+        }
+        console.warn('Failed to send push notification:', error?.message || error);
+      }
+    })
+  );
+}
+
+function awayUserIdsForPlayers(room, playerIds) {
+  const targetPlayerIds = new Set(playerIds.filter(Boolean));
+  return room.players
+    .filter((player) => targetPlayerIds.has(player.id) && player.userId && !hasVisibleLiveClient(room, player.id))
+    .map((player) => player.userId);
+}
+
+function notifyAwayPlayersAfterMove(room, actor, nextState) {
+  if (!nextState || !Array.isArray(nextState.players)) return;
+  const url = `/lobby?room=${encodeURIComponent(room.code)}`;
+  if (nextState.phase === 'round-over' || nextState.phase === 'game-over') {
+    const targetUserIds = awayUserIdsForPlayers(
+      room,
+      room.players.filter((player) => player.id !== actor.id).map((player) => player.id)
+    );
+    const title = nextState.phase === 'game-over' ? 'Skyjo game finished' : 'Skyjo round ended';
+    void sendPushToUsers(targetUserIds, {
+      title,
+      body: `${actor.name} played in room ${room.code}.`,
+      tag: `skyjo-${room.code}-${nextState.phase}`,
+      url
+    });
+    return;
+  }
+
+  const activePlayer = nextState.players[nextState.currentPlayerIndex];
+  if (!activePlayer || activePlayer.id === actor.id) return;
+  const targetUserIds = awayUserIdsForPlayers(room, [activePlayer.id]);
+  void sendPushToUsers(targetUserIds, {
+    title: 'Your turn in Skyjo',
+    body: `${actor.name} played. Tap to take your turn.`,
+    tag: `skyjo-${room.code}-turn`,
+    url
+  });
 }
 
 function cleanChatText(value) {
@@ -404,6 +474,38 @@ async function handleApiRequest(req, res, url) {
       if (body.password !== body.confirmPassword) throw new Error('Passwords must match.');
       await accountStore.changePassword(user.id, body.currentPassword, body.password);
       sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
+      return true;
+    }
+
+    if (url.pathname === '/api/push/config' && req.method === 'GET') {
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      sendJsonResponse(res, 200, {
+        enabled: pushNotificationsEnabled,
+        publicKey: pushNotificationsEnabled ? vapidPublicKey : ''
+      });
+      return true;
+    }
+
+    if (url.pathname === '/api/push/subscribe' && req.method === 'POST') {
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      if (!pushNotificationsEnabled) {
+        sendApiError(res, 503, 'Push notifications are not configured.');
+        return true;
+      }
+      const body = await readJsonBody(req);
+      accountStore.savePushSubscription(user.id, body.subscription, req.headers['user-agent'] || '');
+      sendJsonResponse(res, 200, { ok: true });
+      return true;
+    }
+
+    if (url.pathname === '/api/push/unsubscribe' && req.method === 'POST') {
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      const body = await readJsonBody(req);
+      accountStore.deletePushSubscriptionForUser(user.id, body.endpoint);
+      sendJsonResponse(res, 200, { ok: true });
       return true;
     }
 
@@ -729,6 +831,7 @@ server.on('upgrade', (req, socket, head) => {
 
 wss.on('connection', (ws, req) => {
   ws.accountUser = req.accountUser;
+  ws.visible = true;
   ws.on('message', (raw) => {
     let message;
     try {
@@ -785,12 +888,13 @@ wss.on('connection', (ws, req) => {
       }
       player.userId = player.userId || accountUser.id;
       player.name = accountUser.displayName;
-      player.connected = true;
       room.readyForNextRoundPlayerIds = normalizedReadyIds(room);
-      room.clients.add(ws);
-      room.updatedAt = Date.now();
+      ws.visible = true;
       ws.roomCode = code;
       ws.playerId = player.id;
+      room.clients.add(ws);
+      syncPlayerPresence(room, player);
+      room.updatedAt = Date.now();
       persistRoomsSoon();
       sendJson(ws, { type: 'joined', playerId: player.id, room: publicRoom(room) });
       broadcastRoom(room);
@@ -803,6 +907,15 @@ wss.on('connection', (ws, req) => {
       return;
     }
     const { room, player } = context;
+
+    if (message.type === 'set-presence') {
+      ws.visible = message.visible !== false;
+      syncPlayerPresence(room, player);
+      room.updatedAt = Date.now();
+      persistRoomsSoon();
+      broadcastRoom(room);
+      return;
+    }
 
     if (message.type === 'send-chat-message') {
       const text = cleanChatText(message.text);
@@ -925,6 +1038,7 @@ wss.on('connection', (ws, req) => {
       room.updatedAt = Date.now();
       persistRoomsSoon();
       broadcastRoom(room);
+      notifyAwayPlayersAfterMove(room, player, message.state);
       return;
     }
 
@@ -961,7 +1075,7 @@ wss.on('connection', (ws, req) => {
     if (!context) return;
     const { room, player } = context;
     room.clients.delete(ws);
-    if (!hasLiveReplacementClient(room, player.id, ws)) {
+    if (!hasVisibleLiveClient(room, player.id, ws)) {
       player.connected = false;
     }
     room.updatedAt = Date.now();

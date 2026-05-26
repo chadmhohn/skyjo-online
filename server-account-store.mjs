@@ -172,12 +172,22 @@ export class AccountStore {
         total_score INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        endpoint TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        subscription_json TEXT NOT NULL,
+        user_agent TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_sessions_user_expires ON account_sessions(user_id, expires_at);
       CREATE INDEX IF NOT EXISTS idx_games_completed ON games(completed_at DESC);
       CREATE INDEX IF NOT EXISTS idx_games_source ON games(source_key);
       CREATE INDEX IF NOT EXISTS idx_participants_user ON game_participants(user_id);
       CREATE INDEX IF NOT EXISTS idx_participants_game ON game_participants(game_id);
       CREATE INDEX IF NOT EXISTS idx_round_scores_game ON game_round_scores(game_id, round_number);
+      CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
     `);
   }
 
@@ -325,6 +335,59 @@ export class AccountStore {
       .prepare('UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ? WHERE id = ?')
       .run(nextName, nextRole, nextDisabled, now(), userId);
     return publicUser(this.getUserRowById(userId));
+  }
+
+  savePushSubscription(userId, subscription, userAgent = '') {
+    const row = this.getUserRowById(userId);
+    if (!row || row.disabled === 1) throw new Error('Account not found.');
+    if (!isRecord(subscription) || typeof subscription.endpoint !== 'string' || !subscription.endpoint.startsWith('https://')) {
+      throw new Error('Push subscription is invalid.');
+    }
+    if (!isRecord(subscription.keys) || typeof subscription.keys.p256dh !== 'string' || typeof subscription.keys.auth !== 'string') {
+      throw new Error('Push subscription is missing keys.');
+    }
+    const timestamp = now();
+    this.db
+      .prepare(
+        `INSERT INTO push_subscriptions (endpoint, user_id, subscription_json, user_agent, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(endpoint) DO UPDATE SET
+           user_id = excluded.user_id,
+           subscription_json = excluded.subscription_json,
+           user_agent = excluded.user_agent,
+           updated_at = excluded.updated_at`
+      )
+      .run(subscription.endpoint, userId, JSON.stringify(subscription), stringValue(userAgent).slice(0, 240), timestamp, timestamp);
+  }
+
+  deletePushSubscriptionForUser(userId, endpoint) {
+    if (!endpoint) return;
+    this.db.prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?').run(userId, String(endpoint));
+  }
+
+  deletePushSubscription(endpoint) {
+    if (!endpoint) return;
+    this.db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(String(endpoint));
+  }
+
+  listPushSubscriptionsForUsers(userIds) {
+    const uniqueIds = [...new Set(userIds.filter(Boolean).map(String))];
+    if (uniqueIds.length === 0) return [];
+    const rows = this.db
+      .prepare(`SELECT * FROM push_subscriptions WHERE user_id IN (${placeholders(uniqueIds)})`)
+      .all(...uniqueIds);
+    return rows.flatMap((row) => {
+      try {
+        return [{
+          endpoint: row.endpoint,
+          userId: row.user_id,
+          subscription: JSON.parse(row.subscription_json)
+        }];
+      } catch {
+        this.deletePushSubscription(row.endpoint);
+        return [];
+      }
+    });
   }
 
   recordCompletedGame({ mode, state, roomCode = null, createdByUserId = null, playerAccounts = {}, sourceKey = null }) {

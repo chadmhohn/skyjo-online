@@ -286,6 +286,23 @@ try {
   await assert.rejects(openSocket(baseUrl, cookie), /Unexpected server response|401/, 'multiplayer sockets require account auth');
   const hostAccount = await createAccount(baseUrl, cookie, 'ada@example.com', 'Ada');
   const guestAccount = await createAccount(baseUrl, cookie, 'grace@example.com', 'Grace');
+  const pushConfig = await getJson(baseUrl, hostAccount.cookie, '/api/push/config');
+  assert.equal(typeof pushConfig.enabled, 'boolean', 'push config reports enabled state');
+  const fakePushSubscription = {
+    endpoint: `https://example.com/skyjo-push-smoke-${Date.now()}`,
+    keys: {
+      auth: 'ZmFrZS1hdXRo',
+      p256dh: 'ZmFrZS1wMjU2ZGg'
+    }
+  };
+  const pushSubscribe = await accountRequest(baseUrl, hostAccount.cookie, '/api/push/subscribe', {
+    subscription: fakePushSubscription
+  });
+  assert.equal(pushSubscribe.response.status, pushConfig.enabled ? 200 : 503, 'push subscription follows server push configuration');
+  const pushUnsubscribe = await accountRequest(baseUrl, hostAccount.cookie, '/api/push/unsubscribe', {
+    endpoint: fakePushSubscription.endpoint
+  });
+  assert.equal(pushUnsubscribe.response.status, 200, 'push unsubscribe is accepted');
   const profileUpdate = await accountRequest(baseUrl, hostAccount.cookie, '/api/account/profile', { displayName: 'Ada Prime' }, 'PATCH');
   assert.equal(profileUpdate.response.status, 200, 'players can update their display name');
   assert.equal(profileUpdate.payload.user.displayName, 'Ada Prime');
@@ -385,6 +402,24 @@ try {
   guestSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Grace' }));
   const guestJoined = await waitForMessage(guestSocket, (message) => message.type === 'joined', 'guest join');
 
+  const guestAwayPromise = waitForMessage(
+    hostSocket,
+    (message) => message.type === 'room' && message.room.players.find((player) => player.id === guestJoined.playerId)?.connected === false,
+    'guest away presence'
+  );
+  guestSocket.send(JSON.stringify({ type: 'set-presence', visible: false }));
+  const guestAwayRoom = await guestAwayPromise;
+  assert.equal(guestAwayRoom.room.players.find((player) => player.id === guestJoined.playerId)?.connected, false);
+
+  const guestOnlinePromise = waitForMessage(
+    hostSocket,
+    (message) => message.type === 'room' && message.room.players.find((player) => player.id === guestJoined.playerId)?.connected === true,
+    'guest online presence'
+  );
+  guestSocket.send(JSON.stringify({ type: 'set-presence', visible: true }));
+  const guestOnlineRoom = await guestOnlinePromise;
+  assert.equal(guestOnlineRoom.room.players.find((player) => player.id === guestJoined.playerId)?.connected, true);
+
   const hostRoomPromise = waitForMessage(
     hostSocket,
     (message) => message.type === 'room' && message.room.chatMessages?.length === 1,
@@ -464,7 +499,7 @@ try {
   assert.equal(hostStats.coPlayers.some((player) => player.userId === guestAccount.user.id), true, 'co-player stats are visible');
 
   console.log(
-    'chat smoke passed: login redirect, admin-created accounts, self-admin protection, account-gated rooms, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
+    'chat smoke passed: login redirect, admin-created accounts, self-admin protection, account-gated rooms, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
   );
 } finally {
   reconnectSocket?.close();
