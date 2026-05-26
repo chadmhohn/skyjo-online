@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -908,6 +908,7 @@ type GameSettingsButtonProps = {
   onNewGame?: () => void;
   state?: GameState | null;
 };
+type GameSettingsPanel = 'audio' | 'game' | 'rules' | 'log';
 
 function GameSettingsButton({
   aiOpponentCount,
@@ -917,8 +918,19 @@ function GameSettingsButton({
   state
 }: GameSettingsButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [activePanel, setActivePanel] = useState<GameSettingsPanel>('audio');
   const dialogRef = useRef<HTMLElement | null>(null);
   const hasAiSettings = typeof aiOpponentCount === 'number' && Boolean(aiOpponentSummary && onAiOpponentCountChange && onNewGame);
+  const hasMoveLog = Boolean(state);
+  const settingsPanels = useMemo(
+    () => [
+      { key: 'audio' as const, label: 'Audio' },
+      ...(hasAiSettings ? [{ key: 'game' as const, label: 'Game' }] : []),
+      { key: 'rules' as const, label: 'Rules' },
+      ...(hasMoveLog ? [{ key: 'log' as const, label: 'Log' }] : [])
+    ],
+    [hasAiSettings, hasMoveLog]
+  );
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -940,6 +952,11 @@ function GameSettingsButton({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!settingsPanels.some((panel) => panel.key === activePanel)) setActivePanel('audio');
+  }, [activePanel, isOpen, settingsPanels]);
 
   return (
     <>
@@ -993,72 +1010,100 @@ function GameSettingsButton({
                 </div>
 
                 <div className="skyjo-settings-body overflow-y-auto p-4 sm:p-5">
-                  <section className="skyjo-settings-section">
-                    <div className="skyjo-settings-section-heading">
-                      <p className="skyjo-kicker">Audio</p>
-                      <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Sound</h3>
-                    </div>
-                    <AudioSettingsControls />
-                  </section>
+                  <div className="skyjo-settings-tabs" role="tablist" aria-label="Settings sections">
+                    {settingsPanels.map((panel) => (
+                      <button
+                        aria-controls={`skyjo-settings-panel-${panel.key}`}
+                        aria-selected={activePanel === panel.key}
+                        className={`skyjo-settings-tab ${activePanel === panel.key ? 'skyjo-settings-tab-active' : ''}`}
+                        id={`skyjo-settings-tab-${panel.key}`}
+                        key={panel.key}
+                        onClick={() => setActivePanel(panel.key)}
+                        role="tab"
+                        type="button"
+                      >
+                        {panel.label}
+                      </button>
+                    ))}
+                  </div>
 
-                  {hasAiSettings ? (
-                    <section className="skyjo-settings-section">
-                      <div className="skyjo-settings-section-heading">
-                        <p className="skyjo-kicker">Single player</p>
-                        <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">AI opponents</h3>
-                      </div>
-                      <div className="skyjo-settings-ai-toolbar">
-                        <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
-                        <button className="skyjo-button skyjo-new-game-button text-sm" onClick={onNewGame} type="button">
-                          New Game
-                        </button>
-                      </div>
-                      <div className="skyjo-settings-ai-grid mt-3" role="group" aria-label="Choose AI opponent count">
-                        {singlePlayerAiCounts.map((count) => (
-                          <button
-                            aria-pressed={count === aiOpponentCount}
-                            className={`skyjo-button h-9 min-w-0 px-0 text-sm tabular-nums ${count === aiOpponentCount ? 'skyjo-button-primary' : ''}`}
-                            key={count}
-                            onClick={() => onAiOpponentCountChange?.(count)}
-                            type="button"
-                          >
-                            {count}
+                  <div
+                    aria-labelledby={`skyjo-settings-tab-${activePanel}`}
+                    className="skyjo-settings-panel"
+                    id={`skyjo-settings-panel-${activePanel}`}
+                    role="tabpanel"
+                  >
+                    {activePanel === 'audio' ? (
+                      <section className="skyjo-settings-section">
+                        <div className="skyjo-settings-section-heading">
+                          <p className="skyjo-kicker">Audio</p>
+                          <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Sound</h3>
+                        </div>
+                        <AudioSettingsControls />
+                      </section>
+                    ) : null}
+
+                    {activePanel === 'game' && hasAiSettings ? (
+                      <section className="skyjo-settings-section">
+                        <div className="skyjo-settings-section-heading">
+                          <p className="skyjo-kicker">Single player</p>
+                          <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">AI opponents</h3>
+                        </div>
+                        <div className="skyjo-settings-ai-toolbar">
+                          <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
+                          <button className="skyjo-button skyjo-new-game-button text-sm" onClick={onNewGame} type="button">
+                            New Game
                           </button>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
+                        </div>
+                        <div className="skyjo-settings-ai-grid mt-3" role="group" aria-label="Choose AI opponent count">
+                          {singlePlayerAiCounts.map((count) => (
+                            <button
+                              aria-pressed={count === aiOpponentCount}
+                              className={`skyjo-button h-9 min-w-0 px-0 text-sm tabular-nums ${count === aiOpponentCount ? 'skyjo-button-primary' : ''}`}
+                              key={count}
+                              onClick={() => onAiOpponentCountChange?.(count)}
+                              type="button"
+                            >
+                              {count}
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
 
-                  <section className="skyjo-settings-section">
-                    <div className="skyjo-settings-section-heading">
-                      <p className="skyjo-kicker">Help</p>
-                      <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Rules</h3>
-                    </div>
-                    <div className="skyjo-settings-rules-list">
-                      {rulesHelpSections.map((section) => (
-                        <section className="skyjo-rule-card rounded-xl border p-3" key={section.title}>
-                          <h4 className="skyjo-serif text-base font-bold leading-tight text-[#f5e6c8]">{section.title}</h4>
-                          <ul className="skyjo-rule-list mt-2 list-disc space-y-1.5 pl-5 text-sm leading-6">
-                            {section.items.map((item) => (
-                              <li className="break-words" key={item}>
-                                {item}
-                              </li>
-                            ))}
-                          </ul>
-                        </section>
-                      ))}
-                    </div>
-                  </section>
+                    {activePanel === 'rules' ? (
+                      <section className="skyjo-settings-section">
+                        <div className="skyjo-settings-section-heading">
+                          <p className="skyjo-kicker">Help</p>
+                          <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Rules</h3>
+                        </div>
+                        <div className="skyjo-settings-rules-list">
+                          {rulesHelpSections.map((section) => (
+                            <section className="skyjo-rule-card rounded-xl border p-3" key={section.title}>
+                              <h4 className="skyjo-serif text-base font-bold leading-tight text-[#f5e6c8]">{section.title}</h4>
+                              <ul className="skyjo-rule-list mt-2 list-disc space-y-1.5 pl-5 text-sm leading-6">
+                                {section.items.map((item) => (
+                                  <li className="break-words" key={item}>
+                                    {item}
+                                  </li>
+                                ))}
+                              </ul>
+                            </section>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
 
-                  {state ? (
-                    <section className="skyjo-settings-section">
-                      <div className="skyjo-settings-section-heading">
-                        <p className="skyjo-kicker">Table</p>
-                        <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Move Log</h3>
-                      </div>
-                      <MoveLogList state={state} />
-                    </section>
-                  ) : null}
+                    {activePanel === 'log' && state ? (
+                      <section className="skyjo-settings-section">
+                        <div className="skyjo-settings-section-heading">
+                          <p className="skyjo-kicker">Table</p>
+                          <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Move Log</h3>
+                        </div>
+                        <MoveLogList state={state} />
+                      </section>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="skyjo-settings-footer border-t border-[#f5e6c8]/10 p-4 sm:p-5">

@@ -44,6 +44,7 @@ let ambienceAudio: HTMLAudioElement | null = null;
 let audioAssetsPreloaded = false;
 let audioBlockedUntil = 0;
 let ambienceStartInFlight: Promise<void> | null = null;
+let lastAudioResumeResetAt = 0;
 
 function isBrowser() {
   return typeof window !== 'undefined';
@@ -134,6 +135,30 @@ function preloadAudioAssets() {
     cueElement(cue)?.load();
   });
   ensureAmbienceAudio()?.load();
+}
+
+function resetAudioAfterResume() {
+  if (document.visibilityState === 'hidden') {
+    stopAmbience();
+    return;
+  }
+  const now = Date.now();
+  if (now - lastAudioResumeResetAt < 500) return;
+  lastAudioResumeResetAt = now;
+
+  audioBlockedUntil = 0;
+  lastCuePlayedAt.clear();
+  cuePlayTokens.clear();
+  cueAudioElements.forEach((audio) => cleanupCueAudio(audio));
+  cueAudioElements.clear();
+  if (ambienceAudio) {
+    ambienceAudio.pause();
+    ambienceAudio = null;
+  }
+  ambienceStartInFlight = null;
+  audioAssetsPreloaded = false;
+  setAudioStatus('idle');
+  preloadAudioAssets();
 }
 
 function cleanupCueAudio(audio: HTMLAudioElement) {
@@ -312,10 +337,16 @@ export function useAudioSettings() {
     syncAmbience(false);
     window.addEventListener('pointerdown', unlockAudio, { passive: true });
     window.addEventListener('keydown', unlockAudio);
+    window.addEventListener('focus', resetAudioAfterResume);
+    window.addEventListener('pageshow', resetAudioAfterResume);
+    document.addEventListener('visibilitychange', resetAudioAfterResume);
 
     return () => {
       window.removeEventListener('pointerdown', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
+      window.removeEventListener('focus', resetAudioAfterResume);
+      window.removeEventListener('pageshow', resetAudioAfterResume);
+      document.removeEventListener('visibilitychange', resetAudioAfterResume);
     };
   }, []);
 

@@ -3405,6 +3405,47 @@ body {
     scrollbar-color: rgba(245, 230, 200, 0.48) rgba(245, 230, 200, 0.08);
   }
 
+  .skyjo-settings-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(4.75rem, 1fr));
+    gap: 0.4rem;
+    border: 1px solid rgba(245, 230, 200, 0.12);
+    border-radius: 14px;
+    background: rgba(9, 17, 14, 0.94);
+    padding: 0.35rem;
+    backdrop-filter: blur(12px);
+  }
+
+  .skyjo-settings-tab {
+    min-height: 2.35rem;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: rgba(245, 230, 200, 0.055);
+    color: rgba(245, 230, 200, 0.7);
+    font-size: 0.82rem;
+    font-weight: 900;
+    outline: none;
+  }
+
+  .skyjo-settings-tab-active {
+    border-color: rgba(253, 230, 138, 0.42);
+    background: rgba(251, 191, 36, 0.18);
+    color: #fef3c7;
+  }
+
+  .skyjo-settings-tab:focus-visible {
+    outline: 2px solid #fef3c7;
+    outline-offset: 2px;
+  }
+
+  .skyjo-settings-panel {
+    min-height: 0;
+    display: grid;
+  }
+
   .skyjo-settings-section {
     display: grid;
     gap: 0.78rem;
@@ -3486,6 +3527,10 @@ body {
 
     .skyjo-settings-body {
       padding: 0.85rem;
+    }
+
+    .skyjo-settings-tabs {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .skyjo-settings-dialog-header,
