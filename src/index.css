@@ -3522,6 +3522,7 @@ body {
     }
 
     .skyjo-settings-dialog {
+      height: min(90dvh, 44rem);
       max-height: min(90dvh, 44rem);
     }
 
