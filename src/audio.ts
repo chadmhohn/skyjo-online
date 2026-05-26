@@ -13,6 +13,7 @@ export interface AudioSettings {
 
 type CueAsset = {
   src: string;
+  minGapMs: number;
   stopAfterMs?: number;
   volumeScale: number;
 };
@@ -20,9 +21,9 @@ type CueAsset = {
 const audioSettingsKey = 'skyjo-audio-settings-v2';
 const legacyAudioSettingsKey = 'skyjo-audio-settings-v1';
 const cueAssets: Record<AudioCue, CueAsset> = {
-  flip: { src: '/audio/card-flip.mp3', stopAfterMs: 520, volumeScale: 0.28 },
-  pickup: { src: '/audio/card-pickup.mp3', stopAfterMs: 430, volumeScale: 0.22 },
-  place: { src: '/audio/card-place.mp3', stopAfterMs: 360, volumeScale: 0.16 }
+  flip: { src: '/audio/card-flip.mp3', minGapMs: 180, stopAfterMs: 520, volumeScale: 0.24 },
+  pickup: { src: '/audio/card-pickup.mp3', minGapMs: 450, stopAfterMs: 380, volumeScale: 0.18 },
+  place: { src: '/audio/card-place.mp3', minGapMs: 260, stopAfterMs: 340, volumeScale: 0.14 }
 };
 const ambienceSrc = '/audio/table-ambience.mp3';
 const defaultAudioSettings: AudioSettings = {
@@ -33,13 +34,16 @@ const defaultAudioSettings: AudioSettings = {
 };
 const subscribers = new Set<(settings: AudioSettings) => void>();
 const statusSubscribers = new Set<(status: AudioStatus) => void>();
-const cueAudioTemplates = new Map<AudioCue, HTMLAudioElement>();
-const activeCueAudio = new Set<HTMLAudioElement>();
+const cueAudioElements = new Map<AudioCue, HTMLAudioElement>();
+const lastCuePlayedAt = new Map<AudioCue, number>();
+const cuePlayTokens = new Map<AudioCue, number>();
 
 let audioSettings = readStoredAudioSettings();
 let audioStatus: AudioStatus = 'idle';
 let ambienceAudio: HTMLAudioElement | null = null;
 let audioAssetsPreloaded = false;
+let audioBlockedUntil = 0;
+let ambienceStartInFlight: Promise<void> | null = null;
 
 function isBrowser() {
   return typeof window !== 'undefined';
@@ -110,13 +114,13 @@ function makeAudioElement(src: string) {
   return audio;
 }
 
-function cueTemplate(cue: AudioCue) {
-  const existing = cueAudioTemplates.get(cue);
+function cueElement(cue: AudioCue) {
+  const existing = cueAudioElements.get(cue);
   if (existing) return existing;
-  const template = makeAudioElement(cueAssets[cue].src);
-  if (!template) return null;
-  cueAudioTemplates.set(cue, template);
-  return template;
+  const audio = makeAudioElement(cueAssets[cue].src);
+  if (!audio) return null;
+  cueAudioElements.set(cue, audio);
+  return audio;
 }
 
 function preloadAudioAssets() {
@@ -127,7 +131,7 @@ function preloadAudioAssets() {
   }
   audioAssetsPreloaded = true;
   (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
-    cueTemplate(cue)?.load();
+    cueElement(cue)?.load();
   });
   ensureAmbienceAudio()?.load();
 }
@@ -139,31 +143,54 @@ function cleanupCueAudio(audio: HTMLAudioElement) {
   } catch {
     // Some mobile browsers reject currentTime changes before metadata is ready.
   }
-  activeCueAudio.delete(audio);
 }
 
-async function playAsset(src: string, volume: number, stopAfterMs?: number) {
-  const audio = makeAudioElement(src);
-  if (!audio) return;
-  audio.volume = clamp(volume, 0, 1);
-  activeCueAudio.add(audio);
-  audio.addEventListener('ended', () => activeCueAudio.delete(audio), { once: true });
-  if (stopAfterMs) window.setTimeout(() => cleanupCueAudio(audio), stopAfterMs);
-
-  try {
-    await audio.play();
-    setAudioStatus('ready');
-  } catch {
-    cleanupCueAudio(audio);
-    setAudioStatus('blocked');
-  }
-}
-
-export async function playAudioCue(cue: AudioCue) {
-  if (!audioSettings.soundEffects || audioSettings.soundVolume <= 0) return;
+function playCueAsset(cue: AudioCue) {
+  if (Date.now() < audioBlockedUntil) return;
   const asset = cueAssets[cue];
-  const template = cueTemplate(cue);
-  await playAsset(template?.src || asset.src, audioSettings.soundVolume * asset.volumeScale, asset.stopAfterMs);
+  const previousPlayedAt = lastCuePlayedAt.get(cue) ?? 0;
+  if (Date.now() - previousPlayedAt < asset.minGapMs) return;
+
+  const audio = cueElement(cue);
+  if (!audio) return;
+  lastCuePlayedAt.set(cue, Date.now());
+  const playToken = (cuePlayTokens.get(cue) ?? 0) + 1;
+  cuePlayTokens.set(cue, playToken);
+  audio.volume = clamp(audioSettings.soundVolume * asset.volumeScale, 0, 1);
+  audio.muted = false;
+  try {
+    audio.pause();
+    audio.currentTime = 0;
+  } catch {
+    // Current time can be locked until metadata loads on iOS.
+  }
+  if (asset.stopAfterMs) {
+    window.setTimeout(() => {
+      if (cuePlayTokens.get(cue) === playToken) cleanupCueAudio(audio);
+    }, asset.stopAfterMs);
+  }
+
+  const playResult = audio.play();
+  if (!playResult) {
+    setAudioStatus('ready');
+    return;
+  }
+  playResult
+    .then(() => {
+      audioBlockedUntil = 0;
+      setAudioStatus('ready');
+    })
+    .catch(() => {
+      audioBlockedUntil = Date.now() + 5000;
+      lastCuePlayedAt.set(cue, 0);
+      cleanupCueAudio(audio);
+      setAudioStatus('blocked');
+    });
+}
+
+export function playAudioCue(cue: AudioCue) {
+  if (!audioSettings.soundEffects || audioSettings.soundVolume <= 0) return;
+  playCueAsset(cue);
 }
 
 export function playAudioTestCue() {
@@ -176,6 +203,7 @@ export function playAudioTestCue() {
 export async function primeAudio() {
   preloadAudioAssets();
   if (!hasAudioElement()) return false;
+  audioBlockedUntil = 0;
   if (!audioSettings.ambience) return true;
   await startAmbience();
   return audioStatus === 'ready';
@@ -195,11 +223,19 @@ async function startAmbience() {
   const audio = ensureAmbienceAudio();
   if (!audio) return;
   audio.volume = clamp(audioSettings.ambienceVolume * 0.55, 0, 1);
+  if (!audio.paused) return;
+  if (ambienceStartInFlight) return ambienceStartInFlight;
   try {
-    await audio.play();
-    setAudioStatus('ready');
+    ambienceStartInFlight = audio.play().then(() => {
+      audioBlockedUntil = 0;
+      setAudioStatus('ready');
+    });
+    await ambienceStartInFlight;
   } catch {
+    audioBlockedUntil = Date.now() + 5000;
     setAudioStatus('blocked');
+  } finally {
+    ambienceStartInFlight = null;
   }
 }
 
@@ -213,13 +249,14 @@ function stopAmbience() {
   }
 }
 
-function syncAmbience() {
+function syncAmbience(allowStart = false) {
   if (!audioSettings.ambience || audioSettings.ambienceVolume <= 0) {
     stopAmbience();
     return;
   }
 
   if (ambienceAudio) ambienceAudio.volume = clamp(audioSettings.ambienceVolume * 0.55, 0, 1);
+  if (!allowStart) return;
   void startAmbience();
 }
 
@@ -236,7 +273,7 @@ export function setAudioSettings(nextSettings: Partial<AudioSettings>) {
   };
   writeStoredAudioSettings(audioSettings);
   notifySubscribers();
-  syncAmbience();
+  syncAmbience(nextSettings.ambience !== undefined || nextSettings.ambienceVolume !== undefined);
 }
 
 export function subscribeAudioSettings(subscriber: (settings: AudioSettings) => void) {
@@ -268,11 +305,11 @@ export function useAudioSettings() {
     if (!isBrowser()) return undefined;
     const unlockAudio = () => {
       void primeAudio();
-      syncAmbience();
+      syncAmbience(true);
     };
 
     preloadAudioAssets();
-    syncAmbience();
+    syncAmbience(false);
     window.addEventListener('pointerdown', unlockAudio, { passive: true });
     window.addEventListener('keydown', unlockAudio);
 

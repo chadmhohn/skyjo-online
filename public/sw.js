@@ -1,4 +1,4 @@
-const skyjoCacheName = 'skyjo-online-v2';
+const skyjoCacheName = 'skyjo-online-v3';
 
 self.addEventListener('install', () => {
   self.skipWaiting();

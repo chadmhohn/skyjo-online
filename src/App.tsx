@@ -2022,9 +2022,11 @@ function SinglePlayer() {
   function handleCard(index: number) {
     if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
     if (state.phase === 'opening-reveal') {
+      void playAudioCue('flip');
       setState((current) => revealOpeningCard(current, index));
       return;
     }
+    void playAudioCue('place');
     setState((current) =>
       drawIntent === 'discard' && current.selectedSource === 'draw' && current.drawnCard
         ? discardDrawnAndReveal(current, index)
@@ -2035,6 +2037,11 @@ function SinglePlayer() {
   function chooseDiscardForSinglePlayer() {
     void playAudioCue('pickup');
     setState((current) => chooseDiscard(current));
+  }
+
+  function drawForSinglePlayer() {
+    void playAudioCue('pickup');
+    setState((current) => drawBlind(current));
   }
 
   function startSelectedGame() {
@@ -2101,7 +2108,7 @@ function SinglePlayer() {
             onCardClick={handleCard}
             onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
             onChooseDiscard={chooseDiscardForSinglePlayer}
-            onDraw={() => setState((current) => drawBlind(current))}
+            onDraw={drawForSinglePlayer}
             onSetDrawIntent={setDrawIntent}
             state={state}
           />
@@ -2129,7 +2136,7 @@ function SinglePlayer() {
             localTurn={humanTurn}
             onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
             onChooseDiscard={chooseDiscardForSinglePlayer}
-            onDraw={() => setState((current) => drawBlind(current))}
+            onDraw={drawForSinglePlayer}
             onSetDrawIntent={setDrawIntent}
             state={state}
           />
@@ -2481,9 +2488,11 @@ function Lobby() {
     const active = room.state.players[room.state.currentPlayerIndex];
     if (active.id !== playerId) return;
     if (room.state.phase === 'opening-reveal') {
+      void playAudioCue('flip');
       updateGame(revealOpeningCard(room.state, index));
       return;
     }
+    void playAudioCue('place');
     updateGame(
       drawIntent === 'discard' && room.state.selectedSource === 'draw' && room.state.drawnCard
         ? discardDrawnAndReveal(room.state, index)
@@ -2579,6 +2588,7 @@ function Lobby() {
 
   function drawForRoom() {
     if (!roomState) return;
+    void playAudioCue('pickup');
     updateGame(drawBlind(roomState));
   }
 
