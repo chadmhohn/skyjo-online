@@ -247,6 +247,8 @@ const server = spawn(process.execPath, ['server.mjs'], {
     SKYJO_DB_FILE: dbFile,
     SKYJO_ROOMS_FILE: roomsFile,
     SKYJO_SECURE_COOKIES: 'false',
+    SKYJO_INVITE_SECRET: 'chat-smoke-invite-secret',
+    SKYJO_INVITE_TTL_HOURS: '168',
     SKYJO_SESSION_SECRET: 'chat-smoke-secret'
   },
   stdio: ['ignore', 'pipe', 'pipe']
@@ -270,6 +272,9 @@ try {
   const publicManifest = await fetch(`${baseUrl}/manifest.webmanifest`);
   assert.equal(publicManifest.status, 200, 'PWA manifest stays available before the site-password gate');
   assert.match(publicManifest.headers.get('content-type') || '', /application\/manifest\+json/);
+  const publicManifestJson = await publicManifest.json();
+  assert.equal(publicManifestJson.id, '/', 'PWA manifest has a stable app id');
+  assert.equal(publicManifestJson.launch_handler?.client_mode, 'navigate-existing', 'PWA manifest opts into app URL launch handling');
   const publicAppleIcon = await fetch(`${baseUrl}/skyjo-icon-180.png`);
   assert.equal(publicAppleIcon.status, 200, 'Apple touch icon stays available before the site-password gate');
   assert.match(publicAppleIcon.headers.get('content-type') || '', /image\/png/);
@@ -356,6 +361,28 @@ try {
   parkingHostSocket.send(JSON.stringify({ type: 'create-room', name: 'Offline Host' }));
   const parkingHostJoined = await waitForMessage(parkingHostSocket, (message) => message.type === 'joined', 'parking host join');
   const parkingRoomCode = parkingHostJoined.room.code;
+  const unauthenticatedInvite = await accountRequest(baseUrl, cookie, '/api/rooms/invite', { roomCode: parkingRoomCode });
+  assert.equal(unauthenticatedInvite.response.status, 401, 'room invite creation requires account auth');
+  const outsiderInvite = await accountRequest(baseUrl, adminAccount.cookie, '/api/rooms/invite', { roomCode: parkingRoomCode });
+  assert.equal(outsiderInvite.response.status, 403, 'room invite creation requires room membership');
+  const hostInvite = await accountRequest(baseUrl, hostAccount.cookie, '/api/rooms/invite', { roomCode: parkingRoomCode });
+  assert.equal(hostInvite.response.status, 200, 'room members can create invite links');
+  assert.equal(hostInvite.payload.roomCode, parkingRoomCode);
+  assert.match(hostInvite.payload.path, /^\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  const redeemedInvite = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
+  assert.equal(redeemedInvite.status, 303, 'valid room invite redeems before the password gate');
+  assert.equal(redeemedInvite.headers.get('location'), `/lobby?room=${parkingRoomCode}`);
+  const inviteCookie = redeemedInvite.headers.get('set-cookie');
+  assert.ok(inviteCookie, 'valid room invite sets the shared gate cookie');
+  const inviteLobby = await fetch(`${baseUrl}/lobby?room=${parkingRoomCode}`, {
+    headers: { Cookie: inviteCookie.split(';')[0] },
+    redirect: 'manual'
+  });
+  assert.equal(inviteLobby.status, 200, 'redeemed invite cookie can load the lobby');
+  const invalidInvitePayload = Buffer.from(JSON.stringify({ room: parkingRoomCode, exp: Date.now() + 60000 })).toString('base64url');
+  const invalidInvite = await fetch(`${baseUrl}/invite/${invalidInvitePayload}.bad-signature`, { redirect: 'manual' });
+  assert.equal(invalidInvite.status, 302, 'invalid room invite falls back to the normal password gate');
+  assert.equal(invalidInvite.headers.get('location'), `/login?next=${encodeURIComponent(`/lobby?room=${parkingRoomCode}`)}`);
   parkingHostSocket.close();
   await new Promise((resolve) => parkingHostSocket.once('close', resolve));
   parkingHostSocket = null;
@@ -499,7 +526,7 @@ try {
   assert.equal(hostStats.coPlayers.some((player) => player.userId === guestAccount.user.id), true, 'co-player stats are visible');
 
   console.log(
-    'chat smoke passed: login redirect, admin-created accounts, self-admin protection, account-gated rooms, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
+    'chat smoke passed: login redirect, admin-created accounts, self-admin protection, account-gated rooms, signed invites, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
   );
 } finally {
   reconnectSocket?.close();

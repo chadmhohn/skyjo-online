@@ -178,6 +178,13 @@ export async function saveSinglePlayerGame(state: GameState, clientGameKey: stri
   });
 }
 
+export async function createRoomInvite(roomCode: string) {
+  return apiJson<{ roomCode: string; path: string; expiresAt: number }>('/api/rooms/invite', {
+    method: 'POST',
+    body: JSON.stringify({ roomCode })
+  });
+}
+
 export async function fetchStatsSummary() {
   return apiJson<StatsSummary>('/api/stats/summary');
 }

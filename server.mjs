@@ -27,8 +27,10 @@ const port = Number(process.env.PORT || 4180);
 const host = process.env.HOST || '127.0.0.1';
 const accessPassword = process.env.SKYJO_ACCESS_PASSWORD;
 const sessionSecret = process.env.SKYJO_SESSION_SECRET;
+const inviteSecret = process.env.SKYJO_INVITE_SECRET || sessionSecret;
 const cookieName = process.env.SKYJO_COOKIE_NAME || 'skyjo_session';
 const sessionTtlMs = Number(process.env.SKYJO_SESSION_TTL_HOURS || 24 * 14) * 60 * 60 * 1000;
+const inviteTtlMs = Number(process.env.SKYJO_INVITE_TTL_HOURS || 24 * 7) * 60 * 60 * 1000;
 const accountCookieName = process.env.SKYJO_ACCOUNT_COOKIE_NAME || 'skyjo_account';
 const accountSessionTtlMs = Number(process.env.SKYJO_ACCOUNT_SESSION_TTL_HOURS || 24 * 14) * 60 * 60 * 1000;
 const adminEmail = process.env.SKYJO_ADMIN_EMAIL || 'chad.hohn@groundworkrevops.com';
@@ -95,6 +97,10 @@ function timingSafeEqualString(a, b) {
 
 function sign(value) {
   return crypto.createHmac('sha256', sessionSecret).update(value).digest('base64url');
+}
+
+function signInvite(value) {
+  return crypto.createHmac('sha256', inviteSecret).update(value).digest('base64url');
 }
 
 function createSessionCookie() {
@@ -174,6 +180,74 @@ function makeRoomCode() {
     code += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
   return rooms.has(code) ? makeRoomCode() : code;
+}
+
+function cleanServerRoomCode(value) {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 5);
+}
+
+function createRoomInviteToken(roomCode) {
+  const cleanRoom = cleanServerRoomCode(roomCode);
+  if (cleanRoom.length !== 5) throw new Error('Room code is not valid.');
+  const expiresAt = Date.now() + inviteTtlMs;
+  const payload = Buffer.from(
+    JSON.stringify({
+      v: 1,
+      room: cleanRoom,
+      exp: expiresAt,
+      nonce: crypto.randomBytes(16).toString('base64url')
+    })
+  ).toString('base64url');
+  return {
+    token: `${payload}.${signInvite(payload)}`,
+    expiresAt
+  };
+}
+
+function parseRoomInvitePayload(token, { verifySignature }) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  const [payload, signature] = parts;
+  if (verifySignature && !timingSafeEqualString(signature, signInvite(payload))) return null;
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const room = cleanServerRoomCode(parsed?.room);
+    const expiresAt = Number(parsed?.exp);
+    if (room.length !== 5 || !Number.isFinite(expiresAt)) return null;
+    if (verifySignature && expiresAt < Date.now()) return null;
+    return { room, expiresAt };
+  } catch {
+    return null;
+  }
+}
+
+function roomInviteTokenFromUrl(url) {
+  if (url.pathname.startsWith('/invite/')) return decodeURIComponent(url.pathname.slice('/invite/'.length));
+  return url.searchParams.get('invite') || '';
+}
+
+function handleRoomInviteAccess(res, url) {
+  const token = roomInviteTokenFromUrl(url);
+  if (!token) return false;
+
+  const invite = parseRoomInvitePayload(token, { verifySignature: true });
+  if (!invite) {
+    const untrustedInvite = parseRoomInvitePayload(token, { verifySignature: false });
+    const next = untrustedInvite?.room ? `/lobby?room=${encodeURIComponent(untrustedInvite.room)}` : '/';
+    send(res, 302, '', { Location: `/login?next=${encodeURIComponent(next)}` });
+    return true;
+  }
+
+  send(res, 303, '', {
+    Location: `/lobby?room=${encodeURIComponent(invite.room)}`,
+    'Set-Cookie': cookieHeader(createSessionCookie(), Math.floor(sessionTtlMs / 1000))
+  });
+  return true;
 }
 
 function publicRoom(room) {
@@ -509,6 +583,29 @@ async function handleApiRequest(req, res, url) {
       return true;
     }
 
+    if (url.pathname === '/api/rooms/invite' && req.method === 'POST') {
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      const body = await readJsonBody(req);
+      const roomCode = cleanServerRoomCode(body.roomCode);
+      const room = rooms.get(roomCode);
+      if (!room) {
+        sendApiError(res, 404, 'Room not found.');
+        return true;
+      }
+      if (!room.players.some((player) => player.userId === user.id)) {
+        sendApiError(res, 403, 'Join the room before sharing it.');
+        return true;
+      }
+      const invite = createRoomInviteToken(roomCode);
+      sendJsonResponse(res, 200, {
+        roomCode,
+        path: `/invite/${invite.token}`,
+        expiresAt: invite.expiresAt
+      });
+      return true;
+    }
+
     if (url.pathname === '/api/stats/summary' && req.method === 'GET') {
       const user = requireAccountForApi(req, res);
       if (!user) return true;
@@ -765,6 +862,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname.startsWith('/invite/')) {
+      if (handleRoomInviteAccess(res, url)) return;
+    }
+
     if (url.pathname === '/login' && req.method === 'GET') {
       send(res, 200, renderLogin(url.searchParams.get('error') === '1', url.searchParams.get('next') || '/'), {
         'Content-Type': 'text/html; charset=utf-8'
@@ -789,6 +890,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (!hasValidSession(req)) {
+      if (url.searchParams.has('invite') && handleRoomInviteAccess(res, url)) return;
       const next = safeRedirectPath(`${url.pathname}${url.search}`);
       send(res, 302, '', { Location: `/login?next=${encodeURIComponent(next)}` });
       return;

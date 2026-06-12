@@ -2,9 +2,13 @@
   "name": "Skyjo Online",
   "short_name": "Skyjo",
   "description": "Private Skyjo table for solo and multiplayer games.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
   "background_color": "#060c0a",
   "theme_color": "#0a1410",
   "icons": [

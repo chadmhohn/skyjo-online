@@ -24,6 +24,8 @@ The VPS deployment uses the normal Vite build plus a small Node server with a sh
 2. Create `/etc/skyjo-online.env` or another service env file with:
    - `SKYJO_ACCESS_PASSWORD`
    - `SKYJO_SESSION_SECRET`
+   - `SKYJO_INVITE_SECRET` for signed friend invite links
+   - `SKYJO_INVITE_TTL_HOURS=168` or your preferred invite lifetime
    - `SKYJO_DB_FILE=/var/lib/skyjo-online/skyjo.sqlite`
    - `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com`
    - `SKYJO_ADMIN_INITIAL_PASSWORD` for first admin bootstrap
@@ -34,7 +36,7 @@ The VPS deployment uses the normal Vite build plus a small Node server with a sh
 4. Start the production server:
    `set -a && . /etc/skyjo-online.env && set +a && npm start`
 
-Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets signed, HttpOnly cookies for both the shared gate and user accounts. Keep passwords, session secrets, and the SQLite database out of git.
+Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets signed, HttpOnly cookies for both the shared gate and user accounts. Room invite links grant only the shared-gate cookie and then redirect to `/lobby?room=CODE`; multiplayer still requires account login. Keep passwords, invite/session secrets, and the SQLite database out of git.
 
 Health check:
 `curl http://127.0.0.1:4180/healthz`
@@ -43,7 +45,7 @@ Example systemd files live in `deploy/`:
 - `deploy/skyjo-online.env.example`
 - `deploy/skyjo-online.service`
 
-Generate a session secret with:
+Generate session and invite secrets with:
 `openssl rand -base64 48`
 
 Release smoke checklist:

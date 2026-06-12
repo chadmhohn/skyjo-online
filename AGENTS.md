@@ -11,6 +11,7 @@ Last verified by Codex: 2026-05-23 America/Denver, after the accounts/stats and 
 - Compatibility symlink: `/root/.openclaw/workspace/skyjo-online -> /srv/skyjo-online`.
 - Production service: `skyjo-online.service`, working directory `/srv/skyjo-online`.
 - Service env file: `/etc/skyjo-online.env`. Do not print or commit secret values from this file.
+- Signed room invites use `SKYJO_INVITE_SECRET` and `SKYJO_INVITE_TTL_HOURS`. Invites only bypass the shared site-password gate; multiplayer still requires account login and room membership rules.
 - Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
 - Account and game-history database: `/var/lib/skyjo-online/skyjo.sqlite`, via `SKYJO_DB_FILE`.
 - Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. Treat that password as temporary.

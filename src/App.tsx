@@ -16,6 +16,7 @@ import {
 import {
   AccountProvider,
   createAdminUser,
+  createRoomInvite,
   fetchAdminUsers,
   fetchPlayerStats,
   fetchStatsGame,
@@ -2315,12 +2316,8 @@ function getInitialLobbySession(): InitialLobbySession {
   };
 }
 
-function roomShareUrl(code: string) {
-  const url = new URL(window.location.href);
-  url.pathname = '/lobby';
-  url.search = '';
-  url.hash = '';
-  url.searchParams.set('room', code);
+function absoluteShareUrl(path: string) {
+  const url = new URL(path, window.location.origin);
   return url.toString();
 }
 
@@ -2660,19 +2657,26 @@ function Lobby() {
     }, 2200);
   }
 
-  async function copyRoomLink(text: string) {
+  async function copyRoomLink(text: string, status = 'Link copied') {
     if (!navigator.clipboard?.writeText) throw new Error('Clipboard is not available.');
     await navigator.clipboard.writeText(text);
-    setTemporaryShareStatus('Link copied');
+    setTemporaryShareStatus(status);
   }
 
   async function shareRoomLink() {
     if (!room) return;
-    const url = roomShareUrl(room.code);
-    const text = `Join my Skyjo room ${room.code}: ${url}`;
     setError('');
+    let fallbackText = `Skyjo room code: ${room.code}`;
+    let fallbackStatus = 'Room code copied';
+    let inviteCreated = false;
 
     try {
+      const invite = await createRoomInvite(room.code);
+      const url = absoluteShareUrl(invite.path);
+      const text = `Join my Skyjo room ${room.code}: ${url}`;
+      fallbackText = text;
+      fallbackStatus = 'Link copied';
+      inviteCreated = true;
       if (navigator.share) {
         await navigator.share({
           title: 'Skyjo room',
@@ -2686,7 +2690,10 @@ function Lobby() {
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       try {
-        await copyRoomLink(text);
+        await copyRoomLink(fallbackText, fallbackStatus);
+        if (!inviteCreated) {
+          setError(error instanceof Error ? `${error.message} Room code copied instead.` : 'Could not create invite link. Room code copied instead.');
+        }
       } catch {
         setError('Sharing is not available in this browser. Copy the room code manually.');
       }
