@@ -31,6 +31,7 @@ const inviteSecret = process.env.SKYJO_INVITE_SECRET || sessionSecret;
 const cookieName = process.env.SKYJO_COOKIE_NAME || 'skyjo_session';
 const sessionTtlMs = Number(process.env.SKYJO_SESSION_TTL_HOURS || 24 * 14) * 60 * 60 * 1000;
 const inviteTtlMs = Number(process.env.SKYJO_INVITE_TTL_HOURS || 24 * 7) * 60 * 60 * 1000;
+const inviteCodeTtlMs = Number(process.env.SKYJO_INVITE_CODE_TTL_MINUTES || 30) * 60 * 1000;
 const accountCookieName = process.env.SKYJO_ACCOUNT_COOKIE_NAME || 'skyjo_account';
 const accountSessionTtlMs = Number(process.env.SKYJO_ACCOUNT_SESSION_TTL_HOURS || 24 * 14) * 60 * 60 * 1000;
 const adminEmail = process.env.SKYJO_ADMIN_EMAIL || 'chad.hohn@groundworkrevops.com';
@@ -46,6 +47,9 @@ const accountDatabaseFile = resolveAccountDatabasePath();
 const roomsSaveDebounceMs = 250;
 const maxRoomChatMessages = 80;
 const maxRoomChatMessageLength = 280;
+const inviteCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const inviteCodeLength = 7;
+const inviteInstallCodes = new Map();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
 let shuttingDown = false;
@@ -190,6 +194,28 @@ function cleanServerRoomCode(value) {
     .slice(0, 5);
 }
 
+function cleanInviteInstallCode(value) {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, inviteCodeLength);
+}
+
+function createInviteInstallCodeValue() {
+  let code = '';
+  for (let index = 0; index < inviteCodeLength; index += 1) {
+    code += inviteCodeAlphabet[Math.floor(Math.random() * inviteCodeAlphabet.length)];
+  }
+  return code;
+}
+
+function pruneInviteInstallCodes(timestamp = Date.now()) {
+  for (const [code, invite] of inviteInstallCodes) {
+    if (invite.expiresAt <= timestamp) inviteInstallCodes.delete(code);
+  }
+}
+
 function createRoomInviteToken(roomCode) {
   const cleanRoom = cleanServerRoomCode(roomCode);
   if (cleanRoom.length !== 5) throw new Error('Room code is not valid.');
@@ -226,12 +252,37 @@ function parseRoomInvitePayload(token, { verifySignature }) {
   }
 }
 
+function getOrCreateInviteInstallCode(token, invite) {
+  const timestamp = Date.now();
+  pruneInviteInstallCodes(timestamp);
+  for (const [code, savedInvite] of inviteInstallCodes) {
+    if (savedInvite.token === token && savedInvite.expiresAt > timestamp) {
+      return { code, expiresAt: savedInvite.expiresAt };
+    }
+  }
+
+  const expiresAt = Math.min(invite.expiresAt, timestamp + inviteCodeTtlMs);
+  let code = createInviteInstallCodeValue();
+  while (inviteInstallCodes.has(code)) {
+    code = createInviteInstallCodeValue();
+  }
+  inviteInstallCodes.set(code, { token, room: invite.room, expiresAt });
+  return { code, expiresAt };
+}
+
 function roomInviteTokenFromUrl(url) {
   if (url.pathname.startsWith('/invite/')) return decodeURIComponent(url.pathname.slice('/invite/'.length));
   return url.searchParams.get('invite') || '';
 }
 
-function handleRoomInviteAccess(res, url) {
+function sendInviteRoomAccess(res, roomCode) {
+  send(res, 303, '', {
+    Location: `/lobby?room=${encodeURIComponent(roomCode)}`,
+    'Set-Cookie': cookieHeader(createSessionCookie(), Math.floor(sessionTtlMs / 1000))
+  });
+}
+
+function handleRoomInviteAccess(res, url, { landing = false } = {}) {
   const token = roomInviteTokenFromUrl(url);
   if (!token) return false;
 
@@ -243,10 +294,15 @@ function handleRoomInviteAccess(res, url) {
     return true;
   }
 
-  send(res, 303, '', {
-    Location: `/lobby?room=${encodeURIComponent(invite.room)}`,
-    'Set-Cookie': cookieHeader(createSessionCookie(), Math.floor(sessionTtlMs / 1000))
-  });
+  if (landing && url.searchParams.get('open') !== 'browser') {
+    const installCode = getOrCreateInviteInstallCode(token, invite);
+    send(res, 200, renderInviteLanding({ token, invite, installCode }), {
+      'Content-Type': 'text/html; charset=utf-8'
+    });
+    return true;
+  }
+
+  sendInviteRoomAccess(res, invite.room);
   return true;
 }
 
@@ -444,6 +500,141 @@ function safeRedirectPath(value) {
   const path = String(value || '/');
   if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) return '/';
   return path;
+}
+
+function formatInviteCodeMinutes(expiresAt) {
+  const minutes = Math.max(1, Math.ceil((expiresAt - Date.now()) / 60000));
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+}
+
+function renderInviteLanding({ token, invite, installCode }) {
+  const safeToken = encodeURIComponent(token);
+  const safeRoom = escapeHtml(invite.room);
+  const safeCode = escapeHtml(installCode.code);
+  const safeMinutes = escapeHtml(formatInviteCodeMinutes(installCode.expiresAt));
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Join Skyjo</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        background:
+          radial-gradient(ellipse 90% 60% at 50% 0%, rgba(245, 230, 200, 0.1) 0%, transparent 58%),
+          radial-gradient(ellipse 70% 50% at 90% 100%, rgba(34, 197, 94, 0.09) 0%, transparent 60%),
+          linear-gradient(180deg, #0a1410 0%, #060c0a 100%);
+        color: #f5e6c8;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main { width: min(100%, 560px); }
+      h1 { margin: 0; font-size: clamp(42px, 12vw, 68px); line-height: 0.95; letter-spacing: 0; }
+      h2 { margin: 0 0 10px; font-size: 18px; }
+      p { margin: 0; color: rgba(245, 230, 200, 0.74); line-height: 1.5; }
+      ol { margin: 12px 0 0; padding-left: 22px; color: rgba(245, 230, 200, 0.78); line-height: 1.45; }
+      li + li { margin-top: 6px; }
+      .shell { display: grid; gap: 14px; }
+      .eyebrow { color: rgba(245, 230, 200, 0.58); font-size: 12px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; }
+      .lead { margin-top: 10px; font-size: 17px; }
+      .room { display: inline-flex; margin-top: 16px; border: 1px solid rgba(245, 230, 200, 0.22); border-radius: 8px; padding: 8px 12px; font-size: 24px; font-weight: 900; letter-spacing: 0.08em; }
+      .choice { border: 1px solid rgba(245, 230, 200, 0.14); border-radius: 8px; padding: 16px; background: rgba(255, 255, 255, 0.035); }
+      .actions { display: grid; gap: 10px; margin-top: 14px; }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 46px;
+        border: 0;
+        border-radius: 8px;
+        padding: 0 14px;
+        color: #0a1410;
+        background: #f5e6c8;
+        font: inherit;
+        font-weight: 900;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .button.secondary { color: #f5e6c8; background: rgba(245, 230, 200, 0.12); }
+      .code-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 14px; }
+      input {
+        min-height: 46px;
+        width: 100%;
+        border: 1px solid rgba(245, 230, 200, 0.18);
+        border-radius: 8px;
+        padding: 0 12px;
+        color: #f5e6c8;
+        background: rgba(0, 0, 0, 0.22);
+        font: inherit;
+        font-size: 20px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-align: center;
+      }
+      .note { margin-top: 9px; font-size: 13px; color: rgba(245, 230, 200, 0.58); }
+      .status { min-height: 18px; margin-top: 8px; color: #bbf7d0; font-size: 13px; font-weight: 800; }
+      @media (max-width: 480px) {
+        body { padding: 14px; }
+        .code-row { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section>
+        <div class="eyebrow">Skyjo invite</div>
+        <h1>Join Room ${safeRoom}</h1>
+        <p class="lead">Choose where to play. Browser is fastest; Home Screen is better for repeat games.</p>
+        <div class="room">${safeRoom}</div>
+      </section>
+
+      <section class="choice">
+        <h2>Add Skyjo to your Home Screen</h2>
+        <p>Copy this invite code first, then add Skyjo from Safari.</p>
+        <div class="code-row">
+          <input id="invite-code" readonly value="${safeCode}" />
+          <button class="button" id="copy-code" type="button">Copy Code</button>
+        </div>
+        <div class="status" id="copy-status" role="status"></div>
+        <ol>
+          <li>Tap the Safari share button.</li>
+          <li>Choose Add to Home Screen.</li>
+          <li>Open Skyjo from the new icon and paste this code.</li>
+        </ol>
+        <p class="note">Code expires in about ${safeMinutes}. If it expires, open the original invite link again.</p>
+      </section>
+
+      <section class="choice">
+        <h2>Open in browser</h2>
+        <p>Continue in this browser now. This still bypasses the shared Skyjo password for this invite.</p>
+        <div class="actions">
+          <a class="button secondary" href="/invite/${safeToken}?open=browser">Open in Browser</a>
+        </div>
+      </section>
+    </main>
+    <script>
+      const codeInput = document.getElementById('invite-code');
+      const copyButton = document.getElementById('copy-code');
+      const status = document.getElementById('copy-status');
+      copyButton.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(codeInput.value);
+          status.textContent = 'Invite code copied';
+        } catch {
+          codeInput.focus();
+          codeInput.select();
+          status.textContent = 'Code selected';
+        }
+      });
+    </script>
+  </body>
+</html>`;
 }
 
 function appendRoomChatMessage(room, player, text) {
@@ -720,7 +911,7 @@ async function handleApiRequest(req, res, url) {
   }
 }
 
-function renderLogin(error = false, next = '/') {
+function renderLogin(error = false, next = '/', inviteCodeError = false) {
   const safeNext = safeRedirectPath(next);
   return `<!doctype html>
 <html lang="en">
@@ -739,9 +930,10 @@ function renderLogin(error = false, next = '/') {
         color: #f8fafc;
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
-      main { width: min(92vw, 360px); }
+      main { width: min(92vw, 380px); }
       h1 { margin: 0 0 8px; font-size: 48px; letter-spacing: 0; }
-      p { margin: 0 0 24px; color: #bfdbfe; }
+      h2 { margin: 0 0 10px; font-size: 18px; }
+      p { margin: 0 0 24px; color: #bfdbfe; line-height: 1.45; }
       form { display: grid; gap: 12px; }
       input, button {
         width: 100%;
@@ -753,6 +945,9 @@ function renderLogin(error = false, next = '/') {
       }
       input { padding: 0 12px; background: #f8fafc; color: #0f172a; }
       button { background: #38bdf8; color: #082f49; font-weight: 700; cursor: pointer; }
+      .invite-panel { margin-top: 18px; border-top: 1px solid rgba(191, 219, 254, 0.22); padding-top: 18px; }
+      .invite-panel p { margin-bottom: 12px; color: rgba(191, 219, 254, 0.82); }
+      .invite-panel input { text-transform: uppercase; letter-spacing: 0.08em; text-align: center; font-weight: 800; }
       .error { margin-top: 12px; color: #fecaca; }
     </style>
   </head>
@@ -766,9 +961,41 @@ function renderLogin(error = false, next = '/') {
         <button type="submit">Continue</button>
       </form>
       ${error ? '<div class="error">That password did not work.</div>' : ''}
+      <section class="invite-panel">
+        <h2>Have an invite code?</h2>
+        <p>Paste the code from a Skyjo invite to open that room without the shared password.</p>
+        <form method="post" action="/invite-code">
+          <input name="code" autocomplete="one-time-code" inputmode="text" placeholder="ABCD123" required />
+          <button type="submit">Open Invite</button>
+        </form>
+        ${inviteCodeError ? '<div class="error">That invite code expired or did not match.</div>' : ''}
+      </section>
     </main>
   </body>
 </html>`;
+}
+
+async function handleInviteCodeRedeem(req, res) {
+  const body = await readRequestBody(req);
+  const form = new URLSearchParams(body);
+  const code = cleanInviteInstallCode(form.get('code'));
+  pruneInviteInstallCodes();
+  const savedInvite = inviteInstallCodes.get(code);
+  if (!savedInvite || savedInvite.expiresAt <= Date.now()) {
+    inviteInstallCodes.delete(code);
+    send(res, 303, '', { Location: '/login?inviteError=1' });
+    return;
+  }
+
+  const invite = parseRoomInvitePayload(savedInvite.token, { verifySignature: true });
+  if (!invite || invite.room !== savedInvite.room) {
+    inviteInstallCodes.delete(code);
+    send(res, 303, '', { Location: '/login?inviteError=1' });
+    return;
+  }
+
+  inviteInstallCodes.delete(code);
+  sendInviteRoomAccess(res, invite.room);
 }
 
 async function readRequestBody(req) {
@@ -863,13 +1090,27 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith('/invite/')) {
-      if (handleRoomInviteAccess(res, url)) return;
+      if (handleRoomInviteAccess(res, url, { landing: true })) return;
+    }
+
+    if (url.pathname === '/invite-code' && req.method === 'POST') {
+      await handleInviteCodeRedeem(req, res);
+      return;
     }
 
     if (url.pathname === '/login' && req.method === 'GET') {
-      send(res, 200, renderLogin(url.searchParams.get('error') === '1', url.searchParams.get('next') || '/'), {
-        'Content-Type': 'text/html; charset=utf-8'
-      });
+      send(
+        res,
+        200,
+        renderLogin(
+          url.searchParams.get('error') === '1',
+          url.searchParams.get('next') || '/',
+          url.searchParams.get('inviteError') === '1'
+        ),
+        {
+          'Content-Type': 'text/html; charset=utf-8'
+        }
+      );
       return;
     }
 

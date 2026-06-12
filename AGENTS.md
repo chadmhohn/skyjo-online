@@ -11,7 +11,7 @@ Last verified by Codex: 2026-05-23 America/Denver, after the accounts/stats and 
 - Compatibility symlink: `/root/.openclaw/workspace/skyjo-online -> /srv/skyjo-online`.
 - Production service: `skyjo-online.service`, working directory `/srv/skyjo-online`.
 - Service env file: `/etc/skyjo-online.env`. Do not print or commit secret values from this file.
-- Signed room invites use `SKYJO_INVITE_SECRET` and `SKYJO_INVITE_TTL_HOURS`. Invites only bypass the shared site-password gate; multiplayer still requires account login and room membership rules.
+- Signed room invites use `SKYJO_INVITE_SECRET`, `SKYJO_INVITE_TTL_HOURS`, and optional `SKYJO_INVITE_CODE_TTL_MINUTES`. Invites only bypass the shared site-password gate; multiplayer still requires account login and room membership rules.
 - Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
 - Account and game-history database: `/var/lib/skyjo-online/skyjo.sqlite`, via `SKYJO_DB_FILE`.
 - Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. Treat that password as temporary.
@@ -37,7 +37,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 - `src/game.ts`: shared Skyjo game engine for single-player and multiplayer. Owns deck composition, opening reveal rules, turn progression, scoring, final-turn flow, column clears, and AI decisions.
 - `src/types.ts`: shared client/server state types.
 - `src/serverValidation.ts`: server-side legal multiplayer state validation. This compiles to `server-dist/` and is loaded by the Node server.
-- `server.mjs`: production Node server. Handles password-gated HTTP, static `dist/` serving, `/healthz`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and persistence flush on shutdown.
+- `server.mjs`: production Node server. Handles password-gated HTTP, invite install/browser handoff, static `dist/` serving, `/healthz`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and persistence flush on shutdown.
 - `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, and admin user operations.
 - `server-room-persistence.mjs`: JSON persistence for rooms. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
 - `src/App.tsx`: React routes and UI for home, single-player, lobby, room play, table chat, rules, scoring, and responsive gameplay shells.
@@ -131,7 +131,7 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - Account stats start from the account release forward. Do not attempt historical backfill from `rooms.json` unless Chad explicitly asks for a separate import pass.
 - Mobile phone layout is intentionally board-first/locked: opponents scroll above, local board and table controls stay anchored. Be careful not to regress this when changing tablet/desktop layouts.
 - Tablet landscape intentionally borrows the compact phone header: Rules, Log, and AI opponents stay as small disclosure buttons; the local "You" board is scaled down and bottom-anchored so opponent boards remain visible above it. Opponent boards should not exceed 4 columns in tablet landscape or 3 columns in tablet portrait.
-- Multiplayer rooms are friend-facing and password gated. Shared room links should prefill join without reusing a stale saved player identity for another room.
+- Multiplayer rooms are friend-facing and password gated. Shared room links should land on the install/browser choice page, and browser/install-code continuation should prefill join without reusing a stale saved player identity for another room.
 
 ## Useful Nova Memory Summary
 

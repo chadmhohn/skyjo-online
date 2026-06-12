@@ -369,8 +369,16 @@ try {
   assert.equal(hostInvite.response.status, 200, 'room members can create invite links');
   assert.equal(hostInvite.payload.roomCode, parkingRoomCode);
   assert.match(hostInvite.payload.path, /^\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
-  const redeemedInvite = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
-  assert.equal(redeemedInvite.status, 303, 'valid room invite redeems before the password gate');
+  const inviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
+  assert.equal(inviteLanding.status, 200, 'valid room invite opens the install/browser choice page');
+  const inviteLandingHtml = await inviteLanding.text();
+  assert.match(inviteLandingHtml, new RegExp(`Join Room ${parkingRoomCode}`), 'invite landing shows the room code');
+  assert.match(inviteLandingHtml, /Add Skyjo to your Home Screen/, 'invite landing explains the home screen path');
+  assert.match(inviteLandingHtml, /Open in Browser/, 'invite landing keeps the browser path available');
+  const installCode = inviteLandingHtml.match(/id="invite-code" readonly value="([A-Z0-9]{7})"/)?.[1];
+  assert.ok(installCode, 'invite landing includes a short install code');
+  const redeemedInvite = await fetch(`${baseUrl}${hostInvite.payload.path}?open=browser`, { redirect: 'manual' });
+  assert.equal(redeemedInvite.status, 303, 'valid room invite can still redeem in browser before the password gate');
   assert.equal(redeemedInvite.headers.get('location'), `/lobby?room=${parkingRoomCode}`);
   const inviteCookie = redeemedInvite.headers.get('set-cookie');
   assert.ok(inviteCookie, 'valid room invite sets the shared gate cookie');
@@ -379,6 +387,27 @@ try {
     redirect: 'manual'
   });
   assert.equal(inviteLobby.status, 200, 'redeemed invite cookie can load the lobby');
+  const installCodeRedeem = await fetch(`${baseUrl}/invite-code`, {
+    method: 'POST',
+    body: new URLSearchParams({ code: installCode }),
+    redirect: 'manual'
+  });
+  assert.equal(installCodeRedeem.status, 303, 'install code redeems before the password gate');
+  assert.equal(installCodeRedeem.headers.get('location'), `/lobby?room=${parkingRoomCode}`);
+  const installCodeCookie = installCodeRedeem.headers.get('set-cookie');
+  assert.ok(installCodeCookie, 'install code redemption sets the shared gate cookie');
+  const installCodeLobby = await fetch(`${baseUrl}/lobby?room=${parkingRoomCode}`, {
+    headers: { Cookie: installCodeCookie.split(';')[0] },
+    redirect: 'manual'
+  });
+  assert.equal(installCodeLobby.status, 200, 'install code cookie can load the lobby');
+  const invalidInstallCode = await fetch(`${baseUrl}/invite-code`, {
+    method: 'POST',
+    body: new URLSearchParams({ code: 'BADCODE' }),
+    redirect: 'manual'
+  });
+  assert.equal(invalidInstallCode.status, 303, 'invalid install code redirects back to login');
+  assert.equal(invalidInstallCode.headers.get('location'), '/login?inviteError=1');
   const invalidInvitePayload = Buffer.from(JSON.stringify({ room: parkingRoomCode, exp: Date.now() + 60000 })).toString('base64url');
   const invalidInvite = await fetch(`${baseUrl}/invite/${invalidInvitePayload}.bad-signature`, { redirect: 'manual' });
   assert.equal(invalidInvite.status, 302, 'invalid room invite falls back to the normal password gate');
@@ -526,7 +555,7 @@ try {
   assert.equal(hostStats.coPlayers.some((player) => player.userId === guestAccount.user.id), true, 'co-player stats are visible');
 
   console.log(
-    'chat smoke passed: login redirect, admin-created accounts, self-admin protection, account-gated rooms, signed invites, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
+    'chat smoke passed: login redirect, admin-created accounts, self-admin protection, account-gated rooms, signed invite landing/install codes, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
   );
 } finally {
   reconnectSocket?.close();
