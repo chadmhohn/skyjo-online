@@ -132,6 +132,7 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - Mobile phone layout is intentionally board-first/locked: opponents scroll above, local board and table controls stay anchored. Be careful not to regress this when changing tablet/desktop layouts.
 - Tablet landscape intentionally borrows the compact phone header: Rules, Log, and AI opponents stay as small disclosure buttons; the local "You" board is scaled down and bottom-anchored so opponent boards remain visible above it. Opponent boards should not exceed 4 columns in tablet landscape or 3 columns in tablet portrait.
 - Multiplayer rooms are friend-facing and password gated. Shared room links should land on the install/browser choice page, and browser/install-code continuation should prefill join without reusing a stale saved player identity for another room.
+- The long invite link is reusable for group threads. Each invite page load mints a fresh one-time Home Screen install code, so several recipients can use the same shared link without racing over one copied code.
 
 ## Useful Nova Memory Summary
 

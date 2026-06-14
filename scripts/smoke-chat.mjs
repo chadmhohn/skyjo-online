@@ -377,6 +377,12 @@ try {
   assert.match(inviteLandingHtml, /Open in Browser/, 'invite landing keeps the browser path available');
   const installCode = inviteLandingHtml.match(/id="invite-code" readonly value="([A-Z0-9]{7})"/)?.[1];
   assert.ok(installCode, 'invite landing includes a short install code');
+  const secondInviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
+  assert.equal(secondInviteLanding.status, 200, 'the same group invite can be opened by another player');
+  const secondInviteLandingHtml = await secondInviteLanding.text();
+  const secondInstallCode = secondInviteLandingHtml.match(/id="invite-code" readonly value="([A-Z0-9]{7})"/)?.[1];
+  assert.ok(secondInstallCode, 'a second invite landing includes a short install code');
+  assert.notEqual(secondInstallCode, installCode, 'each invite landing mints its own install code');
   const redeemedInvite = await fetch(`${baseUrl}${hostInvite.payload.path}?open=browser`, { redirect: 'manual' });
   assert.equal(redeemedInvite.status, 303, 'valid room invite can still redeem in browser before the password gate');
   assert.equal(redeemedInvite.headers.get('location'), `/lobby?room=${parkingRoomCode}`);
@@ -401,6 +407,20 @@ try {
     redirect: 'manual'
   });
   assert.equal(installCodeLobby.status, 200, 'install code cookie can load the lobby');
+  const secondInstallCodeRedeem = await fetch(`${baseUrl}/invite-code`, {
+    method: 'POST',
+    body: new URLSearchParams({ code: secondInstallCode }),
+    redirect: 'manual'
+  });
+  assert.equal(secondInstallCodeRedeem.status, 303, 'second install code from the same invite also redeems');
+  assert.equal(secondInstallCodeRedeem.headers.get('location'), `/lobby?room=${parkingRoomCode}`);
+  const reusedInstallCode = await fetch(`${baseUrl}/invite-code`, {
+    method: 'POST',
+    body: new URLSearchParams({ code: installCode }),
+    redirect: 'manual'
+  });
+  assert.equal(reusedInstallCode.status, 303, 'install codes are one-time use');
+  assert.equal(reusedInstallCode.headers.get('location'), '/login?inviteError=1');
   const invalidInstallCode = await fetch(`${baseUrl}/invite-code`, {
     method: 'POST',
     body: new URLSearchParams({ code: 'BADCODE' }),

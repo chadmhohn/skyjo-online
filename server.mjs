@@ -252,15 +252,9 @@ function parseRoomInvitePayload(token, { verifySignature }) {
   }
 }
 
-function getOrCreateInviteInstallCode(token, invite) {
+function createInviteInstallCode(token, invite) {
   const timestamp = Date.now();
   pruneInviteInstallCodes(timestamp);
-  for (const [code, savedInvite] of inviteInstallCodes) {
-    if (savedInvite.token === token && savedInvite.expiresAt > timestamp) {
-      return { code, expiresAt: savedInvite.expiresAt };
-    }
-  }
-
   const expiresAt = Math.min(invite.expiresAt, timestamp + inviteCodeTtlMs);
   let code = createInviteInstallCodeValue();
   while (inviteInstallCodes.has(code)) {
@@ -295,7 +289,7 @@ function handleRoomInviteAccess(res, url, { landing = false } = {}) {
   }
 
   if (landing && url.searchParams.get('open') !== 'browser') {
-    const installCode = getOrCreateInviteInstallCode(token, invite);
+    const installCode = createInviteInstallCode(token, invite);
     send(res, 200, renderInviteLanding({ token, invite, installCode }), {
       'Content-Type': 'text/html; charset=utf-8'
     });

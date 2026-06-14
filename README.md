@@ -37,7 +37,7 @@ The VPS deployment uses the normal Vite build plus a small Node server with a sh
 4. Start the production server:
    `set -a && . /etc/skyjo-online.env && set +a && npm start`
 
-Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets signed, HttpOnly cookies for both the shared gate and user accounts. Room invite links open an install/browser choice page; browser continuation grants only the shared-gate cookie and redirects to `/lobby?room=CODE`, while the short install code can be pasted into the Home Screen app login page for the same gate-cookie handoff. Multiplayer still requires account login. Keep passwords, invite/session secrets, and the SQLite database out of git.
+Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets signed, HttpOnly cookies for both the shared gate and user accounts. Room invite links open an install/browser choice page; browser continuation grants only the shared-gate cookie and redirects to `/lobby?room=CODE`, while each invite page load mints a separate one-time short code that can be pasted into the Home Screen app login page for the same gate-cookie handoff. Multiplayer still requires account login. Keep passwords, invite/session secrets, and the SQLite database out of git.
 
 Health check:
 `curl http://127.0.0.1:4180/healthz`
