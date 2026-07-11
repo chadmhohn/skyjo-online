@@ -1536,7 +1536,7 @@ function PlayerBoardGrid({ entries, state, drawIntent, className = responsiveBoa
   }, [currentOpponentId, isOpponentStack, state.log.length, state.phase]);
 
   return (
-    <div className={className} ref={boardRef}>
+    <div className={className} data-testid={isOpponentStack ? 'opponent-rail' : 'local-board'} ref={boardRef}>
       {entries.map(({ player, isLocal }) => {
         const index = state.players.findIndex((item) => item.id === player.id);
         return (
@@ -1592,7 +1592,7 @@ function TableControls({
     : discardDisabledReason || 'Take the top discard card.';
 
   return (
-    <section className="skyjo-panel skyjo-table-controls skyjo-table-glow">
+    <section className="skyjo-panel skyjo-table-controls skyjo-table-glow" data-testid="table-center">
       <div className="skyjo-table-header mb-4 flex items-center justify-between gap-3">
         <h2 className="skyjo-serif text-xl font-semibold">Table</h2>
         <span className="skyjo-kicker text-right">Round {state.round}</span>
@@ -2165,7 +2165,10 @@ function SinglePlayer() {
   }
 
   return (
-    <main className={`skyjo-surface px-4 py-5 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}>
+    <main
+      className={`skyjo-surface px-4 py-5 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}
+      data-testid="game-table"
+    >
       <div
         className={`skyjo-shell skyjo-active-mobile-shell ${
           summaryModalOpen ? 'skyjo-round-summary-mode' : ''
@@ -2743,7 +2746,10 @@ function Lobby() {
   if (!accountUser) return <RequireAccountPanel next={`/lobby${location.search}`} title="Sign in to play multiplayer" />;
 
   return (
-    <main className={`skyjo-surface px-4 py-8 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}>
+    <main
+      className={`skyjo-surface px-4 py-8 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}
+      data-testid="game-table"
+    >
       <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} ${summaryModalOpen ? 'skyjo-round-summary-mode' : ''} space-y-5`}>
         {roomScoringPhase && roomState && !roundSummaryOpen ? (
           <RoundSummaryRestoreButton meta={readySummary} state={roomState} onRestore={() => setRoundSummaryOpen(true)} />

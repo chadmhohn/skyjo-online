@@ -1434,8 +1434,10 @@ setInterval(() => {
 }, 1000 * 60 * 30).unref();
 
 server.listen(port, host, () => {
+  const address = server.address();
+  const listeningPort = typeof address === 'object' && address ? address.port : port;
   console.log(`Skyjo Online serving ${distDir}`);
-  console.log(`Listening on http://${host}:${port}`);
+  console.log(`Listening on http://${host}:${listeningPort}`);
 });
 
 async function shutdown(signal) {
