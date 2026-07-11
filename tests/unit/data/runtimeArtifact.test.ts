@@ -5,7 +5,12 @@ import { gzipSync } from 'node:zlib';
 import {
   artifactNames,
   assertFullReleaseSha,
+  deriveRuntimeInventory,
   isAllowedRuntimePath,
+  MAX_ARCHIVE_BYTES,
+  MAX_ARCHIVE_ENTRIES,
+  MAX_FILE_BYTES,
+  MAX_UNCOMPRESSED_BYTES,
   normalizeArchivePath,
   parseTarArchive,
   REQUIRED_ARCHIVE_FILES,
@@ -26,6 +31,7 @@ const releaseData = Buffer.from(`${JSON.stringify(releaseIdentity, null, 2)}\n`)
 const releaseChecksum = Buffer.from(`${sha256(releaseData)}  release.json\n`);
 const packageData = Buffer.from(JSON.stringify({
   name: 'skyjo-online',
+  version: '0.1.0',
   private: true,
   type: 'module',
   dependencies: {
@@ -36,11 +42,38 @@ const packageData = Buffer.from(JSON.stringify({
     ws: '8.21.0'
   }
 }));
+const lockedPackages = [
+  ['react', '18.3.1'],
+  ['react-dom', '18.3.1'],
+  ['react-router-dom', '6.30.4'],
+  ['web-push', '3.6.7'],
+  ['ws', '8.21.0']
+] as const;
+const lockData = Buffer.from(JSON.stringify({
+  name: 'skyjo-online',
+  version: '0.1.0',
+  lockfileVersion: 3,
+  packages: Object.fromEntries([
+    ['', {
+      name: 'skyjo-online',
+      version: '0.1.0',
+      dependencies: Object.fromEntries(lockedPackages)
+    }],
+    ...lockedPackages.map(([name, version]) => [`node_modules/${name}`, { version }])
+  ])
+}));
 const sbomData = Buffer.from(JSON.stringify({
   bomFormat: 'CycloneDX',
   specVersion: '1.6',
-  metadata: { component: { type: 'application', name: 'skyjo-online', version: '0.1.0' } },
-  components: ['react', 'react-dom', 'react-router-dom', 'web-push', 'ws'].map((name) => ({ type: 'library', name, version: '1.0.0' }))
+  metadata: {
+    component: {
+      type: 'application',
+      name: 'skyjo-online',
+      version: '0.1.0',
+      properties: [{ name: 'skyjo:releaseSha', value: releaseSha }]
+    }
+  },
+  components: lockedPackages.map(([name, version]) => ({ type: 'library', name, version }))
 }));
 
 type TarEntry = {
@@ -49,16 +82,49 @@ type TarEntry = {
   size: number;
   linkName: string;
   data: Buffer;
+  mode: number;
+  uid: number;
+  gid: number;
+  mtime: number;
+};
+
+type SbomFixture = {
+  bomFormat: string;
+  specVersion: string;
+  metadata: {
+    component: {
+      version: string;
+      properties: Array<{ name: string; value: string }>;
+    };
+  };
+  components: Array<{ type?: string; name?: string; version?: string }>;
 };
 
 function fixtureEntries(): TarEntry[] {
-  return REQUIRED_ARCHIVE_FILES.map((rawPath: string) => {
+  const archiveFiles = [
+    ...REQUIRED_ARCHIVE_FILES,
+    ...lockedPackages.map(([name]) => `node_modules/${name}/package.json`)
+  ];
+  return archiveFiles.map((rawPath: string) => {
     let data = Buffer.from(`fixture:${rawPath}`);
     if (rawPath === 'release.json' || rawPath === 'dist/release.json') data = releaseData;
     if (rawPath === 'release.json.sha256' || rawPath === 'dist/release.json.sha256') data = releaseChecksum;
     if (rawPath === 'package.json') data = packageData;
+    if (rawPath === 'package-lock.json') data = lockData;
     if (rawPath === 'skyjo-runtime.cdx.json') data = sbomData;
-    return { rawPath, typeFlag: '0', size: data.length, linkName: '', data };
+    const lockedPackage = lockedPackages.find(([name]) => rawPath === `node_modules/${name}/package.json`);
+    if (lockedPackage) data = Buffer.from(JSON.stringify({ name: lockedPackage[0], version: lockedPackage[1] }));
+    return {
+      rawPath,
+      typeFlag: '0',
+      size: data.length,
+      linkName: '',
+      data,
+      mode: 0o644,
+      uid: 0,
+      gid: 0,
+      mtime: Date.parse(releaseIdentity.buildTimestamp) / 1000
+    };
   });
 }
 
@@ -71,11 +137,11 @@ function writeOctal(header: Buffer, offset: number, length: number, value: numbe
 function tarHeader(entry: TarEntry) {
   const header = Buffer.alloc(512);
   header.write(entry.rawPath, 0, 100, 'utf8');
-  writeOctal(header, 100, 8, entry.typeFlag === '5' ? 0o755 : 0o644);
-  writeOctal(header, 108, 8, 0);
-  writeOctal(header, 116, 8, 0);
+  writeOctal(header, 100, 8, entry.mode);
+  writeOctal(header, 108, 8, entry.uid);
+  writeOctal(header, 116, 8, entry.gid);
   writeOctal(header, 124, 12, entry.size);
-  writeOctal(header, 136, 12, 0);
+  writeOctal(header, 136, 12, entry.mtime);
   header.fill(0x20, 148, 156);
   header[156] = entry.typeFlag.charCodeAt(0);
   if (entry.linkName) header.write(entry.linkName, 157, 100, 'utf8');
@@ -102,6 +168,19 @@ function createTar(entries: TarEntry[]) {
   return Buffer.concat(chunks);
 }
 
+function replaceFile(entries: TarEntry[], rawPath: string, data: Buffer) {
+  const index = entries.findIndex((entry) => entry.rawPath === rawPath);
+  entries[index] = { ...entries[index], data, size: data.length };
+  return entries;
+}
+
+function withSbomMutation(mutator: (sbom: SbomFixture) => void) {
+  const entries = fixtureEntries();
+  const sbom = JSON.parse(sbomData.toString('utf8')) as SbomFixture;
+  mutator(sbom);
+  return replaceFile(entries, 'skyjo-runtime.cdx.json', Buffer.from(JSON.stringify(sbom)));
+}
+
 describe('runtime artifact safety contract', () => {
   test('requires an exact lowercase commit SHA and SHA-addressed filenames', () => {
     expect(assertFullReleaseSha(releaseSha.toUpperCase())).toBe(releaseSha);
@@ -125,6 +204,18 @@ describe('runtime artifact safety contract', () => {
     expect(() => normalizeArchivePath(unsafePath)).toThrow();
   });
 
+  test('normalizes canonical root and directory spellings without broadening the allowlist', () => {
+    expect(normalizeArchivePath('././dist/')).toBe('dist');
+    expect(normalizeArchivePath('.', { allowRoot: true })).toBe('');
+    expect(() => normalizeArchivePath('.')).toThrow('archive root');
+    expect(() => normalizeArchivePath('')).toThrow('empty path');
+    expect(() => normalizeArchivePath('dist/evil\u0000name')).toThrow('control characters');
+    expect(isAllowedRuntimePath('.', true)).toBe(true);
+    expect(isAllowedRuntimePath('dist', true)).toBe(true);
+    expect(isAllowedRuntimePath('server.mjs', true)).toBe(false);
+    expect(isAllowedRuntimePath('scripts', true)).toBe(true);
+  });
+
   test('allows only compiled output, production dependencies, metadata, and exact runtime scripts', () => {
     expect(isAllowedRuntimePath('./dist/assets/app.js')).toBe(true);
     expect(isAllowedRuntimePath('node_modules/ws/index.js')).toBe(true);
@@ -141,6 +232,35 @@ describe('runtime artifact safety contract', () => {
     expect(result.files.has('src/game.ts')).toBe(false);
   });
 
+  test('derives the exact non-dev package name and version inventory from package-lock', () => {
+    const inventory = deriveRuntimeInventory(packageData, lockData);
+    expect(inventory.root).toEqual({ name: 'skyjo-online', version: '0.1.0' });
+    expect(inventory.packages.map(({ name, version }: { name: string; version: string }) => `${name}@${version}`)).toEqual([
+      'react@18.3.1',
+      'react-dom@18.3.1',
+      'react-router-dom@6.30.4',
+      'web-push@3.6.7',
+      'ws@8.21.0'
+    ]);
+  });
+
+  test('rejects malformed package metadata, lock roots, dependency drift, and empty runtime inventories', () => {
+    expect(() => deriveRuntimeInventory(Buffer.from('{'), lockData)).toThrow('not valid JSON');
+    expect(() => deriveRuntimeInventory(Buffer.from('{}'), lockData)).toThrow('metadata is invalid');
+    const lock = JSON.parse(lockData.toString('utf8'));
+    expect(() => deriveRuntimeInventory(packageData, Buffer.from('{}'))).toThrow('lock root');
+    const drift = structuredClone(lock);
+    drift.packages[''].dependencies.ws = '0.0.0';
+    expect(() => deriveRuntimeInventory(packageData, Buffer.from(JSON.stringify(drift)))).toThrow('dependencies do not match');
+    const empty = structuredClone(lock);
+    for (const key of Object.keys(empty.packages)) if (key) delete empty.packages[key];
+    expect(() => deriveRuntimeInventory(packageData, Buffer.from(JSON.stringify(empty)))).toThrow('inventory is empty');
+    const filtered = structuredClone(lock);
+    filtered.packages['node_modules/dev-only'] = { version: '1.0.0', dev: true };
+    filtered.packages['node_modules/optional-only'] = { version: '1.0.0', optional: true };
+    expect(deriveRuntimeInventory(packageData, Buffer.from(JSON.stringify(filtered))).packages).toHaveLength(5);
+  });
+
   test('rejects duplicate paths, links, dev dependencies, and identity mismatches', () => {
     const duplicate = fixtureEntries();
     duplicate.push({ ...duplicate[0] });
@@ -150,10 +270,10 @@ describe('runtime artifact safety contract', () => {
     link[0] = { ...link[0], typeFlag: '2', linkName: '../../etc/passwd' };
     expect(() => validateRuntimeEntries(link, releaseSha)).toThrow('forbidden symlink');
 
-    const devDependency = fixtureEntries();
-    const sbomIndex = devDependency.findIndex((entry) => entry.rawPath === 'skyjo-runtime.cdx.json');
-    devDependency[sbomIndex] = {
-      ...devDependency[sbomIndex],
+    const falsifiedSbom = fixtureEntries();
+    const sbomIndex = falsifiedSbom.findIndex((entry) => entry.rawPath === 'skyjo-runtime.cdx.json');
+    falsifiedSbom[sbomIndex] = {
+      ...falsifiedSbom[sbomIndex],
       data: Buffer.from(JSON.stringify({
         ...JSON.parse(sbomData.toString('utf8')),
         components: [
@@ -162,20 +282,150 @@ describe('runtime artifact safety contract', () => {
         ]
       }))
     };
-    devDependency[sbomIndex].size = devDependency[sbomIndex].data.length;
-    expect(() => validateRuntimeEntries(devDependency, releaseSha)).toThrow('contains dev dependency vitest');
+    falsifiedSbom[sbomIndex].size = falsifiedSbom[sbomIndex].data.length;
+    expect(() => validateRuntimeEntries(falsifiedSbom, releaseSha)).toThrow('does not exactly match');
+
+    const extraPackage = fixtureEntries();
+    const evilData = Buffer.from(JSON.stringify({ name: 'evil', version: '1.0.0' }));
+    extraPackage.push({
+      rawPath: 'node_modules/evil/package.json',
+      typeFlag: '0',
+      size: evilData.length,
+      linkName: '',
+      data: evilData,
+      mode: 0o644,
+      uid: 0,
+      gid: 0,
+      mtime: Date.parse(releaseIdentity.buildTimestamp) / 1000
+    });
+    expect(() => validateRuntimeEntries(extraPackage, releaseSha)).toThrow('absent from package-lock inventory');
+
+    const nestedExtra = fixtureEntries();
+    const nestedData = Buffer.from('malicious');
+    nestedExtra.push({
+      ...nestedExtra[0],
+      rawPath: 'node_modules/ws/node_modules/evil/index.js',
+      data: nestedData,
+      size: nestedData.length
+    });
+    expect(() => validateRuntimeEntries(nestedExtra, releaseSha)).toThrow('absent from package-lock inventory');
 
     expect(() => validateRuntimeEntries(fixtureEntries(), 'ffffffffffffffffffffffffffffffffffffffff')).toThrow('does not match');
+  });
+
+  test('rejects falsified root binding, component versions, invalid components, and installed manifests', () => {
+    expect(() => validateRuntimeEntries(withSbomMutation((sbom) => { sbom.metadata.component.version = '9.9.9'; }), releaseSha)).toThrow('root component');
+    expect(() => validateRuntimeEntries(withSbomMutation((sbom) => { sbom.metadata.component.properties = []; }), releaseSha)).toThrow('not bound');
+    expect(() => validateRuntimeEntries(withSbomMutation((sbom) => { sbom.components[0].version = '0.0.0'; }), releaseSha)).toThrow('does not exactly match');
+    expect(() => validateRuntimeEntries(withSbomMutation((sbom) => { sbom.components[0] = { name: 'react' }; }), releaseSha)).toThrow('invalid component');
+    expect(() => validateRuntimeEntries(withSbomMutation((sbom) => { sbom.bomFormat = 'SPDX'; }), releaseSha)).toThrow('CycloneDX');
+
+    const wrongManifest = fixtureEntries();
+    replaceFile(wrongManifest, 'node_modules/ws/package.json', Buffer.from(JSON.stringify({ name: 'ws', version: '0.0.0' })));
+    expect(() => validateRuntimeEntries(wrongManifest, releaseSha)).toThrow('does not match package-lock');
+    const missingManifest = fixtureEntries().filter((entry) => entry.rawPath !== 'node_modules/ws/package.json');
+    expect(() => validateRuntimeEntries(missingManifest, releaseSha)).toThrow('missing locked package manifest');
+  });
+
+  test.each([
+    ['1', 'forbidden hardlink'],
+    ['2', 'forbidden symlink'],
+    ['3', 'forbidden special entry']
+  ])('rejects tar entry type %s', (typeFlag, message) => {
+    const entries = fixtureEntries();
+    entries[0] = { ...entries[0], typeFlag };
+    expect(() => validateRuntimeEntries(entries, releaseSha)).toThrow(message);
+  });
+
+  test('rejects link targets, disallowed files, missing files, checksum drift, and identity drift', () => {
+    const linkTarget = fixtureEntries();
+    linkTarget[0] = { ...linkTarget[0], linkName: 'target' };
+    expect(() => validateRuntimeEntries(linkTarget, releaseSha)).toThrow('link target');
+    const disallowed = fixtureEntries();
+    disallowed.push({ ...disallowed[0], rawPath: 'src/secret.ts' });
+    expect(() => validateRuntimeEntries(disallowed, releaseSha)).toThrow('not allowlisted');
+    expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server.mjs'), releaseSha)).toThrow('missing required');
+    const unequalIdentity = replaceFile(fixtureEntries(), 'dist/release.json', Buffer.from('{}'));
+    expect(() => validateRuntimeEntries(unequalIdentity, releaseSha)).toThrow('byte-identical');
+    const badChecksum = replaceFile(fixtureEntries(), 'release.json.sha256', Buffer.from(`${'0'.repeat(64)}  release.json\n`));
+    replaceFile(badChecksum, 'dist/release.json.sha256', Buffer.from(`${'0'.repeat(64)}  release.json\n`));
+    expect(() => validateRuntimeEntries(badChecksum, releaseSha)).toThrow('checksum mismatch');
+    const malformedIdentity = Buffer.from('{bad json');
+    const malformed = replaceFile(fixtureEntries(), 'release.json', malformedIdentity);
+    replaceFile(malformed, 'dist/release.json', malformedIdentity);
+    const malformedChecksum = Buffer.from(`${sha256(malformedIdentity)}  release.json\n`);
+    replaceFile(malformed, 'release.json.sha256', malformedChecksum);
+    replaceFile(malformed, 'dist/release.json.sha256', malformedChecksum);
+    expect(() => validateRuntimeEntries(malformed, releaseSha)).toThrow('Invalid runtime release identity');
+  });
+
+  test('rejects oversized entries and noncanonical owner, mode, or mtime metadata', () => {
+    const oversized = fixtureEntries();
+    oversized[0] = { ...oversized[0], size: MAX_FILE_BYTES + 1 };
+    expect(() => validateRuntimeEntries(oversized, releaseSha)).toThrow('invalid size');
+
+    for (const change of [
+      { uid: 1000 },
+      { gid: 1000 },
+      { mode: 0o666 },
+      { mtime: 1 }
+    ]) {
+      const entries = fixtureEntries();
+      entries[0] = { ...entries[0], ...change };
+      expect(() => validateRuntimeEntries(entries, releaseSha)).toThrow('noncanonical metadata');
+    }
   });
 
   test('parses checksum-verified ustar entries and rejects a corrupt header', () => {
     const tar = createTar(fixtureEntries());
     const parsed = parseTarArchive(tar);
-    expect(parsed).toHaveLength(REQUIRED_ARCHIVE_FILES.length);
+    expect(parsed).toHaveLength(fixtureEntries().length);
     expect(parsed[0].data.length).toBe(parsed[0].size);
     const corrupt = Buffer.from(tar);
     corrupt[0] ^= 1;
     expect(() => parseTarArchive(corrupt)).toThrow('checksum mismatch');
+  });
+
+  test('rejects malformed tar lengths, missing markers, and non-ustar headers', () => {
+    expect(() => parseTarArchive(Buffer.alloc(0))).toThrow('Invalid tar archive length');
+    expect(() => parseTarArchive(Buffer.alloc(513))).toThrow('Invalid tar archive length');
+    const withoutEnd = createTar(fixtureEntries()).subarray(0, -1024);
+    expect(() => parseTarArchive(withoutEnd)).toThrow('missing the two-block');
+    const nonUstar = Buffer.from(createTar(fixtureEntries()));
+    nonUstar.fill(0, 257, 263);
+    nonUstar.fill(0x20, 148, 156);
+    let checksum = 0;
+    for (const byte of nonUstar.subarray(0, 512)) checksum += byte;
+    nonUstar.write(checksum.toString(8).padStart(6, '0'), 148, 6, 'ascii');
+    nonUstar[154] = 0;
+    nonUstar[155] = 0x20;
+    expect(() => parseTarArchive(nonUstar)).toThrow('ustar');
+  });
+
+  test('enforces expanded, per-file, and entry-count resource ceilings before validation', () => {
+    expect(() => parseTarArchive(Buffer.alloc(MAX_UNCOMPRESSED_BYTES + 512))).toThrow('Invalid tar archive length');
+    const oversizedData = Buffer.alloc(MAX_FILE_BYTES + 1);
+    const oversizedEntry = { ...fixtureEntries()[0], data: oversizedData, size: oversizedData.length };
+    expect(() => parseTarArchive(createTar([oversizedEntry]))).toThrow('per-file limit');
+    const empty = { ...fixtureEntries()[0], data: Buffer.alloc(0), size: 0 };
+    const tooMany = Array.from({ length: MAX_ARCHIVE_ENTRIES + 1 }, (_, index) => ({ ...empty, rawPath: `dist/${index}` }));
+    expect(() => parseTarArchive(createTar(tooMany))).toThrow('too many entries');
+    expect(() => validateRuntimeEntries(Array(MAX_ARCHIVE_ENTRIES + 1).fill(empty), releaseSha)).toThrow('invalid entry count');
+  });
+
+  test('rejects a compressed artifact above its measured-runtime ceiling before reading it', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-artifact-limit-test-'));
+    try {
+      const names = artifactNames(releaseSha);
+      const archivePath = path.join(directory, names.archiveName);
+      const checksumPath = path.join(directory, names.checksumName);
+      await fs.writeFile(archivePath, Buffer.alloc(1));
+      await fs.truncate(archivePath, MAX_ARCHIVE_BYTES + 1);
+      await fs.writeFile(checksumPath, `${'0'.repeat(64)}  ${names.archiveName}\n`);
+      await expect(verifyRuntimeArtifact({ archivePath, checksumPath, expectedReleaseSha: releaseSha })).rejects.toThrow('size is outside');
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 
   test('verifies gzip, sidecar hash, archive filename, allowlist, and embedded release SHA together', async () => {
@@ -189,7 +439,7 @@ describe('runtime artifact safety contract', () => {
       await fs.writeFile(checksumPath, `${sha256(archive)}  ${names.archiveName}\n`);
       const result = await verifyRuntimeArtifact({ archivePath, checksumPath, expectedReleaseSha: releaseSha });
       expect(result.releaseSha).toBe(releaseSha);
-      expect(result.entries).toBe(REQUIRED_ARCHIVE_FILES.length);
+      expect(result.entries).toBe(fixtureEntries().length);
 
       await fs.writeFile(checksumPath, `${'0'.repeat(64)}  ${names.archiveName}\n`);
       await expect(verifyRuntimeArtifact({ archivePath, checksumPath, expectedReleaseSha: releaseSha })).rejects.toThrow('checksum mismatch');

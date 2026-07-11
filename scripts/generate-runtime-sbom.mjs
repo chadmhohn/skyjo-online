@@ -17,5 +17,5 @@ const projectRoot = path.resolve(valueAfter('--project-root') || process.cwd());
 const releaseSha = assertFullReleaseSha(valueAfter('--release-sha') || process.env.SKYJO_RELEASE_SHA || process.env.GITHUB_SHA);
 const outputDirectory = path.resolve(projectRoot, valueAfter('--output-dir') || process.env.SKYJO_ARTIFACT_DIR || 'release');
 const outputPath = path.join(outputDirectory, artifactNames(releaseSha).sbomName);
-await generateRuntimeSbom({ projectRoot, outputPath });
+await generateRuntimeSbom({ projectRoot, outputPath, releaseSha });
 console.log(JSON.stringify({ releaseSha, sbomPath: outputPath }));

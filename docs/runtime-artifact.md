@@ -31,6 +31,16 @@ npm run release:artifact:verify -- \
 
 `npm run release:sbom` can generate the external, reproducible CycloneDX 1.6 JSON independently. The generator is an exact lockfile dependency; the workflow must never download an unpinned generator dynamically.
 
+The Linux delivery gate packages the already-built `dist/` and `server-dist/` twice, proves byte-for-byte reproducibility, safely extracts one package, starts it with isolated SQLite/room state and push disabled, and runs the deployed authentication and WebSocket smoke:
+
+```sh
+SKYJO_RELEASE_SHA="$(git rev-parse HEAD)" \
+SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
+npm run test:artifact:integration
+```
+
+The downloaded build identity must already contain that exact SHA and `SOURCE_DATE_EPOCH`; the integration gate never rebuilds application output.
+
 ## Package contract
 
 The archive contains only:
@@ -42,9 +52,11 @@ The archive contains only:
 - a reproducible CycloneDX 1.6 SBOM; and
 - byte-identical release identities at the archive root and in `dist/`.
 
-Source files, tests, development tooling, local state, environment files, and arbitrary scripts are not allowlisted. Packaging rejects source or installed symlinks and special filesystem entries. Verification rejects absolute paths, Windows paths, traversal, ambiguous segments, duplicate entries, links, devices, non-ustar extensions, missing runtime files, development dependencies in the SBOM, release identity drift, an unexpected filename, or any checksum mismatch before extraction.
+Source files, tests, development tooling, local state, environment files, and arbitrary scripts are not allowlisted. Packaging rejects source or installed symlinks and special filesystem entries. The verifier derives the complete non-development, non-optional package name/version inventory from `package-lock.json`. Every physical installed package manifest and every CycloneDX component must match that inventory exactly, with no extra package roots or falsified components. The SBOM root version must match `package.json` and its `skyjo:releaseSha` property must match the embedded release identity.
 
-GNU tar sorts entries and fixes owner, group, mode, and mtime from the release identity. GNU gzip uses `-n` to omit the original filename and timestamp. The builder verifies its own finished archive before reporting success.
+Verification also rejects absolute paths, Windows paths, traversal, ambiguous segments, duplicate entries, links, devices, non-ustar extensions, missing runtime files, release identity drift, an unexpected filename, or any checksum mismatch before extraction. Resource ceilings are 16 MiB compressed, 32 MiB expanded tar, 24 MiB aggregate files, 4 MiB per file, and 4,096 entries. These limits leave headroom over the measured runtime while bounding decompression and entry-count attacks.
+
+GNU tar sorts entries and fixes owner/group to `0`, files to `0644`, directories to `0755`, and every mtime to the release build epoch. The verifier enforces those values on every header. GNU gzip uses `-n` to omit the original filename and timestamp. The builder verifies its own finished archive before reporting success; deployment still extracts with `--no-same-owner --no-same-permissions` before the root-owned controller applies its runtime ownership.
 
 ## GitHub attestation handoff
 

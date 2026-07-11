@@ -34,16 +34,18 @@
     "state:verify": "node scripts/verify-state-backup.mjs",
     "start": "node server.mjs",
     "test": "npm run test:unit",
-    "test:unit": "npm run test:unit:domain && npm run test:unit:data",
+    "test:unit": "npm run test:unit:domain && npm run test:unit:data && npm run test:unit:delivery",
     "test:unit:domain": "vitest run --config vitest.domain.config.ts --coverage",
     "test:unit:data": "vitest run --config vitest.data.config.ts --coverage",
+    "test:unit:delivery": "vitest run --config vitest.delivery.config.ts --coverage",
     "test:e2e": "npm run test:e2e:chromium && npm run test:e2e:webkit",
     "test:e2e:chromium": "playwright test tests/e2e/functional --project=chromium",
     "test:e2e:webkit": "playwright test tests/e2e/functional --project=webkit-phone --project=webkit-tablet-portrait --project=webkit-tablet-landscape",
     "test:a11y": "playwright test tests/e2e/accessibility --project=chromium --project=webkit-phone",
+    "test:artifact:integration": "node scripts/test-runtime-artifact-integration.mjs",
     "test:visual": "playwright test tests/e2e/visual --project=chromium",
     "test:lighthouse": "node scripts/run-lighthouse.mjs",
-    "test:quality": "git diff --check && npm run lint && npm run check:types && npm audit --audit-level=high && npm run build && npm run check:bundle"
+    "test:quality": "git diff --check && npm run lint && npm run check:types && npm audit --audit-level=high && npm run test:unit:delivery && npm run build && npm run check:bundle"
   },
   "dependencies": {
     "react": "^18.3.1",
