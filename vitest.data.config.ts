@@ -12,7 +12,7 @@ export default defineConfig({
       provider: 'v8',
       reportsDirectory: './coverage/data',
       reporter: ['text', 'json-summary', 'lcov'],
-      include: ['server-account-store.mjs', 'server-room-persistence.mjs'],
+      include: ['server-account-store.mjs', 'server-room-persistence.mjs', 'server-release.mjs'],
       thresholds: {
         lines: 88,
         branches: 62,

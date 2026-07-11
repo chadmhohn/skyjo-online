@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && npm run build:server && vite build",
+    "postbuild": "node scripts/write-release-json.mjs",
     "build:server": "tsc -p tsconfig.server.json",
     "check:bundle": "node scripts/check-bundle-budget.mjs",
     "check:types": "tsc --noEmit && tsc -p tsconfig.tests.json --noEmit",

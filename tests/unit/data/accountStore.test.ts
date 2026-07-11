@@ -130,6 +130,7 @@ describe('account and stats persistence', () => {
     expect(duplicate.id).toBe(game.id);
     expect(store!.listVisibleGames(ada)).toHaveLength(1);
     expect(store!.getVisibleGame(ada, game.id)?.rounds).toHaveLength(4);
+    expect(store!.getVisibleGame(ada, game.id)?.finishedByAi).toBe(false);
     expect(store!.getVisibleGame(outsider, game.id)).toBeNull();
 
     const summary = store!.getStatsSummary(ada);
