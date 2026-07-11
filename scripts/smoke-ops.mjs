@@ -148,7 +148,44 @@ try {
   assert.equal(await fs.readFile(rejectedRoomsPath, 'utf8'), rejectedRooms, 'rejected room state must never be overwritten');
   await stopServer(server, { allowFailure: true });
   server = undefined;
-  console.log('operations smoke passed: release metadata, sanitized readiness, two-cookie auth, non-mutating WebSocket, and database recovery');
+
+  const staleCorruptDir = path.join(tempDir, 'stale-corrupt-rooms');
+  await fs.mkdir(staleCorruptDir);
+  const staleCorruptPath = path.join(staleCorruptDir, 'rooms.json');
+  const staleCorruptDocument = {
+    format: 'skyjo-rooms',
+    version: 2,
+    protocolVersion: 1,
+    savedAt: Date.now(),
+    rooms: [
+      {
+        code: 'STALE',
+        hostId: 'host-1',
+        players: [{ id: 'host-1', name: 'Host', connected: false, host: true }],
+        chatMessages: [null],
+        readyForNextRoundPlayerIds: [],
+        state: null,
+        status: 'waiting',
+        updatedAt: Date.now() - 1000 * 60 * 60 * 24,
+        completedGameId: null,
+        gameSessionId: null
+      }
+    ]
+  };
+  const staleCorruptBytes = `${JSON.stringify(staleCorruptDocument)}\n`;
+  await fs.writeFile(staleCorruptPath, staleCorruptBytes, 'utf8');
+  server = await startServer(staleCorruptDir);
+  const staleRoomDegraded = await fetch(`${server.baseUrl}/readyz`);
+  assert.equal(staleRoomDegraded.status, 503, 'stale corrupt room state must fail readiness');
+  assert.deepEqual((await staleRoomDegraded.json()).checks, { database: 'ok', roomState: 'error', lastPersist: 'error' });
+  assert.equal(
+    await fs.readFile(staleCorruptPath, 'utf8'),
+    staleCorruptBytes,
+    'stale corrupt room state must be fully validated and never overwritten'
+  );
+  await stopServer(server, { allowFailure: true });
+  server = undefined;
+  console.log('operations smoke passed: release metadata, sanitized readiness, two-cookie auth, non-mutating WebSocket, database recovery, and rejected-room preservation');
 } finally {
   if (server) await stopServer(server);
   await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

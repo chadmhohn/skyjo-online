@@ -9,8 +9,10 @@ import {
   ROOM_STALE_MS,
   RoomPersistenceFormatError,
   atomicWriteJson,
+  isUnsupportedDirectorySyncError,
   loadRoomsFromDisk,
   loadRoomsSnapshotFromDisk,
+  normalizeRoomsDocument,
   parseRoomsDocument,
   resolveRoomsFilePath,
   saveRoomsToDisk,
@@ -139,6 +141,25 @@ describe('room persistence', () => {
     expect(stale).toEqual(expect.objectContaining({ missing: false, rooms: [] }));
   });
 
+  it('fully validates stale rooms before pruning and preserves rejected source bytes', async () => {
+    const staleCorrupt = serializeRooms(
+      new Map([['ABCDE', room(fixedNow - ROOM_STALE_MS - 1)]]),
+      fixedNow
+    );
+    staleCorrupt.rooms[0].chatMessages = [null as never];
+    const contents = `${JSON.stringify(staleCorrupt)}\n`;
+    await fs.writeFile(roomsFile, contents, 'utf8');
+
+    await expect(loadRoomsSnapshotFromDisk(roomsFile, { now: fixedNow, staleMs: ROOM_STALE_MS })).rejects.toThrow(
+      /invalid chat message/i
+    );
+    expect(await fs.readFile(roomsFile, 'utf8')).toBe(contents);
+
+    const validStale = serializeRooms(new Map([['ABCDE', room(fixedNow - ROOM_STALE_MS - 1)]]), fixedNow);
+    expect(normalizeRoomsDocument(validStale, { pruneStale: false }).rooms).toHaveLength(1);
+    expect(normalizeRoomsDocument(validStale, { now: fixedNow, staleMs: ROOM_STALE_MS }).rooms).toEqual([]);
+  });
+
   it.each([
     ['invalid JSON', '{"rooms":', 'INVALID_ROOMS_JSON'],
     ['a non-document root', JSON.stringify('rooms'), 'INVALID_ROOMS_FILE'],
@@ -178,13 +199,22 @@ describe('room persistence', () => {
   it.each([
     ['a non-object player', (value: ReturnType<typeof room>) => { value.players[0] = null as never; }],
     ['a player without an id', (value: ReturnType<typeof room>) => { value.players[0].id = ''; }],
+    ['duplicate player ids', (value: ReturnType<typeof room>) => { value.players[1].id = value.players[0].id; }],
+    ['a non-string player name', (value: ReturnType<typeof room>) => { value.players[0].name = 42 as never; }],
+    ['an empty player name', (value: ReturnType<typeof room>) => { value.players[0].name = ''; }],
     ['a non-string user id', (value: ReturnType<typeof room>) => { value.players[0].userId = 42 as never; }],
+    ['a non-boolean connection state', (value: ReturnType<typeof room>) => { value.players[0].connected = 'yes' as never; }],
+    ['a non-boolean host state', (value: ReturnType<typeof room>) => { value.players[0].host = 'yes' as never; }],
     ['a host outside the player list', (value: ReturnType<typeof room>) => { value.hostId = 'missing'; }],
     ['non-array chat', (value: ReturnType<typeof room>) => { value.chatMessages = {} as never; }],
     ['a non-object chat message', (value: ReturnType<typeof room>) => { value.chatMessages = [null as never]; }],
+    ['a non-string chat player name', (value: ReturnType<typeof room>) => { value.chatMessages[0].playerName = 42 as never; }],
+    ['an invalid chat timestamp', (value: ReturnType<typeof room>) => { value.chatMessages[0].createdAt = 'now' as never; }],
     ['a malformed chat message', (value: ReturnType<typeof room>) => { value.chatMessages[0].text = ''; }],
     ['non-array ready ids', (value: ReturnType<typeof room>) => { value.readyForNextRoundPlayerIds = {} as never; }],
+    ['a non-string ready id', (value: ReturnType<typeof room>) => { value.readyForNextRoundPlayerIds = [42 as never]; }],
     ['non-object game state', (value: ReturnType<typeof room>) => { value.state = [] as never; }],
+    ['a non-numeric update time', (value: ReturnType<typeof room>) => { value.updatedAt = 'now' as never; }],
     ['a non-string completed game id', (value: ReturnType<typeof room>) => { value.completedGameId = 1 as never; }],
     ['a non-string game session id', (value: ReturnType<typeof room>) => { value.gameSessionId = 1 as never; }]
   ])('rejects persisted room corruption: %s', async (_name, corrupt) => {
@@ -207,6 +237,17 @@ describe('room persistence', () => {
     expect(() => parseRoomsDocument({ format: 'skyjo-rooms', rooms: [] })).toThrow(/missing a version/i);
     expect(() => parseRoomsDocument({ version: 0, rooms: [] })).toThrow(/positive integer/i);
     expect(() => serializeRooms(new Map(), Number.NaN)).toThrow(/savedAt/i);
+  });
+
+  it('classifies directory fsync portability errors independently of the host platform', () => {
+    for (const code of ['EINVAL', 'ENOTSUP', 'EPERM']) {
+      expect(isUnsupportedDirectorySyncError('win32', { code })).toBe(true);
+      expect(isUnsupportedDirectorySyncError('linux', { code })).toBe(false);
+    }
+    expect(isUnsupportedDirectorySyncError('win32', { code: 'EIO' })).toBe(false);
+    expect(isUnsupportedDirectorySyncError('darwin', { code: 'EINVAL' })).toBe(false);
+    expect(isUnsupportedDirectorySyncError('win32', null)).toBe(false);
+    expect(isUnsupportedDirectorySyncError('win32', { code: 22 })).toBe(false);
   });
 
   it('rejects invalid load clocks and propagates non-missing read errors', async () => {

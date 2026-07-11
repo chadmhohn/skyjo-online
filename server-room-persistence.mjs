@@ -11,6 +11,7 @@ export const ROOMS_PROTOCOL_VERSION = 1;
 const validStatuses = new Set(['waiting', 'playing', 'finished']);
 const maxPersistedChatMessages = 80;
 const maxPersistedChatMessageLength = 280;
+const maxPersistedRooms = 10_000;
 const unsupportedWindowsDirectorySyncCodes = new Set(['EINVAL', 'ENOTSUP', 'EPERM']);
 
 export class RoomPersistenceFormatError extends Error {
@@ -49,6 +50,15 @@ function normalizePlayer(value, roomIndex) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} contains an invalid player.`);
   }
+  if (value.name !== undefined && (typeof value.name !== 'string' || value.name.trim() === '')) {
+    throw formatError(`Room ${roomIndex} contains an invalid player name.`);
+  }
+  if (value.connected !== undefined && typeof value.connected !== 'boolean') {
+    throw formatError(`Room ${roomIndex} contains an invalid player connection state.`);
+  }
+  if (value.host !== undefined && typeof value.host !== 'boolean') {
+    throw formatError(`Room ${roomIndex} contains an invalid player host state.`);
+  }
   const id = stringValue(value.id).trim();
   const name = stringValue(value.name, 'Player').trim().slice(0, 24) || 'Player';
   if (!id) {
@@ -70,12 +80,15 @@ function normalizeChatMessage(value, roomIndex) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} contains an invalid chat message.`);
   }
+  if (value.playerName !== undefined && (typeof value.playerName !== 'string' || value.playerName.trim() === '')) {
+    throw formatError(`Room ${roomIndex} contains an invalid chat player name.`);
+  }
   const id = stringValue(value.id).trim();
   const playerId = stringValue(value.playerId).trim();
   const playerName = stringValue(value.playerName, 'Player').trim().slice(0, 24) || 'Player';
   const text = stringValue(value.text).replace(/\s+/g, ' ').trim().slice(0, maxPersistedChatMessageLength);
-  const createdAt = Number(value.createdAt);
-  if (!id || !playerId || !text || !Number.isFinite(createdAt)) {
+  const createdAt = value.createdAt;
+  if (!id || !playerId || !text || !Number.isFinite(createdAt) || createdAt < 0) {
     throw formatError(`Room ${roomIndex} contains a malformed chat message.`);
   }
   return {
@@ -87,18 +100,17 @@ function normalizeChatMessage(value, roomIndex) {
   };
 }
 
-function normalizeRoom(value, roomIndex, now, staleMs) {
+function normalizeRoom(value, roomIndex) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} must be an object.`);
   }
   const code = stringValue(value.code).trim().toUpperCase();
   const hostId = stringValue(value.hostId).trim();
   const status = stringValue(value.status);
-  const updatedAt = Number(value.updatedAt);
-  if (!code || !hostId || !validStatuses.has(status) || !Number.isFinite(updatedAt)) {
+  const updatedAt = value.updatedAt;
+  if (!/^[A-Z0-9]{5}$/.test(code) || !hostId || !validStatuses.has(status) || !Number.isFinite(updatedAt) || updatedAt < 0) {
     throw formatError(`Room ${roomIndex} is missing required state.`);
   }
-  if (updatedAt < now - staleMs) return null;
   if (!Array.isArray(value.players) || value.players.length < 1 || value.players.length > 8) {
     throw formatError(`Room ${roomIndex} must contain between one and eight players.`);
   }
@@ -121,6 +133,9 @@ function normalizeRoom(value, roomIndex, now, staleMs) {
 
   if (value.readyForNextRoundPlayerIds !== undefined && !Array.isArray(value.readyForNextRoundPlayerIds)) {
     throw formatError(`Room ${roomIndex} ready player ids must be an array.`);
+  }
+  if (Array.isArray(value.readyForNextRoundPlayerIds) && value.readyForNextRoundPlayerIds.some((id) => typeof id !== 'string')) {
+    throw formatError(`Room ${roomIndex} contains an invalid ready player id.`);
   }
   const readyForNextRoundPlayerIds = Array.isArray(value.readyForNextRoundPlayerIds)
     ? value.readyForNextRoundPlayerIds
@@ -237,6 +252,58 @@ export function parseRoomsDocument(value) {
   };
 }
 
+function assertStrictEnvelopeKeys(value, document) {
+  if (Array.isArray(value)) return;
+  const actualKeys = Object.keys(value).sort();
+  let allowedKeys;
+  if (document.version === ROOMS_FILE_VERSION) {
+    allowedKeys = ['format', 'version', 'protocolVersion', 'savedAt', 'rooms'];
+  } else if (document.version === 1) {
+    allowedKeys = value.protocolVersion === undefined
+      ? ['version', 'savedAt', 'rooms']
+      : ['version', 'protocolVersion', 'savedAt', 'rooms'];
+  } else {
+    allowedKeys = value.savedAt === undefined ? ['rooms'] : ['savedAt', 'rooms'];
+  }
+  const expectedKeys = allowedKeys.sort();
+  if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
+    throw formatError('Room persistence envelope contains unsupported fields.');
+  }
+}
+
+/**
+ * Strictly validate and normalize a decoded room document. All rooms are fully
+ * validated, including duplicate invariants, before optional stale pruning.
+ */
+export function normalizeRoomsDocument(value, options = {}) {
+  const pruneStale = options.pruneStale !== false;
+  const now = options.now ?? Date.now();
+  const staleMs = options.staleMs ?? ROOM_STALE_MS;
+  if (pruneStale && (!Number.isFinite(now) || !Number.isFinite(staleMs) || staleMs < 0)) {
+    throw new TypeError('now and staleMs must be finite, and staleMs must be non-negative');
+  }
+
+  const document = parseRoomsDocument(value);
+  assertStrictEnvelopeKeys(value, document);
+  if (document.rooms.length > maxPersistedRooms) {
+    throw formatError(`Room persistence document exceeds ${maxPersistedRooms} rooms.`);
+  }
+
+  const normalizedRooms = document.rooms.map((room, index) => normalizeRoom(room, index));
+  const roomCodes = new Set();
+  for (const room of normalizedRooms) {
+    if (roomCodes.has(room.code)) {
+      throw formatError(`Room persistence document contains duplicate room code ${room.code}.`);
+    }
+    roomCodes.add(room.code);
+  }
+
+  return {
+    ...document,
+    rooms: pruneStale ? normalizedRooms.filter((room) => room.updatedAt >= now - staleMs) : normalizedRooms
+  };
+}
+
 export function resolveRoomsFilePath(env = process.env) {
   const configuredPath = stringValue(env.SKYJO_ROOMS_FILE).trim();
   return path.resolve(configuredPath || DEFAULT_ROOMS_FILE);
@@ -281,16 +348,21 @@ export function serializeRooms(rooms, savedAt = Date.now()) {
   };
 }
 
+export function isUnsupportedDirectorySyncError(platform, error) {
+  return platform === 'win32'
+    && error !== null
+    && typeof error === 'object'
+    && typeof error.code === 'string'
+    && unsupportedWindowsDirectorySyncCodes.has(error.code);
+}
+
 async function syncDirectory(directory) {
   let directoryHandle;
   try {
     directoryHandle = await fs.open(directory, 'r');
     await directoryHandle.sync();
   } catch (error) {
-    const unsupportedOnWindows = process.platform === 'win32'
-      && error
-      && unsupportedWindowsDirectorySyncCodes.has(error.code);
-    if (!unsupportedOnWindows) throw error;
+    if (!isUnsupportedDirectorySyncError(process.platform, error)) throw error;
   } finally {
     if (directoryHandle) await directoryHandle.close();
   }
@@ -360,23 +432,12 @@ export async function loadRoomsSnapshotFromDisk(filePath = resolveRoomsFilePath(
     throw formatError('Room persistence file is not valid JSON.', 'INVALID_ROOMS_JSON', { cause });
   }
 
-  const document = parseRoomsDocument(decoded);
-  const normalizedRooms = document.rooms.map((room, index) => normalizeRoom(room, index, now, staleMs));
-  const roomCodes = new Set();
-  const rooms = [];
-  for (const room of normalizedRooms) {
-    if (!room) continue;
-    if (roomCodes.has(room.code)) {
-      throw formatError(`Room persistence document contains duplicate room code ${room.code}.`);
-    }
-    roomCodes.add(room.code);
-    rooms.push(room);
-  }
+  const document = normalizeRoomsDocument(decoded, { now, staleMs, pruneStale: true });
 
   return {
     ...document,
     missing: false,
-    rooms
+    rooms: document.rooms
   };
 }
 

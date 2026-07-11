@@ -213,6 +213,26 @@ describe('verified state backups', () => {
     expect(validateRoomsBackupDocument({ ...roomState(), rooms: Array(10_001).fill(roomState().rooms[0]) })).toBe(false);
   });
 
+  it('uses the runtime room normalizer for duplicate, chat, and optional-field invariants', () => {
+    const duplicatePlayers = structuredClone(roomState());
+    duplicatePlayers.rooms[0].players[1].id = duplicatePlayers.rooms[0].players[0].id;
+    expect(validateRoomsBackupDocument(duplicatePlayers)).toBe(false);
+
+    const nullChat = structuredClone(roomState());
+    nullChat.rooms[0].chatMessages = [null as never];
+    expect(validateRoomsBackupDocument(nullChat)).toBe(false);
+
+    const duplicateRooms = structuredClone(roomState());
+    duplicateRooms.rooms.push({ ...structuredClone(duplicateRooms.rooms[0]), code: 'abcde' });
+    expect(validateRoomsBackupDocument(duplicateRooms)).toBe(false);
+
+    const invalidOptionalFields = structuredClone(roomState());
+    invalidOptionalFields.rooms[0].players[0].connected = 'yes' as never;
+    invalidOptionalFields.rooms[0].completedGameId = 42 as never;
+    invalidOptionalFields.rooms[0].readyForNextRoundPlayerIds = [42 as never];
+    expect(validateRoomsBackupDocument(invalidOptionalFields)).toBe(false);
+  });
+
   it('strictly rejects malformed release identities', () => {
     const invalidCases: Array<[string, unknown]> = [
       ['non-record', null],

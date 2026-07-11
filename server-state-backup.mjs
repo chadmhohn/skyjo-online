@@ -5,10 +5,9 @@ import path from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { SCHEMA_MIGRATIONS } from './server-account-store.mjs';
 import {
+  normalizeRoomsDocument,
   parseRoomsDocument,
-  ROOMS_FILE_FORMAT,
-  ROOMS_FILE_VERSION,
-  ROOMS_PROTOCOL_VERSION
+  ROOMS_FILE_VERSION
 } from './server-room-persistence.mjs';
 import {
   loadReleaseIdentity,
@@ -31,7 +30,6 @@ const payloadFileNames = Object.freeze([
   STATE_BACKUP_FILES.release
 ]);
 const allBackupFileNames = Object.freeze([...payloadFileNames, STATE_BACKUP_FILES.manifest]);
-const allowedRoomStatuses = new Set(['waiting', 'playing', 'finished']);
 const maxManifestBytes = 64 * 1024;
 const maxJsonStateBytes = 64 * 1024 * 1024;
 const fileMode = 0o600;
@@ -238,44 +236,10 @@ async function validateJsonFile(filePath, label, validator) {
   return { document: parsed, validation };
 }
 
-function validateRoomPlayer(player) {
-  if (!isRecord(player)) return false;
-  if (typeof player.id !== 'string' || player.id.trim() === '') return false;
-  if (typeof player.name !== 'string' || player.name.trim() === '') return false;
-  if ('userId' in player && player.userId !== undefined && typeof player.userId !== 'string') return false;
-  if ('connected' in player && typeof player.connected !== 'boolean') return false;
-  if ('host' in player && typeof player.host !== 'boolean') return false;
-  return true;
-}
-
-function validateRoom(room) {
-  if (!isRecord(room)) return false;
-  if (typeof room.code !== 'string' || !/^[A-Z0-9]{5}$/.test(room.code)) return false;
-  if (typeof room.hostId !== 'string' || room.hostId.trim() === '') return false;
-  if (!allowedRoomStatuses.has(room.status)) return false;
-  if (!Number.isFinite(room.updatedAt)) return false;
-  if (!Array.isArray(room.players) || room.players.length < 1 || room.players.length > 8) return false;
-  if (!room.players.every(validateRoomPlayer)) return false;
-  if (!room.players.some((player) => player.id === room.hostId)) return false;
-  if (!Array.isArray(room.chatMessages) || !Array.isArray(room.readyForNextRoundPlayerIds)) return false;
-  if (!(room.state === null || isRecord(room.state))) return false;
-  return true;
-}
-
 export function validateRoomsBackupDocument(value) {
   try {
-    const document = parseRoomsDocument(value);
-    if (document.version === ROOMS_FILE_VERSION) {
-      if (!hasExactKeys(value, ['format', 'version', 'protocolVersion', 'savedAt', 'rooms'])) return false;
-      if (document.format !== ROOMS_FILE_FORMAT || document.protocolVersion !== ROOMS_PROTOCOL_VERSION) return false;
-    } else if (document.version === 1 && !hasExactKeys(value, ['version', 'savedAt', 'rooms'])) {
-      return false;
-    } else if (document.version === 0 && !Array.isArray(value)) {
-      const expectedKeys = Object.prototype.hasOwnProperty.call(value, 'savedAt') ? ['savedAt', 'rooms'] : ['rooms'];
-      if (!hasExactKeys(value, expectedKeys)) return false;
-    }
-    if (document.rooms.length > 10_000) return false;
-    return document.rooms.every(validateRoom);
+    normalizeRoomsDocument(value, { pruneStale: false });
+    return true;
   } catch {
     return false;
   }
