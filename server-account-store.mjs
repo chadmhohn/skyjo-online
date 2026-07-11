@@ -8,6 +8,199 @@ const scryptAsync = promisify(crypto.scrypt);
 const defaultDbFile = path.join('.data', 'skyjo.sqlite');
 const validRoles = new Set(['admin', 'player']);
 
+const baseSchemaSql = `
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'player')),
+    disabled INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    last_login_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS account_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS games (
+    id TEXT PRIMARY KEY,
+    source_key TEXT UNIQUE,
+    mode TEXT NOT NULL CHECK (mode IN ('single', 'multi')),
+    room_code TEXT,
+    completed_at INTEGER NOT NULL,
+    round_count INTEGER NOT NULL,
+    winner_player_id TEXT,
+    winner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    winner_name TEXT NOT NULL,
+    created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    final_state_json TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS game_participants (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    player_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('human', 'ai')),
+    rank INTEGER NOT NULL,
+    round_score INTEGER NOT NULL,
+    total_score INTEGER NOT NULL,
+    won INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS game_round_scores (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    round_number INTEGER NOT NULL,
+    player_id TEXT NOT NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    display_name TEXT NOT NULL,
+    round_score INTEGER NOT NULL,
+    total_score INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    subscription_json TEXT NOT NULL,
+    user_agent TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_user_expires ON account_sessions(user_id, expires_at);
+  CREATE INDEX IF NOT EXISTS idx_games_completed ON games(completed_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_games_source ON games(source_key);
+  CREATE INDEX IF NOT EXISTS idx_participants_user ON game_participants(user_id);
+  CREATE INDEX IF NOT EXISTS idx_participants_game ON game_participants(game_id);
+  CREATE INDEX IF NOT EXISTS idx_round_scores_game ON game_round_scores(game_id, round_number);
+  CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
+`;
+
+const inviteCodesSchemaSql = `
+  CREATE TABLE invite_codes (
+    code_lookup_hash TEXT PRIMARY KEY,
+    room_code TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    redeemed_at INTEGER,
+    CHECK (length(code_lookup_hash) = 64),
+    CHECK (length(room_code) = 5)
+  );
+  CREATE INDEX idx_invite_codes_expires ON invite_codes(expires_at);
+`;
+
+function migrationChecksum(version, name, sql) {
+  return crypto.createHash('sha256').update(`${version}:${name}\n${sql.trim()}\n`).digest('hex');
+}
+
+export const SCHEMA_MIGRATIONS = Object.freeze([
+  Object.freeze({
+    version: 1,
+    name: 'adopt-account-schema',
+    checksum: migrationChecksum(1, 'adopt-account-schema', baseSchemaSql)
+  }),
+  Object.freeze({
+    version: 2,
+    name: 'invite-codes-and-ai-finish',
+    checksum: migrationChecksum(
+      2,
+      'invite-codes-and-ai-finish',
+      `${inviteCodesSchemaSql}\nALTER TABLE games ADD COLUMN finished_by_ai INTEGER NOT NULL DEFAULT 0;`
+    )
+  })
+]);
+
+export const CURRENT_SCHEMA_VERSION = SCHEMA_MIGRATIONS.at(-1).version;
+
+const baselineColumns = Object.freeze({
+  users: ['id', 'email', 'display_name', 'password_hash', 'password_salt', 'role', 'disabled', 'created_at', 'updated_at', 'last_login_at'],
+  account_sessions: ['token_hash', 'user_id', 'created_at', 'expires_at'],
+  games: [
+    'id',
+    'source_key',
+    'mode',
+    'room_code',
+    'completed_at',
+    'round_count',
+    'winner_player_id',
+    'winner_user_id',
+    'winner_name',
+    'created_by_user_id',
+    'final_state_json'
+  ],
+  game_participants: ['id', 'game_id', 'user_id', 'player_id', 'display_name', 'kind', 'rank', 'round_score', 'total_score', 'won'],
+  game_round_scores: ['id', 'game_id', 'round_number', 'player_id', 'user_id', 'display_name', 'round_score', 'total_score'],
+  push_subscriptions: ['endpoint', 'user_id', 'subscription_json', 'user_agent', 'created_at', 'updated_at']
+});
+
+function tableExists(db, tableName) {
+  return Boolean(db.prepare("SELECT 1 AS found FROM sqlite_schema WHERE type = 'table' AND name = ?").get(tableName)?.found);
+}
+
+function tableColumns(db, tableName) {
+  return db.prepare(`PRAGMA table_info(${JSON.stringify(tableName)})`).all();
+}
+
+function validateBaselineSchema(db, { allowMigrationTables = false } = {}) {
+  const expectedTables = new Set(Object.keys(baselineColumns));
+  const allowedExtraTables = allowMigrationTables ? new Set(['schema_migrations', 'invite_codes']) : new Set();
+  const existingTables = db
+    .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all()
+    .map((row) => row.name);
+
+  for (const tableName of expectedTables) {
+    if (!existingTables.includes(tableName)) throw new Error('Legacy database does not match the expected baseline schema.');
+    const columns = new Map(tableColumns(db, tableName).map((column) => [column.name, column]));
+    for (const columnName of baselineColumns[tableName]) {
+      if (!columns.has(columnName)) throw new Error('Legacy database does not match the expected baseline schema.');
+    }
+  }
+  if (existingTables.some((tableName) => !expectedTables.has(tableName) && !allowedExtraTables.has(tableName))) {
+    throw new Error('Legacy database contains an unsupported table.');
+  }
+
+  const integrity = db.prepare('PRAGMA integrity_check').all();
+  if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('Database integrity validation failed.');
+  if (db.prepare('PRAGMA foreign_key_check').all().length > 0) throw new Error('Database foreign key validation failed.');
+}
+
+function validateMigrationRows(rows) {
+  for (let index = 0; index < rows.length; index += 1) {
+    const expected = SCHEMA_MIGRATIONS[index];
+    const row = rows[index];
+    if (!expected || row.version !== expected.version) throw new Error('Unsupported or non-contiguous database migration history.');
+    if (row.name !== expected.name || row.checksum !== expected.checksum) throw new Error('Database migration checksum validation failed.');
+  }
+}
+
+function validateCurrentSchema(db) {
+  validateBaselineSchema(db, { allowMigrationTables: true });
+  const gamesColumn = tableColumns(db, 'games').find((column) => column.name === 'finished_by_ai');
+  if (!gamesColumn || gamesColumn.type !== 'INTEGER' || gamesColumn.notnull !== 1 || String(gamesColumn.dflt_value) !== '0') {
+    throw new Error('Database finished-by-AI schema validation failed.');
+  }
+  const inviteColumns = tableColumns(db, 'invite_codes');
+  const inviteColumnNames = inviteColumns.map((column) => column.name);
+  const expectedInviteColumns = ['code_lookup_hash', 'room_code', 'created_at', 'expires_at', 'redeemed_at'];
+  if (
+    expectedInviteColumns.some((column) => !inviteColumnNames.includes(column)) ||
+    inviteColumnNames.includes('code') ||
+    inviteColumnNames.includes('invite_token')
+  ) {
+    throw new Error('Database invite-code schema validation failed.');
+  }
+}
+
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -98,10 +291,15 @@ export class AccountStore {
     if (this.db) return this;
     if (this.filePath !== ':memory:') await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     this.db = new DatabaseSync(this.filePath);
-    this.db.exec('PRAGMA foreign_keys = ON');
-    this.db.exec('PRAGMA busy_timeout = 5000');
-    this.migrate();
-    return this;
+    try {
+      this.db.exec('PRAGMA foreign_keys = ON');
+      this.db.exec('PRAGMA busy_timeout = 5000');
+      this.migrate();
+      return this;
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
 
   close() {
@@ -110,82 +308,75 @@ export class AccountStore {
   }
 
   migrate() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email TEXT NOT NULL UNIQUE,
-        display_name TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        password_salt TEXT NOT NULL,
-        role TEXT NOT NULL CHECK (role IN ('admin', 'player')),
-        disabled INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        last_login_at INTEGER
-      );
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const hadMigrationTable = tableExists(this.db, 'schema_migrations');
+      if (!hadMigrationTable) {
+        this.db.exec(`
+          CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at INTEGER NOT NULL
+          );
+        `);
+      }
 
-      CREATE TABLE IF NOT EXISTS account_sessions (
-        token_hash TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL
-      );
+      const rows = this.db.prepare('SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version').all();
+      validateMigrationRows(rows);
 
-      CREATE TABLE IF NOT EXISTS games (
-        id TEXT PRIMARY KEY,
-        source_key TEXT UNIQUE,
-        mode TEXT NOT NULL CHECK (mode IN ('single', 'multi')),
-        room_code TEXT,
-        completed_at INTEGER NOT NULL,
-        round_count INTEGER NOT NULL,
-        winner_player_id TEXT,
-        winner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-        winner_name TEXT NOT NULL,
-        created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-        final_state_json TEXT NOT NULL
-      );
+      if (rows.length === 0) {
+        const applicationTables = this.db
+          .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'schema_migrations'")
+          .all();
+        if (applicationTables.length > 0) validateBaselineSchema(this.db, { allowMigrationTables: true });
+        this.db.exec(baseSchemaSql);
+        validateBaselineSchema(this.db, { allowMigrationTables: true });
+        const migration = SCHEMA_MIGRATIONS[0];
+        this.db
+          .prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
+          .run(migration.version, migration.name, migration.checksum, this.now());
+        rows.push({ ...migration, applied_at: this.now() });
+      } else {
+        validateBaselineSchema(this.db, { allowMigrationTables: true });
+      }
 
-      CREATE TABLE IF NOT EXISTS game_participants (
-        id TEXT PRIMARY KEY,
-        game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-        user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-        player_id TEXT NOT NULL,
-        display_name TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('human', 'ai')),
-        rank INTEGER NOT NULL,
-        round_score INTEGER NOT NULL,
-        total_score INTEGER NOT NULL,
-        won INTEGER NOT NULL DEFAULT 0
-      );
+      if (rows.length === 1) {
+        if (tableColumns(this.db, 'games').some((column) => column.name === 'finished_by_ai') || tableExists(this.db, 'invite_codes')) {
+          throw new Error('Database contains a partially applied migration.');
+        }
+        this.db.exec('ALTER TABLE games ADD COLUMN finished_by_ai INTEGER NOT NULL DEFAULT 0');
+        this.db.exec(inviteCodesSchemaSql);
+        const migration = SCHEMA_MIGRATIONS[1];
+        this.db
+          .prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)')
+          .run(migration.version, migration.name, migration.checksum, this.now());
+        rows.push({ ...migration, applied_at: this.now() });
+      }
 
-      CREATE TABLE IF NOT EXISTS game_round_scores (
-        id TEXT PRIMARY KEY,
-        game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-        round_number INTEGER NOT NULL,
-        player_id TEXT NOT NULL,
-        user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-        display_name TEXT NOT NULL,
-        round_score INTEGER NOT NULL,
-        total_score INTEGER NOT NULL
-      );
+      validateMigrationRows(rows);
+      if (rows.length !== CURRENT_SCHEMA_VERSION) throw new Error('Database schema is not current.');
+      validateCurrentSchema(this.db);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
 
-      CREATE TABLE IF NOT EXISTS push_subscriptions (
-        endpoint TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        subscription_json TEXT NOT NULL,
-        user_agent TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
+  getSchemaVersion() {
+    const row = this.db?.prepare('SELECT MAX(version) AS version FROM schema_migrations').get();
+    return Number(row?.version || 0);
+  }
 
-      CREATE INDEX IF NOT EXISTS idx_sessions_user_expires ON account_sessions(user_id, expires_at);
-      CREATE INDEX IF NOT EXISTS idx_games_completed ON games(completed_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_games_source ON games(source_key);
-      CREATE INDEX IF NOT EXISTS idx_participants_user ON game_participants(user_id);
-      CREATE INDEX IF NOT EXISTS idx_participants_game ON game_participants(game_id);
-      CREATE INDEX IF NOT EXISTS idx_round_scores_game ON game_round_scores(game_id, round_number);
-      CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
-    `);
+  checkReadiness() {
+    try {
+      if (!this.db || this.getSchemaVersion() !== CURRENT_SCHEMA_VERSION) return false;
+      if (this.db.prepare('SELECT 1 AS ready').get()?.ready !== 1) return false;
+      return this.db.prepare('PRAGMA quick_check').all().every((row) => row.quick_check === 'ok');
+    } catch {
+      return false;
+    }
   }
 
   async bootstrapAdmin({ email, password }) {
@@ -388,7 +579,15 @@ export class AccountStore {
     });
   }
 
-  recordCompletedGame({ mode, state, roomCode = null, createdByUserId = null, playerAccounts = {}, sourceKey = null }) {
+  recordCompletedGame({
+    mode,
+    state,
+    roomCode = null,
+    createdByUserId = null,
+    playerAccounts = {},
+    sourceKey = null,
+    finishedByAi = false
+  }) {
     if (!isRecord(state) || !Array.isArray(state.players) || state.phase !== 'game-over') {
       throw new Error('Only completed games can be recorded.');
     }
@@ -423,8 +622,8 @@ export class AccountStore {
         .prepare(
           `INSERT INTO games (
             id, source_key, mode, room_code, completed_at, round_count, winner_player_id, winner_user_id,
-            winner_name, created_by_user_id, final_state_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            winner_name, created_by_user_id, final_state_json, finished_by_ai
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           gameId,
@@ -437,7 +636,8 @@ export class AccountStore {
           winnerUserId,
           winner?.name || 'Unknown',
           createdByUserId,
-          JSON.stringify(state)
+          JSON.stringify(state),
+          normalizeBool(finishedByAi)
         );
 
       const participantInsert = this.db.prepare(
@@ -633,6 +833,7 @@ export class AccountStore {
       winnerUserId: row.winner_user_id ?? null,
       winnerName: row.winner_name,
       createdByUserId: row.created_by_user_id ?? null,
+      finishedByAi: row.finished_by_ai === 1,
       participants,
       rounds
     };

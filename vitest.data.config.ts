@@ -12,12 +12,55 @@ export default defineConfig({
       provider: 'v8',
       reportsDirectory: './coverage/data',
       reporter: ['text', 'json-summary', 'lcov'],
-      include: ['server-account-store.mjs', 'server-room-persistence.mjs'],
+      include: [
+        'server-account-store.mjs',
+        'server-persistence-health.mjs',
+        'server-room-persistence.mjs',
+        'server-readiness.mjs',
+        'server-release.mjs',
+        'server-state-backup.mjs'
+      ],
       thresholds: {
-        lines: 88,
-        branches: 62,
+        lines: 90,
+        branches: 85,
         functions: 90,
-        statements: 80
+        statements: 80,
+        'server-account-store.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-persistence-health.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-readiness.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-release.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-room-persistence.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-state-backup.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        }
       }
     }
   }

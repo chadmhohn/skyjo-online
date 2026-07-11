@@ -6,6 +6,9 @@ import {
   DEFAULT_ROOMS_FILE,
   loadRoomsFromDisk,
   resolveRoomsFilePath,
+  ROOMS_FILE_FORMAT,
+  ROOMS_FILE_VERSION,
+  ROOMS_PROTOCOL_VERSION,
   ROOM_STALE_MS,
   saveRoomsToDisk,
   serializeRooms
@@ -73,7 +76,9 @@ try {
 
   await saveRoomsToDisk(new Map([[room.code, room]]), roomsFile);
   const saved = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
-  assert.equal(saved.version, 1);
+  assert.equal(saved.format, ROOMS_FILE_FORMAT);
+  assert.equal(saved.version, ROOMS_FILE_VERSION);
+  assert.equal(saved.protocolVersion, ROOMS_PROTOCOL_VERSION);
   assert.equal(saved.rooms[0].code, room.code);
   assert.equal('clients' in saved.rooms[0], false, 'saved JSON must not contain clients');
   assert.equal(saved.rooms[0].chatMessages[0].playerName, 'Ada', 'saved room includes chat sender names');

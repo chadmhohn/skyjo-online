@@ -1,0 +1,42 @@
+# Skyjo State Backup and Isolated Restore
+
+Skyjo state consists of the SQLite account/history database, the versioned room JSON document, and the checksum-validated release identity. Backups validate all three before they are accepted.
+
+## Create and verify a backup
+
+Run from the release checkout with `SKYJO_DB_FILE` and `SKYJO_ROOMS_FILE` set to the service values:
+
+```sh
+node scripts/backup-state.mjs --output /var/backups/skyjo-online/backup-YYYYMMDDTHHMMSSZ
+node scripts/verify-state-backup.mjs --backup /var/backups/skyjo-online/backup-YYYYMMDDTHHMMSSZ
+```
+
+Explicit source flags are available for canary and test state:
+
+```sh
+node scripts/backup-state.mjs \
+  --database /path/to/skyjo.sqlite \
+  --rooms /path/to/rooms.json \
+  --release /path/to/dist/release.json \
+  --output /fresh/backup-directory
+```
+
+The output directory must be fresh. It contains only `skyjo.sqlite`, `rooms.json`, `release.json`, and `manifest.json`. SQLite is captured through its online backup API and is rejected unless integrity, foreign keys, migration checksums, room format, release identity, sizes, and SHA-256 checksums all validate.
+
+## Restore for verification
+
+Restore only to a new isolated directory:
+
+```sh
+node scripts/restore-state.mjs \
+  --backup /var/backups/skyjo-online/backup-YYYYMMDDTHHMMSSZ \
+  --destination /var/tmp/skyjo-restore-check-YYYYMMDDTHHMMSSZ
+```
+
+The restore command refuses live data locations, non-empty destinations, symlinks/junctions, nested or escaping paths, and any backup that fails verification. It never writes to `SKYJO_DB_FILE` or `SKYJO_ROOMS_FILE` and has no force/overwrite option.
+
+Start a canary against the isolated copies and run `npm run smoke:deployed` before considering the backup usable. Delete the isolated test directory only after the canary has stopped.
+
+## Live recovery rule
+
+There is intentionally no automatic live database restore. If production has accepted traffic after a deployment, do not replace its database automatically or combine a restored database with newer room state. Stop the service, preserve the failed state, select a verified backup, restore it into a fresh isolated directory, validate it with a canary, and only then perform a deliberate operator-controlled cutover.

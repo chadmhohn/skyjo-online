@@ -45,8 +45,16 @@ The VPS deployment uses the normal Vite build plus a small Node server with a sh
 
 Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets signed, HttpOnly cookies for both the shared gate and user accounts. Room invite links open an install/browser choice page; browser continuation grants only the shared-gate cookie and redirects to `/lobby?room=CODE`, while each invite page load mints a separate one-time short code that can be pasted into the Home Screen app login page for the same gate-cookie handoff. Multiplayer still requires account login. Keep passwords, invite/session secrets, and the SQLite database out of git.
 
+Public service checks do not require cookies and are never cached:
+
+- `GET /healthz` is plain liveness and returns `ok` even when durable state needs repair.
+- `GET /readyz` returns only fixed `ok`/`error` checks for the database, room state, and last persistence operation. It returns 503 until all checks pass.
+- `GET /version` returns the checksum-validated build SHA, build timestamp, and current protocol version.
+
+Every `npm run build` writes `dist/release.json` and `dist/release.json.sha256`. Production builds require a full commit SHA; CI may set `SKYJO_RELEASE_SHA`, `SKYJO_BUILD_TIMESTAMP`, or `SOURCE_DATE_EPOCH` before building.
+
 Health check:
-`curl http://127.0.0.1:4180/healthz`
+`curl http://127.0.0.1:4180/healthz && curl http://127.0.0.1:4180/readyz && curl http://127.0.0.1:4180/version`
 
 Example systemd files live in `deploy/`:
 - `deploy/skyjo-online.env.example`
@@ -57,6 +65,9 @@ Generate session and invite secrets with:
 
 Release smoke checklist:
 [docs/deployment-smoke-checklist.md](docs/deployment-smoke-checklist.md)
+
+Verified backup and isolated restore guide:
+[docs/data-recovery.md](docs/data-recovery.md)
 
 Agent handoff and operating guide:
 [AGENTS.md](AGENTS.md)
