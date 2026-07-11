@@ -1,0 +1,59 @@
+[Unit]
+Description=Skyjo Online production service
+Documentation=https://github.com/chadmhohn/skyjo-online/blob/main/docs/immutable-deployment.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathIsDirectory=/srv/skyjo-online/current
+ConditionFileNotEmpty=/srv/skyjo-online/current/server.mjs
+
+[Service]
+Type=simple
+User=skyjo
+Group=skyjo
+WorkingDirectory=/srv/skyjo-online/current
+EnvironmentFile=/etc/skyjo-online.env
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=4180
+ExecStart=/opt/skyjo-online/node/bin/node /srv/skyjo-online/current/server.mjs
+ExecCondition=/usr/bin/test ! -L /srv/skyjo-online/current/server.mjs
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+SuccessExitStatus=143
+UMask=0077
+
+# The release tree and host are immutable to the application. Only state created
+# by StateDirectory=skyjo-online is writable at runtime.
+StateDirectory=skyjo-online
+StateDirectoryMode=0700
+RuntimeDirectory=skyjo-online
+RuntimeDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+RemoveIPC=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

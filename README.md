@@ -23,27 +23,24 @@ Multiplayer online version of the popular card game Skyjo.
 
 ## VPS Deployment
 
-The VPS deployment uses the normal Vite build plus a small Node server with a shared-password gate.
+Production uses a CI-built, checksummed, attested runtime archive and atomic release symlinks. The VPS does not build from or pull into a live Git checkout. Full bootstrap, canary, promotion, rollback, and recovery instructions are in [the immutable deployment runbook](docs/immutable-deployment.md).
 
-1. Install Node.js 24 LTS, then install the locked dependencies:
-   `npm ci`
-2. Create `/etc/skyjo-online.env` or another service env file with:
-   - `SKYJO_ACCESS_PASSWORD`
-   - `SKYJO_SESSION_SECRET`
-   - `SKYJO_INVITE_SECRET` for signed friend invite links
-   - `SKYJO_INVITE_TTL_HOURS=168` or your preferred invite lifetime
-   - `SKYJO_INVITE_CODE_TTL_MINUTES=30` for short Home Screen install-code handoff
-   - `SKYJO_DB_FILE=/var/lib/skyjo-online/skyjo.sqlite`
-   - `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com`
-   - `SKYJO_ADMIN_INITIAL_PASSWORD` for first admin bootstrap
-   - `HOST=127.0.0.1`
-   - `PORT=4180`
-3. Load the env file and build:
-   `set -a && . /etc/skyjo-online.env && set +a && npm run build`
-4. Start the production server:
-   `set -a && . /etc/skyjo-online.env && set +a && npm start`
+Create root-only `/etc/skyjo-online.env` with:
 
-Put Caddy, Nginx, Traefik, or Cloudflare Tunnel in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and sets signed, HttpOnly cookies for both the shared gate and user accounts. Room invite links open an install/browser choice page; browser continuation grants only the shared-gate cookie and redirects to `/lobby?room=CODE`, while each invite page load mints a separate one-time short code that can be pasted into the Home Screen app login page for the same gate-cookie handoff. Multiplayer still requires account login. Keep passwords, invite/session secrets, and the SQLite database out of git.
+- `SKYJO_ACCESS_PASSWORD`
+- `SKYJO_SESSION_SECRET`
+- `SKYJO_INVITE_SECRET` for signed friend invite links
+- `SKYJO_INVITE_TTL_HOURS=168` or your preferred invite lifetime
+- `SKYJO_INVITE_CODE_TTL_MINUTES=30` for short Home Screen install-code handoff
+- `SKYJO_ROOMS_FILE=/var/lib/skyjo-online/rooms.json`
+- `SKYJO_DB_FILE=/var/lib/skyjo-online/skyjo.sqlite`
+- `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com`
+- `SKYJO_ADMIN_INITIAL_PASSWORD` for first admin bootstrap
+- `SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL` and `SKYJO_DEPLOY_SMOKE_ACCOUNT_PASSWORD` for the dedicated existing release-smoke account
+- `HOST=127.0.0.1`
+- `PORT=4180`
+
+The hardened service runs as non-login user `skyjo` with the isolated runtime at `/opt/skyjo-online/node/bin/node`, reads immutable code through `/srv/skyjo-online/current`, and writes only `/var/lib/skyjo-online`. Cloudflare Tunnel remains in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and signed, HttpOnly cookies. Keep passwords, invite/session secrets, smoke credentials, and state out of git and GitHub.
 
 Public service checks do not require cookies and are never cached:
 
@@ -56,9 +53,12 @@ Every `npm run build` writes `dist/release.json` and `dist/release.json.sha256`.
 Health check:
 `curl http://127.0.0.1:4180/healthz && curl http://127.0.0.1:4180/readyz && curl http://127.0.0.1:4180/version`
 
-Example systemd files live in `deploy/`:
+Hardened systemd files live in `deploy/systemd/`:
+
 - `deploy/skyjo-online.env.example`
-- `deploy/skyjo-online.service`
+- `deploy/systemd/skyjo-online.service`
+- `deploy/systemd/skyjo-online-canary@.service`
+- `deploy/systemd/skyjo-online-smoke@.service`
 
 Generate session and invite secrets with:
 `openssl rand -base64 48`

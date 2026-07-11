@@ -1,0 +1,54 @@
+[Unit]
+Description=Skyjo Online isolated release canary %i
+Documentation=https://github.com/chadmhohn/skyjo-online/blob/main/docs/immutable-deployment.md
+After=network.target
+ConditionPathIsDirectory=/var/tmp/skyjo-deploy/%i/release
+ConditionFileNotEmpty=/var/tmp/skyjo-deploy/%i/release/server.mjs
+ConditionFileNotEmpty=/run/skyjo-online-canary/%i.env
+
+[Service]
+Type=simple
+User=skyjo
+Group=skyjo
+WorkingDirectory=/var/tmp/skyjo-deploy/%i/release
+EnvironmentFile=/etc/skyjo-online.env
+EnvironmentFile=/run/skyjo-online-canary/%i.env
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=4181
+ExecStart=/opt/skyjo-online/node/bin/node /var/tmp/skyjo-deploy/%i/release/server.mjs
+ExecCondition=/usr/bin/test ! -L /var/tmp/skyjo-deploy/%i/release/server.mjs
+ExecCondition=/usr/bin/test ! -L /run/skyjo-online-canary/%i.env
+
+Restart=no
+TimeoutStartSec=30s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+SuccessExitStatus=143
+UMask=0077
+
+# The controller creates a private copied-state tree for this instance. The
+# canary cannot write the live state, release store, backups, or host filesystem.
+ReadWritePaths=/var/tmp/skyjo-deploy/%i
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+RemoveIPC=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
