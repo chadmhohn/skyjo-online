@@ -1,4 +1,6 @@
 import type { Card, GameState, MoveResult, Player } from './types';
+import { systemRandom } from './runtime';
+import type { RandomSource } from './runtime';
 
 const rows = 3;
 const columns = 4;
@@ -140,6 +142,7 @@ export const singlePlayerAiOpponentRange = {
 
 export interface SinglePlayerGameOptions {
   aiOpponentCount?: number;
+  random?: RandomSource;
 }
 
 function normalizeSinglePlayerAiOpponentCount(aiOpponentCount: number = singlePlayerAiOpponentRange.min): number {
@@ -149,10 +152,11 @@ function normalizeSinglePlayerAiOpponentCount(aiOpponentCount: number = singlePl
 
 function createSinglePlayerRoster(
   aiOpponentCount: number = singlePlayerAiOpponentRange.min,
-  previousScores = new Map<string, number>()
+  previousScores = new Map<string, number>(),
+  random: RandomSource = systemRandom
 ): PlayerSeed[] {
   const count = normalizeSinglePlayerAiOpponentCount(aiOpponentCount);
-  const selectedAiNames = shuffle([...singlePlayerAiNames]).slice(0, count);
+  const selectedAiNames = shuffle([...singlePlayerAiNames], random).slice(0, count);
   return [
     { id: 'human', name: 'You', kind: 'human', totalScore: previousScores.get('human') ?? 0 },
     ...selectedAiNames.map((name, index) => {
@@ -167,16 +171,16 @@ function createSinglePlayerRoster(
   ];
 }
 
-function shuffle<T>(items: T[]): T[] {
+function shuffle<T>(items: T[], random: RandomSource = systemRandom): T[] {
   const copy = [...items];
   for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(random() * (i + 1));
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
 }
 
-function makeDeck(): Card[] {
+function makeDeck(random: RandomSource = systemRandom): Card[] {
   const values = cardValueCounts.flatMap(({ value, count }) => Array<number>(count).fill(value));
 
   return shuffle(
@@ -185,18 +189,19 @@ function makeDeck(): Card[] {
       value,
       faceUp: false,
       removed: false
-    }))
+    })),
+    random
   );
 }
 
-function drawCard(drawPile: Card[], discardPile: Card[]): MoveResult {
+function drawCard(drawPile: Card[], discardPile: Card[], random: RandomSource = systemRandom): MoveResult {
   if (drawPile.length > 0) {
     const [card, ...remaining] = drawPile;
     return { card: { ...card, faceUp: true }, drawPile: remaining, discardPile };
   }
 
   const [topDiscard, ...rest] = discardPile;
-  const recycled = shuffle(rest.map((card) => ({ ...card, faceUp: false, removed: false })));
+  const recycled = shuffle(rest.map((card) => ({ ...card, faceUp: false, removed: false })), random);
   const [card, ...remaining] = recycled;
   return {
     card: { ...card, faceUp: true },
@@ -245,8 +250,8 @@ function clearMatchingColumnsWithDiscards(grid: Card[]): { grid: Card[]; cleared
   return { grid: next, clearedCards };
 }
 
-function revealRandomOpeningCards(grid: Card[]): Card[] {
-  const indexes = shuffle(Array.from({ length: rows * columns }, (_, index) => index)).slice(0, 2);
+function revealRandomOpeningCards(grid: Card[], random: RandomSource = systemRandom): Card[] {
+  const indexes = shuffle(Array.from({ length: rows * columns }, (_, index) => index), random).slice(0, 2);
   return grid.map((card, index) => (indexes.includes(index) ? { ...card, faceUp: true } : card));
 }
 
@@ -256,9 +261,12 @@ function makePlayer(
   kind: Player['kind'],
   deck: Card[],
   totalScore = 0,
-  autoRevealOpeningCards = false
+  autoRevealOpeningCards = false,
+  random: RandomSource = systemRandom
 ): { player: Player; deck: Card[] } {
-  const grid = autoRevealOpeningCards ? revealRandomOpeningCards(deck.slice(0, rows * columns)) : deck.slice(0, rows * columns);
+  const grid = autoRevealOpeningCards
+    ? revealRandomOpeningCards(deck.slice(0, rows * columns), random)
+    : deck.slice(0, rows * columns);
   return {
     player: {
       id,
@@ -464,13 +472,22 @@ export function createGameForPlayers(
   players: PlayerSeed[],
   round = 1,
   startPlayerId?: string | null,
-  autoRevealOpeningCards = true
+  autoRevealOpeningCards = true,
+  random: RandomSource = systemRandom
 ): GameState {
-  let deck = makeDeck();
+  let deck = makeDeck(random);
   const dealtPlayers: Player[] = [];
 
   for (const player of players) {
-    const dealt = makePlayer(player.id, player.name, player.kind, deck, player.totalScore ?? 0, autoRevealOpeningCards);
+    const dealt = makePlayer(
+      player.id,
+      player.name,
+      player.kind,
+      deck,
+      player.totalScore ?? 0,
+      autoRevealOpeningCards,
+      random
+    );
     dealtPlayers.push(dealt.player);
     deck = dealt.deck;
   }
@@ -521,20 +538,26 @@ export function createGame(
           kind: player.kind,
           totalScore: player.totalScore
         }))
-      : createSinglePlayerRoster(options.aiOpponentCount ?? existingPlayers?.filter((player) => player.kind === 'ai').length, previousScores);
+      : createSinglePlayerRoster(
+          options.aiOpponentCount ?? existingPlayers?.filter((player) => player.kind === 'ai').length,
+          previousScores,
+          options.random
+        );
 
   return createGameForPlayers(
     players,
     round,
     startPlayerId,
-    false
+    false,
+    options.random
   );
 }
 
 export function createMultiplayerGame(
   players: Array<Pick<Player, 'id' | 'name'> & Partial<Pick<Player, 'totalScore'>>>,
   round = 1,
-  startPlayerId?: string | null
+  startPlayerId?: string | null,
+  random: RandomSource = systemRandom
 ): GameState {
   return createGameForPlayers(
     players.map((player) => ({
@@ -545,7 +568,8 @@ export function createMultiplayerGame(
     })),
     round,
     startPlayerId,
-    false
+    false,
+    random
   );
 }
 
@@ -553,9 +577,9 @@ export function startFreshGame(options: SinglePlayerGameOptions = {}): GameState
   return createGame(undefined, 1, null, options);
 }
 
-export function startNextRound(state: GameState): GameState {
+export function startNextRound(state: GameState, random: RandomSource = systemRandom): GameState {
   return {
-    ...createGame(state.players, state.round + 1, state.nextStarterId),
+    ...createGame(state.players, state.round + 1, state.nextStarterId, { random }),
     roundHistory: state.roundHistory ?? []
   };
 }
@@ -621,9 +645,9 @@ export function cancelDiscardSelection(state: GameState): GameState {
   return { ...state, selectedSource: null, drawnCard: null, phase: 'choose-source' };
 }
 
-export function drawBlind(state: GameState): GameState {
+export function drawBlind(state: GameState, random: RandomSource = systemRandom): GameState {
   if (state.phase !== 'choose-source') return state;
-  const result = drawCard(state.drawPile, state.discardPile);
+  const result = drawCard(state.drawPile, state.discardPile, random);
   return withLog(
     {
       ...state,

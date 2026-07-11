@@ -9,7 +9,7 @@ module.exports = {
     'plugin:@typescript-eslint/recommended',
     'plugin:react-hooks/recommended'
   ],
-  ignorePatterns: ['dist', '.eslintrc.cjs'],
+  ignorePatterns: ['coverage', 'dist', 'playwright-report', 'server-dist', 'test-results', '.eslintrc.cjs'],
   parser: '@typescript-eslint/parser',
   parserOptions: {
     ecmaVersion: 'latest',
@@ -18,5 +18,11 @@ module.exports = {
   plugins: ['@typescript-eslint', 'react-refresh'],
   rules: {
     'react-refresh/only-export-components': ['warn', { allowConstantExport: true }]
-  }
+  },
+  overrides: [
+    {
+      files: ['playwright.config.ts', 'vitest.*.config.ts', 'tests/**/*.ts', 'tests/**/*.tsx'],
+      env: { browser: true, node: true }
+    }
+  ]
 };
