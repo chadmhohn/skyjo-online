@@ -21,8 +21,8 @@ export default defineConfig({
         'server-state-backup.mjs'
       ],
       thresholds: {
-        lines: 88,
-        branches: 62,
+        lines: 90,
+        branches: 85,
         functions: 90,
         statements: 80,
         'server-account-store.mjs': {

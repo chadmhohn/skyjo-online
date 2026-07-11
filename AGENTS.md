@@ -37,9 +37,11 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 - `src/game.ts`: shared Skyjo game engine for single-player and multiplayer. Owns deck composition, opening reveal rules, turn progression, scoring, final-turn flow, column clears, and AI decisions.
 - `src/types.ts`: shared client/server state types.
 - `src/serverValidation.ts`: server-side legal multiplayer state validation. This compiles to `server-dist/` and is loaded by the Node server.
-- `server.mjs`: production Node server. Handles password-gated HTTP, invite install/browser handoff, static `dist/` serving, `/healthz`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and persistence flush on shutdown.
+- `server.mjs`: production Node server. Handles password-gated HTTP, invite install/browser handoff, static `dist/` serving, public `/healthz`, `/readyz`, and `/version`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and verified persistence flush on shutdown.
 - `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, and admin user operations.
-- `server-room-persistence.mjs`: JSON persistence for rooms. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
+- `server-room-persistence.mjs`: versioned JSON persistence for rooms with strict legacy readers and durable atomic v2 writes. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
+- `server-release.mjs` and `server-readiness.mjs`: checksum-validated build identity and sanitized public readiness/version contracts. The current baseline is schema 2 and protocol 1.
+- `server-state-backup.mjs`: online SQLite backup, fixed-file checksum manifest verification, and fresh isolated restore safeguards.
 - `src/App.tsx`: React routes and UI for home, single-player, lobby, room play, table chat, rules, scoring, and responsive gameplay shells.
 - `src/account.tsx`: account context and client API helpers for login/signup/logout, stats, single-player save, and admin actions.
 - `src/audio.ts`: client-only Web Audio settings and generated cues. Sound effects are on by default, background music is off by default, and settings persist in browser `localStorage`.
@@ -70,7 +72,7 @@ npm run smoke:release
 npm run smoke:chat
 ```
 
-`npm run smoke:release` includes `git diff --check`, lint, build, high-severity audit, validation smoke, AI smoke, persistence smoke, and account/store smoke. A known moderate `ws` advisory may print during audit; the high-severity gate should still pass unless the dependency state changes.
+`npm run smoke:release` includes `git diff --check`, lint, build, high-severity audit, validation smoke, AI smoke, persistence smoke, account/store smoke, operational readiness/recovery smoke, and backup/restore smoke.
 
 For layout changes, also perform visual QA at minimum widths around:
 
@@ -88,12 +90,16 @@ Local service checks:
 ```sh
 sudo systemctl status skyjo-online.service --no-pager
 curl -fsS http://127.0.0.1:4180/healthz
+curl -fsS http://127.0.0.1:4180/readyz
+curl -fsS http://127.0.0.1:4180/version
 ```
 
 Public checks:
 
 ```sh
 curl -fsS https://skyjo.groundworkrevops.com/healthz
+curl -fsS https://skyjo.groundworkrevops.com/readyz
+curl -fsS https://skyjo.groundworkrevops.com/version
 curl -sS -D - https://skyjo.groundworkrevops.com/login -o /dev/null
 ```
 
