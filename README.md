@@ -9,18 +9,24 @@ Multiplayer online version of the popular card game Skyjo.
 - Optional user accounts with saved stats, game history, and admin password resets
 - Built with React + Vite + TypeScript + Tailwind + a VPS-native WebSocket server
 
+## Requirements
+
+- Node.js 24 LTS
+- npm 11 or newer
+
 ## Quick Start
 1. Clone the repo
-2. `npm install`
-3. Copy `.env.example` to `.env` and set the shared access password
-4. `npm run dev`
+2. Select Node 24 (the repository's `.node-version` is supported by common version managers)
+3. `npm ci`
+4. Copy `.env.example` to `.env` and set the shared access password
+5. `npm run dev`
 
 ## VPS Deployment
 
 The VPS deployment uses the normal Vite build plus a small Node server with a shared-password gate.
 
-1. Install dependencies:
-   `npm install`
+1. Install Node.js 24 LTS, then install the locked dependencies:
+   `npm ci`
 2. Create `/etc/skyjo-online.env` or another service env file with:
    - `SKYJO_ACCESS_PASSWORD`
    - `SKYJO_SESSION_SECRET`
