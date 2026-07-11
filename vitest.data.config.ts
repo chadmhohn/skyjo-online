@@ -17,7 +17,8 @@ export default defineConfig({
         'server-persistence-health.mjs',
         'server-room-persistence.mjs',
         'server-readiness.mjs',
-        'server-release.mjs'
+        'server-release.mjs',
+        'server-state-backup.mjs'
       ],
       thresholds: {
         lines: 88,

@@ -3,6 +3,18 @@ import fsConstants from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
+import { SCHEMA_MIGRATIONS } from './server-account-store.mjs';
+import {
+  parseRoomsDocument,
+  ROOMS_FILE_FORMAT,
+  ROOMS_FILE_VERSION,
+  ROOMS_PROTOCOL_VERSION
+} from './server-room-persistence.mjs';
+import {
+  loadReleaseIdentity,
+  RELEASE_FILE_NAME,
+  validateReleaseIdentity
+} from './server-release.mjs';
 
 export const STATE_BACKUP_FORMAT = 'skyjo-state-backup';
 export const STATE_BACKUP_FORMAT_VERSION = 1;
@@ -251,37 +263,34 @@ function validateRoom(room) {
 }
 
 export function validateRoomsBackupDocument(value) {
-  if (!isRecord(value)) return false;
-  const isVersionOne = value.version === 1 && hasExactKeys(value, ['version', 'savedAt', 'rooms']);
-  const isVersionTwo =
-    value.version === 2 && hasExactKeys(value, ['format', 'version', 'protocolVersion', 'savedAt', 'rooms']);
-  if (!isVersionOne && !isVersionTwo) return false;
-  if (isVersionTwo && (typeof value.format !== 'string' || value.format.trim() === '' || value.format.length > 64)) return false;
-  if (isVersionTwo && (!Number.isSafeInteger(value.protocolVersion) || value.protocolVersion < 1)) return false;
-  if (![1, 2].includes(value.version) || !Number.isFinite(value.savedAt) || !Array.isArray(value.rooms)) return false;
-  if (value.rooms.length > 10_000) return false;
-  return value.rooms.every(validateRoom);
+  try {
+    const document = parseRoomsDocument(value);
+    if (document.version === ROOMS_FILE_VERSION) {
+      if (!hasExactKeys(value, ['format', 'version', 'protocolVersion', 'savedAt', 'rooms'])) return false;
+      if (document.format !== ROOMS_FILE_FORMAT || document.protocolVersion !== ROOMS_PROTOCOL_VERSION) return false;
+    } else if (document.version === 1 && !hasExactKeys(value, ['version', 'savedAt', 'rooms'])) {
+      return false;
+    } else if (document.version === 0 && !Array.isArray(value)) {
+      const expectedKeys = Object.prototype.hasOwnProperty.call(value, 'savedAt') ? ['savedAt', 'rooms'] : ['rooms'];
+      if (!hasExactKeys(value, expectedKeys)) return false;
+    }
+    if (document.rooms.length > 10_000) return false;
+    return document.rooms.every(validateRoom);
+  } catch {
+    return false;
+  }
 }
 
 export function validateReleaseBackupDocument(value) {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ['formatVersion', 'releaseSha', 'buildTimestamp', 'schemaVersion', 'protocolVersion'])
-  ) {
+  try {
+    if (!isRecord(value) || !hasExactKeys(value, ['formatVersion', 'releaseSha', 'buildTimestamp', 'schemaVersion', 'protocolVersion'])) {
+      return false;
+    }
+    validateReleaseIdentity(value, { allowDevelopment: false, requireFullSha: true });
+    return true;
+  } catch {
     return false;
   }
-  if (value.formatVersion !== 1) return false;
-  if (value.releaseSha !== 'development' && !/^[a-f0-9]{7,64}$/.test(value.releaseSha)) return false;
-  if (
-    typeof value.buildTimestamp !== 'string' ||
-    Number.isNaN(Date.parse(value.buildTimestamp)) ||
-    new Date(value.buildTimestamp).toISOString() !== value.buildTimestamp
-  ) {
-    return false;
-  }
-  if (!Number.isSafeInteger(value.schemaVersion) || value.schemaVersion < 1) return false;
-  if (!Number.isSafeInteger(value.protocolVersion) || value.protocolVersion < 1) return false;
-  return true;
 }
 
 function readMigrationRows(database) {
@@ -294,14 +303,13 @@ function readMigrationRows(database) {
 
 export function validateSchemaMigrationHistory(database) {
   const rows = readMigrationRows(database);
-  if (rows.length < 1) throw errorWithCode('SQLite schema migration history is empty.');
+  if (rows.length !== SCHEMA_MIGRATIONS.length) {
+    throw errorWithCode('SQLite schema migration history does not match this release.');
+  }
   rows.forEach((row, index) => {
-    if (row.version !== index + 1) throw errorWithCode('SQLite schema migration history is not contiguous.');
-    if (typeof row.name !== 'string' || row.name.trim() === '') {
-      throw errorWithCode('SQLite schema migration name is invalid.');
-    }
-    if (typeof row.checksum !== 'string' || !/^[a-f0-9]{64}$/.test(row.checksum)) {
-      throw errorWithCode('SQLite schema migration checksum is invalid.');
+    const expected = SCHEMA_MIGRATIONS[index];
+    if (row.version !== expected.version || row.name !== expected.name || row.checksum !== expected.checksum) {
+      throw errorWithCode('SQLite schema migration checksum does not match this release.');
     }
     if (!Number.isSafeInteger(row.applied_at) || row.applied_at < 0) {
       throw errorWithCode('SQLite schema migration timestamp is invalid.');
@@ -468,11 +476,12 @@ async function assertExactDirectoryEntries(directoryPath, expectedNames) {
 }
 
 function roomMetadata(document, releaseProtocolVersion) {
+  const parsed = parseRoomsDocument(document);
   return {
-    format: document.version === 1 ? 'legacy-v1' : document.format,
-    version: document.version,
-    protocolVersion: document.version === 1 ? releaseProtocolVersion : document.protocolVersion,
-    count: document.rooms.length
+    format: parsed.version < ROOMS_FILE_VERSION ? `legacy-v${parsed.version}` : parsed.format,
+    version: parsed.version,
+    protocolVersion: parsed.version < ROOMS_FILE_VERSION ? releaseProtocolVersion : parsed.protocolVersion,
+    count: parsed.rooms.length
   };
 }
 
@@ -626,6 +635,10 @@ export async function createStateBackup(options = {}) {
 
   await validateSqliteFile(databasePath, 'Source SQLite database', { validateSchema: options.validateSchema });
   await validateJsonFile(roomsPath, 'Source room state', options.validateRooms || validateRoomsBackupDocument);
+  if (path.basename(releasePath) !== RELEASE_FILE_NAME) {
+    throw errorWithCode(`Release-identity source must be named ${RELEASE_FILE_NAME}.`);
+  }
+  await loadReleaseIdentity(path.dirname(releasePath), { allowDevelopment: false, requireFullSha: true });
   await validateJsonFile(releasePath, 'Source release identity', options.validateRelease || validateReleaseBackupDocument);
 
   const { stagingDirectory } = await prepareFreshStagingDirectory(destinationDirectory);

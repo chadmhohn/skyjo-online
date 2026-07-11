@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
+import { createAccountStore, SCHEMA_MIGRATIONS } from '../../../server-account-store.mjs';
+import { writeReleaseIdentity } from '../../../server-release.mjs';
 import {
   createStateBackup,
   inspectSqliteState,
@@ -18,11 +20,12 @@ import {
 const execFileAsync = promisify(execFile);
 const fixedTimestamp = '2026-07-11T12:00:00.000Z';
 const releaseSha = 'a'.repeat(40);
-const migrationChecksum = 'b'.repeat(64);
 
 function roomState() {
   return {
-    version: 1,
+    format: 'skyjo-rooms',
+    version: 2,
+    protocolVersion: 1,
     savedAt: Date.parse(fixedTimestamp),
     rooms: [
       {
@@ -49,33 +52,23 @@ function releaseIdentity() {
     formatVersion: 1,
     releaseSha,
     buildTimestamp: fixedTimestamp,
-    schemaVersion: 1,
+    schemaVersion: 2,
     protocolVersion: 1
   };
 }
 
-function createDatabase(filePath: string) {
+async function createDatabase(filePath: string) {
+  const store = await createAccountStore({ filePath, now: () => Date.parse(fixedTimestamp) });
+  store.close();
   const database = new DatabaseSync(filePath);
   database.exec(`
     PRAGMA foreign_keys = ON;
-    CREATE TABLE schema_migrations (
-      version INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      checksum TEXT NOT NULL,
-      applied_at INTEGER NOT NULL
-    );
     CREATE TABLE parents (id INTEGER PRIMARY KEY);
     CREATE TABLE children (
       id INTEGER PRIMARY KEY,
       parent_id INTEGER NOT NULL REFERENCES parents(id)
     );
   `);
-  database.prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)').run(
-    1,
-    'baseline',
-    migrationChecksum,
-    Date.parse(fixedTimestamp)
-  );
   database.prepare('INSERT INTO parents (id) VALUES (?)').run(1);
   database.prepare('INSERT INTO children (id, parent_id) VALUES (?, ?)').run(1, 1);
   database.close();
@@ -95,9 +88,9 @@ describe('verified state backups', () => {
     roomsPath = path.join(sourceDirectory, 'rooms.json');
     releasePath = path.join(sourceDirectory, 'release.json');
     await fs.mkdir(sourceDirectory, { recursive: true });
-    createDatabase(databasePath);
+    await createDatabase(databasePath);
     await fs.writeFile(roomsPath, `${JSON.stringify(roomState())}\n`, { mode: 0o600 });
-    await fs.writeFile(releasePath, `${JSON.stringify(releaseIdentity())}\n`, { mode: 0o600 });
+    await writeReleaseIdentity(sourceDirectory, releaseIdentity());
   });
 
   afterEach(async () => {
@@ -124,12 +117,12 @@ describe('verified state backups', () => {
       formatVersion: 1,
       createdAt: fixedTimestamp,
       metadata: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         releaseSha,
         buildTimestamp: fixedTimestamp,
         protocolVersion: 1,
-        database: { integrityCheck: 'ok', foreignKeyCheck: 'ok', schemaVersion: 1 },
-        rooms: { format: 'legacy-v1', version: 1, protocolVersion: 1, count: 1 }
+        database: { integrityCheck: 'ok', foreignKeyCheck: 'ok', schemaVersion: 2 },
+        rooms: { format: 'skyjo-rooms', version: 2, protocolVersion: 1, count: 1 }
       }
     });
     expect(result.files.map((entry: { name: string }) => entry.name)).toEqual([
@@ -141,7 +134,7 @@ describe('verified state backups', () => {
     expect(inspectSqliteState(path.join(result.backupDirectory, STATE_BACKUP_FILES.database))).toEqual({
       integrityCheck: 'ok',
       foreignKeyCheck: 'ok',
-      schemaVersion: 1
+      schemaVersion: 2
     });
 
     if (process.platform !== 'win32') {
@@ -150,16 +143,13 @@ describe('verified state backups', () => {
     }
   });
 
-  it('supports the strict v2 room envelope without requiring future per-room revisions', () => {
-    const v2 = {
-      format: 'skyjo-room-state',
-      version: 2,
-      protocolVersion: 2,
-      savedAt: Date.parse(fixedTimestamp),
-      rooms: roomState().rooms
-    };
+  it('supports the strict v2 room envelope and its checksummed release identity', () => {
+    const v2 = roomState();
     expect(validateRoomsBackupDocument(v2)).toBe(true);
     expect(validateRoomsBackupDocument({ ...v2, unexpected: true })).toBe(false);
+    expect(
+      validateRoomsBackupDocument({ version: 1, savedAt: Date.parse(fixedTimestamp), rooms: v2.rooms })
+    ).toBe(true);
     expect(validateReleaseBackupDocument(releaseIdentity())).toBe(true);
     expect(validateReleaseBackupDocument({ ...releaseIdentity(), unexpected: true })).toBe(false);
   });
@@ -181,7 +171,7 @@ describe('verified state backups', () => {
       }
     });
     expect(calls.length).toBeGreaterThanOrEqual(4);
-    expect(calls.every((call) => call.schemaVersion === 1 && call.count === 1)).toBe(true);
+    expect(calls.every((call) => call.schemaVersion === 2 && call.count === 1)).toBe(true);
   });
 
   it('rejects corrupt or foreign-key-invalid source databases before creating a final directory', async () => {
@@ -209,12 +199,35 @@ describe('verified state backups', () => {
   });
 
   it('rejects malformed room/release state and schema/release version disagreement', async () => {
-    await fs.writeFile(roomsPath, '{"version":1,"rooms":[]}', 'utf8');
+    await fs.writeFile(roomsPath, '{"version":99,"rooms":[]}', 'utf8');
     await expect(createBackup('bad-rooms')).rejects.toThrow(/room state.*validation/i);
 
     await fs.writeFile(roomsPath, `${JSON.stringify(roomState())}\n`, 'utf8');
-    await fs.writeFile(releasePath, `${JSON.stringify({ ...releaseIdentity(), schemaVersion: 2 })}\n`, 'utf8');
-    await expect(createBackup('bad-release-schema')).rejects.toThrow(/does not match/i);
+    await fs.writeFile(releasePath, `${JSON.stringify({ ...releaseIdentity(), protocolVersion: 2 })}\n`, 'utf8');
+    await expect(createBackup('bad-release-schema')).rejects.toThrow(/checksum/i);
+  });
+
+  it('rejects migration checksum drift and unsupported future migration rows', async () => {
+    let database = new DatabaseSync(databasePath);
+    database.prepare("UPDATE schema_migrations SET checksum = '0' WHERE version = 1").run();
+    database.close();
+    await expect(createBackup('drifted-migration')).rejects.toThrow(/migration checksum/i);
+
+    database = new DatabaseSync(databasePath);
+    database.prepare('UPDATE schema_migrations SET checksum = ? WHERE version = 1').run(SCHEMA_MIGRATIONS[0].checksum);
+    database.prepare('INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)').run(
+      3,
+      'future-migration',
+      'f'.repeat(64),
+      Date.parse(fixedTimestamp)
+    );
+    database.close();
+    await expect(createBackup('future-migration')).rejects.toThrow(/does not match this release/i);
+  });
+
+  it('requires the baked source release checksum before creating a backup', async () => {
+    await fs.appendFile(releasePath, ' ');
+    await expect(createBackup('invalid-source-release')).rejects.toThrow(/checksum mismatch/i);
   });
 
   it('rejects tampering, missing payloads, extra entries, and semantic manifest edits', async () => {

@@ -50,6 +50,7 @@ jobs:
           node scripts/smoke-persistence.mjs
           node scripts/smoke-accounts.mjs
           node scripts/smoke-ops.mjs
+          node scripts/smoke-backup.mjs
           node scripts/smoke-chat.mjs
 
       - name: Upload shared production build
