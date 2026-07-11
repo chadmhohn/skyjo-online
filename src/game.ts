@@ -1,6 +1,6 @@
 import type { Card, GameState, MoveResult, Player } from './types';
-import { systemRandom } from './runtime';
-import type { RandomSource } from './runtime';
+import { systemRandom } from './runtime.js';
+import type { RandomSource } from './runtime.js';
 
 const rows = 3;
 const columns = 4;
