@@ -25,6 +25,36 @@ export default defineConfig({
         branches: 62,
         functions: 90,
         statements: 80,
+        'server-account-store.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-persistence-health.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-readiness.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-release.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-room-persistence.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
         'server-state-backup.mjs': {
           lines: 90,
           branches: 85,
