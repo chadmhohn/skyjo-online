@@ -286,6 +286,7 @@ export function validateReleaseBackupDocument(value) {
     if (!isRecord(value) || !hasExactKeys(value, ['formatVersion', 'releaseSha', 'buildTimestamp', 'schemaVersion', 'protocolVersion'])) {
       return false;
     }
+    if (typeof value.releaseSha !== 'string' || value.releaseSha !== value.releaseSha.toLowerCase()) return false;
     validateReleaseIdentity(value, { allowDevelopment: false, requireFullSha: true });
     return true;
   } catch {
@@ -627,7 +628,7 @@ export async function createStateBackup(options = {}) {
   const destinationDirectory = resolvedPath(options.destinationDirectory, 'Backup destination directory');
 
   for (const sourcePath of [databasePath, roomsPath, releasePath]) {
-    if (pathsOverlap(sourcePath, destinationDirectory)) {
+    if (pathsOverlap(sourcePath, destinationDirectory) || pathContains(path.dirname(sourcePath), destinationDirectory)) {
       throw errorWithCode('Backup destination must be isolated from every live source path.');
     }
     await assertNoLinkedPathComponents(sourcePath);

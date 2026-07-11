@@ -154,6 +154,124 @@ describe('verified state backups', () => {
     expect(validateReleaseBackupDocument({ ...releaseIdentity(), unexpected: true })).toBe(false);
   });
 
+  it('strictly rejects malformed room envelopes, rooms, and players', () => {
+    type RoomContext = {
+      document: Record<string, unknown>;
+      room: Record<string, unknown>;
+      players: Array<Record<string, unknown>>;
+    };
+    const invalidCases: Array<[string, (context: RoomContext) => void]> = [
+      ['missing version', ({ document }) => delete document.version],
+      ['unsupported version', ({ document }) => (document.version = 3)],
+      ['invalid save time', ({ document }) => (document.savedAt = Number.NaN)],
+      ['non-array rooms', ({ document }) => (document.rooms = {})],
+      ['non-record room', ({ document }) => (document.rooms = [null])],
+      ['invalid code type', ({ room }) => (room.code = 123)],
+      ['invalid code value', ({ room }) => (room.code = 'ABC')],
+      ['empty host', ({ room }) => (room.hostId = '')],
+      ['unsupported status', ({ room }) => (room.status = 'paused')],
+      ['invalid update time', ({ room }) => (room.updatedAt = Number.NaN)],
+      ['non-array players', ({ room }) => (room.players = {})],
+      ['empty players', ({ room }) => (room.players = [])],
+      ['too many players', ({ room, players }) => (room.players = Array(9).fill(players[0]))],
+      ['non-record player', ({ players }) => (players[0] = null as unknown as Record<string, unknown>)],
+      ['invalid player id type', ({ players }) => (players[0].id = 1)],
+      ['empty player id', ({ players }) => (players[0].id = '')],
+      ['invalid player name type', ({ players }) => (players[0].name = 1)],
+      ['empty player name', ({ players }) => (players[0].name = '')],
+      ['invalid user id', ({ players }) => (players[0].userId = 1)],
+      ['invalid connected state', ({ players }) => (players[0].connected = 'yes')],
+      ['invalid host state', ({ players }) => (players[0].host = 'yes')],
+      ['host not present', ({ room }) => (room.hostId = 'missing-player')],
+      ['non-array chat', ({ room }) => (room.chatMessages = {})],
+      ['non-array readiness', ({ room }) => (room.readyForNextRoundPlayerIds = {})],
+      ['invalid game state', ({ room }) => (room.state = [])]
+    ];
+
+    expect(validateRoomsBackupDocument(null)).toBe(false);
+    for (const [label, mutate] of invalidCases) {
+      const candidate = structuredClone(roomState()) as unknown as Record<string, unknown>;
+      const rooms = candidate.rooms as Array<Record<string, unknown>>;
+      const room = rooms[0];
+      const players = room.players as Array<Record<string, unknown>>;
+      mutate({ document: candidate, room, players });
+      expect(validateRoomsBackupDocument(candidate), label).toBe(false);
+    }
+
+    const invalidV2Format = {
+      format: '',
+      version: 2,
+      protocolVersion: 1,
+      savedAt: Date.parse(fixedTimestamp),
+      rooms: []
+    };
+    expect(validateRoomsBackupDocument(invalidV2Format)).toBe(false);
+    expect(validateRoomsBackupDocument({ ...invalidV2Format, format: 'valid', protocolVersion: 0 })).toBe(false);
+    expect(
+      validateRoomsBackupDocument({ ...invalidV2Format, format: 'x'.repeat(65), protocolVersion: 1 })
+    ).toBe(false);
+    expect(validateRoomsBackupDocument({ ...roomState(), rooms: Array(10_001).fill(roomState().rooms[0]) })).toBe(false);
+  });
+
+  it('strictly rejects malformed release identities', () => {
+    const invalidCases: Array<[string, unknown]> = [
+      ['non-record', null],
+      ['wrong format', { ...releaseIdentity(), formatVersion: 2 }],
+      ['uppercase SHA', { ...releaseIdentity(), releaseSha: releaseSha.toUpperCase() }],
+      ['short SHA', { ...releaseIdentity(), releaseSha: 'abc' }],
+      ['invalid timestamp', { ...releaseIdentity(), buildTimestamp: 'not-a-date' }],
+      ['noncanonical timestamp', { ...releaseIdentity(), buildTimestamp: '2026-07-11T12:00:00Z' }],
+      ['invalid schema', { ...releaseIdentity(), schemaVersion: 0 }],
+      ['invalid protocol', { ...releaseIdentity(), protocolVersion: 0 }]
+    ];
+    for (const [label, value] of invalidCases) {
+      expect(validateReleaseBackupDocument(value), label).toBe(false);
+    }
+    expect(validateReleaseBackupDocument({ ...releaseIdentity(), releaseSha: 'development' })).toBe(false);
+  });
+
+  it('rejects missing, empty, discontinuous, or malformed migration histories and async validators', async () => {
+    async function replaceDatabase(sql: string) {
+      await fs.rm(databasePath, { force: true });
+      const database = new DatabaseSync(databasePath);
+      database.exec(sql);
+      database.close();
+    }
+
+    await replaceDatabase('CREATE TABLE unrelated (id INTEGER PRIMARY KEY);');
+    expect(() => inspectSqliteState(databasePath)).toThrow(/migration history is missing/i);
+
+    await replaceDatabase(`
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        checksum TEXT NOT NULL,
+        applied_at INTEGER NOT NULL
+      );
+    `);
+    expect(() => inspectSqliteState(databasePath)).toThrow(/does not match this release/i);
+
+    const mutations: Array<[string, string, RegExp]> = [
+      ['gap', 'DELETE FROM schema_migrations WHERE version = 1', /does not match this release/i],
+      ['name', "UPDATE schema_migrations SET name = '' WHERE version = 1", /checksum does not match/i],
+      ['checksum', "UPDATE schema_migrations SET checksum = 'bad' WHERE version = 1", /checksum does not match/i],
+      ['timestamp', 'UPDATE schema_migrations SET applied_at = -1', /timestamp is invalid/i]
+    ];
+    for (const [, sql, expected] of mutations) {
+      await fs.rm(databasePath, { force: true });
+      await createDatabase(databasePath);
+      const database = new DatabaseSync(databasePath);
+      database.exec(sql);
+      database.close();
+      expect(() => inspectSqliteState(databasePath)).toThrow(expected);
+      await fs.rm(databasePath);
+    }
+
+    await createDatabase(databasePath);
+    expect(() => inspectSqliteState(databasePath, { validateSchema: () => false })).toThrow(/failed validation/i);
+    expect(() => inspectSqliteState(databasePath, { validateSchema: async () => true })).toThrow(/must be synchronous/i);
+  });
+
   it('runs an injected schema validator for source, copied, staged, and finalized databases', async () => {
     const calls: Array<{ schemaVersion: number; count: number }> = [];
     await createStateBackup({
@@ -251,6 +369,49 @@ describe('verified state backups', () => {
     await expect(verifyStateBackup(semantic.backupDirectory)).rejects.toThrow(/semantic metadata/i);
   });
 
+  it('rejects malformed manifest shapes, entries, and sanitized metadata', async () => {
+    const result = await createBackup();
+    const manifestPath = path.join(result.backupDirectory, STATE_BACKUP_FILES.manifest);
+    const original = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+    type ManifestMutation = (manifest: Record<string, unknown>) => void;
+    const files = (manifest: Record<string, unknown>) => manifest.files as Array<Record<string, unknown>>;
+    const metadata = (manifest: Record<string, unknown>) => manifest.metadata as Record<string, unknown>;
+    const database = (manifest: Record<string, unknown>) => metadata(manifest).database as Record<string, unknown>;
+    const rooms = (manifest: Record<string, unknown>) => metadata(manifest).rooms as Record<string, unknown>;
+    const mutations: Array<[string, ManifestMutation]> = [
+      ['top-level shape', (manifest) => delete manifest.createdAt],
+      ['format', (manifest) => (manifest.format = 'unknown')],
+      ['timestamp', (manifest) => (manifest.createdAt = 'invalid')],
+      ['file count', (manifest) => (manifest.files = [])],
+      ['file entry shape', (manifest) => (files(manifest)[0].unexpected = true)],
+      ['duplicate file', (manifest) => (files(manifest)[1].name = files(manifest)[0].name)],
+      ['negative file size', (manifest) => (files(manifest)[0].size = -1)],
+      ['invalid file digest', (manifest) => (files(manifest)[0].sha256 = 'invalid')],
+      ['metadata shape', (manifest) => delete metadata(manifest).schemaVersion],
+      ['metadata schema', (manifest) => (metadata(manifest).schemaVersion = 0)],
+      ['metadata release SHA', (manifest) => (metadata(manifest).releaseSha = 'INVALID')],
+      ['metadata timestamp', (manifest) => (metadata(manifest).buildTimestamp = 'invalid')],
+      ['metadata protocol', (manifest) => (metadata(manifest).protocolVersion = 0)],
+      ['database shape', (manifest) => delete database(manifest).integrityCheck],
+      ['database integrity', (manifest) => (database(manifest).integrityCheck = 'failed')],
+      ['room shape', (manifest) => delete rooms(manifest).count],
+      ['room format', (manifest) => (rooms(manifest).format = '')],
+      ['room version', (manifest) => (rooms(manifest).version = 3)],
+      ['room protocol', (manifest) => (rooms(manifest).protocolVersion = 0)],
+      ['room count', (manifest) => (rooms(manifest).count = -1)]
+    ];
+
+    for (const [label, mutate] of mutations) {
+      const candidate = structuredClone(original);
+      mutate(candidate);
+      await fs.writeFile(manifestPath, `${JSON.stringify(candidate)}\n`, 'utf8');
+      await expect(verifyStateBackup(result.backupDirectory), label).rejects.toThrow();
+    }
+
+    await fs.writeFile(manifestPath, '{', 'utf8');
+    await expect(verifyStateBackup(result.backupDirectory)).rejects.toThrow(/not valid JSON/i);
+  });
+
   it.each([
     ['path traversal', '../rooms.json'],
     ['POSIX absolute', '/tmp/rooms.json'],
@@ -339,6 +500,56 @@ describe('verified state backups', () => {
     await expect(
       restoreStateBackup(backupResult.backupDirectory, { destinationDirectory: linkedTarget, livePaths: [] })
     ).rejects.toThrow(/symbolic link.*junction/i);
+  });
+
+  it('cleans restore staging after post-verification failure and validates path arguments', async () => {
+    const backupResult = await createBackup();
+    const destinationDirectory = path.join(tempDirectory, 'failed-restore');
+    let validationCalls = 0;
+    await expect(
+      restoreStateBackup(backupResult.backupDirectory, {
+        destinationDirectory,
+        livePaths: [],
+        validateRelease: (value: unknown) => {
+          validationCalls += 1;
+          return validationCalls === 1 && validateReleaseBackupDocument(value);
+        }
+      })
+    ).rejects.toThrow(/failed validation/i);
+    await expect(fs.lstat(destinationDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await fs.readdir(tempDirectory)).some((name) => name.includes('.failed-restore.staging-'))).toBe(false);
+
+    await expect(verifyStateBackup('')).rejects.toThrow(/required/i);
+    await expect(verifyStateBackup(path.join(tempDirectory, 'missing-backup'))).rejects.toThrow(/does not exist/i);
+    const backupFile = path.join(tempDirectory, 'backup-file');
+    await fs.writeFile(backupFile, 'not a directory', 'utf8');
+    await expect(verifyStateBackup(backupFile)).rejects.toThrow(/real directory/i);
+    await expect(
+      restoreStateBackup(backupResult.backupDirectory, {
+        destinationDirectory: path.join(tempDirectory, 'bad-live-paths'),
+        livePaths: 'not-an-array' as unknown as string[]
+      })
+    ).rejects.toThrow(/must be an array/i);
+  });
+
+  it('rejects overlapping sources and invalid backup timestamps without leaving staging state', async () => {
+    const overlappingDestination = path.join(sourceDirectory, 'nested-backup');
+    await expect(
+      createStateBackup({ databasePath, roomsPath, releasePath, destinationDirectory: overlappingDestination })
+    ).rejects.toThrow(/isolated from every live source/i);
+
+    const invalidTimestampDestination = path.join(tempDirectory, 'invalid-timestamp');
+    await expect(
+      createStateBackup({
+        databasePath,
+        roomsPath,
+        releasePath,
+        destinationDirectory: invalidTimestampDestination,
+        now: 'invalid'
+      })
+    ).rejects.toThrow(/timestamp is invalid/i);
+    await expect(fs.lstat(invalidTimestampDestination)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await fs.readdir(tempDirectory)).some((name) => name.includes('.invalid-timestamp.staging-'))).toBe(false);
   });
 
   it('runs all three CLI wrappers with explicit isolated paths', async () => {

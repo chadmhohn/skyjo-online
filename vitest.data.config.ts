@@ -24,7 +24,13 @@ export default defineConfig({
         lines: 88,
         branches: 62,
         functions: 90,
-        statements: 80
+        statements: 80,
+        'server-state-backup.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        }
       }
     }
   }
