@@ -1,0 +1,38 @@
+[Unit]
+Description=Skyjo isolated release canary %i
+After=network.target
+
+[Service]
+Type=simple
+User=skyjo
+Group=skyjo
+EnvironmentFile=/etc/skyjo-online.env
+EnvironmentFile=/run/skyjo-online-canary/%i.env
+ExecStart=/usr/local/lib/skyjo-online/skyjo-canary-launch %i
+Restart=no
+TimeoutStartSec=15
+TimeoutStopSec=10
+KillSignal=SIGTERM
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/tmp/skyjo-deploy/%i

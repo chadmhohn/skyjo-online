@@ -1,0 +1,47 @@
+[Unit]
+Description=Skyjo Online
+After=network.target
+ConditionPathIsDirectory=/srv/skyjo-online/current
+
+[Service]
+Type=simple
+User=skyjo
+Group=skyjo
+WorkingDirectory=/srv/skyjo-online/current
+EnvironmentFile=/etc/skyjo-online.env
+Environment=NODE_ENV=production
+Environment=SKYJO_RELEASE_FILE=/srv/skyjo-online/current/dist/release.json
+ExecStart=/opt/skyjo-online/node/bin/node /srv/skyjo-online/current/server.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=15
+TimeoutStopSec=15
+KillSignal=SIGTERM
+KillMode=mixed
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/skyjo-online
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
