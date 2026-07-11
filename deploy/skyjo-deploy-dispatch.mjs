@@ -1,9 +1,11 @@
 #!/opt/skyjo-online/node/bin/node
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   DIGEST_PATTERN,
   MAX_ARCHIVE_BYTES,
@@ -13,19 +15,22 @@ import {
   resolveWithin
 } from './release-controller-lib.mjs';
 
-const stageRoot = '/var/tmp/skyjo-deploy';
-const originalCommand = process.env.SSH_ORIGINAL_COMMAND || '';
+export const DEFAULT_STAGE_ROOT = '/var/tmp/skyjo-deploy';
+export const UPLOAD_LOCK_STALE_MS = 15 * 60 * 1000;
+export const MAX_STAGE_DIRECTORY_ENTRIES = 128;
+export const MAX_PARTIALS_CLEANED_PER_UPLOAD = 32;
 
-function reject(message = 'Deployment command rejected.') {
-  process.stderr.write(`${message}\n`);
-  process.exit(64);
+function commandError(message = 'Deployment command rejected.', exitCode = 64) {
+  const error = new Error(message);
+  error.exitCode = exitCode;
+  return error;
 }
 
-function parseCommand(value) {
-  if (value.includes('\0') || value.includes('\n') || value.includes('\r')) reject();
+export function parseCommand(value) {
+  if (typeof value !== 'string' || value.includes('\0') || value.includes('\n') || value.includes('\r')) throw commandError();
   const parts = value.trim().split(/ +/);
   const [command, runId, releaseSha, fourth, fifth] = parts;
-  if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '')) reject();
+  if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '')) throw commandError();
   if (command === 'upload' && parts.length === 4 && /^(?:[1-9][0-9]{0,9})$/.test(fourth || '')) {
     const bytes = Number(fourth);
     if (bytes <= MAX_ARCHIVE_BYTES) return { command, runId, releaseSha, bytes };
@@ -36,46 +41,212 @@ function parseCommand(value) {
   if ((command === 'promote' || command === 'rollback') && parts.length === 5 && DIGEST_PATTERN.test(fourth || '') && RELEASE_TAG_PATTERN.test(fifth || '') && runId.endsWith('-production')) {
     return { command, runId, releaseSha, digest: fourth, tag: fifth };
   }
-  reject();
+  throw commandError();
 }
 
-async function assertSafeStageRoot() {
-  const stat = await fsp.lstat(stageRoot);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) reject('Deployment staging root is unsafe.');
-}
-
-async function upload({ runId, releaseSha, bytes }) {
-  await assertSafeStageRoot();
-  const stageDirectory = resolveWithin(stageRoot, runId);
-  await fsp.mkdir(stageDirectory, { mode: 0o700, recursive: true });
-  const stageStat = await fsp.lstat(stageDirectory);
-  if (!stageStat.isDirectory() || stageStat.isSymbolicLink()) reject('Deployment staging directory is unsafe.');
-  const archivePath = resolveWithin(stageDirectory, `skyjo-runtime-${releaseSha}.tar.gz`);
-  const partialPath = resolveWithin(stageDirectory, `.${releaseSha}.part`);
+async function fsyncDirectory(directory) {
   let handle;
   try {
-    await fsp.rm(partialPath, { force: true });
-    handle = await fsp.open(partialPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
-    let received = 0;
-    for await (const chunk of process.stdin) {
-      received += chunk.length;
-      if (received > bytes || received > MAX_ARCHIVE_BYTES) throw new Error('Upload exceeded declared size.');
-      await handle.write(chunk);
-    }
+    handle = await fsp.open(directory, 'r');
     await handle.sync();
-    if (received !== bytes) throw new Error('Upload did not match declared size.');
-    await handle.close();
-    handle = null;
-    await fsp.rename(partialPath, archivePath);
-    process.stdout.write(`uploaded ${runId} ${releaseSha} ${received}\n`);
   } catch (error) {
+    if (process.platform !== 'win32' || !['EISDIR', 'EINVAL', 'EPERM', 'ENOTSUP'].includes(error.code)) throw error;
+  } finally {
     await handle?.close().catch(() => {});
-    await fsp.rm(partialPath, { force: true }).catch(() => {});
-    throw error;
   }
 }
 
-async function controller(parsed) {
+async function assertSafeDirectory(directory, description) {
+  const stat = await fsp.lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw commandError(`${description} is unsafe.`, 70);
+}
+
+async function assertSafeStageRoot(stageRoot) {
+  await assertSafeDirectory(stageRoot, 'Deployment staging root');
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    return true;
+  }
+}
+
+async function removeDeadUploadLock(lockDirectory, { now = Date.now(), isProcessAlive = processIsAlive } = {}) {
+  const ownerPath = resolveWithin(lockDirectory, 'owner.json');
+  let ownerText;
+  let owner;
+  let ownerStat;
+  try {
+    [ownerText, ownerStat] = await Promise.all([fsp.readFile(ownerPath, 'utf8'), fsp.lstat(ownerPath)]);
+    owner = JSON.parse(ownerText);
+  } catch {
+    return false;
+  }
+  if (!ownerStat.isFile() || ownerStat.isSymbolicLink() || !Number.isSafeInteger(owner?.pid) || owner.pid < 1 ||
+      typeof owner?.token !== 'string' || !/^[a-f0-9]{32}$/.test(owner.token) ||
+      !Number.isSafeInteger(owner?.createdAt) || now - owner.createdAt < UPLOAD_LOCK_STALE_MS || isProcessAlive(owner.pid)) {
+    return false;
+  }
+  const currentText = await fsp.readFile(ownerPath, 'utf8').catch(() => null);
+  if (currentText !== ownerText) return false;
+  await fsp.unlink(ownerPath);
+  await fsyncDirectory(lockDirectory);
+  await fsp.rmdir(lockDirectory);
+  await fsyncDirectory(path.dirname(lockDirectory));
+  return true;
+}
+
+export async function acquireUploadLock(stageDirectory, options = {}) {
+  const lockDirectory = resolveWithin(stageDirectory, '.upload.lock');
+  const ownerPath = resolveWithin(lockDirectory, 'owner.json');
+  const token = crypto.randomBytes(16).toString('hex');
+  const createdAt = options.now ?? Date.now();
+  const ownerText = `${JSON.stringify({ pid: process.pid, token, createdAt })}\n`;
+  let acquired = false;
+  for (let attempt = 0; attempt < 2 && !acquired; attempt += 1) {
+    try {
+      await fsp.mkdir(lockDirectory, { mode: 0o700 });
+      acquired = true;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const removed = attempt === 0 && await removeDeadUploadLock(lockDirectory, {
+        now: createdAt,
+        isProcessAlive: options.isProcessAlive
+      });
+      if (!removed) throw commandError('Another upload is already active for this deployment run.', 75);
+    }
+  }
+  if (!acquired) throw commandError('Another upload is already active for this deployment run.', 75);
+  try {
+    const handle = await fsp.open(ownerPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
+    try {
+      await handle.writeFile(ownerText, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fsyncDirectory(lockDirectory);
+  } catch (error) {
+    await fsp.unlink(ownerPath).catch(() => {});
+    await fsp.rmdir(lockDirectory).catch(() => {});
+    await fsyncDirectory(stageDirectory).catch(() => {});
+    throw error;
+  }
+
+  let released = false;
+  return async () => {
+    if (released) return;
+    const currentOwner = await fsp.readFile(ownerPath, 'utf8').catch(() => null);
+    if (currentOwner !== ownerText) throw new Error('Upload lock ownership changed unexpectedly.');
+    await fsp.unlink(ownerPath);
+    await fsyncDirectory(lockDirectory);
+    await fsp.rmdir(lockDirectory);
+    await fsyncDirectory(stageDirectory);
+    released = true;
+  };
+}
+
+async function cleanupAbandonedPartials(stageDirectory) {
+  const entries = await fsp.readdir(stageDirectory, { withFileTypes: true });
+  if (entries.length > MAX_STAGE_DIRECTORY_ENTRIES) throw new Error('Deployment staging directory contains too many entries.');
+  const partialNames = entries
+    .filter((entry) => entry.isFile() && /^\.upload-[a-f0-9]{40}-[0-9]+-[a-f0-9]{32}\.part$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  if (partialNames.length > MAX_PARTIALS_CLEANED_PER_UPLOAD) {
+    throw new Error('Deployment staging directory contains too many abandoned uploads.');
+  }
+  for (const name of partialNames) {
+    const partialPath = resolveWithin(stageDirectory, name);
+    const stat = await fsp.lstat(partialPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Deployment staging partial is unsafe.');
+    await fsp.unlink(partialPath);
+  }
+  if (partialNames.length > 0) await fsyncDirectory(stageDirectory);
+}
+
+async function existingArchiveSize(archivePath) {
+  let stat;
+  try {
+    stat = await fsp.lstat(archivePath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Completed deployment archive is unsafe.');
+  return stat.size;
+}
+
+async function receiveExactly(input, expectedBytes, handle) {
+  let received = 0;
+  for await (const value of input) {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    received += chunk.length;
+    if (received > expectedBytes || received > MAX_ARCHIVE_BYTES) throw new Error('Upload exceeded declared size.');
+    if (handle) {
+      let offset = 0;
+      while (offset < chunk.length) {
+        const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
+        if (bytesWritten < 1) throw new Error('Upload write made no progress.');
+        offset += bytesWritten;
+      }
+    }
+  }
+  if (received !== expectedBytes) throw new Error('Upload did not match declared size.');
+  return received;
+}
+
+export async function performUpload({ stageRoot = DEFAULT_STAGE_ROOT, runId, releaseSha, bytes, input = process.stdin }) {
+  if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '') ||
+      !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_ARCHIVE_BYTES) throw commandError();
+  await assertSafeStageRoot(stageRoot);
+  const stageDirectory = resolveWithin(stageRoot, runId);
+  const created = await fsp.mkdir(stageDirectory, { mode: 0o700, recursive: false }).then(() => true).catch((error) => {
+    if (error.code === 'EEXIST') return false;
+    throw error;
+  });
+  if (created) await fsyncDirectory(stageRoot);
+  await assertSafeDirectory(stageDirectory, 'Deployment staging directory');
+  const releaseLock = await acquireUploadLock(stageDirectory);
+  try {
+    await cleanupAbandonedPartials(stageDirectory);
+    const archivePath = resolveWithin(stageDirectory, `skyjo-runtime-${releaseSha}.tar.gz`);
+    const completedSize = await existingArchiveSize(archivePath);
+    if (completedSize !== null) {
+      if (completedSize !== bytes) throw new Error('Completed deployment archive conflicts with the declared size.');
+      const received = await receiveExactly(input, bytes, null);
+      return { received, idempotent: true, archivePath };
+    }
+
+    const partialPath = resolveWithin(stageDirectory, `.upload-${releaseSha}-${process.pid}-${crypto.randomBytes(16).toString('hex')}.part`);
+    let handle;
+    try {
+      handle = await fsp.open(partialPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
+      const received = await receiveExactly(input, bytes, handle);
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await fsp.link(partialPath, archivePath);
+      await fsyncDirectory(stageDirectory);
+      await fsp.unlink(partialPath);
+      await fsyncDirectory(stageDirectory);
+      return { received, idempotent: false, archivePath };
+    } catch (error) {
+      await handle?.close().catch(() => {});
+      await fsp.unlink(partialPath).catch(() => {});
+      await fsyncDirectory(stageDirectory).catch(() => {});
+      throw error;
+    }
+  } finally {
+    await releaseLock();
+  }
+}
+
+async function runController(parsed) {
   const argumentsList = [parsed.command, '--run-id', parsed.runId, '--release-sha', parsed.releaseSha];
   if (parsed.digest) argumentsList.push('--artifact-sha256', parsed.digest);
   if (parsed.tag) argumentsList.push('--tag', parsed.tag);
@@ -83,18 +254,28 @@ async function controller(parsed) {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C.UTF-8' }
   });
-  const status = await new Promise((resolve, rejectPromise) => {
-    child.once('error', rejectPromise);
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
     child.once('exit', (code, signal) => resolve(signal ? 70 : (code ?? 70)));
   });
-  process.exit(status);
 }
 
-try {
+export async function dispatch({ originalCommand = process.env.SSH_ORIGINAL_COMMAND || '', stageRoot = DEFAULT_STAGE_ROOT, input = process.stdin } = {}) {
   const parsed = parseCommand(originalCommand);
-  if (parsed.command === 'upload') await upload(parsed);
-  else await controller(parsed);
-} catch (error) {
-  process.stderr.write(`Deployment command failed: ${error?.message || 'unknown error'}\n`);
-  process.exit(70);
+  if (parsed.command === 'upload') {
+    const result = await performUpload({ stageRoot, ...parsed, input });
+    process.stdout.write(`uploaded ${parsed.runId} ${parsed.releaseSha} ${result.received}${result.idempotent ? ' idempotent' : ''}\n`);
+    return 0;
+  }
+  return runController(parsed);
+}
+
+const isDirectExecution = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isDirectExecution) {
+  try {
+    process.exitCode = await dispatch();
+  } catch (error) {
+    process.stderr.write(`Deployment command failed: ${error?.message || 'unknown error'}\n`);
+    process.exitCode = error?.exitCode || 70;
+  }
 }

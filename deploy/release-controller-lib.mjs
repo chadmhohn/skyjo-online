@@ -213,21 +213,74 @@ export async function readLinkWithin(linkPath, releasesDirectory) {
   return resolved;
 }
 
-export async function resolveGithubTag(tag, fetchImpl = fetch) {
-  const safeTag = validateReleaseTag(tag);
-  let response = await fetchImpl(`https://api.github.com/repos/chadmhohn/skyjo-online/git/ref/tags/${encodeURIComponent(safeTag)}`, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'skyjo-release-controller/1' },
-    signal: AbortSignal.timeout(10_000)
-  });
-  if (!response.ok) throw new Error(`GitHub tag verification failed (${response.status}).`);
-  let object = (await response.json()).object;
-  for (let depth = 0; object?.type === 'tag' && depth < 4; depth += 1) {
-    response = await fetchImpl(`https://api.github.com/repos/chadmhohn/skyjo-online/git/tags/${object.sha}`, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'skyjo-release-controller/1' },
+const GITHUB_API_ROOT = 'https://api.github.com/repos/chadmhohn/skyjo-online';
+const GITHUB_REQUEST_HEADERS = Object.freeze({
+  Accept: 'application/vnd.github+json',
+  'User-Agent': 'skyjo-release-controller/1',
+  'X-GitHub-Api-Version': '2022-11-28'
+});
+
+async function githubJson(resource, description, fetchImpl) {
+  let response;
+  try {
+    response = await fetchImpl(`${GITHUB_API_ROOT}${resource}`, {
+      headers: GITHUB_REQUEST_HEADERS,
       signal: AbortSignal.timeout(10_000)
     });
-    if (!response.ok) throw new Error(`GitHub annotated tag verification failed (${response.status}).`);
-    object = (await response.json()).object;
+  } catch (error) {
+    throw new Error(`${description} request failed.`, { cause: error });
+  }
+  if (!response || typeof response.ok !== 'boolean') throw new Error(`${description} returned an invalid response.`);
+  if (!response.ok) throw new Error(`${description} failed (${Number.isInteger(response.status) ? response.status : 'unknown'}).`);
+  let value;
+  try {
+    value = await response.json();
+  } catch (error) {
+    throw new Error(`${description} returned invalid JSON.`, { cause: error });
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${description} returned an invalid payload.`);
+  return value;
+}
+
+function githubObject(value, description) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${description} is missing its object.`);
+  if ((value.type !== 'tag' && value.type !== 'commit') || !RELEASE_SHA_PATTERN.test(value.sha || '')) {
+    throw new Error(`${description} contains an invalid Git object.`);
+  }
+  return { type: value.type, sha: value.sha };
+}
+
+export async function assertGithubCommitOnMain(releaseSha, fetchImpl = fetch) {
+  const safeSha = validateReleaseSha(releaseSha);
+  const comparison = await githubJson(`/compare/${safeSha}...main`, 'GitHub main ancestry verification', fetchImpl);
+  const status = comparison.status;
+  const mergeBaseSha = comparison.merge_base_commit?.sha;
+  const baseSha = comparison.base_commit?.sha;
+  const counts = [comparison.ahead_by, comparison.behind_by, comparison.total_commits];
+  if (!counts.every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    throw new Error('GitHub main ancestry verification returned invalid commit counts.');
+  }
+  if (!RELEASE_SHA_PATTERN.test(mergeBaseSha || '') || !RELEASE_SHA_PATTERN.test(baseSha || '')) {
+    throw new Error('GitHub main ancestry verification returned invalid commit identities.');
+  }
+  if (mergeBaseSha !== safeSha || baseSha !== safeSha) {
+    throw new Error('Release commit is not the exact merge base of public main.');
+  }
+  const isAhead = status === 'ahead' && comparison.ahead_by > 0 && comparison.behind_by === 0;
+  const isIdentical = status === 'identical' && comparison.ahead_by === 0 && comparison.behind_by === 0;
+  if (!isAhead && !isIdentical) throw new Error('Release commit is not identical to or an ancestor of public main.');
+  return { releaseSha: safeSha, status, commitsAhead: comparison.ahead_by };
+}
+
+export const verifyGithubCommitIsOnMain = assertGithubCommitOnMain;
+
+export async function resolveGithubTag(tag, fetchImpl = fetch) {
+  const safeTag = validateReleaseTag(tag);
+  let payload = await githubJson(`/git/ref/tags/${encodeURIComponent(safeTag)}`, 'GitHub tag verification', fetchImpl);
+  let object = githubObject(payload.object, 'GitHub tag verification');
+  for (let depth = 0; object?.type === 'tag' && depth < 4; depth += 1) {
+    payload = await githubJson(`/git/tags/${object.sha}`, 'GitHub annotated tag verification', fetchImpl);
+    object = githubObject(payload.object, 'GitHub annotated tag verification');
   }
   if (object?.type !== 'commit' || !RELEASE_SHA_PATTERN.test(object.sha || '')) throw new Error('Release tag does not resolve to a commit.');
   return object.sha;
@@ -250,18 +303,60 @@ export function selectReleasePathsToPrune(entries, protectedPaths, maximum = 5) 
 }
 
 export async function executeActivationTransaction(operations) {
-  await operations.stop();
+  let phase = 'stop';
   let linksActivated = false;
   try {
+    await operations.stop();
+    phase = 'prepare';
     await operations.prepare();
+    phase = 'swap';
     await operations.swap();
     linksActivated = true;
+    phase = 'start';
     await operations.start();
+    phase = 'verify';
     await operations.verify();
-  } catch (error) {
-    if (linksActivated) await operations.rollback();
-    else await operations.restartPrevious();
-    error.activationRolledBack = linksActivated;
-    throw error;
+  } catch (caught) {
+    const activationError = caught instanceof Error ? caught : new Error(String(caught));
+    const state = {
+      activationPhase: phase,
+      activationRolledBack: false,
+      rollbackFailed: false,
+      previousRestarted: false,
+      restartPreviousFailed: false
+    };
+    if (linksActivated) {
+      try {
+        await operations.rollback();
+        state.activationRolledBack = true;
+      } catch (caughtRollback) {
+        const rollbackError = caughtRollback instanceof Error ? caughtRollback : new Error(String(caughtRollback));
+        const failure = new AggregateError(
+          [activationError, rollbackError],
+          `Activation failed during ${phase}; automatic rollback also failed.`,
+          { cause: activationError }
+        );
+        Object.assign(failure, state, { activationError, rollbackError, rollbackFailed: true });
+        throw failure;
+      }
+    } else {
+      try {
+        await operations.restartPrevious();
+        state.previousRestarted = true;
+      } catch (caughtRestart) {
+        const restartError = caughtRestart instanceof Error ? caughtRestart : new Error(String(caughtRestart));
+        const failure = new AggregateError(
+          [activationError, restartError],
+          `Activation failed during ${phase}; restarting the previous release also failed.`,
+          { cause: activationError }
+        );
+        Object.assign(failure, state, { activationError, restartError, restartPreviousFailed: true });
+        throw failure;
+      }
+    }
+    const failure = new Error(activationError.message, { cause: activationError });
+    failure.name = 'ActivationTransactionError';
+    Object.assign(failure, state, { activationError });
+    throw failure;
   }
 }
