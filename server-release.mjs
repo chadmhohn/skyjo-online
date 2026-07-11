@@ -25,6 +25,14 @@ export function sha256(data) {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 
+export function releaseValidationOptionsForEnvironment(nodeEnv) {
+  const explicitlyNonProduction = nodeEnv === 'development' || nodeEnv === 'test';
+  return {
+    allowDevelopment: explicitlyNonProduction,
+    requireFullSha: !explicitlyNonProduction
+  };
+}
+
 export function validateReleaseIdentity(value, options = {}) {
   if (!isRecord(value)) throw new Error('Invalid release identity.');
   const allowedSchemaVersions = options.allowedSchemaVersions || [CURRENT_SCHEMA_VERSION];

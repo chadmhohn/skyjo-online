@@ -11,7 +11,7 @@ import {
   validateMultiplayerStateUpdate
 } from './server-dist/serverValidation.js';
 import {
-  loadRoomsFromDisk,
+  loadRoomsSnapshotFromDisk,
   resolveRoomsFilePath,
   ROOM_STALE_MS,
   saveRoomsToDisk
@@ -20,6 +20,9 @@ import {
   createAccountStore,
   resolveAccountDatabasePath
 } from './server-account-store.mjs';
+import { createPersistenceHealthTracker } from './server-persistence-health.mjs';
+import { createReadinessResult, createVersionResult } from './server-readiness.mjs';
+import { loadReleaseIdentity, releaseValidationOptionsForEnvironment } from './server-release.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(__dirname, 'dist');
@@ -44,6 +47,7 @@ const pushNotificationsEnabled = Boolean(vapidPublicKey && vapidPrivateKey);
 const rooms = new Map();
 const roomsFile = resolveRoomsFilePath();
 const accountDatabaseFile = resolveAccountDatabasePath();
+const databaseRetryDelayMs = Math.max(100, Number(process.env.SKYJO_DATABASE_RETRY_MS || 5000));
 const roomsSaveDebounceMs = 250;
 const maxRoomChatMessages = 80;
 const maxRoomChatMessageLength = 280;
@@ -53,6 +57,12 @@ const inviteInstallCodes = new Map();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
 let shuttingDown = false;
+let accountStore = null;
+let nextDatabaseRetryAt = 0;
+let databaseFailureLogged = false;
+let releaseIdentity = null;
+let roomPersistenceLoadAccepted = false;
+const roomPersistenceHealth = createPersistenceHealthTracker();
 
 const mimeTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -79,18 +89,44 @@ if (pushNotificationsEnabled) {
   console.warn('Web Push is disabled. Set SKYJO_VAPID_PUBLIC_KEY and SKYJO_VAPID_PRIVATE_KEY to enable notifications.');
 }
 
-const accountStore = await createAccountStore({ filePath: accountDatabaseFile });
 try {
-  const bootstrappedAdmin = await accountStore.bootstrapAdmin({ email: adminEmail, password: adminInitialPassword });
-  if (bootstrappedAdmin) {
-    console.log(`Admin account ready for ${bootstrappedAdmin.email}`);
-  } else {
-    console.warn('No admin account was bootstrapped. Set SKYJO_ADMIN_INITIAL_PASSWORD before first production account setup.');
-  }
-} catch (error) {
-  console.error('Failed to bootstrap admin account:', error);
-  process.exit(1);
+  releaseIdentity = await loadReleaseIdentity(distDir, releaseValidationOptionsForEnvironment(process.env.NODE_ENV));
+} catch {
+  console.error('Release identity validation failed; readiness and version endpoints will remain unavailable.');
 }
+
+async function ensureAccountStore({ force = false } = {}) {
+  if (accountStore?.checkReadiness()) return accountStore;
+  accountStore?.close();
+  accountStore = null;
+
+  const timestamp = Date.now();
+  if (!force && timestamp < nextDatabaseRetryAt) return null;
+  nextDatabaseRetryAt = timestamp + databaseRetryDelayMs;
+
+  let candidate = null;
+  try {
+    candidate = await createAccountStore({ filePath: accountDatabaseFile });
+    const bootstrappedAdmin = await candidate.bootstrapAdmin({ email: adminEmail, password: adminInitialPassword });
+    if (bootstrappedAdmin) {
+      console.log(`Admin account ready for ${bootstrappedAdmin.email}`);
+    } else {
+      console.warn('No admin account was bootstrapped. Set SKYJO_ADMIN_INITIAL_PASSWORD before first production account setup.');
+    }
+    accountStore = candidate;
+    databaseFailureLogged = false;
+    return accountStore;
+  } catch {
+    candidate?.close();
+    if (!databaseFailureLogged) {
+      console.error('Account database is unavailable; the service is running in health-only mode.');
+      databaseFailureLogged = true;
+    }
+    return null;
+  }
+}
+
+await ensureAccountStore({ force: true });
 
 function timingSafeEqualString(a, b) {
   const left = Buffer.from(String(a));
@@ -158,8 +194,12 @@ function isPublicPwaAsset(pathname) {
 
 function currentAccountUser(req) {
   const token = accountToken(req);
-  if (!token) return null;
-  return accountStore.getUserBySessionToken(token);
+  if (!token || !accountStore) return null;
+  try {
+    return accountStore.getUserBySessionToken(token);
+  } catch {
+    return null;
+  }
 }
 
 function send(res, status, body, headers = {}) {
@@ -350,20 +390,25 @@ function broadcastRoom(room) {
 }
 
 function queueRoomsSave() {
-  roomsSaveQueue = roomsSaveQueue
+  if (!roomPersistenceLoadAccepted) {
+    const error = new Error('Room persistence is unavailable.');
+    error.code = 'ROOM_PERSISTENCE_UNAVAILABLE';
+    return Promise.reject(error);
+  }
+  const currentSave = roomsSaveQueue
     .catch(() => {})
-    .then(() => saveRoomsToDisk(rooms, roomsFile))
-    .catch((error) => {
-      console.error('Failed to persist rooms:', error);
-    });
-  return roomsSaveQueue;
+    .then(() => roomPersistenceHealth.track(() => saveRoomsToDisk(rooms, roomsFile)));
+  roomsSaveQueue = currentSave.catch(() => {});
+  return currentSave;
 }
 
 function persistRoomsSoon() {
   if (roomsSaveTimer) return;
   roomsSaveTimer = setTimeout(() => {
     roomsSaveTimer = null;
-    void queueRoomsSave();
+    void queueRoomsSave().catch(() => {
+      console.error('Failed to persist rooms.');
+    });
   }, roomsSaveDebounceMs);
   roomsSaveTimer.unref();
 }
@@ -372,6 +417,11 @@ async function flushRoomPersistence() {
   if (roomsSaveTimer) {
     clearTimeout(roomsSaveTimer);
     roomsSaveTimer = null;
+  }
+  if (!roomPersistenceLoadAccepted) {
+    const error = new Error('Room persistence is unavailable.');
+    error.code = 'ROOM_PERSISTENCE_UNAVAILABLE';
+    throw error;
   }
   await queueRoomsSave();
 }
@@ -423,7 +473,7 @@ function syncPlayerPresence(room, player) {
 }
 
 async function sendPushToUsers(userIds, payload) {
-  if (!pushNotificationsEnabled) return;
+  if (!pushNotificationsEnabled || !accountStore) return;
   const subscriptions = accountStore.listPushSubscriptionsForUsers(userIds);
   if (subscriptions.length === 0) return;
   await Promise.all(
@@ -1048,16 +1098,22 @@ async function serveStatic(req, res) {
 }
 
 try {
-  const restoredRooms = await loadRoomsFromDisk(roomsFile, { staleMs: ROOM_STALE_MS });
-  for (const room of restoredRooms) {
+  const snapshot = await roomPersistenceHealth.track(() =>
+    loadRoomsSnapshotFromDisk(roomsFile, { staleMs: ROOM_STALE_MS })
+  );
+  const restoredRoomMap = new Map(snapshot.rooms.map((room) => [room.code, room]));
+  if (snapshot.missing || snapshot.legacy) {
+    await roomPersistenceHealth.track(() => saveRoomsToDisk(restoredRoomMap, roomsFile));
+  }
+  for (const room of snapshot.rooms) {
     rooms.set(room.code, room);
   }
-  if (restoredRooms.length > 0) {
-    console.log(`Restored ${restoredRooms.length} persisted room(s) from ${roomsFile}`);
-    await saveRoomsToDisk(rooms, roomsFile);
+  roomPersistenceLoadAccepted = true;
+  if (snapshot.rooms.length > 0) {
+    console.log(`Restored ${snapshot.rooms.length} persisted room(s) from ${roomsFile}`);
   }
-} catch (error) {
-  console.error('Failed to load persisted rooms:', error);
+} catch {
+  console.error('Persisted room state was rejected; room writes are disabled to protect the source file.');
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1069,13 +1125,32 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === '/version') {
+      const result = createVersionResult(releaseIdentity);
+      sendJsonResponse(res, result.statusCode, result.payload, { 'Cache-Control': 'no-store' });
+      return;
+    }
+
+    if (url.pathname === '/readyz') {
+      await ensureAccountStore();
+      const persistence = roomPersistenceHealth.probe();
+      const result = createReadinessResult({
+        releaseIdentity,
+        databaseReady: accountStore?.checkReadiness() === true,
+        roomState: roomPersistenceLoadAccepted,
+        lastPersist: persistence.status === 'ok'
+      });
+      sendJsonResponse(res, result.statusCode, result.payload, { 'Cache-Control': 'no-store' });
+      return;
+    }
+
     if (isPublicPwaAsset(url.pathname)) {
       await serveStatic(req, res);
       return;
     }
 
     if (url.pathname === '/logout') {
-      accountStore.deleteSession(accountToken(req));
+      accountStore?.deleteSession(accountToken(req));
       send(res, 302, '', {
         Location: '/login',
         'Set-Cookie': [cookieHeader('', 0), accountCookieHeader('', 0)]
@@ -1132,6 +1207,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith('/api/')) {
+      if (!(await ensureAccountStore())) {
+        sendApiError(res, 503, 'Service is not ready.');
+        return;
+      }
       if (await handleApiRequest(req, res, url)) return;
       sendApiError(res, 404, 'API route not found.');
       return;
@@ -1445,16 +1524,23 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`Received ${signal}; persisting rooms before shutdown.`);
   markAllPlayersDisconnected();
-  await flushRoomPersistence();
+  let exitCode = 0;
+  try {
+    await flushRoomPersistence();
+  } catch {
+    exitCode = 1;
+    console.error('Room persistence flush failed during shutdown.');
+  }
   for (const client of wss.clients) {
     client.close(1001, 'Server shutting down');
   }
   wss.close(() => {});
   server.close(() => {
-    process.exit(0);
+    accountStore?.close();
+    process.exit(exitCode);
   });
   setTimeout(() => {
-    process.exit(0);
+    process.exit(exitCode);
   }, 3000).unref();
 }
 

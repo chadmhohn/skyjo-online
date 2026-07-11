@@ -9,6 +9,7 @@ import {
   RELEASE_CHECKSUM_FILE_NAME,
   RELEASE_FILE_NAME,
   RELEASE_FORMAT_VERSION,
+  releaseValidationOptionsForEnvironment,
   sha256,
   validateReleaseIdentity,
   writeReleaseIdentity
@@ -66,6 +67,14 @@ describe('release identity', () => {
     expect(() => validateReleaseIdentity(identity({ buildTimestamp: '2026-07-11T12:00:00Z' }))).toThrow(/canonical ISO/i);
     expect(() => validateReleaseIdentity(identity({ releaseSha: 'development' }), { allowDevelopment: false })).toThrow(/development/i);
     expect(() => validateReleaseIdentity(identity({ releaseSha: 'abcdef0' }), { requireFullSha: true })).toThrow(/full release SHA/i);
+  });
+
+  it('treats an unset or unknown NODE_ENV as production-like', () => {
+    expect(releaseValidationOptionsForEnvironment(undefined)).toEqual({ allowDevelopment: false, requireFullSha: true });
+    expect(releaseValidationOptionsForEnvironment('production')).toEqual({ allowDevelopment: false, requireFullSha: true });
+    expect(releaseValidationOptionsForEnvironment('staging')).toEqual({ allowDevelopment: false, requireFullSha: true });
+    expect(releaseValidationOptionsForEnvironment('development')).toEqual({ allowDevelopment: true, requireFullSha: false });
+    expect(releaseValidationOptionsForEnvironment('test')).toEqual({ allowDevelopment: true, requireFullSha: false });
   });
 
   it('rejects modified JSON, malformed checksums, and invalid JSON without leaking data', async () => {

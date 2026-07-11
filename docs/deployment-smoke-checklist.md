@@ -19,6 +19,8 @@ It runs:
 - `npm run smoke:validation`
 - `npm run smoke:ai`
 - `npm run smoke:persistence`
+- `npm run smoke:accounts`
+- `npm run smoke:ops`
 
 If you need to isolate a failure, run the same commands one at a time in that order.
 
@@ -29,9 +31,11 @@ After deploying the built release, check the local service before using the publ
 ```sh
 systemctl status skyjo-online.service --no-pager
 curl -fsS http://127.0.0.1:4180/healthz
+curl -fsS http://127.0.0.1:4180/readyz
+curl -fsS http://127.0.0.1:4180/version
 ```
 
-Expected result: systemd reports the service as active and the service health endpoint returns `ok`.
+Expected result: systemd reports the service as active, liveness returns `ok`, readiness returns 200 with three `ok` checks, and version reports the expected full release SHA. A 503 readiness response is a release blocker even when liveness remains healthy.
 
 ## Public Health
 
@@ -39,9 +43,25 @@ Check the public `/healthz` endpoint through the production edge:
 
 ```sh
 curl -fsS https://skyjo.groundworkrevops.com/healthz
+curl -fsS https://skyjo.groundworkrevops.com/readyz
+curl -fsS https://skyjo.groundworkrevops.com/version
 ```
 
-Expected result: the public health check returns `ok` without requiring the shared game password. If the local health check passes but public health fails, inspect the public gateway or reverse proxy before changing the app.
+Expected result: all three endpoints are public, `/healthz` returns `ok`, and `/readyz` plus `/version` include `Cache-Control: no-store`. If local checks pass but public checks fail, inspect the public gateway or reverse proxy before changing the app.
+
+Run the deployed authentication and non-mutating WebSocket proof with a dedicated existing smoke account. Do not put these values in git or print them:
+
+```sh
+SKYJO_SMOKE_BASE_URL=https://skyjo.groundworkrevops.com \
+SKYJO_SMOKE_ACCESS_PASSWORD='...' \
+SKYJO_SMOKE_ACCOUNT_EMAIL='...' \
+SKYJO_SMOKE_ACCOUNT_PASSWORD='...' \
+SKYJO_EXPECTED_RELEASE_SHA="$(git rev-parse HEAD)" \
+SKYJO_EXPECTED_PROTOCOL_VERSION=1 \
+npm run smoke:deployed
+```
+
+The smoke validates liveness, readiness, version identity, both authentication cookies, the account identity, and an authenticated WebSocket open/close without creating or joining a room.
 
 ## Login And Static Bundle
 
@@ -111,6 +131,8 @@ Room state persists to `SKYJO_ROOMS_FILE` when set, or `.data/rooms.json` by def
 - Before server-side room, validation, or persistence changes, identify the active rooms file used by the service environment.
 - Preserve the rooms file, SQLite database, and their parent directory across deploys; do not delete `.data/rooms.json` or `.data/skyjo.sqlite` as part of cleanup.
 - Back up the rooms file and SQLite database before deploying persistence format changes.
+- Use the checksummed workflow in [data-recovery.md](data-recovery.md); never copy a live SQLite file with a plain filesystem copy.
 - On graceful shutdown, the server marks players disconnected and flushes rooms before exiting. After restart, restored rooms have empty socket clients and players appear offline until their browsers reconnect.
 - Rooms older than the stale-room window are pruned on load or later cleanup, so check `updatedAt` before assuming a missing room indicates a deploy failure.
+- A corrupt or future room format is rejected and room writes remain disabled so the source file cannot be overwritten. Repair or restore it, then restart the service and require `/readyz` to pass.
 - After any server-side change, include the multiplayer two-client smoke and a refresh/rejoin check so persisted room state, WebSocket reconnect, account-gated multiplayer, saved stats, and move validation are all exercised.
