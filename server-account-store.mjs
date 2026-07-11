@@ -16,10 +16,6 @@ function stringValue(value, fallback = '') {
   return typeof value === 'string' ? value : fallback;
 }
 
-function now() {
-  return Date.now();
-}
-
 function normalizeEmail(email) {
   return stringValue(email).trim().toLowerCase();
 }
@@ -92,8 +88,9 @@ export function resolveAccountDatabasePath(env = process.env) {
 }
 
 export class AccountStore {
-  constructor(filePath = resolveAccountDatabasePath()) {
+  constructor(filePath = resolveAccountDatabasePath(), options = {}) {
     this.filePath = filePath;
+    this.now = options.now || Date.now;
     this.db = null;
   }
 
@@ -198,7 +195,7 @@ export class AccountStore {
     const existing = this.getUserRowByEmail(normalizedEmail);
     if (existing) {
       if (existing.role !== 'admin' || existing.disabled === 1) {
-        this.db.prepare('UPDATE users SET role = ?, disabled = 0, updated_at = ? WHERE id = ?').run('admin', now(), existing.id);
+        this.db.prepare('UPDATE users SET role = ?, disabled = 0, updated_at = ? WHERE id = ?').run('admin', this.now(), existing.id);
       }
       return publicUser(this.getUserRowById(existing.id));
     }
@@ -225,7 +222,7 @@ export class AccountStore {
     if (!validRoles.has(role)) throw new Error('Invalid account role.');
     const cleanName = normalizeDisplayName(displayName || normalizedEmail.split('@')[0]);
     const { hash, salt } = await hashPassword(password);
-    const timestamp = now();
+    const timestamp = this.now();
     const id = crypto.randomUUID();
 
     try {
@@ -247,7 +244,8 @@ export class AccountStore {
     const row = this.getUserRowByEmail(email);
     if (!row || row.disabled === 1) return null;
     if (!(await verifyPassword(password, row))) return null;
-    this.db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?').run(now(), now(), row.id);
+    const timestamp = this.now();
+    this.db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?').run(timestamp, timestamp, row.id);
     return publicUser(this.getUserRowById(row.id));
   }
 
@@ -256,7 +254,7 @@ export class AccountStore {
     if (!user || user.disabled === 1) return null;
     const token = crypto.randomBytes(32).toString('base64url');
     const tokenHash = hashSessionToken(token);
-    const timestamp = now();
+    const timestamp = this.now();
     const expiresAt = timestamp + ttlMs;
     this.db
       .prepare('INSERT INTO account_sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
@@ -266,7 +264,7 @@ export class AccountStore {
 
   getUserBySessionToken(token) {
     const tokenHash = hashSessionToken(String(token || ''));
-    const timestamp = now();
+    const timestamp = this.now();
     this.db.prepare('DELETE FROM account_sessions WHERE expires_at < ?').run(timestamp);
     const row = this.db
       .prepare(
@@ -298,7 +296,7 @@ export class AccountStore {
     const { hash, salt } = await hashPassword(nextPassword);
     this.db
       .prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?')
-      .run(hash, salt, now(), userId);
+      .run(hash, salt, this.now(), userId);
   }
 
   listUsers() {
@@ -333,7 +331,7 @@ export class AccountStore {
     }
     this.db
       .prepare('UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ? WHERE id = ?')
-      .run(nextName, nextRole, nextDisabled, now(), userId);
+      .run(nextName, nextRole, nextDisabled, this.now(), userId);
     return publicUser(this.getUserRowById(userId));
   }
 
@@ -346,7 +344,7 @@ export class AccountStore {
     if (!isRecord(subscription.keys) || typeof subscription.keys.p256dh !== 'string' || typeof subscription.keys.auth !== 'string') {
       throw new Error('Push subscription is missing keys.');
     }
-    const timestamp = now();
+    const timestamp = this.now();
     this.db
       .prepare(
         `INSERT INTO push_subscriptions (endpoint, user_id, subscription_json, user_agent, created_at, updated_at)
@@ -400,7 +398,7 @@ export class AccountStore {
     }
 
     const gameId = crypto.randomUUID();
-    const completedAt = now();
+    const completedAt = this.now();
     const rankedPlayers = [...state.players].sort((left, right) => left.totalScore - right.totalScore || left.roundScore - right.roundScore);
     const winner = state.winnerId ? state.players.find((player) => player.id === state.winnerId) : rankedPlayers[0];
     const winnerUserId = winner ? playerAccounts[winner.id] || null : null;
@@ -660,7 +658,7 @@ function summarizeParticipants(participants) {
 }
 
 export async function createAccountStore(options = {}) {
-  const store = new AccountStore(options.filePath || resolveAccountDatabasePath(options.env));
+  const store = new AccountStore(options.filePath || resolveAccountDatabasePath(options.env), { now: options.now });
   await store.open();
   return store;
 }

@@ -43,15 +43,19 @@ function completedState() {
   };
 }
 
+const fixedNow = Date.parse('2026-07-11T12:00:00Z');
+
 describe('account and stats persistence', () => {
   let tempDir = '';
   let dbFile = '';
+  let currentTime = fixedNow;
   let store: Awaited<ReturnType<typeof createAccountStore>> | undefined;
 
   beforeEach(async () => {
+    currentTime = fixedNow;
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-account-test-'));
     dbFile = path.join(tempDir, 'skyjo.sqlite');
-    store = await createAccountStore({ filePath: dbFile });
+    store = await createAccountStore({ filePath: dbFile, now: () => currentTime });
   });
 
   afterEach(async () => {
@@ -71,14 +75,25 @@ describe('account and stats persistence', () => {
 
     const ada = await store!.createUser({ email: 'Ada@Example.com', displayName: '  Ada   Lovelace  ', password: 'ada-secret-123' });
     const grace = await store!.createUser({ email: 'grace@example.com', displayName: 'Grace', password: 'grace-secret-123' });
-    expect(ada).toMatchObject({ email: 'ada@example.com', displayName: 'Ada Lovelace', role: 'player' });
+    expect(ada).toMatchObject({
+      email: 'ada@example.com',
+      displayName: 'Ada Lovelace',
+      role: 'player',
+      createdAt: fixedNow,
+      updatedAt: fixedNow
+    });
     expect((await store!.authenticate('ADA@example.com', 'ada-secret-123')).id).toBe(ada.id);
     expect(await store!.authenticate('ada@example.com', 'wrong-password')).toBeNull();
 
-    const session = store!.createSession(ada.id, 60_000);
-    expect(store!.getUserBySessionToken(session.token).id).toBe(ada.id);
-    store!.deleteSession(session.token);
-    expect(store!.getUserBySessionToken(session.token)).toBeNull();
+    const expiringSession = store!.createSession(ada.id, 60_000);
+    expect(expiringSession.expiresAt).toBe(fixedNow + 60_000);
+    expect(store!.getUserBySessionToken(expiringSession.token).id).toBe(ada.id);
+    currentTime += 60_001;
+    expect(store!.getUserBySessionToken(expiringSession.token)).toBeNull();
+
+    const revocableSession = store!.createSession(ada.id, 60_000);
+    store!.deleteSession(revocableSession.token);
+    expect(store!.getUserBySessionToken(revocableSession.token)).toBeNull();
 
     await store!.changePassword(ada.id, 'ada-secret-123', 'ada-secret-456');
     expect(await store!.authenticate('ada@example.com', 'ada-secret-123')).toBeNull();

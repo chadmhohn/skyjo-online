@@ -1,14 +1,6 @@
 export type RandomSource = () => number;
 
-export interface Clock {
-  now(): number;
-}
-
 export const systemRandom: RandomSource = () => Math.random();
-
-export const systemClock: Clock = {
-  now: () => Date.now()
-};
 
 export function createSeededRandom(seed: number): RandomSource {
   let value = seed >>> 0;
