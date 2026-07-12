@@ -561,7 +561,7 @@ adopt_legacy() {
   backup_checksum="$backup_unit.sha256"
   skyjo_prepare_unit_backup "$live_unit" "$backup_unit" "$backup_checksum" root root || die 'Unable to prepare and verify the original production unit backup.'
 
-  skyjo_cleanup_legacy_staging "$APP_ROOT/releases" "$sha" root root 4 || die 'Legacy staging cleanup found an unsafe or unbounded partial state.'
+  skyjo_cleanup_legacy_staging "$APP_ROOT/releases" "$sha" 0 0 4 || die 'Legacy staging cleanup found an unsafe or unbounded partial state.'
   if [ -e "$target" ] || [ -L "$target" ]; then
     skyjo_validate_legacy_release "$target" "$sha" root root || die 'Existing legacy release target does not match the requested immutable anchor.'
   else
@@ -594,8 +594,8 @@ adopt_legacy() {
     /usr/bin/sync -f "$APP_ROOT/releases" 2>/dev/null || true
     skyjo_validate_legacy_release "$target" "$sha" root root || die 'Published legacy release target failed immutable validation.'
   fi
-  skyjo_ensure_legacy_link "$APP_ROOT/current" "releases/$sha" root root || die 'Current legacy anchor is ambiguous or unsafe.'
-  skyjo_ensure_legacy_link "$APP_ROOT/previous" "releases/$sha" root root || die 'Previous legacy anchor is ambiguous or unsafe.'
+  skyjo_ensure_legacy_link "$APP_ROOT/current" "releases/$sha" 0 0 || die 'Current legacy anchor is ambiguous or unsafe.'
+  skyjo_ensure_legacy_link "$APP_ROOT/previous" "releases/$sha" 0 0 || die 'Previous legacy anchor is ambiguous or unsafe.'
   printf '%s\n' "Adopted immutable legacy rollback anchor $sha without restarting production."
 }
 
