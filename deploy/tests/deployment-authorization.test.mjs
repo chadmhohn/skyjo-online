@@ -305,6 +305,8 @@ test('replay ledger rejects unsafe roots and concurrent consumption has one winn
     if (process.platform !== 'win32') {
       const unsafe = path.join(parent, 'unsafe');
       await fs.mkdir(unsafe, { mode: 0o755 });
+      await fs.chmod(unsafe, 0o755);
+      assert.equal((await fs.lstat(unsafe)).mode & 0o777, 0o755);
       await assert.rejects(beginAuthorizationUse({
         ledgerRoot: unsafe,
         fields: fields({ runId: '987-2-canary' }),

@@ -256,7 +256,12 @@ test('first upload tolerates only EACCES for the verified 1731 stage parent', { 
     expectedStageRootUid: rootStat.uid,
     expectedStageRootGid: rootStat.gid,
     stageRootFsync: async () => { throw Object.assign(new Error('disk error'), { code: 'EIO' }); }
-  }), (error) => error.code === 'EIO');
+  }), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.cause?.code, 'EIO');
+    assert.deepEqual(error.errors.map((entry) => entry.code), ['EIO', 'EIO']);
+    return true;
+  });
   await assert.rejects(fs.lstat(path.join(root, '124-1-canary')), (error) => error.code === 'ENOENT');
 }));
 
