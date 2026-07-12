@@ -390,7 +390,8 @@ jobs:
           SKYJO_RELEASE_SHA: ${{ needs.quality.outputs.source-sha }}
         run: |
           set -Eeuo pipefail
-          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct '${{ needs.quality.outputs.source-sha }}')"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct '${{ needs.quality.outputs.source-sha }}')"
+          export SOURCE_DATE_EPOCH
           npm run release:artifact
           npm run test:artifact:integration
           echo "archive-name=skyjo-runtime-${{ needs.quality.outputs.source-sha }}.tar.gz" >> "$GITHUB_OUTPUT"
