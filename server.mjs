@@ -11,6 +11,12 @@ import {
   validateMultiplayerStateUpdate
 } from './server-dist/serverValidation.js';
 import {
+  hasVisibleLiveClient,
+  registerRealtimeServer,
+  sendRealtimeJson,
+  syncPlayerPresence
+} from './server-dist/serverRealtime.js';
+import {
   loadRoomsSnapshotFromDisk,
   resolveRoomsFilePath,
   ROOM_STALE_MS,
@@ -391,7 +397,7 @@ function setPlayerReadyForNextRound(room, playerId, ready) {
 }
 
 function sendJson(ws, payload) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
+  sendRealtimeJson(ws, payload);
 }
 
 function broadcastRoom(room) {
@@ -469,19 +475,6 @@ function createWaitingRoom({ code, hostPlayer, ws }) {
     gameSessionId: null,
     clients: new Set([ws])
   };
-}
-
-function hasVisibleLiveClient(room, playerId, currentWs = null) {
-  for (const client of room.clients) {
-    if (client === currentWs) continue;
-    if (client.roomCode !== room.code || client.playerId !== playerId) continue;
-    if (client.readyState === client.OPEN && client.visible !== false) return true;
-  }
-  return false;
-}
-
-function syncPlayerPresence(room, player) {
-  player.connected = hasVisibleLiveClient(room, player.id);
 }
 
 async function sendPushToUsers(userIds, payload) {
@@ -1249,38 +1242,7 @@ const server = http.createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ noServer: true });
 
-server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url || '/', 'http://localhost');
-  if (url.pathname !== '/rooms' || !hasValidSession(req)) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-    socket.destroy();
-    return;
-  }
-  const accountUser = currentAccountUser(req);
-  if (!accountUser) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-    socket.destroy();
-    return;
-  }
-  req.accountUser = accountUser;
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
-  });
-});
-
-wss.on('connection', (ws, req) => {
-  ws.accountUser = req.accountUser;
-  ws.visible = true;
-  ws.on('message', (raw) => {
-    let message;
-    try {
-      message = JSON.parse(String(raw));
-    } catch {
-      sendJson(ws, { type: 'error', message: 'Invalid message.' });
-      return;
-    }
-
+function handleProtocolV1Message(ws, message) {
     if (message.type === 'create-room') {
       const accountUser = ws.accountUser;
       const code = makeRoomCodeForSocket(ws);
@@ -1348,15 +1310,6 @@ wss.on('connection', (ws, req) => {
       return;
     }
     const { room, player } = context;
-
-    if (message.type === 'set-presence') {
-      ws.visible = message.visible !== false;
-      syncPlayerPresence(room, player);
-      room.updatedAt = Date.now();
-      persistRoomsSoon();
-      broadcastRoom(room);
-      return;
-    }
 
     if (message.type === 'send-chat-message') {
       const text = cleanChatText(message.text);
@@ -1509,21 +1462,19 @@ wss.on('connection', (ws, req) => {
       sendJson(ws, { type: 'joined', playerId: player.id, room: publicRoom(newRoom) });
       return;
     }
-  });
+}
 
-  ws.on('close', () => {
-    if (shuttingDown) return;
-    const context = roomPlayer(ws);
-    if (!context) return;
-    const { room, player } = context;
-    room.clients.delete(ws);
-    if (!hasVisibleLiveClient(room, player.id, ws)) {
-      player.connected = false;
-    }
-    room.updatedAt = Date.now();
-    persistRoomsSoon();
-    broadcastRoom(room);
-  });
+registerRealtimeServer({
+  server,
+  webSocketServer: wss,
+  hasValidSession,
+  currentAccountUser,
+  roomPlayer,
+  persistRoomsSoon,
+  broadcastRoom,
+  now: Date.now,
+  isShuttingDown: () => shuttingDown,
+  onProtocolV1Message: handleProtocolV1Message
 });
 
 setInterval(() => {
