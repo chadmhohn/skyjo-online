@@ -14,7 +14,7 @@ export default defineConfig({
     name: 'ui',
     environment: 'jsdom',
     globals: true,
-    setupFiles: ['./tests/setup/dom.ts'],
+    setupFiles: ['./tests/setup/ui.ts'],
     include: ['./tests/unit/ui/**/*.test.ts', './tests/unit/ui/**/*.test.tsx'],
     restoreMocks: true,
     clearMocks: true,
