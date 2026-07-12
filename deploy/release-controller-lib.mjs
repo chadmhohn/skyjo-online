@@ -39,6 +39,10 @@ export const REQUIRED_ARCHIVE_ENTRIES = new Set([
   'server-dist/types.js',
   'scripts/backup-state.mjs',
   'scripts/deployed-smoke-lib.mjs',
+  'scripts/monitor-readiness.mjs',
+  'scripts/readiness-monitor-lib.mjs',
+  'scripts/run-scheduled-backup.mjs',
+  'scripts/scheduled-backup-lib.mjs',
   'scripts/verify-state-backup.mjs',
   'scripts/restore-state.mjs',
   'scripts/smoke-deployed.mjs'

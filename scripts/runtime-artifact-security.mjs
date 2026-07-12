@@ -36,7 +36,11 @@ export const RUNTIME_ROOT_FILES = Object.freeze([
 export const RUNTIME_SCRIPT_FILES = Object.freeze([
   'scripts/backup-state.mjs',
   'scripts/deployed-smoke-lib.mjs',
+  'scripts/monitor-readiness.mjs',
+  'scripts/readiness-monitor-lib.mjs',
   'scripts/restore-state.mjs',
+  'scripts/run-scheduled-backup.mjs',
+  'scripts/scheduled-backup-lib.mjs',
   'scripts/smoke-deployed.mjs',
   'scripts/verify-state-backup.mjs'
 ]);

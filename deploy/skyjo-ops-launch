@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+action=${1:-}
+[ "$#" -eq 1 ] || exit 64
+case "$action" in daily|monthly) ;; *) exit 64 ;; esac
+[ "$(/usr/bin/id -u)" -eq 0 ] || exit 77
+
+exec 9>/run/lock/skyjo-release-controller.lock
+/usr/bin/flock --exclusive --wait 300 9 || exit 75
+
+node=/opt/skyjo-online/node/bin/node
+current=/srv/skyjo-online/current
+release=$(/usr/bin/readlink -f "$current")
+case "$release" in /srv/skyjo-online/releases/[a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]) ;; *) exit 65 ;; esac
+script="$release/scripts/run-scheduled-backup.mjs"
+[ -x "$node" ] && [ -f "$script" ] && [ ! -L "$script" ] || exit 66
+[ "$(/usr/bin/stat -c %u "$release")" -eq 0 ] || exit 66
+[ "$(/usr/bin/stat -c %u "$script")" -eq 0 ] || exit 66
+permissions=$(/usr/bin/stat -c %A "$script")
+case "$permissions" in ?????w*|????????w*) exit 66 ;; esac
+
+export SKYJO_RELEASE_FILE="$release/release.json"
+export SKYJO_DB_FILE=/var/lib/skyjo-online/skyjo.sqlite
+export SKYJO_ROOMS_FILE=/var/lib/skyjo-online/rooms.json
+exec "$node" "$script" --kind "$action"

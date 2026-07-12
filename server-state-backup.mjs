@@ -7,7 +7,8 @@ import { SCHEMA_MIGRATIONS } from './server-account-store.mjs';
 import {
   normalizeRoomsDocument,
   parseRoomsDocument,
-  ROOMS_FILE_VERSION
+  ROOMS_FILE_VERSION,
+  SUPPORTED_ROOMS_PROTOCOL_VERSIONS
 } from './server-room-persistence.mjs';
 import {
   loadReleaseIdentity,
@@ -251,7 +252,12 @@ export function validateReleaseBackupDocument(value) {
       return false;
     }
     if (typeof value.releaseSha !== 'string' || value.releaseSha !== value.releaseSha.toLowerCase()) return false;
-    validateReleaseIdentity(value, { allowDevelopment: false, requireFullSha: true });
+    validateReleaseIdentity(value, {
+      allowDevelopment: false,
+      requireFullSha: true,
+      allowedSchemaVersions: SCHEMA_MIGRATIONS.map((migration) => migration.version),
+      allowedProtocolVersions: [...SUPPORTED_ROOMS_PROTOCOL_VERSIONS]
+    });
     return true;
   } catch {
     return false;
@@ -266,9 +272,9 @@ function readMigrationRows(database) {
   return database.prepare('SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version').all();
 }
 
-export function validateSchemaMigrationHistory(database) {
+export function validateSchemaMigrationHistory(database, options = {}) {
   const rows = readMigrationRows(database);
-  if (rows.length !== SCHEMA_MIGRATIONS.length) {
+  if (rows.length < 1 || rows.length > SCHEMA_MIGRATIONS.length) {
     throw errorWithCode('SQLite schema migration history does not match this release.');
   }
   rows.forEach((row, index) => {
@@ -280,6 +286,9 @@ export function validateSchemaMigrationHistory(database) {
       throw errorWithCode('SQLite schema migration timestamp is invalid.');
     }
   });
+  if (options.requireCurrent !== false && rows.length !== SCHEMA_MIGRATIONS.length) {
+    throw errorWithCode('SQLite schema migration history does not match the current release.');
+  }
   return { schemaVersion: rows.at(-1).version, migrations: rows };
 }
 
@@ -292,7 +301,9 @@ export function inspectSqliteState(filePath, options = {}) {
     }
     const foreignKeyViolations = database.prepare('PRAGMA foreign_key_check').all();
     if (foreignKeyViolations.length > 0) throw errorWithCode('SQLite foreign-key verification failed.');
-    const migrationState = validateSchemaMigrationHistory(database);
+    const migrationState = validateSchemaMigrationHistory(database, {
+      requireCurrent: options.requireCurrentSchema !== false
+    });
     const schemaValidator = options.validateSchema;
     if (schemaValidator) {
       const result = schemaValidator(database, {
@@ -487,7 +498,7 @@ async function verifyPayloadDirectory(directoryPath, manifest, options = {}) {
   const databaseState = await validateSqliteFile(
     path.join(directoryPath, STATE_BACKUP_FILES.database),
     'Backup SQLite database',
-    { validateSchema: options.validateSchema }
+    { validateSchema: options.validateSchema, requireCurrentSchema: false }
   );
   const roomsState = await validateJsonFile(
     path.join(directoryPath, STATE_BACKUP_FILES.rooms),

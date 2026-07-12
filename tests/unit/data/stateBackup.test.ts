@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { createAccountStore, SCHEMA_MIGRATIONS } from '../../../server-account-store.mjs';
-import { writeReleaseIdentity } from '../../../server-release.mjs';
+import { CURRENT_PROTOCOL_VERSION, writeReleaseIdentity } from '../../../server-release.mjs';
 import {
   createStateBackup,
   inspectSqliteState,
@@ -108,6 +109,35 @@ describe('verified state backups', () => {
     });
   }
 
+  async function rewriteBackupAsHistoricalSchemaOne(backupDirectory: string) {
+    const databaseFile = path.join(backupDirectory, STATE_BACKUP_FILES.database);
+    const releaseFile = path.join(backupDirectory, STATE_BACKUP_FILES.release);
+    const manifestFile = path.join(backupDirectory, STATE_BACKUP_FILES.manifest);
+    const database = new DatabaseSync(databaseFile);
+    database.exec(`
+      DROP TABLE children;
+      DROP TABLE parents;
+      DROP TABLE invite_codes;
+      ALTER TABLE games DROP COLUMN finished_by_ai;
+      DELETE FROM schema_migrations WHERE version = 2;
+    `);
+    database.close();
+
+    const release = JSON.parse(await fs.readFile(releaseFile, 'utf8'));
+    release.schemaVersion = 1;
+    await fs.writeFile(releaseFile, `${JSON.stringify(release, null, 2)}\n`, 'utf8');
+
+    const manifest = JSON.parse(await fs.readFile(manifestFile, 'utf8'));
+    manifest.metadata.schemaVersion = 1;
+    manifest.metadata.database.schemaVersion = 1;
+    for (const entry of manifest.files) {
+      const data = await fs.readFile(path.join(backupDirectory, entry.name));
+      entry.size = data.byteLength;
+      entry.sha256 = crypto.createHash('sha256').update(data).digest('hex');
+    }
+    await fs.writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  }
+
   it('creates an atomic fixed-layout backup and verifies hashes, semantics, SQLite, and private modes', async () => {
     const result = await createBackup();
     const names = (await fs.readdir(result.backupDirectory)).sort();
@@ -207,6 +237,11 @@ describe('verified state backups', () => {
     };
     expect(validateRoomsBackupDocument(invalidV2Format)).toBe(false);
     expect(validateRoomsBackupDocument({ ...invalidV2Format, format: 'valid', protocolVersion: 0 })).toBe(false);
+    expect(validateRoomsBackupDocument({
+      ...invalidV2Format,
+      format: 'valid',
+      protocolVersion: CURRENT_PROTOCOL_VERSION + 1
+    })).toBe(false);
     expect(
       validateRoomsBackupDocument({ ...invalidV2Format, format: 'x'.repeat(65), protocolVersion: 1 })
     ).toBe(false);
@@ -248,6 +283,10 @@ describe('verified state backups', () => {
       expect(validateReleaseBackupDocument(value), label).toBe(false);
     }
     expect(validateReleaseBackupDocument({ ...releaseIdentity(), releaseSha: 'development' })).toBe(false);
+    expect(validateReleaseBackupDocument({
+      ...releaseIdentity(),
+      protocolVersion: CURRENT_PROTOCOL_VERSION + 1
+    })).toBe(false);
   });
 
   it('rejects missing, empty, discontinuous, or malformed migration histories and async validators', async () => {
@@ -361,6 +400,46 @@ describe('verified state backups', () => {
     );
     database.close();
     await expect(createBackup('future-migration')).rejects.toThrow(/does not match this release/i);
+  });
+
+  it('verifies and restores a checksum-valid historical migration prefix for long-term retention', async () => {
+    const backup = await createBackup('historical-prefix');
+    await rewriteBackupAsHistoricalSchemaOne(backup.backupDirectory);
+
+    const verified = await verifyStateBackup(backup.backupDirectory);
+    expect(verified.metadata.schemaVersion).toBe(1);
+    expect(verified.metadata.database.schemaVersion).toBe(1);
+    expect(inspectSqliteState(path.join(backup.backupDirectory, STATE_BACKUP_FILES.database), {
+      requireCurrentSchema: false
+    })).toMatchObject({ schemaVersion: 1, integrityCheck: 'ok', foreignKeyCheck: 'ok' });
+    expect(() => inspectSqliteState(path.join(backup.backupDirectory, STATE_BACKUP_FILES.database))).toThrow(/current release/i);
+
+    const restored = await restoreStateBackup(backup.backupDirectory, {
+      destinationDirectory: path.join(tempDirectory, 'historical-restore'),
+      livePaths: []
+    });
+    expect(inspectSqliteState(restored.databasePath, { requireCurrentSchema: false }).schemaVersion).toBe(1);
+    expect(JSON.parse(await fs.readFile(restored.releasePath, 'utf8')).schemaVersion).toBe(1);
+
+    const migratedCopy = await createAccountStore({ filePath: restored.databasePath });
+    migratedCopy.close();
+    expect(inspectSqliteState(restored.databasePath).schemaVersion).toBe(2);
+    expect((await verifyStateBackup(backup.backupDirectory)).metadata.schemaVersion).toBe(1);
+  });
+
+  it('refuses to create a live backup from a stale migration prefix', async () => {
+    const database = new DatabaseSync(databasePath);
+    database.prepare('DELETE FROM schema_migrations WHERE version = 2').run();
+    database.close();
+    const destinationDirectory = path.join(tempDirectory, 'stale-live-backup');
+    await expect(createStateBackup({
+      databasePath,
+      roomsPath,
+      releasePath,
+      destinationDirectory,
+      now: fixedTimestamp
+    })).rejects.toThrow(/current release/i);
+    await expect(fs.lstat(destinationDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('requires the baked source release checksum before creating a backup', async () => {
