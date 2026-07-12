@@ -86,7 +86,9 @@ function spawnAdmissionChild(args) {
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   const done = new Promise((resolve, reject) => {
     child.once('error', reject);
-    child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
+    // `exit` can precede the final pipe data event. `close` is emitted only
+    // after the child and all stdio handles close, so collected evidence is complete.
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
   return { child, done };
 }
