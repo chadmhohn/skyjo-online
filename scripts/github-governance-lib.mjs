@@ -140,87 +140,66 @@ export function workflowTokenPermissions() {
 const CHECK_RUN_PAGE_LIMIT = 100;
 const CHECK_RUN_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/;
 
-function completedAtTimestamp(value) {
-  if (typeof value !== 'string') throw new Error('Duplicate required checks have an invalid completion timestamp.');
+function completedAtTimestamp(value, context) {
+  if (typeof value !== 'string') throw new Error(`Required check ${context} has an invalid completion timestamp.`);
   const match = CHECK_RUN_TIMESTAMP.exec(value);
-  if (!match) throw new Error('Duplicate required checks have an invalid completion timestamp.');
+  if (!match) throw new Error(`Required check ${context} has an invalid completion timestamp.`);
   const timestamp = Date.parse(value);
   const expected = `${match[1]}.${(match[2] || '').padEnd(3, '0')}Z`;
   if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== expected) {
-    throw new Error('Duplicate required checks have an invalid completion timestamp.');
+    throw new Error(`Required check ${context} has an invalid completion timestamp.`);
   }
   return timestamp;
 }
 
+function validateRequiredCheck(check, context, mainSha, checkIds) {
+  if (!Number.isSafeInteger(check?.id) || check.id < 1 || checkIds.has(check.id)) {
+    throw new Error(`Required check ${context} has an invalid or repeated check-run identity.`);
+  }
+  checkIds.add(check.id);
+  if (check.head_sha !== mainSha) {
+    throw new Error(`Required check ${context} does not belong to current main.`);
+  }
+  if (check.status !== 'completed') {
+    throw new Error(`Required check ${context} is not settled on current main.`);
+  }
+  const completedAt = completedAtTimestamp(check.completed_at, context);
+  if (!Number.isSafeInteger(check.app?.id) || check.app.id < 1) {
+    throw new Error(`Required check ${context} has no trustworthy GitHub App identity.`);
+  }
+  return { check, completedAt };
+}
+
 export function checkRunIntegrations(checkRuns, mainSha) {
   if (!checkRuns || !Array.isArray(checkRuns.check_runs)) throw new Error('Current main check-run response is invalid.');
-  if (checkRuns.check_runs.length > CHECK_RUN_PAGE_LIMIT) {
-    throw new Error('Current main check runs exceed the bounded governance preflight response.');
+  if (
+    !Number.isSafeInteger(checkRuns.total_count) || checkRuns.total_count < 0 ||
+    checkRuns.total_count > CHECK_RUN_PAGE_LIMIT
+  ) {
+    throw new Error('Current main check-run count is invalid or exceeds the bounded governance preflight response.');
   }
-  if (checkRuns.total_count !== undefined) {
-    if (!Number.isSafeInteger(checkRuns.total_count) || checkRuns.total_count < 0) {
-      throw new Error('Current main check-run count is invalid.');
-    }
-    if (checkRuns.total_count > checkRuns.check_runs.length) {
-      throw new Error('Current main check runs exceed the bounded governance preflight response.');
-    }
-    if (checkRuns.total_count !== checkRuns.check_runs.length) {
-      throw new Error('Current main check-run count does not match the bounded response.');
-    }
+  if (checkRuns.check_runs.length > CHECK_RUN_PAGE_LIMIT || checkRuns.total_count !== checkRuns.check_runs.length) {
+    throw new Error('Current main check-run count does not match the bounded response.');
   }
   const integrationIds = new Map();
+  const checkIds = new Set();
   for (const context of REQUIRED_CHECKS) {
     const matches = checkRuns.check_runs.filter((check) => check.name === context);
     if (matches.length === 0) throw new Error(`Required check ${context} is not represented on current main.`);
-    if (matches.length === 1) {
-      const [check] = matches;
-      if (check.status !== 'completed' || check.conclusion !== 'success') {
-        throw new Error(`Required check ${context} is not green on current main.`);
-      }
-      if (!Number.isSafeInteger(check.app?.id) || check.app.id < 1) {
-        throw new Error(`Required check ${context} has no trustworthy GitHub App identity.`);
-      }
-      if (check.head_sha !== undefined && check.head_sha !== mainSha) {
-        throw new Error(`Required check ${context} does not belong to current main.`);
-      }
-      integrationIds.set(context, check.app.id);
-      continue;
-    }
-
-    const appIds = new Set();
-    const checkIds = new Set();
-    const completionTimestamps = new Set();
-    let latest = null;
-    for (const check of matches) {
-      if (!Number.isSafeInteger(check.id) || check.id < 1 || checkIds.has(check.id)) {
-        throw new Error(`Duplicate required check ${context} has an invalid or repeated check-run identity.`);
-      }
-      checkIds.add(check.id);
-      if (!Number.isSafeInteger(check.app?.id) || check.app.id < 1) {
-        throw new Error(`Required check ${context} has no trustworthy GitHub App identity.`);
-      }
-      appIds.add(check.app.id);
-      if (check.head_sha !== mainSha) {
-        throw new Error(`Duplicate required check ${context} does not belong to current main.`);
-      }
-      if (check.status !== 'completed') {
-        throw new Error(`Duplicate required check ${context} is not settled on current main.`);
-      }
-      const completedAt = completedAtTimestamp(check.completed_at);
-      if (completionTimestamps.has(completedAt)) {
-        throw new Error(`Duplicate required check ${context} has no unique newest completion.`);
-      }
-      completionTimestamps.add(completedAt);
-      if (!latest || completedAt > latest.completedAt) latest = { check, completedAt };
-    }
+    const validated = matches.map((check) => validateRequiredCheck(check, context, mainSha, checkIds));
+    const appIds = new Set(validated.map(({ check }) => check.app.id));
     if (appIds.size !== 1) {
       throw new Error(`Duplicate required check ${context} has conflicting GitHub App identities.`);
     }
-    const check = latest.check;
-    if (check.status !== 'completed' || check.conclusion !== 'success') {
+    const newestTimestamp = Math.max(...validated.map(({ completedAt }) => completedAt));
+    const newest = validated.filter(({ completedAt }) => completedAt === newestTimestamp);
+    if (newest.length !== 1) {
+      throw new Error(`Duplicate required check ${context} has no unique newest completion.`);
+    }
+    if (newest[0].check.conclusion !== 'success') {
       throw new Error(`Required check ${context} is not green on current main.`);
     }
-    integrationIds.set(context, check.app.id);
+    integrationIds.set(context, newest[0].check.app.id);
   }
   return integrationIds;
 }

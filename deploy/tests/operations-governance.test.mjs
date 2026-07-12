@@ -303,7 +303,7 @@ test('governance apply preflights green main checks before its first mutation', 
     requests.push({ method, endpoint });
     if (endpoint === '/repos/owner/repo') return { full_name: 'owner/repo', default_branch: 'main', owner: repositoryOwner };
     if (endpoint.endsWith('/commits/main')) return { sha: releaseSha };
-    if (endpoint.includes('/check-runs')) return { check_runs: [] };
+    if (endpoint.includes('/check-runs')) return requiredCheckResponse({ total_count: 0, check_runs: [] });
     throw new Error('unexpected API request');
   };
   await assert.rejects(reconcileGithubGovernance({
@@ -318,6 +318,10 @@ test('governance duplicate checks accept only the unique newest success from one
   const context = REQUIRED_CHECKS[0];
   response.check_runs.push(requiredCheckRun(context, 100, {
     conclusion: 'failure',
+    completed_at: '2026-07-12T19:20:00Z'
+  }));
+  response.check_runs.push(requiredCheckRun(context, 101, {
+    conclusion: 'cancelled',
     completed_at: '2026-07-12T19:20:00Z'
   }));
   response.total_count = response.check_runs.length;
@@ -393,18 +397,42 @@ test('governance duplicate checks reject mixed apps, stale heads, and malformed 
   assert.throws(() => checkRunIntegrations(staleSingle, releaseSha), /does not belong to current main/);
 });
 
+test('governance validates every singleton identity, head, status, timestamp, and app', () => {
+  const invalidSingletons = [
+    { mutate: (check) => { delete check.id; }, expected: /check-run identity/ },
+    { mutate: (check) => { check.id = 0; }, expected: /check-run identity/ },
+    { mutate: (check) => { delete check.head_sha; }, expected: /does not belong to current main/ },
+    { mutate: (check) => { check.head_sha = 'b'.repeat(40); }, expected: /does not belong to current main/ },
+    { mutate: (check) => { check.status = 'in_progress'; check.completed_at = null; }, expected: /not settled/ },
+    { mutate: (check) => { delete check.completed_at; }, expected: /completion timestamp/ },
+    { mutate: (check) => { check.completed_at = 'not-a-timestamp'; }, expected: /completion timestamp/ },
+    { mutate: (check) => { delete check.app; }, expected: /trustworthy GitHub App/ },
+    { mutate: (check) => { check.app.id = 0; }, expected: /trustworthy GitHub App/ },
+    { mutate: (check) => { check.conclusion = 'failure'; }, expected: /not green/ }
+  ];
+  for (const { mutate, expected } of invalidSingletons) {
+    const response = requiredCheckResponse();
+    mutate(response.check_runs[0]);
+    assert.throws(() => checkRunIntegrations(response, releaseSha), expected);
+  }
+});
+
 test('governance check discovery rejects incomplete, oversized, and invalid bounded responses', () => {
   const incomplete = requiredCheckResponse({ total_count: REQUIRED_CHECKS.length + 1 });
-  assert.throws(() => checkRunIntegrations(incomplete, releaseSha), /exceed the bounded/);
+  assert.throws(() => checkRunIntegrations(incomplete, releaseSha), /does not match/);
 
   const shortCount = requiredCheckResponse({ total_count: REQUIRED_CHECKS.length - 1 });
   assert.throws(() => checkRunIntegrations(shortCount, releaseSha), /does not match/);
 
   const invalidCount = requiredCheckResponse({ total_count: '9' });
-  assert.throws(() => checkRunIntegrations(invalidCount, releaseSha), /count is invalid/);
+  assert.throws(() => checkRunIntegrations(invalidCount, releaseSha), /count is invalid or exceeds/);
+
+  const missingCount = requiredCheckResponse();
+  delete missingCount.total_count;
+  assert.throws(() => checkRunIntegrations(missingCount, releaseSha), /count is invalid or exceeds/);
 
   const oversizedRuns = Array.from({ length: 101 }, (_, index) => ({ name: `unrelated-${index}` }));
-  assert.throws(() => checkRunIntegrations({ total_count: 101, check_runs: oversizedRuns }, releaseSha), /exceed the bounded/);
+  assert.throws(() => checkRunIntegrations({ total_count: 101, check_runs: oversizedRuns }, releaseSha), /count is invalid or exceeds/);
 });
 
 test('governance apply rejects ambiguous managed rulesets before its first mutation', async () => {
@@ -413,13 +441,7 @@ test('governance apply rejects ambiguous managed rulesets before its first mutat
     requests.push({ method, endpoint });
     if (endpoint === '/repos/owner/repo') return { full_name: 'owner/repo', default_branch: 'main', owner: repositoryOwner };
     if (endpoint.endsWith('/commits/main')) return { sha: releaseSha };
-    if (endpoint.includes('/check-runs')) {
-      return {
-        check_runs: REQUIRED_CHECKS.map((name) => ({
-          name, status: 'completed', conclusion: 'success', app: { id: 15368 }
-        }))
-      };
-    }
+    if (endpoint.includes('/check-runs')) return requiredCheckResponse();
     if (endpoint.endsWith('/actions/permissions/workflow')) {
       return { default_workflow_permissions: 'read', can_approve_pull_request_reviews: false };
     }
@@ -456,13 +478,7 @@ test('governance apply binds checks to their app and verifies detailed settings 
       return { ...repository };
     }
     if (endpoint.endsWith('/commits/main')) return { sha: releaseSha };
-    if (endpoint.includes('/check-runs')) {
-      return {
-        check_runs: REQUIRED_CHECKS.map((name) => ({
-          name, status: 'completed', conclusion: 'success', app: { id: 15368 }
-        }))
-      };
-    }
+    if (endpoint.includes('/check-runs')) return requiredCheckResponse();
     if (endpoint.endsWith('/actions/permissions/workflow')) {
       if (method === 'PUT') Object.assign(workflowToken, body);
       return { ...workflowToken };
