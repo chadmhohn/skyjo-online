@@ -283,7 +283,9 @@ test('unrelated failed units are rejected before systemctl and exact-unit comman
   assert.equal(commandLog.length, 1);
   assert.equal(commandLog[0][0], 'show');
   assert.equal(commandLog[0].at(-1), productionSmokeUnit);
-  assert(commandLog[0].slice(1, -1).every((argument) => argument === '--no-pager' || argument.startsWith('--property=')));
+  assert(commandLog[0].includes('--all'));
+  assert(commandLog[0].slice(1, -1).every((argument) =>
+    argument === '--no-pager' || argument === '--all' || argument.startsWith('--property=')));
 });
 
 test('an unsafe certification remains an explicit cleanup aggregate and later cleanup still runs', async () => {

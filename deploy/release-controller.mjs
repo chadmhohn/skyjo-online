@@ -430,7 +430,7 @@ function temporaryUnitError(contract, stage, message, options = {}) {
 
 async function inspectTemporaryUnit(contract, systemctl) {
   const output = await systemctl([
-    'show', '--no-pager',
+    'show', '--no-pager', '--all',
     ...temporaryUnitStateKeys.map((property) => `--property=${property}`),
     contract.unit
   ]);
