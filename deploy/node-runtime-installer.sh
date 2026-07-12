@@ -92,7 +92,7 @@ skyjo_install_node_archive() (
   /usr/bin/chmod 0700 "$runtime" || exit 1
 
   if [ "$owner" = - ] && [ -n "${SKYJO_NODE_INSTALL_TEST_READY_FILE:-}" ]; then
-    : > "$SKYJO_NODE_INSTALL_TEST_READY_FILE" || exit 1
+    printf '%s\n' "${BASHPID:-$$}" > "$SKYJO_NODE_INSTALL_TEST_READY_FILE" || exit 1
     /usr/bin/sleep "${SKYJO_NODE_INSTALL_TEST_PAUSE_SECONDS:-30}" || exit 1
   fi
 

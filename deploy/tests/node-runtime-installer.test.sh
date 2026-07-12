@@ -129,11 +129,18 @@ mkdir "$interrupt_root"
   skyjo_install_node_archive "$valid_archive" "$valid_digest" "$interrupt_root" \
     "$interrupt_root/node-v$version" "$archive_root" "$version" -
 ) &
-interrupt_pid=$!
-for _ in {1..200}; do [ -e "$interrupt_ready" ] && break; sleep 0.01; done
-[ -e "$interrupt_ready" ] || { printf '%s\n' 'Interrupted-install test never reached staging.' >&2; exit 1; }
-kill -TERM "$interrupt_pid"
-if wait "$interrupt_pid"; then
+interrupt_wrapper_pid=$!
+for _ in {1..200}; do [ -s "$interrupt_ready" ] && break; sleep 0.01; done
+[ -s "$interrupt_ready" ] || { printf '%s\n' 'Interrupted-install test never reached staging.' >&2; exit 1; }
+interrupt_pid=$(tr -d '[:space:]' < "$interrupt_ready")
+case "$interrupt_pid" in
+  ''|0|*[!0-9]*)
+    printf '%s\n' 'Interrupted-install test did not publish the installer PID.' >&2
+    exit 1
+    ;;
+esac
+kill -TERM -- "$interrupt_pid"
+if wait "$interrupt_wrapper_pid"; then
   printf '%s\n' 'Interrupted Node installation unexpectedly succeeded.' >&2
   exit 1
 fi
