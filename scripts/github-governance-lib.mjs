@@ -137,26 +137,69 @@ export function workflowTokenPermissions() {
   };
 }
 
-function checkRunIntegrations(checkRuns) {
+const CHECK_RUN_PAGE_LIMIT = 100;
+const CHECK_RUN_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/;
+
+function completedAtTimestamp(value, context) {
+  if (typeof value !== 'string') throw new Error(`Required check ${context} has an invalid completion timestamp.`);
+  const match = CHECK_RUN_TIMESTAMP.exec(value);
+  if (!match) throw new Error(`Required check ${context} has an invalid completion timestamp.`);
+  const timestamp = Date.parse(value);
+  const expected = `${match[1]}.${(match[2] || '').padEnd(3, '0')}Z`;
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== expected) {
+    throw new Error(`Required check ${context} has an invalid completion timestamp.`);
+  }
+  return timestamp;
+}
+
+function validateRequiredCheck(check, context, mainSha, checkIds) {
+  if (!Number.isSafeInteger(check?.id) || check.id < 1 || checkIds.has(check.id)) {
+    throw new Error(`Required check ${context} has an invalid or repeated check-run identity.`);
+  }
+  checkIds.add(check.id);
+  if (check.head_sha !== mainSha) {
+    throw new Error(`Required check ${context} does not belong to current main.`);
+  }
+  if (check.status !== 'completed') {
+    throw new Error(`Required check ${context} is not settled on current main.`);
+  }
+  const completedAt = completedAtTimestamp(check.completed_at, context);
+  if (!Number.isSafeInteger(check.app?.id) || check.app.id < 1) {
+    throw new Error(`Required check ${context} has no trustworthy GitHub App identity.`);
+  }
+  return { check, completedAt };
+}
+
+export function checkRunIntegrations(checkRuns, mainSha) {
   if (!checkRuns || !Array.isArray(checkRuns.check_runs)) throw new Error('Current main check-run response is invalid.');
   if (
-    Number.isSafeInteger(checkRuns.total_count) &&
-    checkRuns.total_count > checkRuns.check_runs.length
+    !Number.isSafeInteger(checkRuns.total_count) || checkRuns.total_count < 0 ||
+    checkRuns.total_count > CHECK_RUN_PAGE_LIMIT
   ) {
-    throw new Error('Current main check runs exceed the bounded governance preflight response.');
+    throw new Error('Current main check-run count is invalid or exceeds the bounded governance preflight response.');
+  }
+  if (checkRuns.check_runs.length > CHECK_RUN_PAGE_LIMIT || checkRuns.total_count !== checkRuns.check_runs.length) {
+    throw new Error('Current main check-run count does not match the bounded response.');
   }
   const integrationIds = new Map();
+  const checkIds = new Set();
   for (const context of REQUIRED_CHECKS) {
     const matches = checkRuns.check_runs.filter((check) => check.name === context);
-    if (matches.length !== 1) throw new Error(`Required check ${context} is not uniquely represented on current main.`);
-    const [check] = matches;
-    if (check.status !== 'completed' || check.conclusion !== 'success') {
+    if (matches.length === 0) throw new Error(`Required check ${context} is not represented on current main.`);
+    const validated = matches.map((check) => validateRequiredCheck(check, context, mainSha, checkIds));
+    const appIds = new Set(validated.map(({ check }) => check.app.id));
+    if (appIds.size !== 1) {
+      throw new Error(`Duplicate required check ${context} has conflicting GitHub App identities.`);
+    }
+    const newestTimestamp = Math.max(...validated.map(({ completedAt }) => completedAt));
+    const newest = validated.filter(({ completedAt }) => completedAt === newestTimestamp);
+    if (newest.length !== 1) {
+      throw new Error(`Duplicate required check ${context} has no unique newest completion.`);
+    }
+    if (newest[0].check.conclusion !== 'success') {
       throw new Error(`Required check ${context} is not green on current main.`);
     }
-    if (!Number.isSafeInteger(check.app?.id) || check.app.id < 1) {
-      throw new Error(`Required check ${context} has no trustworthy GitHub App identity.`);
-    }
-    integrationIds.set(context, check.app.id);
+    integrationIds.set(context, newest[0].check.app.id);
   }
   return integrationIds;
 }
@@ -265,7 +308,7 @@ export async function reconcileGithubGovernance({ repository, api, apply = false
   const mainCommit = await api('GET', `/repos/${target}/commits/main`);
   if (!/^[a-f0-9]{40}$/.test(mainCommit?.sha || '')) throw new Error('Current main commit identity is invalid.');
   const checks = await api('GET', `/repos/${target}/commits/${mainCommit.sha}/check-runs?filter=latest&per_page=100`);
-  const integrationIds = checkRunIntegrations(checks);
+  const integrationIds = checkRunIntegrations(checks, mainCommit.sha);
   const existingActions = await api('GET', `/repos/${target}/actions/permissions`);
   const existingWorkflowToken = await api('GET', `/repos/${target}/actions/permissions/workflow`);
   if (existingActions?.enabled !== true) throw new Error('GitHub Actions must already be enabled before governance activation.');
