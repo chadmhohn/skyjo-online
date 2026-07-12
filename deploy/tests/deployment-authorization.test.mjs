@@ -13,6 +13,7 @@ import {
   signDeploymentAuthorization,
   verifyDeploymentAuthorization
 } from '../deployment-authorization-lib.mjs';
+import { createSignedAuthorization } from '../sign-deployment-authorization.mjs';
 
 const now = 1_800_000_000;
 const sha = 'a'.repeat(40);
@@ -101,6 +102,9 @@ test('freshness, lifetime, signature encoding, and command whitespace fail close
   for (const malformed of [` ${command}`, `${command} `, command.replace('verify ', 'verify  '), `${command}\n`, command.replace('verify', 'verif\té')]) {
     assert.throws(() => parseSignedDeploymentCommand(malformed, { nowSeconds: now }), DeploymentAuthorizationError);
   }
+  for (const malformed of [`${command}\0`, command.split(' ').slice(0, -1).join(' '), `${command}${'x'.repeat(513)}`]) {
+    assert.throws(() => parseSignedDeploymentCommand(malformed, { nowSeconds: now }), DeploymentAuthorizationError);
+  }
 });
 
 test('public key files require safe ownership and permissions', async (context) => {
@@ -114,6 +118,46 @@ test('public key files require safe ownership and permissions', async (context) 
       await fs.chmod(keyPath, 0o666);
       await assert.rejects(loadAuthorizationPublicKey(keyPath, { expectedUid: uid }), DeploymentAuthorizationError);
     } else context.diagnostic('POSIX mode rejection is exercised in Linux CI.');
+
+    const symlinkPath = path.join(root, 'linked.pem');
+    try {
+      await fs.symlink(keyPath, symlinkPath, 'file');
+      await assert.rejects(loadAuthorizationPublicKey(symlinkPath, { expectedUid: uid }), DeploymentAuthorizationError);
+    } catch (error) {
+      if (process.platform !== 'win32' || error.code !== 'EPERM') throw error;
+      context.diagnostic('Public-key symlink rejection is exercised in Linux CI.');
+    }
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('signer reads a safe Ed25519 private key and rejects the wrong key type', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-auth-signer-'));
+  try {
+    const privatePath = path.join(root, 'canary-private.pem');
+    await fs.writeFile(privatePath, canary.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+    const result = await createSignedAuthorization([
+      '--role', 'canary', '--command', 'verify', '--run-id', '555-1-canary',
+      '--release-sha', sha, '--artifact-sha256', digest, '--tag', '-',
+      '--key-id', 'canary-2026-07', '--private-key', privatePath, '--lifetime-seconds', '300'
+    ], { nowSeconds: now, expectedUid: process.getuid?.() });
+    assert.equal(result.signature.length, 86);
+    await verifyDeploymentAuthorization({
+      fields: fields({ runId: '555-1-canary', issuedAt: result.issuedAt, expiresAt: result.expiresAt }),
+      signature: result.signature,
+      keyring: { 'canary-2026-07': { role: 'canary', publicKey: canary.publicKey } },
+      nowSeconds: now
+    });
+
+    const rsaPath = path.join(root, 'rsa-private.pem');
+    const rsa = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    await fs.writeFile(rsaPath, rsa.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+    await assert.rejects(createSignedAuthorization([
+      '--role', 'canary', '--command', 'verify', '--run-id', '555-2-canary',
+      '--release-sha', sha, '--artifact-sha256', digest, '--tag', '-',
+      '--key-id', 'canary-2026-07', '--private-key', rsaPath
+    ], { nowSeconds: now, expectedUid: process.getuid?.() }), DeploymentAuthorizationError);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -136,6 +180,7 @@ test('replay ledger consumes once and a new run attempt is independent', async (
     }), /already consumed/);
     await first.complete();
     await assert.rejects(first.fail(), /already finalized/);
+    assert.equal(JSON.parse(await fs.readFile(first.recordPath, 'utf8')).status, 'completed');
     const retry = await beginAuthorizationUse({
       ledgerRoot: root,
       fields: fields({ runId: '123-2-canary' }),
@@ -144,7 +189,54 @@ test('replay ledger consumes once and a new run attempt is independent', async (
       expectedUid: process.getuid?.()
     });
     await retry.fail();
+    assert.equal(JSON.parse(await fs.readFile(retry.recordPath, 'utf8')).status, 'failed');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('replay ledger rejects unsafe roots and concurrent consumption has one winner', async (context) => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-auth-ledger-race-'));
+  const root = path.join(parent, 'ledger');
+  await fs.mkdir(root, { mode: 0o700 });
+  try {
+    const value = fields({ runId: '987-1-canary' });
+    const payloadSha256 = crypto.createHash('sha256').update(canonicalAuthorizationPayload(value, { nowSeconds: now }), 'ascii').digest('hex');
+    const attempts = await Promise.allSettled([
+      beginAuthorizationUse({ ledgerRoot: root, fields: value, payloadSha256, nowSeconds: now, expectedUid: process.getuid?.() }),
+      beginAuthorizationUse({ ledgerRoot: root, fields: value, payloadSha256, nowSeconds: now, expectedUid: process.getuid?.() })
+    ]);
+    assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1);
+    assert.equal(attempts.filter((attempt) => attempt.status === 'rejected').length, 1);
+    await attempts.find((attempt) => attempt.status === 'fulfilled').value.complete();
+
+    if (process.platform !== 'win32') {
+      const unsafe = path.join(parent, 'unsafe');
+      await fs.mkdir(unsafe, { mode: 0o755 });
+      await assert.rejects(beginAuthorizationUse({
+        ledgerRoot: unsafe,
+        fields: fields({ runId: '987-2-canary' }),
+        payloadSha256,
+        nowSeconds: now,
+        expectedUid: process.getuid?.()
+      }), DeploymentAuthorizationError);
+    } else context.diagnostic('Unsafe POSIX ledger mode is exercised in Linux CI.');
+
+    const link = path.join(parent, 'ledger-link');
+    try {
+      await fs.symlink(root, link, process.platform === 'win32' ? 'junction' : 'dir');
+      await assert.rejects(beginAuthorizationUse({
+        ledgerRoot: link,
+        fields: fields({ runId: '987-3-canary' }),
+        payloadSha256,
+        nowSeconds: now,
+        expectedUid: process.getuid?.()
+      }), DeploymentAuthorizationError);
+    } catch (error) {
+      if (process.platform !== 'win32' || error.code !== 'EPERM') throw error;
+      context.diagnostic('Ledger symlink rejection is exercised in Linux CI.');
+    }
+  } finally {
+    await fs.rm(parent, { recursive: true, force: true });
   }
 });
