@@ -101,6 +101,21 @@ test('only a proven dead stale owner can be reclaimed and live ownership is neve
   assert.deepEqual(await fs.readdir(stage), []);
 }));
 
+test('unsafe lock objects are rejected without following or removing them', { skip: process.platform === 'win32' }, async () => fixture(async (root) => {
+  const stage = path.join(root, runId);
+  const outside = path.join(root, 'outside');
+  await fs.mkdir(stage);
+  await fs.mkdir(outside);
+  const owner = path.join(outside, 'owner.json');
+  await fs.writeFile(owner, `${JSON.stringify({ pid: 999_999, token: 'c'.repeat(32), createdAt: 1_000 })}\n`);
+  await fs.symlink(outside, path.join(stage, '.upload.lock'), 'dir');
+  await assert.rejects(acquireUploadLock(stage, {
+    now: 1_000 + UPLOAD_LOCK_STALE_MS + 1,
+    isProcessAlive: () => false
+  }), /already active/);
+  assert.equal(await fs.readFile(owner, 'utf8'), `${JSON.stringify({ pid: 999_999, token: 'c'.repeat(32), createdAt: 1_000 })}\n`);
+}));
+
 test('abandoned-partial cleanup is bounded and refuses an unbounded stage', async () => fixture(async (root) => {
   const stage = path.join(root, runId);
   await fs.mkdir(stage);

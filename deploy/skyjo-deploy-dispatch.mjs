@@ -81,12 +81,16 @@ async function removeDeadUploadLock(lockDirectory, { now = Date.now(), isProcess
   let owner;
   let ownerStat;
   try {
-    [ownerText, ownerStat] = await Promise.all([fsp.readFile(ownerPath, 'utf8'), fsp.lstat(ownerPath)]);
+    const lockStat = await fsp.lstat(lockDirectory);
+    if (!lockStat.isDirectory() || lockStat.isSymbolicLink()) return false;
+    ownerStat = await fsp.lstat(ownerPath);
+    if (!ownerStat.isFile() || ownerStat.isSymbolicLink()) return false;
+    ownerText = await fsp.readFile(ownerPath, 'utf8');
     owner = JSON.parse(ownerText);
   } catch {
     return false;
   }
-  if (!ownerStat.isFile() || ownerStat.isSymbolicLink() || !Number.isSafeInteger(owner?.pid) || owner.pid < 1 ||
+  if (!Number.isSafeInteger(owner?.pid) || owner.pid < 1 ||
       typeof owner?.token !== 'string' || !/^[a-f0-9]{32}$/.test(owner.token) ||
       !Number.isSafeInteger(owner?.createdAt) || now - owner.createdAt < UPLOAD_LOCK_STALE_MS || isProcessAlive(owner.pid)) {
     return false;
@@ -140,6 +144,11 @@ export async function acquireUploadLock(stageDirectory, options = {}) {
   let released = false;
   return async () => {
     if (released) return;
+    const lockStat = await fsp.lstat(lockDirectory).catch(() => null);
+    const ownerStat = await fsp.lstat(ownerPath).catch(() => null);
+    if (!lockStat?.isDirectory() || lockStat.isSymbolicLink() || !ownerStat?.isFile() || ownerStat.isSymbolicLink()) {
+      throw new Error('Upload lock became unsafe before release.');
+    }
     const currentOwner = await fsp.readFile(ownerPath, 'utf8').catch(() => null);
     if (currentOwner !== ownerText) throw new Error('Upload lock ownership changed unexpectedly.');
     await fsp.unlink(ownerPath);
