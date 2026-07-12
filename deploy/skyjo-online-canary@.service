@@ -2,6 +2,7 @@
 Description=Skyjo isolated release canary %i
 After=network.target
 ConditionFileNotEmpty=/run/skyjo-online-canary/%i.env
+CollectMode=inactive
 
 [Service]
 Type=simple

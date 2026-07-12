@@ -366,6 +366,179 @@ export async function executeCanaryLifecycle(operations) {
   }
 }
 
+const temporaryUnitStateKeys = Object.freeze([
+  'Id', 'LoadState', 'ActiveState', 'SubState', 'Result', 'MainPID', 'ControlPID', 'Job',
+  'FragmentPath', 'DropInPaths', 'CollectMode'
+]);
+const temporaryUnitFragments = Object.freeze({
+  'skyjo-online-canary': '/etc/systemd/system/skyjo-online-canary@.service',
+  'skyjo-online-canary-smoke': '/etc/systemd/system/skyjo-online-canary-smoke@.service',
+  'skyjo-online-state-proof': '/etc/systemd/system/skyjo-online-state-proof@.service',
+  'skyjo-online-smoke': '/etc/systemd/system/skyjo-online-smoke@.service'
+});
+const temporaryUnitNamePattern = /^(skyjo-online-(?:canary|canary-smoke|state-proof|smoke))@[0-9]+-[0-9]+-(?:canary|production)\.service$/;
+
+function temporaryUnitContract(unit) {
+  const match = typeof unit === 'string' ? unit.match(temporaryUnitNamePattern) : null;
+  const fragmentPath = match && temporaryUnitFragments[match[1]];
+  return fragmentPath ? { unit, fragmentPath } : null;
+}
+
+export function parseCanaryUnitState(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 4096 || /[\0\r]/.test(value)) {
+    throw new Error('Canary unit state probe is malformed.');
+  }
+  const normalized = value.endsWith('\n') ? value.slice(0, -1) : value;
+  const lines = normalized.split('\n');
+  if (lines.length !== temporaryUnitStateKeys.length) throw new Error('Canary unit state probe has an invalid property count.');
+  const state = {};
+  for (const line of lines) {
+    const match = line.match(/^([A-Za-z]+)=(.*)$/);
+    if (!match || /[\u0000-\u001f\u007f]/.test(line) ||
+        !temporaryUnitStateKeys.includes(match[1]) || Object.hasOwn(state, match[1])) {
+      throw new Error('Canary unit state probe contains an invalid property.');
+    }
+    state[match[1]] = match[2];
+  }
+  if (temporaryUnitStateKeys.some((key) => !Object.hasOwn(state, key))) {
+    throw new Error('Canary unit state probe is incomplete.');
+  }
+  return Object.freeze(state);
+}
+
+function hasExactTemporaryUnitIdentity(state, contract) {
+  return state.Id === contract.unit && state.LoadState === 'loaded' && state.FragmentPath === contract.fragmentPath &&
+    state.DropInPaths === '' && state.CollectMode === 'inactive';
+}
+
+function hasNoTemporaryUnitWork(state) {
+  return state.MainPID === '0' && state.ControlPID === '0' && state.Job === '';
+}
+
+function isCleanTemporaryUnitState(state, contract) {
+  return hasExactTemporaryUnitIdentity(state, contract) && hasNoTemporaryUnitWork(state) &&
+    state.ActiveState === 'inactive' && state.SubState === 'dead' && state.Result === 'success';
+}
+
+function temporaryUnitError(contract, stage, message, options = {}) {
+  const error = new Error(message, options.cause ? { cause: options.cause } : undefined);
+  Object.defineProperty(error, 'canaryUnit', { value: contract.unit, enumerable: true });
+  Object.defineProperty(error, 'canaryUnitResetStage', { value: stage, enumerable: true });
+  if (options.state) Object.defineProperty(error, 'canaryUnitState', { value: options.state, enumerable: false });
+  return error;
+}
+
+async function inspectTemporaryUnit(contract, systemctl) {
+  const output = await systemctl([
+    'show', '--no-pager',
+    ...temporaryUnitStateKeys.map((property) => `--property=${property}`),
+    contract.unit
+  ]);
+  return parseCanaryUnitState(output);
+}
+
+function attachTemporaryUnitFinalState(error, state, contract) {
+  Object.defineProperty(error, 'canaryUnitFinalState', { value: state, enumerable: false });
+  if (!isCleanTemporaryUnitState(state, contract)) {
+    Object.defineProperty(error, 'canaryUnitFinalStateUnsafe', { value: true, enumerable: false });
+  }
+}
+
+async function resetFailedTemporaryUnit(contract, certificationError, systemctl) {
+  try {
+    await systemctl(['reset-failed', contract.unit]);
+  } catch (caught) {
+    Object.defineProperty(certificationError, 'canaryUnitResetError', {
+      value: normalizeError(caught), enumerable: false
+    });
+  }
+  try {
+    attachTemporaryUnitFinalState(certificationError, await inspectTemporaryUnit(contract, systemctl), contract);
+  } catch (caught) {
+    Object.defineProperty(certificationError, 'canaryUnitFinalStateProbeError', {
+      value: normalizeError(caught), enumerable: false
+    });
+  }
+}
+
+export async function certifyTemporaryUnitsClean(unitNames, {
+  systemctl = (args) => run('/usr/bin/systemctl', args)
+} = {}) {
+  const contracts = Array.isArray(unitNames) ? unitNames.map(temporaryUnitContract) : [];
+  if (contracts.length < 1 || contracts.length > 8 || contracts.some((contract) => !contract) ||
+      new Set(unitNames).size !== unitNames.length) {
+    throw new Error('Canary cleanup unit list is invalid.');
+  }
+  const results = [];
+  const certificationErrors = [];
+  for (const contract of contracts) {
+    let initialState;
+    try {
+      initialState = await inspectTemporaryUnit(contract, systemctl);
+    } catch (caught) {
+      certificationErrors.push(temporaryUnitError(
+        contract, 'initial-state-probe', 'Canary unit state could not be inspected safely.', { cause: normalizeError(caught) }
+      ));
+      continue;
+    }
+    if (isCleanTemporaryUnitState(initialState, contract)) {
+      results.push({ unit: contract.unit, status: 'clean' });
+      continue;
+    }
+    if (!hasExactTemporaryUnitIdentity(initialState, contract)) {
+      certificationErrors.push(temporaryUnitError(
+        contract, 'unsafe-state', 'Canary unit did not reach its exact terminal state.', { state: initialState }
+      ));
+      continue;
+    }
+
+    const hasUnexpectedResidue = ['active', 'activating', 'deactivating'].includes(initialState.ActiveState) ||
+      !hasNoTemporaryUnitWork(initialState);
+    if (hasUnexpectedResidue) {
+      const residueError = temporaryUnitError(
+        contract, 'unexpected-residue', 'Canary unit retained active process or job residue.', { state: initialState }
+      );
+      try { await systemctl(['stop', contract.unit]); }
+      catch (caught) {
+        Object.defineProperty(residueError, 'canaryUnitStopError', { value: normalizeError(caught), enumerable: false });
+      }
+      try {
+        const stoppedState = await inspectTemporaryUnit(contract, systemctl);
+        if (stoppedState.ActiveState === 'failed' &&
+            hasExactTemporaryUnitIdentity(stoppedState, contract) && hasNoTemporaryUnitWork(stoppedState)) {
+          await resetFailedTemporaryUnit(contract, residueError, systemctl);
+        } else {
+          attachTemporaryUnitFinalState(residueError, stoppedState, contract);
+        }
+      } catch (caught) {
+        Object.defineProperty(residueError, 'canaryUnitFinalStateProbeError', {
+          value: normalizeError(caught), enumerable: false
+        });
+      }
+      certificationErrors.push(residueError);
+      continue;
+    }
+
+    if (initialState.ActiveState !== 'failed') {
+      certificationErrors.push(temporaryUnitError(
+        contract, 'unsafe-state', 'Canary unit did not reach its exact terminal state.', { state: initialState }
+      ));
+      continue;
+    }
+
+    const failedStateError = temporaryUnitError(
+      contract, 'unexpected-failed', 'Canary unit unexpectedly entered the failed state.', { state: initialState }
+    );
+    await resetFailedTemporaryUnit(contract, failedStateError, systemctl);
+    certificationErrors.push(failedStateError);
+  }
+  if (certificationErrors.length === 1) throw certificationErrors[0];
+  if (certificationErrors.length > 1) {
+    throw new AggregateError(certificationErrors, 'One or more temporary units failed cleanup certification.');
+  }
+  return results;
+}
+
 async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
   const runDirectory = resolveWithin(PATHS.stage, runId);
   // prepareCandidate has already taken ownership from the upload identity. Keep
@@ -422,7 +595,7 @@ async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
     runStateProof: () => run('/usr/bin/systemctl', ['start', stateProofUnit]),
     verifySourceSnapshot: () => verifyPredeploySnapshot(snapshotDirectory, { expectedOwnerUid: 0, expectedOwnerGid: 0 }),
     stopServer: () => run('/usr/bin/systemctl', ['stop', serverUnit]),
-    resetUnits: () => run('/usr/bin/systemctl', ['reset-failed', serverUnit, smokeUnit, stateProofUnit]),
+    resetUnits: () => certifyTemporaryUnitsClean([serverUnit, smokeUnit, stateProofUnit]),
     removeEnvironment: () => fsp.rm(envPath, { force: true })
   });
 }
@@ -509,11 +682,30 @@ async function smokeProduction(releaseDirectory, identity, runId) {
     'SKYJO_SMOKE_BASE_URL=http://127.0.0.1:4180'
   ].join('\n') + '\n', { mode: 0o640 });
   await run('/usr/bin/chown', ['root:skyjo', envPath]);
-  try { await run('/usr/bin/systemctl', ['start', `skyjo-online-smoke@${runId}.service`]); }
-  finally {
-    await run('/usr/bin/systemctl', ['reset-failed', `skyjo-online-smoke@${runId}.service`]).catch(() => {});
-    await fsp.rm(envPath, { force: true });
+  const smokeUnit = `skyjo-online-smoke@${runId}.service`;
+  let primaryError;
+  try { await run('/usr/bin/systemctl', ['start', smokeUnit]); }
+  catch (caught) { primaryError = normalizeError(caught); }
+  const cleanupErrors = [];
+  for (const [stage, cleanup] of [
+    ['certify-unit', () => certifyTemporaryUnitsClean([smokeUnit])],
+    ['remove-environment', () => fsp.rm(envPath, { force: true })]
+  ]) {
+    try { await cleanup(); }
+    catch (caught) {
+      const error = normalizeError(caught);
+      Object.defineProperty(error, 'productionSmokeCleanupStage', { value: stage, enumerable: true });
+      cleanupErrors.push(error);
+    }
   }
+  if (primaryError) {
+    if (cleanupErrors.length > 0) {
+      Object.defineProperty(primaryError, 'productionSmokeCleanupErrors', { value: cleanupErrors, enumerable: false });
+    }
+    throw primaryError;
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, 'Production smoke cleanup did not complete safely.');
 }
 
 async function rollbackLinks(failedRelease, oldRelease, runId) {
@@ -733,6 +925,7 @@ async function assertEffectiveTemplate(unit, fragmentPath, expectedUser, expecte
     ['DropInPaths', ''],
     ['User', expectedUser],
     ['Group', expectedGroup],
+    ['CollectMode', 'inactive'],
     ['NoNewPrivileges', 'yes'],
     ['ProtectSystem', 'strict']
   ]);
@@ -838,19 +1031,19 @@ async function selfTest() {
 
   const unitContracts = [
     ['/etc/systemd/system/skyjo-online-canary@.service', {
-      required: ['User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
+      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
       forbidden: ['EnvironmentFile=/etc/skyjo-online.env', 'User=skyjo']
     }],
     ['/etc/systemd/system/skyjo-online-canary-smoke@.service', {
-      required: ['User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
+      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
       forbidden: ['EnvironmentFile=/etc/skyjo-online.env', 'User=skyjo']
     }],
     ['/etc/systemd/system/skyjo-online-state-proof@.service', {
-      required: ['User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
+      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
       forbidden: ['EnvironmentFile=/etc/skyjo-online.env', 'User=skyjo', 'IPAddressAllow=localhost']
     }],
     ['/etc/systemd/system/skyjo-online-smoke@.service', {
-      required: ['User=skyjo', 'Group=skyjo', 'EnvironmentFile=/etc/skyjo-online.env', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=true', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost'],
+      required: ['CollectMode=inactive', 'User=skyjo', 'Group=skyjo', 'EnvironmentFile=/etc/skyjo-online.env', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=true', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost'],
       forbidden: ['User=skyjo-canary']
     }]
   ];
