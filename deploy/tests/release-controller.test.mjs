@@ -327,11 +327,26 @@ test('operational assets keep the safety contracts explicit', async () => {
   assert.match(bootstrap, /activation_steps='activation_stop activation_prepare_state activation_reload activation_start activation_health activation_proof'/);
   const adoptionStart = bootstrap.indexOf('adopt_legacy()');
   const adoptionBackup = bootstrap.indexOf('skyjo_prepare_unit_backup', adoptionStart);
+  const numericStagingCleanup = 'skyjo_cleanup_legacy_staging "$APP_ROOT/releases" "$sha" 0 0 4';
+  const adoptionStagingCleanup = bootstrap.indexOf(numericStagingCleanup, adoptionStart);
   const adoptionTargetPublish = bootstrap.indexOf('/usr/bin/mv -T "$tmp" "$target"', adoptionStart);
-  const adoptionCurrent = bootstrap.indexOf('skyjo_ensure_legacy_link "$APP_ROOT/current"', adoptionStart);
-  const adoptionPrevious = bootstrap.indexOf('skyjo_ensure_legacy_link "$APP_ROOT/previous"', adoptionStart);
-  assert.ok(adoptionBackup > adoptionStart && adoptionTargetPublish > adoptionBackup && adoptionCurrent > adoptionTargetPublish && adoptionPrevious > adoptionCurrent,
-    'adoption must back up first and resumably publish target, current, then previous');
+  const numericCurrentLink = 'skyjo_ensure_legacy_link "$APP_ROOT/current" "releases/$sha" 0 0';
+  const numericPreviousLink = 'skyjo_ensure_legacy_link "$APP_ROOT/previous" "releases/$sha" 0 0';
+  const adoptionCurrent = bootstrap.indexOf(numericCurrentLink, adoptionStart);
+  const adoptionPrevious = bootstrap.indexOf(numericPreviousLink, adoptionStart);
+  assert.ok(adoptionBackup > adoptionStart && adoptionStagingCleanup > adoptionBackup && adoptionTargetPublish > adoptionStagingCleanup &&
+    adoptionCurrent > adoptionTargetPublish && adoptionPrevious > adoptionCurrent,
+    'adoption must back up, clean interrupted staging, and resumably publish target, current, then previous');
+  assert.equal(bootstrap.indexOf(numericStagingCleanup, adoptionStagingCleanup + numericStagingCleanup.length), -1,
+    'installed bootstrap must have exactly one numeric interrupted-staging cleanup call site');
+  assert.equal(bootstrap.indexOf(numericCurrentLink, adoptionCurrent + numericCurrentLink.length), -1,
+    'installed bootstrap must have exactly one numeric current-link call site');
+  assert.equal(bootstrap.indexOf(numericPreviousLink, adoptionPrevious + numericPreviousLink.length), -1,
+    'installed bootstrap must have exactly one numeric previous-link call site');
+  assert.doesNotMatch(bootstrap, /skyjo_ensure_legacy_link "\$APP_ROOT\/(?:current|previous)" "releases\/\$sha" root root/,
+    'installed bootstrap must not pass account names to the numeric link ownership contract');
+  assert.doesNotMatch(bootstrap, /skyjo_cleanup_legacy_staging "\$APP_ROOT\/releases" "\$sha" root root/,
+    'installed bootstrap must not pass account names to the numeric staging ownership contract');
   assert.match(service, /User=skyjo/);
   assert.match(service, /\/opt\/skyjo-online\/node\/bin\/node/);
   assert.match(canary, /^User=skyjo-canary$/m);
