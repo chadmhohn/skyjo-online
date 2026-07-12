@@ -258,6 +258,21 @@ async function inspectRooms(roomsPath) {
   };
 }
 
+export async function inspectRuntimeState({ databasePath, roomsPath }) {
+  const databaseSource = resolveSafe(databasePath, 'SQLite runtime path');
+  const roomsSource = resolveSafe(roomsPath, 'Room-state runtime path');
+  await Promise.all([
+    assertNoLinkedPathComponents(databaseSource),
+    assertNoLinkedPathComponents(roomsSource),
+    regularFile(databaseSource, 'SQLite runtime state'),
+    regularFile(roomsSource, 'Room-state runtime state')
+  ]);
+  return {
+    database: inspectDatabase(databaseSource),
+    rooms: await inspectRooms(roomsSource)
+  };
+}
+
 function normalizeSource(source) {
   if (!hasExactKeys(source, ['releaseSha', 'legacy']) || !fullShaPattern.test(source.releaseSha) || typeof source.legacy !== 'boolean') {
     throw new Error('Snapshot source metadata is invalid.');

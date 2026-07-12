@@ -1,4 +1,19 @@
 #!/bin/sh
 set -eu
-exec /usr/bin/flock --exclusive --nonblock /run/lock/skyjo-release-controller.lock \
-  /opt/skyjo-online/node/bin/node /usr/local/lib/skyjo-online/release-controller.mjs "$@"
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 077
+
+for directory in /usr/local /usr/local/lib /usr/local/lib/skyjo-online /usr/local/share /usr/local/share/skyjo-online; do
+  [ -d "$directory" ] && [ ! -L "$directory" ] || exit 70
+  [ "$(/usr/bin/stat -c %u -- "$directory")" = 0 ] && [ "$(/usr/bin/stat -c %g -- "$directory")" = 0 ] || exit 70
+  mode=$(/usr/bin/stat -c %a -- "$directory")
+  [ $(((0$mode) & 0022)) -eq 0 ] || exit 70
+done
+manifest=/usr/local/share/skyjo-online/delivery-assets.sha256
+launcher=/usr/local/lib/skyjo-online/skyjo-controller-launch
+[ -f "$manifest" ] && [ ! -L "$manifest" ] && [ "$(/usr/bin/stat -c %u -- "$manifest")" = 0 ] && [ "$(/usr/bin/stat -c %g -- "$manifest")" = 0 ] && [ "$(/usr/bin/stat -c %a -- "$manifest")" = 444 ] || exit 70
+[ -f "$launcher" ] && [ ! -L "$launcher" ] && [ "$(/usr/bin/stat -c %u -- "$launcher")" = 0 ] && [ "$(/usr/bin/stat -c %g -- "$launcher")" = 0 ] && [ "$(/usr/bin/stat -c %a -- "$launcher")" = 555 ] || exit 70
+/usr/bin/sha256sum --check --strict "$manifest" >/dev/null || exit 70
+exec /usr/bin/flock --exclusive --nonblock --no-fork --conflict-exit-code 73 /run/lock/skyjo-release-controller.lock \
+  /usr/local/lib/skyjo-online/skyjo-controller-launch "$@"

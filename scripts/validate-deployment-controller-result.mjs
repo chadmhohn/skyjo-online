@@ -9,7 +9,7 @@ const releaseTagPattern = /^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-
 
 function parseCanonicalObject(value) {
   if (typeof value !== 'string' || value.length < 1 || value.length > 2048 || value.trim() !== value || /[\r\n]/.test(value)) {
-    throw new Error('Controller result must be one bounded JSON line.');
+    throw new Error('Controller result must be one bounded canonical JSON line.');
   }
   let result;
   try { result = JSON.parse(value); }
@@ -30,13 +30,13 @@ export function validateDeploymentControllerResult(value, { mode, releaseSha, ta
     if (!releaseTagPattern.test(tag || '') || result.promoted !== releaseSha || result.tag !== tag) {
       throw new Error('Promotion controller result does not match the requested release and tag.');
     }
-    const normalBackup = typeof result.backup === 'string' &&
+    const normal = typeof result.backup === 'string' &&
       new RegExp(`^[0-9]{8}T[0-9]{6}Z-pre-${releaseSha}$`).test(result.backup) &&
       value === JSON.stringify({ promoted: releaseSha, tag, backup: result.backup });
     const idempotent = result.idempotent === true &&
       value === JSON.stringify({ promoted: releaseSha, tag, idempotent: true });
-    if (!normalBackup && !idempotent) throw new Error('Promotion controller result has an invalid completion envelope.');
-    return normalBackup
+    if (!normal && !idempotent) throw new Error('Promotion controller result has an invalid completion envelope.');
+    return normal
       ? { promoted: releaseSha, tag, backup: result.backup }
       : { promoted: releaseSha, tag, idempotent: true };
   }
@@ -48,7 +48,7 @@ export function validateDeploymentControllerResult(value, { mode, releaseSha, ta
   throw new Error('Controller result mode is unsupported.');
 }
 
-async function readStdin(maxBytes = 2048) {
+async function readTerminalLine(maxBytes = 2049) {
   const chunks = [];
   let bytes = 0;
   for await (const chunk of process.stdin) {
@@ -56,7 +56,11 @@ async function readStdin(maxBytes = 2048) {
     if (bytes > maxBytes) throw new Error('Controller result exceeds the size limit.');
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '');
+  const raw = Buffer.concat(chunks).toString('utf8');
+  if (!raw.endsWith('\n') || raw.includes('\r') || raw.slice(0, -1).includes('\n')) {
+    throw new Error('Controller result is not exactly one LF-terminated line.');
+  }
+  return raw.slice(0, -1);
 }
 
 function parseArguments(argv) {
@@ -70,7 +74,7 @@ const direct = process.argv[1] && path.resolve(process.argv[1]) === path.resolve
 if (direct) {
   try {
     const expected = parseArguments(process.argv.slice(2));
-    const result = validateDeploymentControllerResult(await readStdin(), expected);
+    const result = validateDeploymentControllerResult(await readTerminalLine(), expected);
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch {
     process.stderr.write('Deployment controller result validation failed.\n');

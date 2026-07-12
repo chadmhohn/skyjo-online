@@ -53,6 +53,7 @@ test('successful canaries clean up and cleanup failures remain explicit', async 
     assert.equal(error, failedAndDirty.primary);
     assert.deepEqual(error.canaryCleanupErrors, [failedAndDirty.cleanup]);
     assert.equal(error.canaryCleanupErrors[0].canaryCleanupStage, 'stop-server');
+    assert.equal(error.preserveRunRoot, true);
     return true;
   });
   assert.deepEqual(failedAndDirty.calls.slice(-3), cleanupStages);

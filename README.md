@@ -58,7 +58,10 @@ Hardened systemd files live in `deploy/`:
 - `deploy/skyjo-online.env.example`
 - `deploy/skyjo-online.service`
 - `deploy/skyjo-online-canary@.service`
+- `deploy/skyjo-online-canary-smoke@.service`
 - `deploy/skyjo-online-smoke@.service`
+- `deploy/skyjo-online-state-proof@.service`
+- `deploy/skyjo-online-legacy-proof@.service`
 
 Generate session and invite secrets with:
 `openssl rand -base64 48`
