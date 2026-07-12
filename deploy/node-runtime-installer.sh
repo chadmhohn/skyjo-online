@@ -96,7 +96,7 @@ skyjo_install_node_archive() (
     /usr/bin/sleep "${SKYJO_NODE_INSTALL_TEST_PAUSE_SECONDS:-30}" || exit 1
   fi
 
-  /usr/bin/tar --list --xz --file "$archive" > "$listing" || exit 1
+  /usr/bin/tar --list --use-compress-program=/usr/bin/xz --file "$archive" > "$listing" || exit 1
   /usr/bin/awk -v root="$expected_archive_root" '
     BEGIN { seen = 0 }
     $0 == root || $0 == root "/" { seen = 1; next }
@@ -105,7 +105,7 @@ skyjo_install_node_archive() (
     END { if (!seen) exit 1 }
   ' "$listing" || { printf '%s\n' 'Node archive contains an unexpected root or path.' >&2; exit 1; }
 
-  /usr/bin/tar --extract --xz --file "$archive" --directory "$runtime" \
+  /usr/bin/tar --extract --use-compress-program=/usr/bin/xz --file "$archive" --directory "$runtime" \
     --strip-components=1 --no-same-owner --no-same-permissions || exit 1
   [ -x "$runtime/bin/node" ] && [ -f "$runtime/bin/node" ] && [ ! -L "$runtime/bin/node" ] || {
     printf '%s\n' 'Extracted Node runtime is incomplete.' >&2
