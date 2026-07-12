@@ -102,7 +102,10 @@ export function immutableReleaseTagsRuleset() {
     enforcement: 'active',
     bypass_actors: [],
     conditions: releaseTagConditions(),
-    rules: [{ type: 'update' }, { type: 'deletion' }]
+    rules: [
+      { type: 'update', parameters: { update_allows_fetch_and_merge: false } },
+      { type: 'deletion' }
+    ]
   };
 }
 

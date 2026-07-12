@@ -249,7 +249,10 @@ test('governance policy has no bypass, zero approvals, exact checks, and squash-
   assert.deepEqual(immutableReleaseTagsRuleset(), {
     name: 'Immutable release tags', target: 'tag', enforcement: 'active', bypass_actors: [],
     conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } },
-    rules: [{ type: 'update' }, { type: 'deletion' }]
+    rules: [
+      { type: 'update', parameters: { update_allows_fetch_and_merge: false } },
+      { type: 'deletion' }
+    ]
   });
   assert.deepEqual(repositorySettings(), {
     has_issues: true, allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false,
