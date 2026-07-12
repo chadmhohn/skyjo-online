@@ -1,7 +1,9 @@
 [Unit]
 Description=Skyjo Online
-After=network.target
+Wants=network-online.target
+After=network-online.target
 ConditionPathIsDirectory=/srv/skyjo-online/current
+ConditionFileNotEmpty=/srv/skyjo-online/current/server.mjs
 
 [Service]
 Type=simple
@@ -12,13 +14,14 @@ EnvironmentFile=/etc/skyjo-online.env
 Environment=NODE_ENV=production
 Environment=SKYJO_RELEASE_FILE=/srv/skyjo-online/current/dist/release.json
 ExecStart=/opt/skyjo-online/node/bin/node /srv/skyjo-online/current/server.mjs
+ExecCondition=/usr/bin/test ! -L /srv/skyjo-online/current/server.mjs
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=15
 TimeoutStopSec=15
 KillSignal=SIGTERM
 KillMode=mixed
-UMask=0027
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -33,6 +36,7 @@ ProtectControlGroups=true
 ProtectProc=invisible
 ProcSubset=pid
 LockPersonality=true
+RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 RemoveIPC=true

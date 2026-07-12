@@ -6,11 +6,10 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { parseSignedDeploymentCommand } from './deployment-authorization-lib.mjs';
 import {
-  DIGEST_PATTERN,
   MAX_ARCHIVE_BYTES,
   RELEASE_SHA_PATTERN,
-  RELEASE_TAG_PATTERN,
   RUN_ID_PATTERN,
   resolveWithin
 } from './release-controller-lib.mjs';
@@ -27,21 +26,35 @@ function commandError(message = 'Deployment command rejected.', exitCode = 64) {
 }
 
 export function parseCommand(value) {
-  if (typeof value !== 'string' || value.includes('\0') || value.includes('\n') || value.includes('\r')) throw commandError();
-  const parts = value.trim().split(/ +/);
-  const [command, runId, releaseSha, fourth, fifth] = parts;
-  if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '')) throw commandError();
-  if (command === 'upload' && parts.length === 4 && /^(?:[1-9][0-9]{0,9})$/.test(fourth || '')) {
+  if (typeof value !== 'string' || value.length > 512 || value.trim() !== value || /[\0\n\r\t]/.test(value) || value.includes('  ')) {
+    throw commandError();
+  }
+  const parts = value.split(' ');
+  const [command, runId, releaseSha, fourth] = parts;
+  if (command === 'upload') {
+    if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '') ||
+        parts.length !== 4 || !/^(?:[1-9][0-9]{0,9})$/.test(fourth || '')) throw commandError();
     const bytes = Number(fourth);
     if (bytes <= MAX_ARCHIVE_BYTES) return { command, runId, releaseSha, bytes };
+    throw commandError();
   }
-  if (command === 'verify' && parts.length === 4 && DIGEST_PATTERN.test(fourth || '') && runId.endsWith('-canary')) {
-    return { command, runId, releaseSha, digest: fourth };
+  try {
+    const { fields, signature } = parseSignedDeploymentCommand(value);
+    return {
+      command: fields.command,
+      runId: fields.runId,
+      releaseSha: fields.releaseSha,
+      digest: fields.artifactSha256,
+      tag: fields.tag,
+      issuedAt: fields.issuedAt,
+      expiresAt: fields.expiresAt,
+      keyId: fields.keyId,
+      signature,
+      signedCommand: value
+    };
+  } catch {
+    throw commandError();
   }
-  if ((command === 'promote' || command === 'rollback') && parts.length === 5 && DIGEST_PATTERN.test(fourth || '') && RELEASE_TAG_PATTERN.test(fifth || '') && runId.endsWith('-production')) {
-    return { command, runId, releaseSha, digest: fourth, tag: fifth };
-  }
-  throw commandError();
 }
 
 async function fsyncDirectory(directory) {
@@ -256,9 +269,7 @@ export async function performUpload({ stageRoot = DEFAULT_STAGE_ROOT, runId, rel
 }
 
 async function runController(parsed) {
-  const argumentsList = [parsed.command, '--run-id', parsed.runId, '--release-sha', parsed.releaseSha];
-  if (parsed.digest) argumentsList.push('--artifact-sha256', parsed.digest);
-  if (parsed.tag) argumentsList.push('--tag', parsed.tag);
+  const argumentsList = [parsed.command, '--authorization-command', parsed.signedCommand];
   const child = spawn('/usr/bin/sudo', ['--non-interactive', '/usr/local/sbin/skyjo-release-controller', ...argumentsList], {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', LANG: 'C.UTF-8' }

@@ -3,10 +3,14 @@ set -eu
 
 NODE_VERSION=24.18.0
 NODE_SHA256=55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742
+TRANSPORT_KEY_FINGERPRINT=SHA256:bhyqodJaNMmwhARLS0JOIZUm4Xh+u7mNT00mYfVdPaw
 NODE_ROOT=/opt/skyjo-online
 APP_ROOT=/srv/skyjo-online
 LIB_ROOT=/usr/local/lib/skyjo-online
 STAGED_UNIT=/usr/local/share/skyjo-online/skyjo-online.service
+AUTH_ROOT=/etc/skyjo-deploy-auth
+REPLAY_ROOT=/var/lib/skyjo-deploy-authorizations
+ASSET_MANIFEST=/usr/local/share/skyjo-online/delivery-assets.sha256
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -37,30 +41,58 @@ install_node() {
 
 prepare() {
   public_key=${1:-}
-  [ -n "$public_key" ] && [ -f "$public_key" ] || die 'Usage: bootstrap-skyjo-delivery.sh prepare <deploy-public-key-file>'
+  canary_authorization_key=${2:-}
+  production_authorization_key=${3:-}
+  [ "$#" -eq 3 ] && [ -f "$public_key" ] && [ -f "$canary_authorization_key" ] && [ -f "$production_authorization_key" ] || \
+    die 'Usage: bootstrap-skyjo-delivery.sh prepare <transport-public-key> <canary-authorization-public-pem> <production-authorization-public-pem>'
   key=$(sed -n '1p' "$public_key")
   printf '%s' "$key" | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/=]+([[:space:]].*)?$' || die 'Deploy key must be a single Ed25519 public key.'
   [ "$(wc -l < "$public_key")" -eq 1 ] || die 'Deploy public key file must contain exactly one line.'
+  [ "$(/usr/bin/ssh-keygen -lf "$public_key" -E sha256 | /usr/bin/awk '{print $2}')" = "$TRANSPORT_KEY_FINGERPRINT" ] || \
+    die 'Deploy transport key does not match the pinned GitHub environment key.'
 
   install_node
+  /opt/skyjo-online/node/bin/node "$SCRIPT_DIR/validate-deployment-public-keys.mjs" \
+    "$canary_authorization_key" "$production_authorization_key" >/dev/null
   id skyjo >/dev/null 2>&1 || /usr/sbin/useradd --system --home-dir /var/lib/skyjo-online --shell /usr/sbin/nologin skyjo
+  id skyjo-canary >/dev/null 2>&1 || /usr/sbin/useradd --system --no-create-home --home-dir /var/empty/skyjo-canary --shell /usr/sbin/nologin skyjo-canary
   id skyjo-deploy >/dev/null 2>&1 || /usr/sbin/useradd --system --create-home --home-dir /var/lib/skyjo-deploy --shell /bin/sh skyjo-deploy
   /usr/sbin/usermod --lock skyjo-deploy
   /usr/bin/install -d -o root -g root -m 0755 "$APP_ROOT" "$APP_ROOT/releases" "$LIB_ROOT" /usr/local/share/skyjo-online
-  /usr/bin/install -d -o skyjo -g skyjo -m 0700 /var/lib/skyjo-online
+  if [ ! -e /var/lib/skyjo-online ]; then
+    /usr/bin/install -d -o root -g root -m 0700 /var/lib/skyjo-online
+  else
+    [ -d /var/lib/skyjo-online ] && [ ! -L /var/lib/skyjo-online ] || die 'Existing production state directory is unsafe.'
+  fi
   /usr/bin/install -d -o root -g root -m 0700 /var/backups/skyjo-online
-  /usr/bin/install -d -o root -g skyjo-deploy -m 0730 /var/tmp/skyjo-deploy
-  /usr/bin/install -d -o root -g skyjo -m 0750 /run/skyjo-online-canary
+  /usr/bin/install -d -o root -g skyjo-deploy -m 1731 /var/tmp/skyjo-deploy
+  /usr/bin/install -d -o root -g root -m 0700 "$REPLAY_ROOT"
+  /usr/bin/install -d -o root -g root -m 0700 "$AUTH_ROOT"
+  /usr/bin/install -o root -g root -m 0600 "$canary_authorization_key" "$AUTH_ROOT/canary-2026-07.pem"
+  /usr/bin/install -o root -g root -m 0600 "$production_authorization_key" "$AUTH_ROOT/production-2026-07.pem"
+  /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-tmpfiles.conf" /etc/tmpfiles.d/skyjo-online.conf
+  /usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/skyjo-online.conf
 
-  for file in release-controller.mjs release-controller-lib.mjs skyjo-deploy-dispatch.mjs skyjo-canary-launch skyjo-smoke-launch; do
-    /usr/bin/install -o root -g root -m 0755 "$SCRIPT_DIR/$file" "$LIB_ROOT/$file"
+  for file in release-controller.mjs release-controller-lib.mjs state-snapshot-lib.mjs deployment-authorization-lib.mjs skyjo-deploy-dispatch.mjs validate-deployment-public-keys.mjs; do
+    /usr/bin/install -o root -g root -m 0555 "$SCRIPT_DIR/$file" "$LIB_ROOT/$file"
+  done
+  for file in skyjo-canary-launch skyjo-smoke-launch skyjo-state-proof-launch; do
+    /usr/bin/install -o root -g root -m 0555 "$SCRIPT_DIR/$file" "$LIB_ROOT/$file"
   done
   /usr/bin/install -o root -g root -m 0755 "$SCRIPT_DIR/skyjo-release-controller" /usr/local/sbin/skyjo-release-controller
   /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online.service" "$STAGED_UNIT"
   /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-canary@.service" /etc/systemd/system/skyjo-online-canary@.service
+  /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-canary-smoke@.service" /etc/systemd/system/skyjo-online-canary-smoke@.service
   /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-smoke@.service" /etc/systemd/system/skyjo-online-smoke@.service
+  /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-state-proof@.service" /etc/systemd/system/skyjo-online-state-proof@.service
   /usr/bin/install -o root -g root -m 0440 "$SCRIPT_DIR/skyjo-deploy.sudoers" /etc/sudoers.d/skyjo-deploy
   /usr/sbin/visudo -cf /etc/sudoers.d/skyjo-deploy >/dev/null
+  /usr/bin/systemd-analyze verify \
+    /etc/systemd/system/skyjo-online-canary@.service \
+    /etc/systemd/system/skyjo-online-canary-smoke@.service \
+    /etc/systemd/system/skyjo-online-smoke@.service \
+    /etc/systemd/system/skyjo-online-state-proof@.service \
+    "$STAGED_UNIT" >/dev/null
 
   deploy_home=/var/lib/skyjo-deploy
   /usr/bin/chown root:root "$deploy_home"
@@ -70,6 +102,32 @@ prepare() {
   printf '%s %s\n' "$options" "$key" > "$deploy_home/.ssh/authorized_keys"
   /usr/bin/chown root:root "$deploy_home/.ssh/authorized_keys"
   /usr/bin/chmod 0644 "$deploy_home/.ssh/authorized_keys"
+
+  : > "$ASSET_MANIFEST"
+  for asset in \
+    "$LIB_ROOT/release-controller.mjs" \
+    "$LIB_ROOT/release-controller-lib.mjs" \
+    "$LIB_ROOT/state-snapshot-lib.mjs" \
+    "$LIB_ROOT/deployment-authorization-lib.mjs" \
+    "$LIB_ROOT/skyjo-deploy-dispatch.mjs" \
+    "$LIB_ROOT/validate-deployment-public-keys.mjs" \
+    "$LIB_ROOT/skyjo-canary-launch" \
+    "$LIB_ROOT/skyjo-smoke-launch" \
+    "$LIB_ROOT/skyjo-state-proof-launch" \
+    /usr/local/sbin/skyjo-release-controller \
+    "$STAGED_UNIT" \
+    /etc/systemd/system/skyjo-online-canary@.service \
+    /etc/systemd/system/skyjo-online-canary-smoke@.service \
+    /etc/systemd/system/skyjo-online-smoke@.service \
+    /etc/systemd/system/skyjo-online-state-proof@.service \
+    /etc/tmpfiles.d/skyjo-online.conf \
+    /etc/sudoers.d/skyjo-deploy \
+    "$AUTH_ROOT/canary-2026-07.pem" \
+    "$AUTH_ROOT/production-2026-07.pem"; do
+    /usr/bin/sha256sum "$asset" >> "$ASSET_MANIFEST"
+  done
+  /usr/bin/chown root:root "$ASSET_MANIFEST"
+  /usr/bin/chmod 0444 "$ASSET_MANIFEST"
 
   if [ ! -e /etc/skyjo-online.env ]; then
     /usr/bin/install -o root -g root -m 0600 /dev/null /etc/skyjo-online.env
@@ -170,5 +228,5 @@ case "${1:-}" in
   prepare) shift; prepare "$@" ;;
   adopt-legacy) shift; adopt_legacy "$@" ;;
   activate-production-unit) shift; [ "$#" -eq 0 ] || die 'activate-production-unit takes no arguments'; activate_unit ;;
-  *) die 'Usage: bootstrap-skyjo-delivery.sh {prepare <deploy-public-key-file>|adopt-legacy <sha>|activate-production-unit}' ;;
+  *) die 'Usage: bootstrap-skyjo-delivery.sh {prepare <transport-public-key> <canary-auth-public-pem> <production-auth-public-pem>|adopt-legacy <sha>|activate-production-unit}' ;;
 esac

@@ -35,6 +35,20 @@ test('forced-command grammar remains strict', () => {
   assert.throws(() => parseCommand(`upload ${runId} ${releaseSha} 4\nrollback`), /rejected/);
 });
 
+test('privileged commands require the exact nine-token signed authorization grammar', () => {
+  const digest = 'b'.repeat(64);
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const expiresAt = issuedAt + 300;
+  const signature = 'A'.repeat(86);
+  const signedCommand = `verify ${runId} ${releaseSha} ${digest} - ${issuedAt} ${expiresAt} canary-2026-07 ${signature}`;
+  assert.deepEqual(parseCommand(signedCommand), {
+    command: 'verify', runId, releaseSha, digest, tag: '-', issuedAt, expiresAt,
+    keyId: 'canary-2026-07', signature, signedCommand
+  });
+  assert.throws(() => parseCommand(`verify ${runId} ${releaseSha} ${digest}`), /rejected/);
+  assert.throws(() => parseCommand(signedCommand.replace('canary-2026-07', 'production-2026-07')), /rejected/);
+});
+
 test('upload publishes with no-overwrite hard link and removes only its unique partial', async () => fixture(async (root) => {
   const first = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 5, input: input('first') });
   assert.equal(first.idempotent, false);

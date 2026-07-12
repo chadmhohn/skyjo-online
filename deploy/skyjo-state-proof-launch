@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+run_id=${1:-}
+printf '%s' "$run_id" | /usr/bin/grep -Eq '^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(canary|production)$' || exit 64
+run_root="/var/tmp/skyjo-deploy/$run_id"
+release="$run_root/release"
+state="$run_root/canary-state"
+proof_root="$run_root/canary-proof"
+proof="$proof_root/verified"
+
+[ "${SKYJO_CANARY_RELEASE_DIR:-}" = "$release" ] || exit 64
+[ "${SKYJO_DB_FILE:-}" = "$state/skyjo.sqlite" ] || exit 64
+[ "${SKYJO_ROOMS_FILE:-}" = "$state/rooms.json" ] || exit 64
+[ "${SKYJO_CANARY_PROOF_DIR:-}" = "$proof_root" ] || exit 64
+[ -d "$release" ] && [ ! -L "$release" ] || exit 64
+[ -d "$state" ] && [ ! -L "$state" ] || exit 64
+[ -d "$proof_root" ] && [ ! -L "$proof_root" ] || exit 64
+[ ! -e "$proof" ] || exit 64
+
+/opt/skyjo-online/node/bin/node "$release/scripts/backup-state.mjs" \
+  --output "$proof" \
+  --database "$state/skyjo.sqlite" \
+  --rooms "$state/rooms.json" \
+  --release "$release/release.json"
+/opt/skyjo-online/node/bin/node "$release/scripts/verify-state-backup.mjs" --backup "$proof"

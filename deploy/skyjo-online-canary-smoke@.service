@@ -1,19 +1,16 @@
 [Unit]
-Description=Skyjo isolated release canary %i
+Description=Skyjo isolated authenticated canary smoke %i
 After=network.target
 ConditionFileNotEmpty=/run/skyjo-online-canary/%i.env
 
 [Service]
-Type=simple
+Type=oneshot
 User=skyjo-canary
 Group=skyjo-canary
 EnvironmentFile=/run/skyjo-online-canary/%i.env
-ExecStart=/usr/local/lib/skyjo-online/skyjo-canary-launch %i
+ExecStart=/usr/local/lib/skyjo-online/skyjo-smoke-launch
 ExecCondition=/usr/bin/test ! -L /run/skyjo-online-canary/%i.env
-Restart=no
-TimeoutStartSec=15
-TimeoutStopSec=10
-KillSignal=SIGTERM
+TimeoutStartSec=20
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=false
@@ -39,5 +36,4 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 IPAddressAllow=localhost
 SystemCallArchitectures=native
-ReadWritePaths=/var/tmp/skyjo-deploy/%i
 InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env

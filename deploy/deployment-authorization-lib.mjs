@@ -108,6 +108,22 @@ export function parseAuthorizationSignature(value) {
   return decoded;
 }
 
+export function formatSignedDeploymentCommand(value, signature, options = {}) {
+  const fields = normalizeAuthorizationFields(value, options);
+  parseAuthorizationSignature(signature);
+  return [
+    fields.command,
+    fields.runId,
+    fields.releaseSha,
+    fields.artifactSha256,
+    fields.tag,
+    fields.issuedAt,
+    fields.expiresAt,
+    fields.keyId,
+    signature
+  ].join(' ');
+}
+
 export function parseSignedDeploymentCommand(value, options = {}) {
   if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > MAX_AUTHORIZATION_COMMAND_BYTES ||
       !/^[\x20-\x7e]+$/.test(value) || value !== value.trim() || value.includes('  ')) {
@@ -154,6 +170,11 @@ export async function loadAuthorizationPublicKey(filePath, options = {}) {
   }
   if (key.asymmetricKeyType !== 'ed25519') reject('INVALID_KEY');
   return key;
+}
+
+export function authorizationPublicKeyFingerprint(publicKey) {
+  if (publicKey?.asymmetricKeyType !== 'ed25519') reject('INVALID_KEY');
+  return crypto.createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
 }
 
 export async function loadAuthorizationPrivateKey(filePath, options = {}) {

@@ -27,6 +27,9 @@ import {
 
 const sha = 'a'.repeat(40);
 const digest = 'b'.repeat(64);
+const signature = 'A'.repeat(86);
+const issuedAt = '1800000000';
+const expiresAt = '1800000300';
 const required = ['./', ...REQUIRED_ARCHIVE_ENTRIES];
 const regularLine = '-rw-r--r-- 0/0 1 2026-07-11 00:00:00 file';
 
@@ -35,11 +38,12 @@ test('deployment identifiers and command lanes are strict', () => {
   assert.equal(validateReleaseTag('v0.2.0'), 'v0.2.0');
   assert.throws(() => validateRunId('../x'), /Invalid/);
   assert.throws(() => validateReleaseTag('latest'), /Invalid/);
-  assert.deepEqual(parseArguments(['verify', '--run-id', '123-1-canary', '--release-sha', sha, '--artifact-sha256', digest]), {
-    command: 'verify', runId: '123-1-canary', releaseSha: sha, digest, tag: undefined
-  });
-  assert.throws(() => parseArguments(['promote', '--run-id', '123-1-canary', '--release-sha', sha, '--artifact-sha256', digest, '--tag', 'v0.2.0']), /production run ID/);
-  assert.throws(() => parseArguments(['rollback', '--run-id', '123-1-production', '--release-sha', sha, '--artifact-sha256', digest]), /require/);
+  const signedCommand = `verify 123-1-canary ${sha} ${digest} - ${issuedAt} ${expiresAt} canary-2026-07 ${signature}`;
+  assert.deepEqual(parseArguments(['verify', '--authorization-command', signedCommand]), { command: 'verify', signedCommand });
+  assert.deepEqual(parseArguments(['self-test']), { command: 'self-test' });
+  assert.throws(() => parseArguments(['verify']), /signed deployment authorization/i);
+  assert.throws(() => parseArguments(['verify', '--authorization-command', signedCommand, 'extra']), /signed deployment authorization/i);
+  assert.throws(() => parseArguments(['self-test', '--authorization-command', signedCommand]), /takes no arguments/i);
 });
 
 test('path and archive validation reject traversal, links, duplicates, and forbidden secrets', () => {
@@ -135,11 +139,15 @@ test('public rollback authorization is exact and release retention keeps five in
 
 test('operational assets keep the safety contracts explicit', async () => {
   const deploy = path.resolve(import.meta.dirname, '..');
-  const [wrapper, bootstrap, service, canary, controller, sudoers] = await Promise.all([
+  const [wrapper, bootstrap, service, canary, canarySmoke, productionSmoke, stateProof, stateProofLauncher, controller, sudoers] = await Promise.all([
     fs.readFile(path.join(deploy, 'skyjo-release-controller'), 'utf8'),
     fs.readFile(path.join(deploy, 'bootstrap-skyjo-delivery.sh'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-online.service'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-online-canary@.service'), 'utf8'),
+    fs.readFile(path.join(deploy, 'skyjo-online-canary-smoke@.service'), 'utf8'),
+    fs.readFile(path.join(deploy, 'skyjo-online-smoke@.service'), 'utf8'),
+    fs.readFile(path.join(deploy, 'skyjo-online-state-proof@.service'), 'utf8'),
+    fs.readFile(path.join(deploy, 'skyjo-state-proof-launch'), 'utf8'),
     fs.readFile(path.join(deploy, 'release-controller.mjs'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-deploy.sudoers'), 'utf8')
   ]);
@@ -148,7 +156,23 @@ test('operational assets keep the safety contracts explicit', async () => {
   assert.match(bootstrap, /Legacy rollback snapshot contains a symbolic link/);
   assert.match(service, /User=skyjo/);
   assert.match(service, /\/opt\/skyjo-online\/node\/bin\/node/);
+  assert.match(canary, /^User=skyjo-canary$/m);
   assert.match(canary, /EnvironmentFile=\/run\/skyjo-online-canary\/%i\.env/);
+  assert.doesNotMatch(canary, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
+  assert.match(canary, /^IPAddressDeny=any$/m);
+  assert.match(canary, /^IPAddressAllow=localhost$/m);
+  assert.doesNotMatch(canary, /^PrivateTmp=true$/m);
+  assert.match(canarySmoke, /^User=skyjo-canary$/m);
+  assert.doesNotMatch(canarySmoke, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
+  assert.match(productionSmoke, /^User=skyjo$/m);
+  assert.match(productionSmoke, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
+  assert.match(stateProof, /^User=skyjo-canary$/m);
+  assert.match(stateProof, /^RestrictAddressFamilies=AF_UNIX$/m);
+  assert.doesNotMatch(stateProof, /^PrivateTmp=true$/m);
+  assert.match(stateProofLauncher, /"\$release\/scripts\/backup-state\.mjs"/);
+  assert.match(stateProofLauncher, /"\$release\/scripts\/verify-state-backup\.mjs"/);
   assert.match(controller, /SKYJO_VAPID_PRIVATE_KEY=/);
+  assert.match(controller, /\['root:skyjo-canary', runDirectory\]/);
+  assert.doesNotMatch(controller, /run\(PATHS\.node, \[resolveWithin\(releaseDirectory, 'scripts\//);
   assert.match(sudoers, /^skyjo-deploy .*NOPASSWD: \/usr\/local\/sbin\/skyjo-release-controller \*$/m);
 });

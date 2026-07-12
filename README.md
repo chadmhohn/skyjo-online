@@ -53,12 +53,12 @@ Every `npm run build` writes `dist/release.json` and `dist/release.json.sha256`.
 Health check:
 `curl http://127.0.0.1:4180/healthz && curl http://127.0.0.1:4180/readyz && curl http://127.0.0.1:4180/version`
 
-Hardened systemd files live in `deploy/systemd/`:
+Hardened systemd files live in `deploy/`:
 
 - `deploy/skyjo-online.env.example`
-- `deploy/systemd/skyjo-online.service`
-- `deploy/systemd/skyjo-online-canary@.service`
-- `deploy/systemd/skyjo-online-smoke@.service`
+- `deploy/skyjo-online.service`
+- `deploy/skyjo-online-canary@.service`
+- `deploy/skyjo-online-smoke@.service`
 
 Generate session and invite secrets with:
 `openssl rand -base64 48`

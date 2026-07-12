@@ -360,3 +360,67 @@ export async function executeActivationTransaction(operations) {
     throw failure;
   }
 }
+
+function rollbackFailure(message, cause, serviceRecovered, stage) {
+  const error = new Error(message);
+  error.cause = cause;
+  error.deploymentStatus = 'rollback-failed';
+  error.serviceRecovered = serviceRecovered;
+  error.rollbackStage = stage;
+  return error;
+}
+
+export async function executeCodeRollbackTransaction(operations) {
+  const recoverFailedRelease = async ({ restoreLink, stage, cause }) => {
+    const recoveryErrors = [];
+    if (restoreLink) {
+      try { await operations.stop(); } catch (error) { recoveryErrors.push(error); }
+      try { await operations.restoreOriginalLinks(); } catch (error) { recoveryErrors.push(error); }
+    }
+    let serviceRecovered = false;
+    try {
+      await operations.restartFailed();
+      serviceRecovered = true;
+    } catch (error) {
+      recoveryErrors.push(error);
+    }
+    if (recoveryErrors.length > 0) {
+      const aggregate = new AggregateError([cause, ...recoveryErrors], `${stage} failed and the failed release could not be re-established.`, { cause });
+      throw rollbackFailure(aggregate.message, aggregate, serviceRecovered, stage);
+    }
+    throw rollbackFailure(`${stage} failed; the original release was restarted and reverified: ${cause.message}`, cause, true, stage);
+  };
+
+  try {
+    await operations.stop();
+  } catch (error) {
+    await recoverFailedRelease({ restoreLink: false, stage: 'stop', cause: error });
+  }
+  try {
+    await operations.prepare();
+  } catch (error) {
+    await recoverFailedRelease({ restoreLink: false, stage: 'prepare', cause: error });
+  }
+  try {
+    await operations.restoreCurrent();
+  } catch (error) {
+    await recoverFailedRelease({ restoreLink: false, stage: 'restore-current', cause: error });
+  }
+
+  let recordError;
+  try {
+    await operations.recordFailed();
+  } catch (error) {
+    recordError = error;
+  }
+
+  try {
+    await operations.startRecovered();
+  } catch (error) {
+    await recoverFailedRelease({ restoreLink: true, stage: 'start-recovered', cause: error });
+  }
+  if (recordError) {
+    throw rollbackFailure(`Recovered code is running, but recording the failed release link failed: ${recordError.message}`, recordError, true, 'record-failed');
+  }
+  return { status: 'rolled-back' };
+}

@@ -3,6 +3,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  formatSignedDeploymentCommand,
   loadAuthorizationPrivateKey,
   normalizeAuthorizationFields,
   signDeploymentAuthorization
@@ -44,18 +45,21 @@ export async function createSignedAuthorization(argv, options = {}) {
   const privateKey = await loadAuthorizationPrivateKey(values.get('--private-key'), {
     expectedUid: options.expectedUid ?? process.getuid?.()
   });
+  const signature = signDeploymentAuthorization(fields, privateKey, { nowSeconds: issuedAt });
   return {
+    fields,
     issuedAt: fields.issuedAt,
     expiresAt: fields.expiresAt,
     keyId: fields.keyId,
-    signature: signDeploymentAuthorization(fields, privateKey, { nowSeconds: issuedAt })
+    signature,
+    commandLine: formatSignedDeploymentCommand(fields, signature, { nowSeconds: issuedAt })
   };
 }
 
 const direct = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (direct) {
   createSignedAuthorization(process.argv.slice(2)).then(
-    (result) => process.stdout.write(`${JSON.stringify(result)}\n`),
+    (result) => process.stdout.write(`${result.commandLine}\n`),
     () => {
       process.stderr.write('Deployment authorization signing failed.\n');
       process.exitCode = 1;

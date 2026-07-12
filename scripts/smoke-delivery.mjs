@@ -92,21 +92,45 @@ async function testWorkflowContract() {
     assert.match(workflow, new RegExp(`release-canary:[\\s\\S]*?- ${job}`), `release canary must wait for ${job}`);
   }
 
-  const productionUnit = await fs.readFile(path.join(root, 'deploy', 'systemd', 'skyjo-online.service'), 'utf8');
-  const canaryUnit = await fs.readFile(path.join(root, 'deploy', 'systemd', 'skyjo-online-canary@.service'), 'utf8');
-  const smokeUnit = await fs.readFile(path.join(root, 'deploy', 'systemd', 'skyjo-online-smoke@.service'), 'utf8');
-  for (const unit of [productionUnit, canaryUnit, smokeUnit]) {
-    assert.match(unit, /^User=skyjo$/m);
+  const productionUnit = await fs.readFile(path.join(root, 'deploy', 'skyjo-online.service'), 'utf8');
+  const canaryUnit = await fs.readFile(path.join(root, 'deploy', 'skyjo-online-canary@.service'), 'utf8');
+  const canarySmokeUnit = await fs.readFile(path.join(root, 'deploy', 'skyjo-online-canary-smoke@.service'), 'utf8');
+  const productionSmokeUnit = await fs.readFile(path.join(root, 'deploy', 'skyjo-online-smoke@.service'), 'utf8');
+  const stateProofUnit = await fs.readFile(path.join(root, 'deploy', 'skyjo-online-state-proof@.service'), 'utf8');
+  const canaryLauncher = await fs.readFile(path.join(root, 'deploy', 'skyjo-canary-launch'), 'utf8');
+  const smokeLauncher = await fs.readFile(path.join(root, 'deploy', 'skyjo-smoke-launch'), 'utf8');
+  const stateProofLauncher = await fs.readFile(path.join(root, 'deploy', 'skyjo-state-proof-launch'), 'utf8');
+  for (const unit of [productionUnit, canaryUnit, canarySmokeUnit, productionSmokeUnit, stateProofUnit]) {
     assert.match(unit, /^NoNewPrivileges=true$/m);
     assert.match(unit, /^ProtectSystem=strict$/m);
-    assert.match(unit, /\/opt\/skyjo-online\/node\/bin\/node/);
+    assert.match(unit, /^RestrictNamespaces=true$/m);
+    assert.match(unit, /^UMask=0077$/m);
     assert.doesNotMatch(unit, /\/usr\/bin\/node/);
   }
-  assert.match(canaryUnit, /^Environment=PORT=4181$/m);
-  assert.doesNotMatch(canaryUnit, /\/var\/lib\/skyjo-online/);
-  assert.match(canaryUnit, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
-  assert.doesNotMatch(smokeUnit, /^Requires=/m);
-  assert.match(smokeUnit, /smoke-launcher\.mjs/);
+  assert.match(productionUnit, /^User=skyjo$/m);
+  assert.match(productionSmokeUnit, /^User=skyjo$/m);
+  for (const unit of [canaryUnit, canarySmokeUnit, stateProofUnit]) {
+    assert.match(unit, /^User=skyjo-canary$/m);
+    assert.doesNotMatch(unit, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
+    assert.match(unit, /^InaccessiblePaths=\/var\/lib\/skyjo-online \/etc\/skyjo-online\.env$/m);
+    assert.doesNotMatch(unit, /^PrivateTmp=true$/m);
+  }
+  assert.match(productionUnit, /\/opt\/skyjo-online\/node\/bin\/node/);
+  assert.match(canaryLauncher, /\/opt\/skyjo-online\/node\/bin\/node/);
+  assert.match(smokeLauncher, /\/opt\/skyjo-online\/node\/bin\/node/);
+  assert.match(stateProofLauncher, /\/opt\/skyjo-online\/node\/bin\/node/);
+  assert.doesNotMatch(canaryUnit, /^ReadWritePaths=.*\/var\/lib\/skyjo-online/m);
+  assert.match(canaryUnit, /^IPAddressDeny=any$/m);
+  assert.match(canaryUnit, /^IPAddressAllow=localhost$/m);
+  assert.match(canaryUnit, /^ReadWritePaths=\/var\/tmp\/skyjo-deploy\/%i$/m);
+  assert.match(canarySmokeUnit, /^IPAddressDeny=any$/m);
+  assert.match(canarySmokeUnit, /^IPAddressAllow=localhost$/m);
+  assert.match(stateProofUnit, /^RestrictAddressFamilies=AF_UNIX$/m);
+  assert.doesNotMatch(stateProofUnit, /^IPAddressAllow=/m);
+  assert.doesNotMatch(productionSmokeUnit, /^Requires=/m);
+  assert.match(productionSmokeUnit, /skyjo-smoke-launch/);
+  assert.match(stateProofLauncher, /"\$release\/scripts\/backup-state\.mjs"/);
+  assert.match(stateProofLauncher, /"\$release\/scripts\/verify-state-backup\.mjs"/);
 }
 
 async function testLinuxRemoteClient() {
@@ -118,19 +142,25 @@ async function testLinuxRemoteClient() {
     const checksum = `${archive}.sha256`;
     const identity = path.join(temp, 'identity');
     const knownHosts = path.join(temp, 'known_hosts');
+    const canaryAuthorizationKey = path.join(temp, 'canary-auth.pem');
+    const productionAuthorizationKey = path.join(temp, 'production-auth.pem');
     const log = path.join(temp, 'ssh.log');
     const fakeSsh = path.join(temp, 'ssh');
     const payload = Buffer.from('deterministic-runtime-archive');
     const digest = crypto.createHash('sha256').update(payload).digest('hex');
+    const canaryKeys = crypto.generateKeyPairSync('ed25519');
+    const productionKeys = crypto.generateKeyPairSync('ed25519');
     await Promise.all([
       fs.writeFile(archive, payload),
       fs.writeFile(checksum, `${digest}  ${archiveName}\n`),
       fs.writeFile(identity, 'test-key\n'),
       fs.writeFile(knownHosts, 'example.test ssh-ed25519 test\n'),
+      fs.writeFile(canaryAuthorizationKey, canaryKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 }),
+      fs.writeFile(productionAuthorizationKey, productionKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 }),
       fs.writeFile(fakeSsh, `#!/usr/bin/env bash\nset -Eeuo pipefail\nprintf '%s\\n' "\${*: -1}" >> "$SKYJO_FAKE_SSH_LOG"\nif [[ "\${*: -1}" == upload\\ * ]]; then wc -c >> "$SKYJO_FAKE_SSH_LOG"; else printf '{"legacy":false}\\n'; fi\n`)
     ]);
     await fs.chmod(fakeSsh, 0o700);
-    const env = {
+    const baseEnv = {
       ...process.env,
       SKYJO_DEPLOY_HOST: 'deploy.example.test',
       SKYJO_DEPLOY_PORT: '22',
@@ -141,16 +171,18 @@ async function testLinuxRemoteClient() {
       SKYJO_SSH_BIN: fakeSsh
     };
     const client = path.join(root, 'deploy', 'github-release-remote.sh');
-    await execFileAsync('bash', [client, 'verify', '123-1-canary', fullSha, archive, checksum], { env });
-    await execFileAsync('bash', [client, 'promote', '123-1-production', fullSha, archive, checksum, 'v0.1.1'], { env });
-    await execFileAsync('bash', [client, 'rollback', '123-1-production', fullSha, checksum, 'v0.1.1'], { env });
+    const canaryEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: canaryAuthorizationKey, SKYJO_DEPLOY_AUTH_KEY_ID: 'canary-2026-07' };
+    const productionEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: productionAuthorizationKey, SKYJO_DEPLOY_AUTH_KEY_ID: 'production-2026-07' };
+    await execFileAsync('bash', [client, 'verify', '123-1-canary', fullSha, archive, checksum], { env: canaryEnv });
+    await execFileAsync('bash', [client, 'promote', '123-1-production', fullSha, archive, checksum, 'v0.1.1'], { env: productionEnv });
+    await execFileAsync('bash', [client, 'rollback', '123-1-production', fullSha, checksum, 'v0.1.1'], { env: productionEnv });
     const calls = await fs.readFile(log, 'utf8');
     assert.match(calls, new RegExp(`upload 123-1-canary ${fullSha} ${payload.length}`));
-    assert.match(calls, new RegExp(`verify 123-1-canary ${fullSha} ${digest}`));
-    assert.match(calls, new RegExp(`promote 123-1-production ${fullSha} ${digest} v0\\.1\\.1`));
-    assert.match(calls, new RegExp(`rollback 123-1-production ${fullSha} ${digest} v0\\.1\\.1`));
+    assert.match(calls, new RegExp(`verify 123-1-canary ${fullSha} ${digest} - [0-9]+ [0-9]+ canary-2026-07 [A-Za-z0-9_-]{86}`));
+    assert.match(calls, new RegExp(`promote 123-1-production ${fullSha} ${digest} v0\\.1\\.1 [0-9]+ [0-9]+ production-2026-07 [A-Za-z0-9_-]{86}`));
+    assert.match(calls, new RegExp(`rollback 123-1-production ${fullSha} ${digest} v0\\.1\\.1 [0-9]+ [0-9]+ production-2026-07 [A-Za-z0-9_-]{86}`));
     await assert.rejects(
-      execFileAsync('bash', [client, 'promote', '123-1-production', fullSha, archive, checksum, 'main'], { env }),
+      execFileAsync('bash', [client, 'promote', '123-1-production', fullSha, archive, checksum, 'main'], { env: productionEnv }),
       /immutable release tag/i
     );
   } finally {

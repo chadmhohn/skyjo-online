@@ -14,6 +14,8 @@ Required environment:
   SKYJO_DEPLOY_USER
   SKYJO_DEPLOY_IDENTITY_FILE
   SKYJO_DEPLOY_KNOWN_HOSTS_FILE
+  SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE
+  SKYJO_DEPLOY_AUTH_KEY_ID
 EOF
   exit 64
 }
@@ -57,7 +59,11 @@ deploy_port="${SKYJO_DEPLOY_PORT:-22}"
 deploy_user="${SKYJO_DEPLOY_USER:-skyjo-deploy}"
 identity_file="${SKYJO_DEPLOY_IDENTITY_FILE:-}"
 known_hosts_file="${SKYJO_DEPLOY_KNOWN_HOSTS_FILE:-}"
+authorization_key_file="${SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE:-}"
+authorization_key_id="${SKYJO_DEPLOY_AUTH_KEY_ID:-}"
 ssh_bin="${SKYJO_SSH_BIN:-ssh}"
+node_bin="${SKYJO_NODE_BIN:-node}"
+signer="${SKYJO_DEPLOY_AUTH_SIGNER:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sign-deployment-authorization.mjs}"
 
 [[ "$run_id" =~ ^[0-9]+-[0-9]+-(canary|production)$ ]] || die 'invalid run ID'
 [[ "$release_sha" =~ ^[a-f0-9]{40}$ ]] || die 'invalid release SHA'
@@ -67,10 +73,19 @@ ssh_bin="${SKYJO_SSH_BIN:-ssh}"
 [[ "$deploy_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || die 'invalid deploy user'
 [[ -f "$identity_file" && ! -L "$identity_file" ]] || die 'missing deploy identity file'
 [[ -f "$known_hosts_file" && ! -L "$known_hosts_file" ]] || die 'missing pinned known-hosts file'
+[[ -f "$authorization_key_file" && ! -L "$authorization_key_file" ]] || die 'missing deployment authorization private key'
+[[ -f "$signer" && ! -L "$signer" ]] || die 'missing deployment authorization signer'
 
 if [[ "$mode" != "verify" ]]; then
   [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'invalid immutable release tag'
 fi
+authorization_role=production
+authorization_tag="$release_tag"
+if [[ "$mode" == "verify" ]]; then
+  authorization_role=canary
+  authorization_tag=-
+fi
+[[ "$authorization_key_id" =~ ^${authorization_role}-[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]] || die 'invalid deployment authorization key ID'
 
 expected_archive_name="skyjo-runtime-$release_sha.tar.gz"
 expected_checksum_name="$expected_archive_name.sha256"
@@ -106,16 +121,19 @@ if [[ "$mode" == "verify" || "$mode" == "promote" ]]; then
   "$ssh_bin" "${ssh_options[@]}" "$target" "upload $run_id $release_sha $archive_size" < "$archive_path"
 fi
 
-case "$mode" in
-  verify)
-    "$ssh_bin" "${ssh_options[@]}" "$target" "verify $run_id $release_sha $expected_digest"
-    ;;
-  promote)
-    "$ssh_bin" "${ssh_options[@]}" "$target" "promote $run_id $release_sha $expected_digest $release_tag"
-    ;;
-  rollback)
-    "$ssh_bin" "${ssh_options[@]}" "$target" "rollback $run_id $release_sha $expected_digest $release_tag"
-    ;;
-esac
+signed_command="$("$node_bin" "$signer" \
+  --role "$authorization_role" \
+  --command "$mode" \
+  --run-id "$run_id" \
+  --release-sha "$release_sha" \
+  --artifact-sha256 "$expected_digest" \
+  --tag "$authorization_tag" \
+  --key-id "$authorization_key_id" \
+  --private-key "$authorization_key_file" \
+  --lifetime-seconds 300)"
+[[ "$signed_command" != *$'\n'* && "$signed_command" != *$'\r'* ]] || die 'signer returned an invalid command'
+[[ "$signed_command" == "$mode $run_id $release_sha $expected_digest $authorization_tag "* ]] || die 'signer returned a mismatched command'
+
+"$ssh_bin" "${ssh_options[@]}" "$target" "$signed_command"
 
 printf '%s completed for release %s.\n' "$mode" "$release_sha"

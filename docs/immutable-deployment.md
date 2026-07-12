@@ -49,6 +49,7 @@ Do not use `ssh-keyscan` during a workflow. Store the verified host key, not a p
 /var/backups/skyjo-online/             verified state backups
 /run/skyjo-online-canary/              root-created ephemeral canary environment
 /etc/skyjo-online.env                  root-only application and smoke secrets
+/usr/local/lib/skyjo-online/           root-owned controller and launchers
 ```
 
 Release directories are root-owned and read-only to `skyjo`. Live state is owned by `skyjo` and is never placed below a release. Backups are root-only. Upload staging is owned by `skyjo-deploy`; the controller accepts only paths resolved beneath the expected run directory.
@@ -64,14 +65,20 @@ ssh-keygen -t ed25519 -f skyjo-github-deploy -C skyjo-github-actions
 Copy only the public key to a root-readable temporary file on the VPS. From the checked-out release source, run the prepare phase:
 
 ```sh
-sudo deploy/bootstrap-vps.sh prepare \
-  --deploy-public-key-file /root/skyjo-github-deploy.pub
-sudo deploy/bootstrap-vps.sh check --phase prepared
+sudo deploy/bootstrap-skyjo-delivery.sh prepare /root/skyjo-github-deploy.pub
+sudo /usr/local/sbin/skyjo-release-controller self-test
 ```
 
 Preparation installs and checksum-verifies the isolated Node 24 runtime, creates the restricted identities/directories, installs the root-owned dispatcher/controller, validates sudoers and SSH configuration, installs only the canary unit, and stages the hardened production unit. It deliberately does not replace or restart the legacy production service. Delete the temporary public-key file afterward.
 
-Before the first tagged promotion, create a verified rollback anchor for the currently healthy legacy service and prove it independently. Then activate the staged production unit only as part of the controlled first-cutover procedure documented by the release issue. The bootstrap/controller fail closed when `previous` is absent or unsafe; a first promotion must never create a state where rollback means “nowhere.”
+Before the first tagged promotion, create and activate a verified rollback anchor for the currently healthy legacy service. These are deliberately separate, explicit steps; neither runs during prepare:
+
+```sh
+sudo deploy/bootstrap-skyjo-delivery.sh adopt-legacy <current-40-character-sha>
+sudo deploy/bootstrap-skyjo-delivery.sh activate-production-unit
+```
+
+`adopt-legacy` creates a link-free, checksummed, production-dependency snapshot and backs up the old unit without restarting it. `activate-production-unit` validates that manifest, stops and flushes the old service, restricts state ownership, installs the staged unit, starts the legacy anchor with isolated Node 24, and health-checks it. Failure restores and rechecks the original unit. The release controller refuses promotion when a validated `current` rollback anchor is absent; a first promotion must never create a state where rollback means "nowhere."
 
 The application environment stays at mode `0600`, owned by root. In addition to the application settings in `deploy/skyjo-online.env.example`, define a dedicated existing smoke account:
 
@@ -122,7 +129,7 @@ For the one-time legacy anchor, rollback output explicitly reports `"legacy": tr
 
 ## Retention and recovery
 
-The controller retains the five newest immutable releases plus anything referenced by `current` or `previous`. Backup rotation keeps 30 daily and 12 monthly verified backups. Staging and canary data are private and short-lived.
+The controller retains five immutable releases total while always protecting `current` and `previous`. The scheduled governance workflow maintains 30 daily and 12 monthly verified backups; the release controller never ambiguously prunes its pre-activation recovery point. Staging and canary data are private and short-lived.
 
 Automatic rollback never replaces `/var/lib/skyjo-online/skyjo.sqlite` or `rooms.json`. If data recovery is required after traffic resumed:
 
@@ -139,9 +146,11 @@ See [data-recovery.md](data-recovery.md) for the checksummed backup contract. A 
 Safe preparation checks do not activate production:
 
 ```sh
-sudo deploy/bootstrap-vps.sh check --phase prepared
-sudo systemd-analyze verify deploy/systemd/skyjo-online.service
-sudo systemd-analyze verify deploy/systemd/skyjo-online-canary@.service
+sudo /usr/local/sbin/skyjo-release-controller self-test
+sudo systemd-analyze verify deploy/skyjo-online.service
+sudo systemd-analyze verify deploy/skyjo-online-canary@.service
+sudo systemd-analyze verify deploy/skyjo-online-smoke@.service
+node --test deploy/tests/release-controller.test.mjs
 npm run smoke:delivery
 ```
 
