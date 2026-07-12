@@ -8,11 +8,11 @@ import { loadAuthorizationPublicKey } from './deployment-authorization-lib.mjs';
 export const DEPLOYMENT_AUTHORIZATION_KEYS = Object.freeze({
   'canary-2026-07': Object.freeze({
     role: 'canary',
-    fingerprint: 'e8ba15e37fe810cf70942b27ddbd13957377acc312617e886283582d5ee01875'
+    fingerprint: 'be3e2f90ff827718163c9add11d8c1b539b95109db32e6a0a3ceb41bcd73e26f'
   }),
   'production-2026-07': Object.freeze({
     role: 'production',
-    fingerprint: '75f645a8397923f62418d5109cb5b85c3475afa458bbdfc4789194e7aa15a1d6'
+    fingerprint: '6320f5bcf311812740996fbe5f022437ddd5e41803669e48000009e4c9d349ba'
   })
 });
 
