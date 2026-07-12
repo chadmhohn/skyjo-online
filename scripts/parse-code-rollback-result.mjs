@@ -10,11 +10,8 @@ export function parseCodeRollbackResult(value, { failedReleaseSha } = {}) {
     throw new Error('Rollback controller output must be one bounded JSON line.');
   }
   let result;
-  try {
-    result = JSON.parse(value);
-  } catch {
-    throw new Error('Rollback controller output is not valid JSON.');
-  }
+  try { result = JSON.parse(value); }
+  catch { throw new Error('Rollback controller output is not valid JSON.'); }
   if (!result || typeof result !== 'object' || Array.isArray(result) ||
       Object.keys(result).sort().join(',') !== 'legacy,rolledBackTo' || typeof result.legacy !== 'boolean') {
     throw new Error('Rollback controller output has an invalid shape.');
@@ -22,16 +19,14 @@ export function parseCodeRollbackResult(value, { failedReleaseSha } = {}) {
   if (JSON.stringify({ rolledBackTo: result.rolledBackTo, legacy: result.legacy }) !== value) {
     throw new Error('Rollback controller output is not canonical JSON.');
   }
-  if (failedReleaseSha !== undefined && !fullShaPattern.test(failedReleaseSha)) {
-    throw new Error('Failed release SHA is invalid.');
-  }
+  if (failedReleaseSha !== undefined && !fullShaPattern.test(failedReleaseSha)) throw new Error('Failed release SHA is invalid.');
   if (result.legacy) {
     if (result.rolledBackTo !== 'legacy') throw new Error('Legacy rollback output is inconsistent.');
     return { legacy: true, rolledBackTo: 'legacy' };
   }
   if (!fullShaPattern.test(result.rolledBackTo || '')) throw new Error('Rollback target SHA is invalid.');
-  if (failedReleaseSha !== undefined) {
-    if (result.rolledBackTo === failedReleaseSha) throw new Error('Rollback did not move away from the failed release.');
+  if (failedReleaseSha !== undefined && result.rolledBackTo === failedReleaseSha) {
+    throw new Error('Rollback did not move away from the failed release.');
   }
   return { legacy: false, rolledBackTo: result.rolledBackTo };
 }

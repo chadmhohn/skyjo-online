@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { cleanupRun, executeWithRunCleanup } from '../release-controller.mjs';
+import { cleanupRun, executeWithRequiredRunCleanup } from '../release-controller.mjs';
 
 async function fixture(callback) {
   const stageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-run-cleanup-'));
@@ -18,15 +18,13 @@ async function fixture(callback) {
   }
 }
 
-function cleanupWithin(stageRoot) {
-  return (runId, workDirectory) => cleanupRun(runId, workDirectory, { stageRoot });
+function cleanupWithin(stageRoot, runId, workDirectory) {
+  return () => cleanupRun(runId, workDirectory, { stageRoot });
 }
 
 test('a successful verify-style action removes the entire deployment run', async () => fixture(async ({ stageRoot, runId, workDirectory }) => {
-  const result = await executeWithRunCleanup({
-    runId,
-    workDirectory,
-    cleanup: cleanupWithin(stageRoot),
+  const result = await executeWithRequiredRunCleanup({
+    cleanup: cleanupWithin(stageRoot, runId, workDirectory),
     action: async () => {
       await fs.mkdir(path.join(workDirectory, 'snapshot'));
       await fs.writeFile(path.join(workDirectory, 'snapshot', 'manifest.json'), '{}');
@@ -39,27 +37,45 @@ test('a successful verify-style action removes the entire deployment run', async
 
 test('action failures remain primary while cleanup still removes all residue', async () => fixture(async ({ stageRoot, runId, workDirectory }) => {
   const primary = new Error('injected action failure');
-  await assert.rejects(executeWithRunCleanup({
-    runId,
-    workDirectory,
-    cleanup: cleanupWithin(stageRoot),
+  await assert.rejects(executeWithRequiredRunCleanup({
+    cleanup: cleanupWithin(stageRoot, runId, workDirectory),
     action: async () => { throw primary; }
   }), (error) => error === primary);
   await assert.rejects(fs.lstat(workDirectory), (error) => error.code === 'ENOENT');
 }));
 
-test('cleanup failures fail closed and cannot mask an action failure', async () => fixture(async ({ runId, workDirectory }) => {
+test('cleanup failures aggregate visibly without losing action recovery or uncertainty flags', async () => fixture(async () => {
   const primary = new Error('injected action failure');
+  Object.defineProperty(primary, 'deploymentStatus', { value: 'rollback-failed', enumerable: true });
+  Object.defineProperty(primary, 'linkMayHaveChanged', { value: true, enumerable: true });
+  Object.defineProperty(primary, 'activationRolledBack', { value: false, enumerable: false });
   const cleanup = new Error('injected cleanup failure');
-  await assert.rejects(executeWithRunCleanup({
-    runId,
-    workDirectory,
+  await assert.rejects(executeWithRequiredRunCleanup({
     action: async () => { throw primary; },
     cleanup: async () => { throw cleanup; }
   }), (error) => {
     assert(error instanceof AggregateError);
     assert.equal(error.deploymentActionError, primary);
     assert.equal(error.deploymentCleanupError, cleanup);
+    assert.equal(error.runCleanupError, cleanup);
+    assert.equal(error.deploymentStatus, 'rollback-failed');
+    assert.equal(error.linkMayHaveChanged, true);
+    assert.equal(error.activationRolledBack, false);
     return true;
   });
+}));
+
+test('cleanup proves ENOENT after removal and rejects visible residue or path drift', async () => fixture(async ({ stageRoot, runId, workDirectory }) => {
+  let removeCalls = 0;
+  await assert.rejects(cleanupRun(runId, workDirectory, {
+    stageRoot,
+    remove: async () => { removeCalls += 1; },
+    inspect: async () => ({ isDirectory: () => true })
+  }), /remains after cleanup/);
+  assert.equal(removeCalls, 1);
+
+  await assert.rejects(cleanupRun(runId, path.join(stageRoot, 'different-run'), {
+    stageRoot,
+    remove: async () => assert.fail('unexpected path reached removal')
+  }), /unexpected deployment path/);
 }));

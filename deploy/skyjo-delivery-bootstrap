@@ -1,0 +1,21 @@
+#!/bin/sh
+# Installed as a root-owned LF-normalized launcher by the delivery bootstrap.
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 077
+
+die() { printf '%s\n' "$*" >&2; exit 70; }
+for directory in /usr /usr/local /usr/local/lib /usr/local/lib/skyjo-online; do
+  [ -d "$directory" ] && [ ! -L "$directory" ] || die 'Bootstrap trust path is unsafe.'
+  [ "$(/usr/bin/stat -c %u -- "$directory")" = 0 ] && [ "$(/usr/bin/stat -c %g -- "$directory")" = 0 ] || die 'Bootstrap trust path ownership is unsafe.'
+  mode=$(/usr/bin/stat -c %a -- "$directory")
+  [ $(((0$mode) & 0022)) -eq 0 ] || die 'Bootstrap trust path is writable.'
+done
+guard=/usr/local/lib/skyjo-online/bootstrap-generation-guard-lib.sh
+[ -f "$guard" ] && [ ! -L "$guard" ] || die 'Bootstrap generation guard is unsafe.'
+[ "$(/usr/bin/stat -c %u -- "$guard")" = 0 ] && [ "$(/usr/bin/stat -c %g -- "$guard")" = 0 ] || die 'Bootstrap generation guard ownership is unsafe.'
+[ "$(/usr/bin/stat -c %a -- "$guard")" = 555 ] || die 'Bootstrap generation guard mode is unsafe.'
+. "$guard"
+bootstrap=$(skyjo_guard_bootstrap_generation /usr/local/lib/skyjo-online/bootstrap 0 0) || die 'Installed bootstrap generation failed its pre-execution trust guard.'
+exec "$bootstrap" "$@"

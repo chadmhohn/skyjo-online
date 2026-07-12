@@ -11,12 +11,14 @@ import {
 const serverUnit = 'skyjo-online-canary@123-1-canary.service';
 const smokeUnit = 'skyjo-online-canary-smoke@123-1-canary.service';
 const productionSmokeUnit = 'skyjo-online-smoke@123-1-production.service';
+const legacyProofUnit = 'skyjo-online-legacy-proof@123-1-production.service';
 
 function fragmentFor(unit) {
   if (unit.startsWith('skyjo-online-canary-smoke@')) return '/etc/systemd/system/skyjo-online-canary-smoke@.service';
   if (unit.startsWith('skyjo-online-canary@')) return '/etc/systemd/system/skyjo-online-canary@.service';
   if (unit.startsWith('skyjo-online-state-proof@')) return '/etc/systemd/system/skyjo-online-state-proof@.service';
   if (unit.startsWith('skyjo-online-smoke@')) return '/etc/systemd/system/skyjo-online-smoke@.service';
+  if (unit.startsWith('skyjo-online-legacy-proof@')) return '/etc/systemd/system/skyjo-online-legacy-proof@.service';
   throw new Error('unknown test unit');
 }
 
@@ -98,6 +100,7 @@ test('an exact failed instance is reset and reinspected but still fails certific
     assert.equal(error.canaryUnitState.ActiveState, 'failed');
     assert.equal(error.canaryUnitFinalState.ActiveState, 'inactive');
     assert.equal(error.canaryUnitFinalStateUnsafe, undefined);
+    assert.equal(error.preserveRunRoot, undefined);
     return true;
   });
   assert.equal(resets, 1);
@@ -129,6 +132,7 @@ test('a reset-failed permission error retains unsafe final evidence and does not
     assert.equal(error.canaryUnitResetError, resetError);
     assert.equal(error.canaryUnitFinalState.ActiveState, 'failed');
     assert.equal(error.canaryUnitFinalStateUnsafe, true);
+    assert.equal(error.preserveRunRoot, true);
     return true;
   });
   assert.deepEqual(calls.map(commandKind), [
@@ -204,6 +208,7 @@ test('a stop permission error retains unsafe final evidence and does not strand 
     assert.equal(error.canaryUnitFinalState.ActiveState, 'active');
     assert.equal(error.canaryUnitFinalState.MainPID, '42');
     assert.equal(error.canaryUnitFinalStateUnsafe, true);
+    assert.equal(error.preserveRunRoot, true);
     return true;
   });
   assert.deepEqual(calls.map(commandKind), [
@@ -286,6 +291,23 @@ test('unrelated failed units are rejected before systemctl and exact-unit comman
   assert(commandLog[0].includes('--all'));
   assert(commandLog[0].slice(1, -1).every((argument) =>
     argument === '--no-pager' || argument === '--all' || argument.startsWith('--property=')));
+
+  assert.deepEqual(await certifyTemporaryUnitsClean([legacyProofUnit], {
+    systemctl: async (args) => unitState(args.at(-1))
+  }), [{ unit: legacyProofUnit, status: 'clean' }]);
+  for (const invalidUnit of [
+    'skyjo-online-legacy-proof@bootstrap-activation.service',
+    'skyjo-online-canary@123-1-production.service',
+    'skyjo-online-smoke@123-1-canary.service',
+    'skyjo-online-canary@0-1-canary.service',
+    'skyjo-online-smoke@123-0-production.service',
+    `skyjo-online-canary@${'1'.repeat(21)}-1-canary.service`,
+    `skyjo-online-legacy-proof@1-${'1'.repeat(7)}-production.service`
+  ]) {
+    await assert.rejects(certifyTemporaryUnitsClean([invalidUnit], {
+      systemctl: async () => assert.fail('invalid unit reached the controller certifier')
+    }), /unit list is invalid/);
+  }
 });
 
 test('an unsafe certification remains an explicit cleanup aggregate and later cleanup still runs', async () => {
@@ -310,6 +332,7 @@ test('an unsafe certification remains an explicit cleanup aggregate and later cl
     assert(error instanceof AggregateError);
     assert.equal(error.errors[0].canaryCleanupStage, 'reset-units');
     assert.equal(error.errors[0].canaryUnit, serverUnit);
+    assert.equal(error.preserveRunRoot, true);
     return true;
   });
   assert.deepEqual(calls.slice(-3), ['stopServer', 'resetUnits', 'removeEnvironment']);
@@ -319,4 +342,6 @@ test('production smoke cleanup no longer ignores a broad reset-failed failure', 
   const source = await fs.readFile(path.resolve(import.meta.dirname, '..', 'release-controller.mjs'), 'utf8');
   assert.doesNotMatch(source, /reset-failed[^\n]*skyjo-online-smoke[^\n]*catch\(\(\) => \{\}\)/);
   assert.match(source, /certifyTemporaryUnitsClean\(\[smokeUnit\]\)/);
+  assert.match(source, /certifyTemporaryUnitsClean\(\[unit\]\)/);
+  assert.doesNotMatch(source, /reset-failed[^\n]*(?:skyjo-online-smoke|skyjo-online-legacy-proof)[^\n]*catch\(\(\) => \{\}\)/);
 });

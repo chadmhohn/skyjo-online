@@ -33,15 +33,18 @@ const expiresAt = '1800000300';
 const required = ['./', ...REQUIRED_ARCHIVE_ENTRIES];
 const regularLine = '-rw-r--r-- 0/0 1 2026-07-11 00:00:00 file';
 
+function trustedTestOperations() {
+  if (process.platform === 'win32') return {};
+  return { trustedUid: process.getuid(), trustedGid: process.getgid() };
+}
+
 test('deployment identifiers and command lanes are strict', () => {
   assert.equal(validateRunId('123-1-canary'), '123-1-canary');
   assert.equal(validateReleaseTag('v0.2.0'), 'v0.2.0');
   assert.throws(() => validateRunId('../x'), /Invalid/);
   assert.throws(() => validateReleaseTag('latest'), /Invalid/);
-  const signedCommand = `verify 123-1-canary ${sha} ${digest} 4096 - ${issuedAt} ${expiresAt} canary-primary ${signature}`;
+  const signedCommand = `verify 123-1-canary ${sha} ${digest} - ${issuedAt} ${expiresAt} canary-2026-07 ${signature}`;
   assert.deepEqual(parseArguments(['verify', '--authorization-command', signedCommand]), { command: 'verify', signedCommand });
-  const uploadCommand = signedCommand.replace(/^verify /, 'upload ');
-  assert.deepEqual(parseArguments(['upload', '--authorization-command', uploadCommand]), { command: 'upload', signedCommand: uploadCommand });
   assert.deepEqual(parseArguments(['self-test']), { command: 'self-test' });
   assert.throws(() => parseArguments(['verify']), /signed deployment authorization/i);
   assert.throws(() => parseArguments(['verify', '--authorization-command', signedCommand, 'extra']), /signed deployment authorization/i);
@@ -111,7 +114,7 @@ test('release symlink swaps remain within the release store', async () => {
     const target = path.join(releases, sha);
     await fs.mkdir(target, { recursive: true });
     const current = path.join(root, 'current');
-    await replaceSymlink(current, target);
+    await replaceSymlink(current, target, trustedTestOperations());
     assert.equal(await readLinkWithin(current, releases), target);
     await fs.rm(current, { force: true });
     await fs.symlink(path.dirname(root), current, process.platform === 'win32' ? 'junction' : 'dir');
@@ -148,34 +151,142 @@ test('activation failures select restart-before-swap or rollback-after-swap with
 });
 
 test('public rollback authorization is exact and release retention keeps five including both links', () => {
-  const metadata = { releaseSha: sha, artifactSha256: digest, artifactBytes: 4096, tag: 'v0.2.0' };
-  assert.equal(authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: digest, requestedBytes: 4096, requestedTag: 'v0.2.0' }), true);
-  assert.throws(() => authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: 'c'.repeat(64), requestedBytes: 4096, requestedTag: 'v0.2.0' }), /does not match/);
-  assert.throws(() => authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: digest, requestedBytes: 4097, requestedTag: 'v0.2.0' }), /does not match/);
+  const metadata = { releaseSha: sha, artifactSha256: digest, tag: 'v0.2.0' };
+  assert.equal(authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: digest, requestedTag: 'v0.2.0' }), true);
+  assert.throws(() => authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: 'c'.repeat(64), requestedTag: 'v0.2.0' }), /does not match/);
   const entries = Array.from({ length: 8 }, (_, index) => ({ path: `/releases/${index}`, mtimeMs: index }));
   assert.deepEqual(selectReleasePathsToPrune(entries, ['/releases/7', '/releases/6'], 5), ['/releases/2', '/releases/1', '/releases/0']);
 });
 
 test('operational assets keep the safety contracts explicit', async () => {
   const deploy = path.resolve(import.meta.dirname, '..');
-  const [wrapper, bootstrap, service, canary, canarySmoke, productionSmoke, stateProof, stateProofLauncher, controller, sudoers] = await Promise.all([
+  const [wrapper, bootstrap, bootstrapWrapper, bootstrapGuard, bootstrapSafety, nodeInstaller, nodeGuard, controllerLauncher, transportKey, service, canary, canarySmoke, productionSmoke, stateProof, legacyProof, stateProofLauncher, legacyProofScript, controller, sudoers] = await Promise.all([
     fs.readFile(path.join(deploy, 'skyjo-release-controller'), 'utf8'),
     fs.readFile(path.join(deploy, 'bootstrap-skyjo-delivery.sh'), 'utf8'),
+    fs.readFile(path.join(deploy, 'skyjo-delivery-bootstrap'), 'utf8'),
+    fs.readFile(path.join(deploy, 'bootstrap-generation-guard-lib.sh'), 'utf8'),
+    fs.readFile(path.join(deploy, 'bootstrap-safety-lib.sh'), 'utf8'),
+    fs.readFile(path.join(deploy, 'node-runtime-installer.sh'), 'utf8'),
+    fs.readFile(path.join(deploy, 'node-runtime-guard-lib.sh'), 'utf8'),
+    fs.readFile(path.join(deploy, 'skyjo-controller-launch'), 'utf8'),
+    fs.readFile(path.join(deploy, 'transport-key-lib.sh'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-online.service'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-online-canary@.service'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-online-canary-smoke@.service'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-online-smoke@.service'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-online-state-proof@.service'), 'utf8'),
+    fs.readFile(path.join(deploy, 'skyjo-online-legacy-proof@.service'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-state-proof-launch'), 'utf8'),
+    fs.readFile(path.join(deploy, 'legacy-runtime-proof.mjs'), 'utf8'),
     fs.readFile(path.join(deploy, 'release-controller.mjs'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-deploy.sudoers'), 'utf8')
   ]);
-  assert.match(wrapper, /flock --exclusive --nonblock/);
+  const legacyUnitCleanup = await fs.readFile(path.join(deploy, 'legacy-proof-unit-cleanup-lib.sh'), 'utf8');
+  assert.match(wrapper, /flock --exclusive --nonblock --no-fork/);
+  assert.match(wrapper, /--conflict-exit-code 73/);
+  assert.doesNotMatch(wrapper, /--close/);
+  assert.match(wrapper, /sha256sum --check --strict "\$manifest"/);
+  assert.match(wrapper, /skyjo-controller-launch/);
   assert.match(bootstrap, /Prepared Skyjo delivery assets\. The live production unit was not replaced/);
+  const pathReset = bootstrap.indexOf('PATH=/usr/sbin:/usr/bin:/sbin:/bin');
+  const restrictiveUmask = bootstrap.indexOf('umask 077');
+  const rootGate = bootstrap.indexOf('require_root\n');
+  const firstSource = bootstrap.indexOf('. "$SCRIPT_DIR/bootstrap-safety-lib.sh"');
+  assert.ok(pathReset > 0 && restrictiveUmask > pathReset && rootGate > restrictiveUmask && firstSource > rootGate,
+    'bootstrap must reset PATH and umask and require root before sourcing helpers');
+  assert.match(bootstrap, /snapshot_and_exec_prepare/);
+  assert.match(bootstrap, /exec "\$target\/bootstrap-skyjo-delivery\.sh" prepare/);
+  assert.match(bootstrap, /initial_assert_root_directory_chain "\$SCRIPT_DIR"/);
+  assert.match(bootstrap, /Bootstrap snapshot source is not root-owned/);
+  assert.match(bootstrap, /Prepare key inputs must be the installed immutable snapshots/);
+  assert.match(bootstrap, /bundle\.sha256/);
+  assert.match(bootstrap, /initial_assert_generation "\$target"/);
+  assert.match(bootstrapWrapper, /skyjo_guard_bootstrap_generation/);
+  assert.match(bootstrapWrapper, /exec "\$bootstrap"/);
+  assert.match(bootstrapGuard, /\^\[a-f0-9\]\{64\}\$/);
+  assert.match(bootstrapGuard, /sha256sum --check --strict bundle\.sha256/);
+  assert.match(bootstrapSafety, /cp --no-dereference --reflink=never/);
+  assert.match(bootstrapSafety, /Refusing unsafe pre-existing file destination/);
   assert.match(bootstrap, /skyjo_install_node_archive/);
   assert.match(bootstrap, /node-v\$NODE_VERSION-linux-x64/);
+  assert.match(nodeInstaller, /\.skyjo-node-runtime/);
+  assert.match(nodeInstaller, /skyjo_assert_root_directory_chain/);
+  assert.match(nodeInstaller, /flock --exclusive/);
+  assert.match(nodeInstaller, /\.node\.link\.XXXXXX/);
+  assert.match(nodeGuard, /skyjo_guard_node_runtime/);
+  assert.match(nodeGuard, /stat -c %g/);
+  const controllerGuard = controllerLauncher.indexOf('skyjo_guard_node_runtime');
+  const controllerExec = controllerLauncher.indexOf('exec /opt/skyjo-online/node-v24.18.0/bin/node');
+  assert.ok(controllerGuard > 0 && controllerExec > controllerGuard,
+    'locked shell launcher must validate the pinned runtime before direct Node execution');
+  assert.match(controllerLauncher, /sha256sum --check --strict "\$manifest"/);
   assert.match(bootstrap, /skyjo_canonical_transport_public_key "\$public_key" "\$TRANSPORT_KEY_FINGERPRINT"/);
+  assert.match(transportKey, /LF or CRLF/);
   assert.match(bootstrap, /Legacy rollback snapshot contains a symbolic link/);
+  assert.match(bootstrap, /skyjo_secure_directory \/var\/tmp\/skyjo-deploy root skyjo-deploy 1731 true/);
+  assert.match(bootstrap, /findmnt --noheadings --output FSTYPE --target \/var\/tmp\/skyjo-deploy/);
+  assert.match(bootstrap, /\.quota-admitted/);
+  assert.match(bootstrap, /skyjo_secure_directory "\$AUTH_ROOT" root root 0700/);
+  assert.match(bootstrap, /skyjo_atomic_install "\$canary_authorization_key" "\$AUTH_ROOT\/canary-2026-07\.pem"/);
+  assert.match(bootstrap, /skyjo_atomic_install "\$production_authorization_key" "\$AUTH_ROOT\/production-2026-07\.pem"/);
+  assert.match(bootstrap, /Installed canary key differs from its immutable snapshot/);
+  assert.match(bootstrap, /Production environment content changed during preparation/);
+  assert.match(bootstrap, /ensure_system_identity skyjo \/var\/lib\/skyjo-online \/usr\/sbin\/nologin/);
+  assert.match(bootstrap, /ensure_system_identity skyjo-canary \/var\/empty\/skyjo-canary \/usr\/sbin\/nologin/);
+  assert.match(bootstrap, /ensure_system_identity skyjo-deploy \/var\/lib\/skyjo-deploy \/bin\/sh/);
+  assert.match(bootstrap, /Runtime identity has unexpected supplementary groups/);
+  assert.match(bootstrap, /Runtime identities must have distinct primary group IDs/);
+  assert.match(bootstrap, /Runtime private group is shared by another primary identity/);
+  assert.match(bootstrap, /skyjo_publish_legacy_proof_environment "\$env_path" root skyjo[\s\S]*?\|\| return 1/);
+  assert.match(bootstrap, /skyjo_remove_legacy_proof_environment/);
+  assert.match(bootstrap, /\. "\$SCRIPT_DIR\/legacy-proof-unit-cleanup-lib\.sh"/);
+  assert.match(bootstrap, /skyjo_finalize_bootstrap_legacy_proof "\$proof_status" "\$unit" "\$env_path"/);
+  assert.match(legacyUnitCleanup, /skyjo-online-legacy-proof@bootstrap-activation\.service/);
+  assert.match(legacyUnitCleanup, /show --no-pager --all[\s\S]*--property=Id[\s\S]*--property=CollectMode/);
+  assert.match(legacyUnitCleanup, /"\$skyjo_cleanup_systemctl" reset-failed "\$skyjo_cleanup_unit" \|\| return 1/);
+  assert.doesNotMatch(legacyUnitCleanup, /reset-failed[^\n]*\|\| true/);
+  const sudoersPreflight = bootstrap.indexOf('visudo -cf "$SCRIPT_DIR/skyjo-deploy.sudoers"');
+  const sudoersPublication = bootstrap.indexOf('install_asset "$SCRIPT_DIR/skyjo-deploy.sudoers"');
+  const unitPreflight = bootstrap.indexOf('systemd-analyze verify \\\n    "$SCRIPT_DIR/skyjo-online-canary@.service"');
+  const unitPublication = bootstrap.indexOf('install_asset "$SCRIPT_DIR/skyjo-online-canary@.service"');
+  assert.ok(sudoersPreflight > 0 && sudoersPublication > sudoersPreflight, 'sudoers source must preflight before publication');
+  assert.ok(unitPreflight > 0 && unitPublication > unitPreflight, 'systemd sources must preflight before publication');
+  const wrapperPublication = bootstrap.lastIndexOf('skyjo_atomic_install "$SCRIPT_DIR/skyjo-delivery-bootstrap"');
+  const daemonReload = bootstrap.lastIndexOf('/usr/bin/systemctl daemon-reload', wrapperPublication);
+  const generationPublication = bootstrap.lastIndexOf('skyjo_publish_relative_symlink "$BOOTSTRAP_STORE/current"');
+  assert.ok(wrapperPublication > daemonReload && generationPublication > wrapperPublication,
+    'delayed bootstrap entrypoint must publish only after successful preparation');
+  const activationStart = bootstrap.indexOf('activate_unit()');
+  const transientGuard = bootstrap.indexOf('SYSTEMD_EXEC_PID', activationStart);
+  const productionStop = bootstrap.indexOf('systemctl stop skyjo-online.service', activationStart);
+  assert.ok(activationStart >= 0 && transientGuard > activationStart && transientGuard < productionStop, 'transient-service guard must precede production stop');
+  assert.match(bootstrap, /activation_proof\(\) \{ run_legacy_proof "\$target" \|\| return 1; \}/);
+  assert.match(bootstrap, /skyjo_run_activation_transaction activation_recover/);
+  const recoveryBlock = bootstrap.indexOf('activation_recover()', productionStop);
+  const recoveryStop = bootstrap.indexOf('systemctl stop skyjo-online.service', recoveryBlock);
+  assert.doesNotMatch(bootstrap.slice(recoveryStop, bootstrap.indexOf('sha256sum --check', recoveryStop)), /\|\| true/,
+    'recovery must not restore the legacy unit while a hardened process may still be active');
+  const recoveryStart = bootstrap.indexOf('/usr/bin/systemctl start skyjo-online.service ||', recoveryBlock);
+  const recoveryProof = bootstrap.indexOf('run_legacy_proof "$target" ||', recoveryStart);
+  assert.ok(recoveryStart > productionStop && recoveryProof > recoveryStart,
+    'failure recovery must run the full trusted legacy proof after restarting the original unit');
+  assert.doesNotMatch(bootstrap.slice(recoveryStart, recoveryProof), /healthz/,
+    'failure recovery may not substitute a health-only check for the full trusted proof');
+  assert.match(bootstrap, /Unexpected systemd drop-in directory must be removed before preparation/);
+  const savedUnitCheck = bootstrap.indexOf('sha256sum --check --strict "$old_unit_checksum"');
+  assert.ok(savedUnitCheck > activationStart && savedUnitCheck < productionStop,
+    'saved legacy unit checksum must verify before production stop');
+  const liveUnitCompare = bootstrap.indexOf('skyjo_classify_activation_unit /etc/systemd/system/skyjo-online.service "$old_unit" "$STAGED_UNIT"');
+  assert.ok(liveUnitCompare > savedUnitCheck && liveUnitCompare < productionStop,
+    'live unit must classify as exact legacy or staged hardened content before production stop');
+  assert.match(bootstrap, /activation_steps='activation_stop activation_prepare_state activation_reload activation_start activation_health activation_proof'/);
+  const adoptionStart = bootstrap.indexOf('adopt_legacy()');
+  const adoptionBackup = bootstrap.indexOf('skyjo_prepare_unit_backup', adoptionStart);
+  const adoptionTargetPublish = bootstrap.indexOf('/usr/bin/mv -T "$tmp" "$target"', adoptionStart);
+  const adoptionCurrent = bootstrap.indexOf('skyjo_ensure_legacy_link "$APP_ROOT/current"', adoptionStart);
+  const adoptionPrevious = bootstrap.indexOf('skyjo_ensure_legacy_link "$APP_ROOT/previous"', adoptionStart);
+  assert.ok(adoptionBackup > adoptionStart && adoptionTargetPublish > adoptionBackup && adoptionCurrent > adoptionTargetPublish && adoptionPrevious > adoptionCurrent,
+    'adoption must back up first and resumably publish target, current, then previous');
   assert.match(service, /User=skyjo/);
   assert.match(service, /\/opt\/skyjo-online\/node\/bin\/node/);
   assert.match(canary, /^User=skyjo-canary$/m);
@@ -195,10 +306,62 @@ test('operational assets keep the safety contracts explicit', async () => {
   assert.match(stateProof, /^CollectMode=inactive$/m);
   assert.match(stateProof, /^RestrictAddressFamilies=AF_UNIX$/m);
   assert.doesNotMatch(stateProof, /^PrivateTmp=true$/m);
+  assert.match(legacyProof, /^User=skyjo$/m);
+  assert.match(legacyProof, /^CollectMode=inactive$/m);
+  assert.match(legacyProof, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
+  assert.match(legacyProof, /^IPAddressAllow=localhost$/m);
+  assert.doesNotMatch(legacyProof, /^User=skyjo-canary$/m);
   assert.match(stateProofLauncher, /"\$release\/scripts\/backup-state\.mjs"/);
   assert.match(stateProofLauncher, /"\$release\/scripts\/verify-state-backup\.mjs"/);
+  assert.match(legacyProofScript, /inspectRuntimeState/);
+  assert.match(legacyProofScript, /smoke account authentication failed/);
   assert.match(controller, /SKYJO_VAPID_PRIVATE_KEY=/);
-  assert.match(controller, /\['root:skyjo-canary', runDirectory\]/);
+  assert.match(controller, /\['root:root', runDirectory\]/);
+  assert.match(controller, /\['0711', runDirectory\]/);
   assert.doesNotMatch(controller, /run\(PATHS\.node, \[resolveWithin\(releaseDirectory, 'scripts\//);
+  assert.match(controller, /verifyRunningProduction\(oldRelease, rollbackAnchor, parsed\.runId\)/);
+  assert.match(controller, /publishImmutableDirectory\(incoming, immutableTarget\)/);
+  assert.match(controller, /proveDurablePublishedDirectory\(immutableTarget\)/);
+  assert.match(controller, /fsyncFilesystemPath\(PATHS\.releases, \{ directory: true \}\)/);
+  assert.match(controller, /swap: async \(markLinksChanged\)/);
+  assert.match(controller, /flag: 'wx'/);
+  const promotionPreflight = controller.indexOf('async function promoteAction(parsed)');
+  const hardenedUnit = controller.indexOf('await assertHardenedProductionUnit()', promotionPreflight);
+  const rollbackAnchor = controller.indexOf('const rollbackAnchor = await validateRollbackAnchor(oldRelease)', hardenedUnit);
+  const reviveCurrent = controller.indexOf('await verifyRunningProduction(oldRelease, rollbackAnchor, parsed.runId)', rollbackAnchor);
+  const prepareCandidate = controller.indexOf('const prepared = await prepareCandidate(parsed)', reviveCurrent);
+  assert.ok(promotionPreflight >= 0 && hardenedUnit > promotionPreflight && rollbackAnchor > hardenedUnit &&
+    reviveCurrent > rollbackAnchor && prepareCandidate > reviveCurrent,
+  'fresh promotion must start and fully prove the validated current release before candidate work');
+  assert.match(controller, /assertEffectiveDeliveryUnits/);
+  assert.match(controller, /Deployment staging requires .*ext4.*link-count.*semantics/);
+  assert.match(controller, /Effective production systemd DropInPaths must be empty/);
+  assert.match(controller, /primary groups must be distinct/);
   assert.match(sudoers, /^skyjo-deploy .*NOPASSWD: \/usr\/local\/sbin\/skyjo-release-controller \*$/m);
+});
+
+test('first activation runbooks require a disconnect-safe transient service sharing the controller lock', async () => {
+  const root = path.resolve(import.meta.dirname, '..', '..');
+  for (const name of ['atomic-vps-releases.md', 'immutable-deployment.md']) {
+    const document = await fs.readFile(path.join(root, 'docs', name), 'utf8');
+    assert.match(document, /systemd-run/);
+    assert.match(document, /--service-type=exec/);
+    assert.match(document, /flock --exclusive --nonblock --no-fork/);
+    assert.match(document, /\/usr\/local\/sbin\/skyjo-delivery-bootstrap activate-production-unit/);
+    assert.match(document, /\/usr\/local\/sbin\/skyjo-delivery-bootstrap adopt-legacy/);
+    assert.doesNotMatch(document, /deploy\/bootstrap-skyjo-delivery\.sh adopt-legacy/);
+    assert.doesNotMatch(document, /sudo (?:deploy\/bootstrap-skyjo-delivery\.sh|[^\n]*BOOTSTRAP[^\n]*) activate-production-unit/);
+  }
+});
+
+test('the one-time command-protocol cutover requires pre-merge bootstrap and manual canary evidence', async () => {
+  const document = await fs.readFile(path.resolve(import.meta.dirname, '..', '..', 'docs', 'immutable-deployment.md'), 'utf8');
+  assert.match(document, /Signed-action protocol cutover/);
+  assert.match(document, /dispatcher\/controller installed from `0cc063e`/);
+  assert.match(document, /Release Canary` is intentionally ineligible on pull requests/);
+  assert.match(document, /git -c core\.autocrlf=false -c core\.eol=lf archive/);
+  assert.match(document, /Before merging, run `bootstrap-skyjo-delivery\.sh prepare`/);
+  assert.match(document, /manual `verify` through `deploy\/github-release-remote\.sh`/);
+  assert.match(document, /Merge only after that manual canary passes/);
+  assert.match(document, /Do not tag or promote during the cutover window/);
 });

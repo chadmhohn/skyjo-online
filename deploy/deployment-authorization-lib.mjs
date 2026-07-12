@@ -3,11 +3,10 @@ import fsConstants from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export const AUTHORIZATION_DOMAIN = 'skyjo-online-deployment-authorization/v2';
+export const AUTHORIZATION_DOMAIN = 'skyjo-online-deployment-authorization/v1';
 export const AUTHORIZATION_REPOSITORY = 'chadmhohn/skyjo-online';
 export const MAX_AUTHORIZATION_LIFETIME_SECONDS = 600;
 export const MAX_AUTHORIZATION_COMMAND_BYTES = 512;
-export const MAX_AUTHORIZED_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 const runIdPattern = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(canary|production)$/;
 const releaseShaPattern = /^[a-f0-9]{40}$/;
@@ -16,7 +15,6 @@ const releaseTagPattern = /^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-
 const keyIdPattern = /^(?:canary|production)-[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const signaturePattern = /^[A-Za-z0-9_-]{86}$/;
 const integerPattern = /^(?:0|[1-9][0-9]{0,15})$/;
-const positiveIntegerPattern = /^[1-9][0-9]{0,15}$/;
 
 export class DeploymentAuthorizationError extends Error {
   constructor(code, message = 'Deployment authorization rejected.') {
@@ -46,12 +44,7 @@ function parseEpoch(value, label) {
   return parsed;
 }
 
-function laneFor(command, runId) {
-  if (command === 'upload') {
-    const runMatch = typeof runId === 'string' ? runId.match(runIdPattern) : null;
-    if (!runMatch) reject('INVALID_RUN_ID', 'Deployment authorization run ID is invalid.');
-    return { role: runMatch[1], suffix: runMatch[1], tagRequired: runMatch[1] === 'production' };
-  }
+function laneFor(command) {
   if (command === 'verify') return { role: 'canary', suffix: 'canary', tagRequired: false };
   if (command === 'promote' || command === 'rollback') return { role: 'production', suffix: 'production', tagRequired: true };
   reject('INVALID_COMMAND', 'Deployment authorization command is invalid.');
@@ -60,24 +53,16 @@ function laneFor(command, runId) {
 export function normalizeAuthorizationFields(value, options = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) reject('INVALID_AUTHORIZATION');
   const command = requireAscii(value.command, 'Command');
-  const runId = requireAscii(value.runId, 'Run ID');
-  const lane = laneFor(command, runId);
+  const lane = laneFor(command);
   const role = requireAscii(value.role, 'Role');
   if (role !== lane.role) reject('ROLE_MISMATCH', 'Deployment authorization role is invalid.');
+  const runId = requireAscii(value.runId, 'Run ID');
   const runMatch = runId.match(runIdPattern);
   if (!runMatch || runMatch[1] !== lane.suffix) reject('INVALID_RUN_ID', 'Deployment authorization run ID is invalid.');
   const releaseSha = requireAscii(value.releaseSha, 'Release SHA');
   if (!releaseShaPattern.test(releaseSha)) reject('INVALID_RELEASE_SHA', 'Deployment authorization release SHA is invalid.');
   const artifactSha256 = requireAscii(value.artifactSha256, 'Artifact digest');
   if (!digestPattern.test(artifactSha256)) reject('INVALID_DIGEST', 'Deployment authorization artifact digest is invalid.');
-  const artifactBytesValue = typeof value.artifactBytes === 'number' ? String(value.artifactBytes) : value.artifactBytes;
-  if (typeof artifactBytesValue !== 'string' || !positiveIntegerPattern.test(artifactBytesValue)) {
-    reject('INVALID_ARTIFACT_SIZE', 'Deployment authorization artifact size is invalid.');
-  }
-  const artifactBytes = Number(artifactBytesValue);
-  if (!Number.isSafeInteger(artifactBytes) || artifactBytes > MAX_AUTHORIZED_ARTIFACT_BYTES) {
-    reject('INVALID_ARTIFACT_SIZE', 'Deployment authorization artifact size is invalid.');
-  }
   const tag = requireAscii(value.tag, 'Tag');
   if ((lane.tagRequired && !releaseTagPattern.test(tag)) || (!lane.tagRequired && tag !== '-')) {
     reject('INVALID_TAG', 'Deployment authorization tag is invalid.');
@@ -95,7 +80,7 @@ export function normalizeAuthorizationFields(value, options = {}) {
     if (issuedAt > nowSeconds + 60) reject('NOT_YET_VALID', 'Deployment authorization is not yet valid.');
     if (expiresAt <= nowSeconds) reject('EXPIRED', 'Deployment authorization has expired.');
   }
-  return { role, command, runId, releaseSha, artifactSha256, artifactBytes, tag, issuedAt, expiresAt, keyId };
+  return { role, command, runId, releaseSha, artifactSha256, tag, issuedAt, expiresAt, keyId };
 }
 
 export function canonicalAuthorizationPayload(value, options = {}) {
@@ -108,7 +93,6 @@ export function canonicalAuthorizationPayload(value, options = {}) {
     `run_id=${fields.runId}`,
     `release_sha=${fields.releaseSha}`,
     `artifact_sha256=${fields.artifactSha256}`,
-    `artifact_bytes=${fields.artifactBytes}`,
     `tag=${fields.tag}`,
     `issued_at=${fields.issuedAt}`,
     `expires_at=${fields.expiresAt}`,
@@ -124,34 +108,17 @@ export function parseAuthorizationSignature(value) {
   return decoded;
 }
 
-export function formatSignedDeploymentCommand(value, signature, options = {}) {
-  const fields = normalizeAuthorizationFields(value, options);
-  parseAuthorizationSignature(signature);
-  return [
-    fields.command,
-    fields.runId,
-    fields.releaseSha,
-    fields.artifactSha256,
-    fields.artifactBytes,
-    fields.tag,
-    fields.issuedAt,
-    fields.expiresAt,
-    fields.keyId,
-    signature
-  ].join(' ');
-}
-
 export function parseSignedDeploymentCommand(value, options = {}) {
   if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > MAX_AUTHORIZATION_COMMAND_BYTES ||
       !/^[\x20-\x7e]+$/.test(value) || value !== value.trim() || value.includes('  ')) {
     reject('INVALID_COMMAND_LINE', 'Deployment authorization command line is invalid.');
   }
   const tokens = value.split(' ');
-  if (tokens.length !== 10) reject('INVALID_COMMAND_LINE', 'Deployment authorization command line is invalid.');
-  const [command, runId, releaseSha, artifactSha256, artifactBytes, tag, issuedAt, expiresAt, keyId, signature] = tokens;
-  const role = laneFor(command, runId).role;
+  if (tokens.length !== 9) reject('INVALID_COMMAND_LINE', 'Deployment authorization command line is invalid.');
+  const [command, runId, releaseSha, artifactSha256, tag, issuedAt, expiresAt, keyId, signature] = tokens;
+  const role = laneFor(command).role;
   const fields = normalizeAuthorizationFields({
-    role, command, runId, releaseSha, artifactSha256, artifactBytes, tag, issuedAt, expiresAt, keyId
+    role, command, runId, releaseSha, artifactSha256, tag, issuedAt, expiresAt, keyId
   }, options);
   parseAuthorizationSignature(signature);
   return { fields, signature };
@@ -189,11 +156,6 @@ export async function loadAuthorizationPublicKey(filePath, options = {}) {
   return key;
 }
 
-export function authorizationPublicKeyFingerprint(publicKey) {
-  if (publicKey?.asymmetricKeyType !== 'ed25519') reject('INVALID_KEY');
-  return crypto.createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
-}
-
 export async function loadAuthorizationPrivateKey(filePath, options = {}) {
   const pem = await readKeyFile(filePath, { ...options, expectedUid: options.expectedUid ?? process.getuid?.() });
   let key;
@@ -211,13 +173,20 @@ export function signDeploymentAuthorization(value, privateKey, options = {}) {
   return crypto.sign(null, Buffer.from(payload, 'ascii'), privateKey).toString('base64url');
 }
 
-export async function verifyDeploymentAuthorization({ fields: rawFields, signature, keyring, nowSeconds, expectedUid = 0 }) {
-  const fields = normalizeAuthorizationFields(rawFields, { nowSeconds });
+export async function verifyDeploymentAuthorization({
+  fields: rawFields,
+  signature,
+  keyring,
+  nowSeconds,
+  expectedUid = 0,
+  checkFreshness = true
+}) {
+  const fields = normalizeAuthorizationFields(rawFields, { nowSeconds, checkFreshness });
   const entry = keyring instanceof Map ? keyring.get(fields.keyId) : keyring?.[fields.keyId];
   if (!entry || entry.role !== fields.role) reject('UNKNOWN_KEY', 'Deployment authorization key is not trusted.');
   const publicKey = entry.publicKey || await loadAuthorizationPublicKey(entry.publicKeyPath, { expectedUid });
   if (publicKey?.asymmetricKeyType !== 'ed25519') reject('INVALID_KEY');
-  const payload = canonicalAuthorizationPayload(fields, { nowSeconds });
+  const payload = canonicalAuthorizationPayload(fields, { nowSeconds, checkFreshness });
   const valid = crypto.verify(null, Buffer.from(payload, 'ascii'), publicKey, parseAuthorizationSignature(signature));
   if (!valid) reject('BAD_SIGNATURE', 'Deployment authorization signature did not verify.');
   return { fields, payloadSha256: crypto.createHash('sha256').update(payload, 'ascii').digest('hex') };
@@ -258,8 +227,102 @@ async function assertSafeLedgerRoot(ledgerRoot, expectedUid) {
   return resolved;
 }
 
-async function replaceLedgerRecord(recordPath, expected, next) {
-  const current = await fs.readFile(recordPath, 'utf8');
+const MAX_LEDGER_RECORD_BYTES = 8192;
+export const MAX_AUTHORIZATION_RESULT_BYTES = 2048;
+
+function canonicalResultJson(result) {
+  let json;
+  try { json = JSON.stringify(result); }
+  catch { reject('INVALID_RESULT', 'Deployment action result is not serializable.'); }
+  if (typeof json !== 'string' || Buffer.byteLength(json, 'utf8') < 1 ||
+      Buffer.byteLength(json, 'utf8') > MAX_AUTHORIZATION_RESULT_BYTES) {
+    reject('INVALID_RESULT', 'Deployment action result is not bounded.');
+  }
+  let parsed;
+  try { parsed = JSON.parse(json); }
+  catch { reject('INVALID_RESULT'); }
+  if (JSON.stringify(parsed) !== json) reject('INVALID_RESULT', 'Deployment action result is not canonical JSON.');
+  return json;
+}
+
+function recordIdentity(fields, payloadSha256) {
+  return {
+    role: fields.role,
+    command: fields.command,
+    runId: fields.runId,
+    releaseSha: fields.releaseSha,
+    artifactSha256: fields.artifactSha256,
+    tag: fields.tag,
+    keyId: fields.keyId,
+    issuedAt: fields.issuedAt,
+    expiresAt: fields.expiresAt,
+    payloadSha256
+  };
+}
+
+function parseLedgerRecord(text) {
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') < 2 ||
+      Buffer.byteLength(text, 'utf8') > MAX_LEDGER_RECORD_BYTES || !text.endsWith('\n') || text.slice(0, -1).includes('\n')) {
+    reject('INVALID_LEDGER');
+  }
+  let record;
+  try { record = JSON.parse(text); }
+  catch { reject('INVALID_LEDGER'); }
+  if (!record || typeof record !== 'object' || Array.isArray(record) || `${JSON.stringify(record)}\n` !== text || record.formatVersion !== 2) {
+    reject('INVALID_LEDGER');
+  }
+  const normalizedRecord = normalizeAuthorizationFields(record, { checkFreshness: false });
+  if (!digestPattern.test(record.payloadSha256 || '')) reject('INVALID_LEDGER');
+  const expectedPayload = canonicalAuthorizationPayload(normalizedRecord, { checkFreshness: false });
+  if (crypto.createHash('sha256').update(expectedPayload, 'ascii').digest('hex') !== record.payloadSha256) reject('INVALID_LEDGER');
+  if (!Number.isSafeInteger(record.startedAt) || record.startedAt < 0) reject('INVALID_LEDGER');
+  const baseKeys = ['formatVersion', 'status', ...Object.keys(recordIdentity(normalizedRecord, record.payloadSha256)), 'startedAt'];
+  if (record.status === 'started') {
+    if (Object.keys(record).join(',') !== baseKeys.join(',')) reject('INVALID_LEDGER');
+    return record;
+  }
+  if (!Number.isSafeInteger(record.completedAt) || record.completedAt < record.startedAt) reject('INVALID_LEDGER');
+  if (record.status === 'failed') {
+    if (Object.keys(record).join(',') !== [...baseKeys, 'completedAt'].join(',')) reject('INVALID_LEDGER');
+    return record;
+  }
+  if (record.status === 'completed') {
+    let parsedResult;
+    try { parsedResult = JSON.parse(record.resultJson); }
+    catch { reject('INVALID_LEDGER'); }
+    if (Object.keys(record).join(',') !== [...baseKeys, 'resultJson', 'completedAt'].join(',') ||
+        typeof record.resultJson !== 'string' || canonicalResultJson(parsedResult) !== record.resultJson) {
+      reject('INVALID_LEDGER');
+    }
+    return record;
+  }
+  reject('INVALID_LEDGER');
+}
+
+async function readLedgerText(recordPath, expectedUid, { missing = false } = {}) {
+  let handle;
+  try {
+    handle = await fs.open(recordPath, fsConstants.constants.O_RDONLY | (fsConstants.constants.O_NOFOLLOW || 0));
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 2 || stat.size > MAX_LEDGER_RECORD_BYTES ||
+        (process.platform !== 'win32' && (stat.mode & 0o7777) !== 0o600) ||
+        (expectedUid !== undefined && stat.uid !== expectedUid)) reject('INVALID_LEDGER');
+    return await handle.readFile('utf8');
+  } catch (error) {
+    if (missing && error?.code === 'ENOENT') return null;
+    if (error instanceof DeploymentAuthorizationError) throw error;
+    reject('INVALID_LEDGER');
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function replaceLedgerRecord(recordPath, expected, next, expectedUid) {
+  const current = await readLedgerText(recordPath, expectedUid);
+  if (current === next) {
+    await syncDirectory(path.dirname(recordPath));
+    return;
+  }
   if (current !== expected) reject('LEDGER_CONFLICT', 'Deployment authorization ledger changed unexpectedly.');
   const temporary = `${recordPath}.next-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
   const handle = await fs.open(temporary, 'wx', 0o600);
@@ -277,43 +340,93 @@ async function replaceLedgerRecord(recordPath, expected, next) {
   }
 }
 
-async function readCompletedReplay(recordPath, payloadSha256, expectedUid) {
-  let handle;
-  try {
-    handle = await fs.open(recordPath, fsConstants.constants.O_RDONLY | (fsConstants.constants.O_NOFOLLOW || 0));
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.isSymbolicLink() || (expectedUid !== undefined && stat.uid !== expectedUid) ||
-        (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)) return false;
-    const record = JSON.parse(await handle.readFile('utf8'));
-    return record?.formatVersion === 1 && record.status === 'completed' && record.payloadSha256 === payloadSha256;
-  } catch {
-    return false;
-  } finally {
-    await handle?.close().catch(() => {});
+function activeUse({ key, recordPath, started, ownerUid, replaceRecord, resumed = false }) {
+  const startedAt = JSON.parse(started).startedAt;
+  let state = 'started';
+  async function finish(status, result) {
+    if (state !== 'started') reject('LEDGER_CONFLICT', 'Deployment authorization ledger is already finalized.');
+    const completedAt = Math.max(startedAt, Math.floor(Date.now() / 1000));
+    const parsedStarted = JSON.parse(started);
+    const nextRecord = status === 'completed'
+      ? { ...parsedStarted, status, resultJson: canonicalResultJson(result), completedAt }
+      : { ...parsedStarted, status, completedAt };
+    const next = `${JSON.stringify(nextRecord)}\n`;
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await replaceRecord(recordPath, started, next, ownerUid);
+        state = status;
+        return;
+      } catch (error) {
+        lastError = error;
+        const observed = await readLedgerText(recordPath, ownerUid).catch(() => null);
+        if (observed !== started && observed !== next) break;
+      }
+    }
+    throw lastError || new DeploymentAuthorizationError('LEDGER_CONFLICT');
   }
+  return {
+    key,
+    recordPath,
+    replayed: false,
+    resumed,
+    complete: (result) => finish('completed', result),
+    fail: () => finish('failed')
+  };
 }
 
-export async function beginAuthorizationUse({ ledgerRoot, fields: rawFields, payloadSha256, nowSeconds, expectedUid, allowExactCompletedReplay = false }) {
-  const fields = normalizeAuthorizationFields(rawFields, { nowSeconds });
+function existingUse(record, recordText, fields, payloadSha256, nowSeconds, key, recordPath, options) {
+  for (const name of ['role', 'command', 'runId', 'releaseSha', 'artifactSha256', 'tag']) {
+    if (record[name] !== fields[name]) reject('REPLAY_CONFLICT', 'Deployment authorization conflicts with a consumed operation.');
+  }
+  const exactAuthorization = record.keyId === fields.keyId && record.issuedAt === fields.issuedAt &&
+    record.expiresAt === fields.expiresAt && record.payloadSha256 === payloadSha256;
+  if (!exactAuthorization) normalizeAuthorizationFields(fields, { nowSeconds });
+  if (record.status === 'completed') {
+    return { key, recordPath, replayed: true, result: JSON.parse(record.resultJson) };
+  }
+  if (record.status === 'failed') reject('PRIOR_FAILED', 'Deployment authorization previously failed and will not be re-executed.');
+  if (options.allowStartedRecovery) {
+    return activeUse({
+      key,
+      recordPath,
+      started: recordText,
+      ownerUid: options.ownerUid,
+      replaceRecord: options.replaceRecord,
+      resumed: true
+    });
+  }
+  reject('IN_PROGRESS', 'Deployment authorization is already executing; retry the exact request later.');
+}
+
+export async function beginAuthorizationUse({
+  ledgerRoot,
+  fields: rawFields,
+  payloadSha256,
+  nowSeconds,
+  expectedUid,
+  replaceRecord = replaceLedgerRecord,
+  allowStartedRecovery = false
+}) {
+  const ownerUid = expectedUid ?? process.getuid?.();
+  const fields = normalizeAuthorizationFields(rawFields, { nowSeconds, checkFreshness: false });
   if (!digestPattern.test(payloadSha256 || '')) reject('INVALID_LEDGER');
-  const root = await assertSafeLedgerRoot(ledgerRoot, expectedUid ?? process.getuid?.());
+  const root = await assertSafeLedgerRoot(ledgerRoot, ownerUid);
   const key = replayKey(fields);
   const recordPath = path.join(root, `${key}.json`);
+  const existingText = await readLedgerText(recordPath, ownerUid, { missing: true });
+  const existingOptions = { allowStartedRecovery, ownerUid, replaceRecord };
+  if (existingText !== null) return existingUse(parseLedgerRecord(existingText), existingText, fields, payloadSha256, nowSeconds, key, recordPath, existingOptions);
+
+  // A previously completed exact request may be reconciled after expiry, but a
+  // new operation must still be fresh before its one-use record is created.
+  normalizeAuthorizationFields(rawFields, { nowSeconds });
+  const startedAt = nowSeconds ?? Math.floor(Date.now() / 1000);
   const started = `${JSON.stringify({
-    formatVersion: 1,
+    formatVersion: 2,
     status: 'started',
-    role: fields.role,
-    command: fields.command,
-    runId: fields.runId,
-    releaseSha: fields.releaseSha,
-    artifactSha256: fields.artifactSha256,
-    artifactBytes: fields.artifactBytes,
-    tag: fields.tag,
-    keyId: fields.keyId,
-    issuedAt: fields.issuedAt,
-    expiresAt: fields.expiresAt,
-    payloadSha256,
-    startedAt: nowSeconds ?? Math.floor(Date.now() / 1000)
+    ...recordIdentity(fields, payloadSha256),
+    startedAt
   })}\n`;
   let handle;
   try {
@@ -322,16 +435,8 @@ export async function beginAuthorizationUse({ ledgerRoot, fields: rawFields, pay
     await handle.sync();
   } catch (error) {
     if (error?.code === 'EEXIST') {
-      if (allowExactCompletedReplay && await readCompletedReplay(recordPath, payloadSha256, expectedUid ?? process.getuid?.())) {
-        return {
-          key,
-          recordPath,
-          replayed: true,
-          complete: async () => {},
-          fail: async () => {}
-        };
-      }
-      reject('REPLAY', 'Deployment authorization was already consumed.');
+      const raced = await readLedgerText(recordPath, ownerUid);
+      return existingUse(parseLedgerRecord(raced), raced, fields, payloadSha256, nowSeconds, key, recordPath, existingOptions);
     }
     if (error instanceof DeploymentAuthorizationError) throw error;
     reject('INVALID_LEDGER');
@@ -339,19 +444,5 @@ export async function beginAuthorizationUse({ ledgerRoot, fields: rawFields, pay
     await handle?.close().catch(() => {});
   }
   await syncDirectory(root);
-  let state = 'started';
-  async function finish(status) {
-    if (state !== 'started') reject('LEDGER_CONFLICT', 'Deployment authorization ledger is already finalized.');
-    const completedAt = Math.floor(Date.now() / 1000);
-    const next = `${JSON.stringify({ ...JSON.parse(started), status, completedAt })}\n`;
-    await replaceLedgerRecord(recordPath, started, next);
-    state = status;
-  }
-  return {
-    key,
-    recordPath,
-    replayed: false,
-    complete: () => finish('completed'),
-    fail: () => finish('failed')
-  };
+  return activeUse({ key, recordPath, started, ownerUid, replaceRecord });
 }

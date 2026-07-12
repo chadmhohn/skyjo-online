@@ -15,6 +15,7 @@ Required environment:
   SKYJO_DEPLOY_IDENTITY_FILE
   SKYJO_DEPLOY_KNOWN_HOSTS_FILE
   SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE
+  SKYJO_DEPLOY_AUTH_KEY_ID
 EOF
   exit 64
 }
@@ -59,6 +60,7 @@ deploy_user="${SKYJO_DEPLOY_USER:-skyjo-deploy}"
 identity_file="${SKYJO_DEPLOY_IDENTITY_FILE:-}"
 known_hosts_file="${SKYJO_DEPLOY_KNOWN_HOSTS_FILE:-}"
 authorization_key_file="${SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE:-}"
+authorization_key_id="${SKYJO_DEPLOY_AUTH_KEY_ID:-}"
 ssh_bin="${SKYJO_SSH_BIN:-ssh}"
 node_bin="${SKYJO_NODE_BIN:-node}"
 signer="${SKYJO_DEPLOY_AUTH_SIGNER:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sign-deployment-authorization.mjs}"
@@ -85,7 +87,7 @@ if [[ "$mode" == "verify" ]]; then
   authorization_role=canary
   authorization_tag=-
 fi
-authorization_key_id="${authorization_role}-primary"
+[[ "$authorization_key_id" =~ ^${authorization_role}-[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]] || die 'invalid deployment authorization key ID'
 
 expected_archive_name="skyjo-runtime-$release_sha.tar.gz"
 expected_checksum_name="$expected_archive_name.sha256"
@@ -110,11 +112,7 @@ ssh_options=(
 )
 target="$deploy_user@$deploy_host"
 
-if [[ "$mode" == "rollback" ]]; then
-  archive_path="${checksum_path%.sha256}"
-fi
-
-if [[ "$mode" == "verify" || "$mode" == "promote" || "$mode" == "rollback" ]]; then
+if [[ "$mode" == "verify" || "$mode" == "promote" ]]; then
   [[ "$(basename -- "$archive_path")" == "$expected_archive_name" ]] || die 'archive path does not match release SHA'
   [[ -f "$archive_path" && ! -L "$archive_path" ]] || die 'missing release archive'
   actual_digest="$(sha256sum "$archive_path" | awk '{print $1}')"
@@ -122,45 +120,66 @@ if [[ "$mode" == "verify" || "$mode" == "promote" || "$mode" == "rollback" ]]; t
   archive_size="$(wc -c < "$archive_path" | tr -d '[:space:]')"
   [[ "$archive_size" =~ ^[1-9][0-9]*$ ]] || die 'release archive is empty'
 
-fi
-
-sign_command() {
-  command_to_sign="$1"
-  "$node_bin" "$signer" \
-  --role "$authorization_role" \
-  --command "$command_to_sign" \
-  --run-id "$run_id" \
-  --release-sha "$release_sha" \
-  --artifact-sha256 "$expected_digest" \
-  --artifact-bytes "$archive_size" \
-  --tag "$authorization_tag" \
-  --key-id "$authorization_key_id" \
-  --private-key "$authorization_key_file" \
-  --lifetime-seconds 300
-}
-
-if [[ "$mode" == "verify" || "$mode" == "promote" ]]; then
-  upload_command="$(sign_command upload)"
-  [[ "$upload_command" != *$'\n'* && "$upload_command" != *$'\r'* ]] || die 'signer returned an invalid upload command'
-  [[ "$upload_command" == "upload $run_id $release_sha $expected_digest $archive_size $authorization_tag "* ]] || die 'signer returned a mismatched upload command'
+  upload_command="upload $run_id $release_sha $archive_size"
   if ! "$ssh_bin" "${ssh_options[@]}" "$target" "$upload_command" < "$archive_path" > /dev/null; then
-    printf '%s\n' 'Upload transport failed; retrying the exact signed, idempotent request once.' >&2
+    printf '%s\n' 'Upload acknowledgement was lost; retrying the exact idempotent upload once.' >&2
     sleep 1
     "$ssh_bin" "${ssh_options[@]}" "$target" "$upload_command" < "$archive_path" > /dev/null
   fi
 fi
 
-signed_command="$(sign_command "$mode")"
-[[ "$signed_command" != *$'\n'* && "$signed_command" != *$'\r'* ]] || die 'signer returned an invalid command'
-[[ "$signed_command" == "$mode $run_id $release_sha $expected_digest $archive_size $authorization_tag "* ]] || die 'signer returned a mismatched command'
+authorization_json="$("$node_bin" "$signer" \
+  --role "$authorization_role" \
+  --command "$mode" \
+  --run-id "$run_id" \
+  --release-sha "$release_sha" \
+  --artifact-sha256 "$expected_digest" \
+  --tag "$authorization_tag" \
+  --key-id "$authorization_key_id" \
+  --private-key "$authorization_key_file" \
+  --lifetime-seconds 300)"
+authorization_values="$("$node_bin" -e '
+  const value = JSON.parse(process.argv[1]);
+  const exact = ["issuedAt", "expiresAt", "keyId", "signature"];
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).sort().join(",") !== [...exact].sort().join(",") ||
+      !Number.isSafeInteger(value.issuedAt) || !Number.isSafeInteger(value.expiresAt) ||
+      typeof value.keyId !== "string" || typeof value.signature !== "string") process.exit(64);
+  process.stdout.write(`${value.issuedAt} ${value.expiresAt} ${value.keyId} ${value.signature}`);
+' "$authorization_json")" || die 'signer returned invalid authorization metadata'
+read -r issued_at expires_at signed_key_id signature extra <<< "$authorization_values"
+[[ -z "${extra:-}" && "$issued_at" =~ ^[0-9]+$ && "$expires_at" =~ ^[0-9]+$ ]] || die 'signer returned invalid authorization times'
+[[ "$signed_key_id" == "$authorization_key_id" && "$signature" =~ ^[A-Za-z0-9_-]{86}$ ]] || die 'signer returned invalid authorization identity'
+signed_command="$mode $run_id $release_sha $expected_digest $authorization_tag $issued_at $expires_at $signed_key_id $signature"
 
-if ! controller_result="$("$ssh_bin" "${ssh_options[@]}" "$target" "$signed_command")"; then
-  die "$mode controller transport or execution failed"
-fi
-if ! validated_result="$(printf '%s' "$controller_result" | "$node_bin" "$result_validator" \
-  --mode "$mode" --release-sha "$release_sha" --tag "$authorization_tag")"; then
+result_sentinel=$'\036'
+controller_result=''
+retry_delays=(1 2 4 8 16 30)
+for attempt in 0 1 2 3 4 5 6; do
+  set +e
+  controller_envelope="$(
+    "$ssh_bin" "${ssh_options[@]}" "$target" "$signed_command"
+    controller_status=$?
+    printf '%s' "$result_sentinel"
+    exit "$controller_status"
+  )"
+  controller_status=$?
+  set -e
+  if (( controller_status == 0 )); then
+    [[ "$controller_envelope" == *"$result_sentinel" ]] || die 'controller result sentinel is missing'
+    controller_result="${controller_envelope%"$result_sentinel"}"
+    break
+  fi
+  if (( (controller_status != 255 && controller_status != 73) || attempt == 6 )); then
+    exit "$controller_status"
+  fi
+  printf '%s\n' "Privileged $mode acknowledgement is pending; retrying the exact signed command." >&2
+  sleep "${retry_delays[$attempt]}"
+done
+
+validated_result="$(printf '%s' "$controller_result" | "$node_bin" "$result_validator" \
+  --mode "$mode" --release-sha "$release_sha" --tag "$authorization_tag")" || \
   die "$mode controller returned an invalid or incomplete result"
-fi
 if [[ "$mode" == rollback ]]; then
   printf '%s\n' "$validated_result"
 else

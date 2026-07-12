@@ -7,12 +7,10 @@ const recovered = 'b'.repeat(40);
 
 test('rollback output identifies exact legacy and recovered-release targets', () => {
   assert.deepEqual(parseCodeRollbackResult('{"rolledBackTo":"legacy","legacy":true}', { failedReleaseSha: failed }), {
-    legacy: true,
-    rolledBackTo: 'legacy'
+    legacy: true, rolledBackTo: 'legacy'
   });
   assert.deepEqual(parseCodeRollbackResult(`{"rolledBackTo":"${recovered}","legacy":false}`, { failedReleaseSha: failed }), {
-    legacy: false,
-    rolledBackTo: recovered
+    legacy: false, rolledBackTo: recovered
   });
 });
 
@@ -26,7 +24,5 @@ test('rollback output rejects ambiguity, unexpected fields, and the failed relea
     `{"rolledBackTo":"${recovered}","legacy":false,"legacy":false}`,
     `{"rolledBackTo":"${recovered}","legacy":false}\ncompleted`,
     'not-json'
-  ]) {
-    assert.throws(() => parseCodeRollbackResult(value, { failedReleaseSha: failed }), /rollback/i);
-  }
+  ]) assert.throws(() => parseCodeRollbackResult(value, { failedReleaseSha: failed }), /rollback/i);
 });

@@ -126,6 +126,45 @@ test('post-swap activation failure reports successful automatic code rollback', 
   assert.deepEqual(fixture.calls, ['stop', 'prepare', 'swap', 'start', 'verify', 'rollback']);
 });
 
+test('a swap that marks a changed link rolls back when its durability proof fails', async () => {
+  const activation = new Error('link parent fsync failed');
+  const fixture = operations((calls) => ({
+    swap: async (markLinksChanged) => {
+      calls.push('swap');
+      markLinksChanged();
+      throw activation;
+    }
+  }));
+  await assert.rejects(executeActivationTransaction(fixture.value), (error) => {
+    assert.equal(error.activationPhase, 'swap');
+    assert.equal(error.activationRolledBack, true);
+    assert.equal(error.previousRestarted, false);
+    assert.equal(error.activationError, activation);
+    return true;
+  });
+  assert.deepEqual(fixture.calls, ['stop', 'prepare', 'swap', 'rollback']);
+});
+
+test('an uncertainty-tagged swap error rolls back instead of restarting unchecked links', async () => {
+  const activation = Object.assign(new Error('rename acknowledgement lost'), { linkMayHaveChanged: true });
+  const fixture = operations((calls) => ({
+    swap: async () => { calls.push('swap'); throw activation; }
+  }));
+  await assert.rejects(executeActivationTransaction(fixture.value), (error) =>
+    error.activationPhase === 'swap' && error.activationRolledBack === true && error.previousRestarted === false);
+  assert.deepEqual(fixture.calls, ['stop', 'prepare', 'swap', 'rollback']);
+});
+
+test('a proven pre-mutation swap failure may restart the unchanged previous release', async () => {
+  const activation = new Error('temporary link creation failed');
+  const fixture = operations((calls) => ({
+    swap: async () => { calls.push('swap'); throw activation; }
+  }));
+  await assert.rejects(executeActivationTransaction(fixture.value), (error) =>
+    error.activationPhase === 'swap' && error.activationRolledBack === false && error.previousRestarted === true);
+  assert.deepEqual(fixture.calls, ['stop', 'prepare', 'swap', 'restartPrevious']);
+});
+
 test('rollback failure preserves both errors and never attempts a misleading restart', async () => {
   const activation = new Error('start failed');
   const rollback = new Error('rollback smoke failed');

@@ -56,6 +56,24 @@ test('failed previous-link recording reports failure after recovered code is ver
   assert.deepEqual(fixture.calls, ['stop', 'prepare', 'restore-current', 'record-failed', 'start-recovered']);
 });
 
+test('an uncertain current-link durability failure restores both original links', async () => {
+  const fixture = operations();
+  fixture.value.restoreCurrent = async () => {
+    fixture.calls.push('restore-current');
+    throw Object.assign(new Error('parent fsync failed'), { linkMayHaveChanged: true });
+  };
+  await assert.rejects(executeCodeRollbackTransaction(fixture.value), (error) => {
+    assert.equal(error.deploymentStatus, 'rollback-failed');
+    assert.equal(error.rollbackStage, 'restore-current');
+    assert.equal(error.serviceRecovered, true);
+    return true;
+  });
+  assert.deepEqual(fixture.calls, [
+    'stop', 'prepare', 'restore-current',
+    'stop', 'restore-original-links', 'restart-failed'
+  ]);
+});
+
 test('recovered-release start failure restores both original links and reverifies the failed release', async () => {
   const fixture = operations({ fail: 'start-recovered' });
   await assert.rejects(executeCodeRollbackTransaction(fixture.value), (error) => {

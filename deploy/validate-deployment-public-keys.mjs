@@ -6,13 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { loadAuthorizationPublicKey } from './deployment-authorization-lib.mjs';
 
 export const DEPLOYMENT_AUTHORIZATION_KEYS = Object.freeze({
-  'canary-primary': Object.freeze({
+  'canary-2026-07': Object.freeze({
     role: 'canary',
-    fingerprint: '233552349715bb1b6b2b5c9edb39114d4a325795ce08ae94a48f7f96ddec62c3'
+    fingerprint: 'e8ba15e37fe810cf70942b27ddbd13957377acc312617e886283582d5ee01875'
   }),
-  'production-primary': Object.freeze({
+  'production-2026-07': Object.freeze({
     role: 'production',
-    fingerprint: '3b3ddc163fa6052c079baff53a36cfc0779b1ae953d4d3a515477bd34f036c9a'
+    fingerprint: '75f645a8397923f62418d5109cb5b85c3475afa458bbdfc4789194e7aa15a1d6'
   })
 });
 
@@ -30,8 +30,8 @@ export async function validateDeploymentPublicKeys({ canaryPath, productionPath,
     production: publicKeyFingerprint(productionKey)
   };
   if (
-    fingerprints.canary !== DEPLOYMENT_AUTHORIZATION_KEYS['canary-primary'].fingerprint ||
-    fingerprints.production !== DEPLOYMENT_AUTHORIZATION_KEYS['production-primary'].fingerprint ||
+    fingerprints.canary !== DEPLOYMENT_AUTHORIZATION_KEYS['canary-2026-07'].fingerprint ||
+    fingerprints.production !== DEPLOYMENT_AUTHORIZATION_KEYS['production-2026-07'].fingerprint ||
     fingerprints.canary === fingerprints.production
   ) {
     throw new Error('Deployment authorization public keys do not match the pinned lane keyring.');

@@ -14,7 +14,7 @@ import {
 
 const releaseSha = 'a'.repeat(40);
 
-test('SQLite backup keepalive is refed only during backup and always cleaned up', async () => {
+test('SQLite backup keepalive is referenced only during backup and always cleaned up', async () => {
   for (const failure of [null, new Error('injected backup failure')]) {
     const calls = [];
     const database = { close: () => calls.push('close') };
@@ -27,10 +27,7 @@ test('SQLite backup keepalive is refed only during backup and always cleaned up'
         calls.push('set');
         return timer;
       },
-      clearIntervalImpl: (value) => {
-        assert.equal(value, timer);
-        calls.push('clear');
-      },
+      clearIntervalImpl: (value) => { assert.equal(value, timer); calls.push('clear'); },
       backupImpl: async (value, destination) => {
         assert.equal(value, database);
         assert.equal(destination, '/backup.sqlite');

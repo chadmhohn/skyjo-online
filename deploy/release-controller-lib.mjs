@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import nodeFs from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -10,6 +11,11 @@ export const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
 export const MAX_EXTRACTED_BYTES = 24 * 1024 * 1024;
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRIES = 4096;
+export const MAX_RELEASE_ROOT_ENTRIES = 128;
+export const MAX_STALE_LINK_TEMPS = 32;
+export const MAX_STALE_INCOMING_DIRECTORIES = 32;
+export const STALE_DEPLOYMENT_ARTIFACT_MS = 15 * 60 * 1000;
+export const DEPLOYMENT_CLOCK_SKEW_MS = 60 * 1000;
 
 export const REQUIRED_ARCHIVE_ENTRIES = new Set([
   'release.json',
@@ -194,21 +200,382 @@ export async function loadVerifiedReleaseIdentity(releaseDirectory, expectedSha)
   return validateReleaseIdentity(JSON.parse(rootData), expectedSha);
 }
 
-export async function replaceSymlink(linkPath, targetPath) {
-  const temporary = `${linkPath}.next-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-  await fs.symlink(targetPath, temporary, process.platform === 'win32' ? 'junction' : 'dir');
+function normalizedError(caught) {
+  return caught instanceof Error ? caught : new Error(String(caught));
+}
+
+function uncertaintyError(caught, property) {
+  const error = normalizedError(caught);
   try {
-    await fs.rename(temporary, linkPath);
-  } catch (error) {
-    if (error.code === 'EEXIST' || error.code === 'ENOTEMPTY') {
-      await fs.rm(linkPath, { force: true });
-      await fs.rename(temporary, linkPath);
-    } else {
-      throw error;
-    }
-  } finally {
-    await fs.rm(temporary, { force: true }).catch(() => {});
+    Object.defineProperty(error, property, { value: true, enumerable: true, configurable: true });
+    return error;
+  } catch {
+    const wrapped = new Error(error.message, { cause: error });
+    Object.defineProperty(wrapped, property, { value: true, enumerable: true });
+    return wrapped;
   }
+}
+
+export async function fsyncFilesystemPath(filePath, {
+  directory = false,
+  openFile = fs.open
+} = {}) {
+  const flags = nodeFs.constants.O_RDONLY |
+    (nodeFs.constants.O_NOFOLLOW || 0) |
+    (directory ? (nodeFs.constants.O_DIRECTORY || 0) : 0);
+  let handle;
+  let primaryError;
+  try {
+    handle = await openFile(filePath, flags);
+    await handle.sync();
+  } catch (caught) {
+    const error = normalizedError(caught);
+    if (!(directory && process.platform === 'win32' && ['EISDIR', 'EINVAL', 'EPERM', 'ENOTSUP'].includes(error.code))) {
+      primaryError = error;
+    }
+  }
+  let closeError;
+  try { await handle?.close(); }
+  catch (caught) { closeError = normalizedError(caught); }
+  if (primaryError && closeError) throw new AggregateError([primaryError, closeError], `Failed to sync and close ${filePath}.`, { cause: primaryError });
+  if (primaryError) throw primaryError;
+  if (closeError) throw closeError;
+}
+
+export async function syncTreeDurably(rootPath, operations = {}) {
+  const lstat = operations.lstat || fs.lstat;
+  const readdir = operations.readdir || fs.readdir;
+  const syncEntry = operations.syncEntry || fsyncFilesystemPath;
+  const stat = await lstat(rootPath);
+  if (stat.isSymbolicLink()) throw new Error(`Durable release tree contains a symbolic link: ${rootPath}`);
+  if (stat.isFile()) {
+    await syncEntry(rootPath, { directory: false });
+    return;
+  }
+  if (!stat.isDirectory()) throw new Error(`Durable release tree contains a special entry: ${rootPath}`);
+  const entries = await readdir(rootPath, { withFileTypes: true });
+  entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  for (const entry of entries) {
+    await syncTreeDurably(path.join(rootPath, entry.name), operations);
+  }
+  await syncEntry(rootPath, { directory: true });
+}
+
+export async function renameDurably(sourcePath, destinationPath, {
+  rename = fs.rename,
+  syncParent = fsyncFilesystemPath
+} = {}) {
+  let renamed = false;
+  try {
+    await rename(sourcePath, destinationPath);
+    renamed = true;
+    await syncParent(path.dirname(destinationPath), { directory: true });
+  } catch (caught) {
+    if (renamed) throw uncertaintyError(caught, 'renameMayHaveCommitted');
+    throw caught;
+  }
+}
+
+export async function proveDurablePublishedDirectory(targetPath, operations = {}) {
+  const syncTree = operations.syncTree || syncTreeDurably;
+  const syncParent = operations.syncParent || fsyncFilesystemPath;
+  await syncTree(targetPath);
+  await syncParent(path.dirname(targetPath), { directory: true });
+}
+
+export async function publishImmutableDirectory(incomingPath, targetPath, operations = {}) {
+  const parent = path.dirname(targetPath);
+  if (path.dirname(incomingPath) !== parent || incomingPath === targetPath) {
+    throw new Error('Immutable release publication paths must be distinct siblings.');
+  }
+  const syncTree = operations.syncTree || syncTreeDurably;
+  const syncParent = operations.syncParent || fsyncFilesystemPath;
+  const rename = operations.rename || ((source, destination) => renameDurably(source, destination, { syncParent }));
+  const remove = operations.remove || fs.rm;
+  try {
+    await syncTree(incomingPath);
+    await rename(incomingPath, targetPath);
+  } catch (caught) {
+    const primaryError = normalizedError(caught);
+    const cleanupErrors = [];
+    try { await remove(incomingPath, { recursive: true, force: true }); }
+    catch (cleanupError) { cleanupErrors.push(normalizedError(cleanupError)); }
+    try { await syncParent(parent, { directory: true }); }
+    catch (cleanupError) { cleanupErrors.push(normalizedError(cleanupError)); }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([primaryError, ...cleanupErrors], 'Immutable release publication failed and cleanup was incomplete.', { cause: primaryError });
+    }
+    throw primaryError;
+  }
+}
+
+async function assertTrustedReleaseRoots(appRoot, releasesRoot, operations = {}) {
+  const lstat = operations.lstat || fs.lstat;
+  const trustedUid = operations.trustedUid ?? 0;
+  const trustedGid = operations.trustedGid ?? 0;
+  if (!Number.isSafeInteger(trustedUid) || trustedUid < 0 || !Number.isSafeInteger(trustedGid) || trustedGid < 0) {
+    throw new Error('Trusted release owner identity is invalid.');
+  }
+  const app = path.resolve(appRoot);
+  const releases = path.resolve(releasesRoot);
+  if (releases !== path.join(app, 'releases')) throw new Error('Release store is not the exact application-root child.');
+  for (const [description, directory] of [['application root', app], ['release store', releases]]) {
+    const stat = await lstat(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Trusted ${description} is not a real directory.`);
+    if (process.platform !== 'win32' && (stat.uid !== trustedUid || stat.gid !== trustedGid || (stat.mode & 0o022) !== 0)) {
+      throw new Error(`Trusted ${description} is not root-owned and non-writable.`);
+    }
+  }
+  return { app, releases };
+}
+
+function validateArtifactTimestamp(stat, now, description) {
+  if (!Number.isFinite(stat.mtimeMs)) throw new Error(`${description} timestamp is invalid.`);
+  if (stat.mtimeMs > now + DEPLOYMENT_CLOCK_SKEW_MS) throw new Error(`${description} timestamp is in the future.`);
+  return now - stat.mtimeMs >= STALE_DEPLOYMENT_ARTIFACT_MS;
+}
+
+function propagateUncertainty(primary, cleanup) {
+  const failure = new AggregateError([primary, cleanup], 'Release link operation failed and temporary-link cleanup was incomplete.', { cause: primary });
+  if (primary.linkMayHaveChanged === true) Object.defineProperty(failure, 'linkMayHaveChanged', { value: true, enumerable: true });
+  if (primary.renameMayHaveCommitted === true) Object.defineProperty(failure, 'renameMayHaveCommitted', { value: true, enumerable: true });
+  return failure;
+}
+
+export async function cleanupStaleReleaseLinkTemps({
+  appRoot,
+  releasesRoot,
+  now = Date.now()
+}, operations = {}) {
+  const { app, releases } = await assertTrustedReleaseRoots(appRoot, releasesRoot, operations);
+  const trustedUid = operations.trustedUid ?? 0;
+  const trustedGid = operations.trustedGid ?? 0;
+  const readdir = operations.readdir || fs.readdir;
+  const lstat = operations.lstat || fs.lstat;
+  const readlink = operations.readlink || fs.readlink;
+  const unlink = operations.unlink || fs.unlink;
+  const syncParent = operations.syncParent || fsyncFilesystemPath;
+  const entries = await readdir(app, { withFileTypes: true });
+  if (entries.length > MAX_RELEASE_ROOT_ENTRIES) throw new Error('Application root contains too many entries for bounded link cleanup.');
+  const candidates = entries
+    .map((entry) => entry.name)
+    .filter((name) => name.startsWith('current.next-') || name.startsWith('previous.next-'))
+    .sort();
+  if (candidates.length > MAX_STALE_LINK_TEMPS) throw new Error('Too many release-link cleanup candidates.');
+  const exact = /^(?:current|previous)\.next-[1-9][0-9]{0,9}-[a-f0-9]{8}$/;
+  const stale = [];
+  for (const name of candidates) {
+    if (!exact.test(name)) throw new Error(`Malformed release-link temporary entry: ${name}`);
+    const candidate = resolveWithin(app, name);
+    const stat = await lstat(candidate);
+    if (!stat.isSymbolicLink() || (process.platform !== 'win32' && (stat.uid !== trustedUid || stat.gid !== trustedGid))) {
+      throw new Error(`Release-link temporary entry is unsafe: ${name}`);
+    }
+    const rawTarget = await readlink(candidate);
+    const resolvedTarget = path.resolve(app, rawTarget);
+    const releaseSha = path.basename(resolvedTarget);
+    if (!RELEASE_SHA_PATTERN.test(releaseSha) || resolvedTarget !== resolveWithin(releases, releaseSha)) {
+      throw new Error(`Release-link temporary target is unsafe: ${name}`);
+    }
+    if (validateArtifactTimestamp(stat, now, `Release-link temporary entry ${name}`)) stale.push(candidate);
+  }
+  let removed = 0;
+  let primaryError;
+  try {
+    for (const candidate of stale) {
+      await unlink(candidate);
+      removed += 1;
+    }
+  } catch (caught) {
+    primaryError = normalizedError(caught);
+  }
+  let syncError;
+  if (removed > 0) {
+    try { await syncParent(app, { directory: true }); }
+    catch (caught) { syncError = normalizedError(caught); }
+  }
+  if (primaryError && syncError) throw new AggregateError([primaryError, syncError], 'Stale release-link cleanup and parent sync failed.', { cause: primaryError });
+  if (primaryError) throw primaryError;
+  if (syncError) throw syncError;
+  return { candidates: candidates.length, removed };
+}
+
+async function validateRootOwnedTree(rootPath, operations, counter = { entries: 0, bytes: 0 }) {
+  const lstat = operations.lstat || fs.lstat;
+  const readdir = operations.readdir || fs.readdir;
+  const stat = await lstat(rootPath);
+  counter.entries += 1;
+  if (counter.entries > MAX_ARCHIVE_ENTRIES) throw new Error('Incoming release tree exceeds the bounded cleanup entry limit.');
+  const trustedUid = operations.trustedUid ?? 0;
+  const trustedGid = operations.trustedGid ?? 0;
+  if (process.platform !== 'win32' && (stat.uid !== trustedUid || stat.gid !== trustedGid)) throw new Error('Incoming release tree contains a non-root-owned entry.');
+  if (stat.isSymbolicLink()) throw new Error('Incoming release tree contains a symbolic link.');
+  if (stat.isFile()) {
+    if (process.platform !== 'win32' && (stat.mode & 0o022) !== 0) throw new Error('Incoming release tree contains a writable file.');
+    if (!Number.isSafeInteger(stat.size) || stat.size < 0) throw new Error('Incoming release tree contains an invalid file size.');
+    if (stat.size > MAX_EXTRACTED_BYTES - counter.bytes) {
+      throw new Error('Incoming release tree exceeds the bounded cleanup byte limit.');
+    }
+    counter.bytes += stat.size;
+    return counter;
+  }
+  if (!stat.isDirectory()) throw new Error('Incoming release tree contains a special entry.');
+  if (process.platform !== 'win32' && (stat.mode & 0o022) !== 0) throw new Error('Incoming release tree contains a writable directory.');
+  const entries = await readdir(rootPath, { withFileTypes: true });
+  entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  for (const entry of entries) await validateRootOwnedTree(path.join(rootPath, entry.name), operations, counter);
+  return counter;
+}
+
+async function removeTreeNoFollow(rootPath, operations, mutation = { count: 0 }) {
+  const lstat = operations.lstat || fs.lstat;
+  const readdir = operations.readdir || fs.readdir;
+  const unlink = operations.unlink || fs.unlink;
+  const rmdir = operations.rmdir || fs.rmdir;
+  const stat = await lstat(rootPath);
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    const entries = await readdir(rootPath, { withFileTypes: true });
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) await removeTreeNoFollow(path.join(rootPath, entry.name), operations, mutation);
+    await rmdir(rootPath);
+    mutation.count += 1;
+    return mutation;
+  }
+  if (stat.isFile() || stat.isSymbolicLink()) {
+    await unlink(rootPath);
+    mutation.count += 1;
+    return mutation;
+  }
+  throw new Error('Incoming release cleanup encountered a special entry.');
+}
+
+export async function cleanupStaleIncomingDirectories({
+  appRoot,
+  releasesRoot,
+  activeRunId,
+  activeReleaseSha,
+  now = Date.now()
+}, operations = {}) {
+  const { releases } = await assertTrustedReleaseRoots(appRoot, releasesRoot, operations);
+  const trustedUid = operations.trustedUid ?? 0;
+  const trustedGid = operations.trustedGid ?? 0;
+  if (activeRunId !== undefined && !RUN_ID_PATTERN.test(activeRunId)) throw new Error('Active deployment run ID is invalid for incoming cleanup.');
+  if (activeReleaseSha !== undefined && !RELEASE_SHA_PATTERN.test(activeReleaseSha)) throw new Error('Active release SHA is invalid for incoming cleanup.');
+  if ((activeRunId === undefined) !== (activeReleaseSha === undefined)) throw new Error('Active incoming cleanup identity is incomplete.');
+  const activeName = activeRunId === undefined ? null : `.incoming-${activeReleaseSha}-${activeRunId}`;
+  const readdir = operations.readdir || fs.readdir;
+  const lstat = operations.lstat || fs.lstat;
+  const syncParent = operations.syncParent || fsyncFilesystemPath;
+  const entries = await readdir(releases, { withFileTypes: true });
+  if (entries.length > MAX_RELEASE_ROOT_ENTRIES) throw new Error('Release store contains too many entries for bounded incoming cleanup.');
+  const candidates = entries.map((entry) => entry.name).filter((name) => name.startsWith('.incoming-')).sort();
+  if (candidates.length > MAX_STALE_INCOMING_DIRECTORIES) throw new Error('Too many incoming release cleanup candidates.');
+  const exact = /^\.incoming-([a-f0-9]{40})-([1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(?:canary|production))$/;
+  const stale = [];
+  for (const name of candidates) {
+    const match = name.match(exact);
+    if (!match) throw new Error(`Malformed incoming release directory: ${name}`);
+    const candidate = resolveWithin(releases, name);
+    const stat = await lstat(candidate);
+    const mode = stat.mode & 0o7777;
+    if (!stat.isDirectory() || stat.isSymbolicLink() ||
+        (process.platform !== 'win32' && (stat.uid !== trustedUid || stat.gid !== trustedGid || ![0o700, 0o755].includes(mode)))) {
+      throw new Error(`Incoming release directory is unsafe: ${name}`);
+    }
+    const isStale = validateArtifactTimestamp(stat, now, `Incoming release directory ${name}`);
+    if (name !== activeName && isStale) {
+      await validateRootOwnedTree(candidate, operations);
+      stale.push(candidate);
+    }
+  }
+  let removed = 0;
+  const mutation = { count: 0 };
+  let primaryError;
+  try {
+    for (const candidate of stale) {
+      await removeTreeNoFollow(candidate, operations, mutation);
+      removed += 1;
+    }
+  } catch (caught) {
+    primaryError = normalizedError(caught);
+  }
+  let syncError;
+  if (mutation.count > 0) {
+    try { await syncParent(releases, { directory: true }); }
+    catch (caught) { syncError = normalizedError(caught); }
+  }
+  if (primaryError && syncError) throw new AggregateError([primaryError, syncError], 'Incoming release cleanup and parent sync failed.', { cause: primaryError });
+  if (primaryError) throw primaryError;
+  if (syncError) throw syncError;
+  return { candidates: candidates.length, removed, activePreserved: activeName !== null && candidates.includes(activeName) };
+}
+
+async function cleanupOwnReleaseLinkTemp(temporary, targetPath, operations = {}) {
+  const lstat = operations.lstat || fs.lstat;
+  const readlink = operations.readlink || fs.readlink;
+  const unlink = operations.unlinkTemporary || fs.unlink;
+  const syncParent = operations.syncParent || fsyncFilesystemPath;
+  const stat = await lstat(temporary).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!stat) return false;
+  const trustedUid = operations.trustedUid ?? 0;
+  const trustedGid = operations.trustedGid ?? 0;
+  if (!/^(?:current|previous)\.next-[1-9][0-9]{0,9}-[a-f0-9]{8}$/.test(path.basename(temporary)) ||
+      !stat.isSymbolicLink() || (process.platform !== 'win32' && (stat.uid !== trustedUid || stat.gid !== trustedGid))) {
+    throw new Error('Owned release-link temporary entry is unsafe.');
+  }
+  const resolvedTarget = path.resolve(path.dirname(temporary), await readlink(temporary));
+  if (resolvedTarget !== path.resolve(targetPath)) throw new Error('Owned release-link temporary target changed unexpectedly.');
+  await unlink(temporary);
+  await syncParent(path.dirname(temporary), { directory: true });
+  return true;
+}
+
+export async function replaceSymlink(linkPath, targetPath, operations = {}) {
+  const createSymlink = operations.createSymlink || fs.symlink;
+  const removeLink = operations.removeLink || fs.rm;
+  const rename = operations.rename || ((source, destination) => renameDurably(source, destination, {
+    syncParent: operations.syncParent || fsyncFilesystemPath
+  }));
+  const temporary = `${linkPath}.next-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  const appRoot = path.dirname(linkPath);
+  const releasesRoot = operations.releasesDirectory || path.join(appRoot, 'releases');
+  if (['current', 'previous'].includes(path.basename(linkPath))) {
+    const cleanupStaleTemps = operations.cleanupStaleTemps || cleanupStaleReleaseLinkTemps;
+    await cleanupStaleTemps({ appRoot, releasesRoot, now: operations.now ?? Date.now() }, operations);
+  }
+  let linkMayHaveChanged = false;
+  let operationError;
+  try {
+    await createSymlink(targetPath, temporary, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+      await rename(temporary, linkPath);
+    } catch (caught) {
+      const error = normalizedError(caught);
+      const replacementRequired = error.code === 'EEXIST' || error.code === 'ENOTEMPTY' ||
+        (process.platform === 'win32' && error.code === 'EPERM');
+      if (!error.renameMayHaveCommitted && replacementRequired) {
+        linkMayHaveChanged = true;
+        try {
+          await removeLink(linkPath, { force: true });
+          await rename(temporary, linkPath);
+        } catch (fallbackError) {
+          throw uncertaintyError(fallbackError, 'linkMayHaveChanged');
+        }
+      } else {
+        if (error.renameMayHaveCommitted) linkMayHaveChanged = true;
+        if (linkMayHaveChanged) throw uncertaintyError(error, 'linkMayHaveChanged');
+        throw error;
+      }
+    }
+  } catch (caught) {
+    operationError = normalizedError(caught);
+  }
+  let cleanupError;
+  try { await cleanupOwnReleaseLinkTemp(temporary, targetPath, operations); }
+  catch (caught) { cleanupError = normalizedError(caught); }
+  if (operationError && cleanupError) throw propagateUncertainty(operationError, cleanupError);
+  if (operationError) throw operationError;
+  if (cleanupError) throw cleanupError;
 }
 
 export async function readLinkWithin(linkPath, releasesDirectory) {
@@ -294,11 +661,9 @@ export async function resolveGithubTag(tag, fetchImpl = fetch) {
   return object.sha;
 }
 
-export function authorizeRollback({ currentReleaseSha, metadata, requestedReleaseSha, requestedDigest, requestedBytes, requestedTag }) {
+export function authorizeRollback({ currentReleaseSha, metadata, requestedReleaseSha, requestedDigest, requestedTag }) {
   if (currentReleaseSha !== validateReleaseSha(requestedReleaseSha)) throw new Error('Current release does not match the requested failed SHA.');
-  if (!Number.isSafeInteger(requestedBytes) || requestedBytes < 1 || requestedBytes > MAX_ARCHIVE_BYTES ||
-      !metadata || metadata.releaseSha !== requestedReleaseSha || metadata.artifactSha256 !== validateDigest(requestedDigest) ||
-      metadata.artifactBytes !== requestedBytes || metadata.tag !== validateReleaseTag(requestedTag)) {
+  if (!metadata || metadata.releaseSha !== requestedReleaseSha || metadata.artifactSha256 !== validateDigest(requestedDigest) || metadata.tag !== validateReleaseTag(requestedTag)) {
     throw new Error('Rollback authorization does not match current release metadata.');
   }
   return true;
@@ -320,7 +685,7 @@ export async function executeActivationTransaction(operations) {
     phase = 'prepare';
     await operations.prepare();
     phase = 'swap';
-    await operations.swap();
+    await operations.swap(() => { linksActivated = true; });
     linksActivated = true;
     phase = 'start';
     await operations.start();
@@ -328,6 +693,7 @@ export async function executeActivationTransaction(operations) {
     await operations.verify();
   } catch (caught) {
     const activationError = caught instanceof Error ? caught : new Error(String(caught));
+    if (phase === 'swap' && activationError.linkMayHaveChanged === true) linksActivated = true;
     const state = {
       activationPhase: phase,
       activationRolledBack: false,
@@ -414,7 +780,7 @@ export async function executeCodeRollbackTransaction(operations) {
   try {
     await operations.restoreCurrent();
   } catch (error) {
-    await recoverFailedRelease({ restoreLink: false, stage: 'restore-current', cause: error });
+    await recoverFailedRelease({ restoreLink: error?.linkMayHaveChanged === true, stage: 'restore-current', cause: error });
   }
 
   let recordError;

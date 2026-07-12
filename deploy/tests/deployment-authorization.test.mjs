@@ -28,11 +28,10 @@ function fields(overrides = {}) {
     runId: '123-1-canary',
     releaseSha: sha,
     artifactSha256: digest,
-    artifactBytes: 4096,
     tag: '-',
     issuedAt: now,
     expiresAt: now + 300,
-    keyId: 'canary-primary',
+    keyId: 'canary-2026-07',
     ...overrides
   };
 }
@@ -45,20 +44,19 @@ test('canonical payload is fixed ASCII with one final LF', () => {
   const payload = canonicalAuthorizationPayload(fields(), { nowSeconds: now });
   assert.equal(payload.endsWith('\n'), true);
   assert.equal(payload.endsWith('\n\n'), false);
-  assert.match(payload, /^domain=skyjo-online-deployment-authorization\/v2\nrepository=chadmhohn\/skyjo-online\n/);
-  assert.match(payload, /\nartifact_bytes=4096\n/);
+  assert.match(payload, /^domain=skyjo-online-deployment-authorization\/v1\nrepository=chadmhohn\/skyjo-online\n/);
   assert.equal(Buffer.byteLength(payload, 'ascii'), payload.length);
 });
 
 test('lane-specific Ed25519 keys verify only their allowed actions', async () => {
   const keyring = new Map([
-    ['canary-primary', { role: 'canary', publicKey: canary.publicKey }],
-    ['production-primary', { role: 'production', publicKey: production.publicKey }]
+    ['canary-2026-07', { role: 'canary', publicKey: canary.publicKey }],
+    ['production-2026-07', { role: 'production', publicKey: production.publicKey }]
   ]);
   const canaryFields = fields();
   assert.equal((await verifyDeploymentAuthorization({ fields: canaryFields, signature: sign(canaryFields), keyring, nowSeconds: now })).fields.command, 'verify');
   const productionFields = fields({
-    role: 'production', command: 'promote', runId: '123-1-production', tag: 'v0.1.1', keyId: 'production-primary'
+    role: 'production', command: 'promote', runId: '123-1-production', tag: 'v0.1.1', keyId: 'production-2026-07'
   });
   const signature = signDeploymentAuthorization(productionFields, production.privateKey, { nowSeconds: now });
   assert.equal((await verifyDeploymentAuthorization({ fields: productionFields, signature, keyring, nowSeconds: now })).fields.role, 'production');
@@ -66,7 +64,7 @@ test('lane-specific Ed25519 keys verify only their allowed actions', async () =>
   const rollbackSignature = signDeploymentAuthorization(rollbackFields, production.privateKey, { nowSeconds: now });
   assert.equal((await verifyDeploymentAuthorization({ fields: rollbackFields, signature: rollbackSignature, keyring, nowSeconds: now })).fields.command, 'rollback');
   await assert.rejects(
-    verifyDeploymentAuthorization({ fields: canaryFields, signature: sign(canaryFields), keyring: new Map([['canary-primary', { role: 'production', publicKey: canary.publicKey }]]), nowSeconds: now }),
+    verifyDeploymentAuthorization({ fields: canaryFields, signature: sign(canaryFields), keyring: new Map([['canary-2026-07', { role: 'production', publicKey: canary.publicKey }]]), nowSeconds: now }),
     /not trusted/
   );
 });
@@ -74,17 +72,16 @@ test('lane-specific Ed25519 keys verify only their allowed actions', async () =>
 test('every signed field mutation is rejected', async () => {
   const original = fields();
   const signature = sign(original);
-  const keyring = { 'canary-primary': { role: 'canary', publicKey: canary.publicKey } };
+  const keyring = { 'canary-2026-07': { role: 'canary', publicKey: canary.publicKey } };
   const mutations = [
-    { releaseSha: 'c'.repeat(40) }, { artifactSha256: 'd'.repeat(64) }, { artifactBytes: 4097 }, { runId: '124-1-canary' },
+    { releaseSha: 'c'.repeat(40) }, { artifactSha256: 'd'.repeat(64) }, { runId: '124-1-canary' },
     { issuedAt: now + 1 }, { expiresAt: now + 301 }
   ];
   for (const mutation of mutations) {
     await assert.rejects(verifyDeploymentAuthorization({ fields: fields(mutation), signature, keyring, nowSeconds: now }), DeploymentAuthorizationError);
   }
   for (const invalid of [
-    fields({ role: 'production' }), fields({ command: 'promote' }), fields({ tag: 'v0.1.1' }),
-    fields({ keyId: 'production-primary' }), fields({ artifactBytes: 16 * 1024 * 1024 + 1 })
+    fields({ role: 'production' }), fields({ command: 'promote' }), fields({ tag: 'v0.1.1' }), fields({ keyId: 'production-2026-07' })
   ]) {
     await assert.rejects(verifyDeploymentAuthorization({ fields: invalid, signature, keyring, nowSeconds: now }), DeploymentAuthorizationError);
   }
@@ -93,14 +90,14 @@ test('every signed field mutation is rejected', async () => {
 test('freshness, lifetime, signature encoding, and command whitespace fail closed', async () => {
   const value = fields();
   const signature = sign(value);
-  const keyring = { 'canary-primary': { role: 'canary', publicKey: canary.publicKey } };
+  const keyring = { 'canary-2026-07': { role: 'canary', publicKey: canary.publicKey } };
   await assert.rejects(verifyDeploymentAuthorization({ fields: value, signature, keyring, nowSeconds: now + 300 }), /expired/);
   await assert.rejects(verifyDeploymentAuthorization({ fields: fields({ issuedAt: now + 61, expiresAt: now + 300 }), signature, keyring, nowSeconds: now }), /not yet/);
   await assert.rejects(verifyDeploymentAuthorization({ fields: fields({ expiresAt: now + 601 }), signature, keyring, nowSeconds: now }), /lifetime/);
   await assert.rejects(verifyDeploymentAuthorization({ fields: value, signature: `${signature.slice(0, -1)}+`, keyring, nowSeconds: now }), /signature/);
   await assert.rejects(verifyDeploymentAuthorization({ fields: value, signature: `${signature.slice(0, -1)}${signature.at(-1) === 'A' ? 'B' : 'A'}`, keyring, nowSeconds: now }), DeploymentAuthorizationError);
   await assert.rejects(verifyDeploymentAuthorization({ fields: fields({ keyId: 'canary-revoked' }), signature, keyring, nowSeconds: now }), /not trusted/);
-  const command = `verify ${value.runId} ${value.releaseSha} ${value.artifactSha256} ${value.artifactBytes} - ${value.issuedAt} ${value.expiresAt} ${value.keyId} ${signature}`;
+  const command = `verify ${value.runId} ${value.releaseSha} ${value.artifactSha256} - ${value.issuedAt} ${value.expiresAt} ${value.keyId} ${signature}`;
   assert.equal(parseSignedDeploymentCommand(command, { nowSeconds: now }).fields.command, 'verify');
   for (const malformed of [` ${command}`, `${command} `, command.replace('verify ', 'verify  '), `${command}\n`, command.replace('verify', 'verif\té')]) {
     assert.throws(() => parseSignedDeploymentCommand(malformed, { nowSeconds: now }), DeploymentAuthorizationError);
@@ -142,14 +139,15 @@ test('signer reads a safe Ed25519 private key and rejects the wrong key type', a
     await fs.writeFile(privatePath, canary.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
     const result = await createSignedAuthorization([
       '--role', 'canary', '--command', 'verify', '--run-id', '555-1-canary',
-      '--release-sha', sha, '--artifact-sha256', digest, '--artifact-bytes', '4096', '--tag', '-',
-      '--key-id', 'canary-primary', '--private-key', privatePath, '--lifetime-seconds', '300'
+      '--release-sha', sha, '--artifact-sha256', digest, '--tag', '-',
+      '--key-id', 'canary-2026-07', '--private-key', privatePath, '--lifetime-seconds', '300'
     ], { nowSeconds: now, expectedUid: process.getuid?.() });
+    assert.deepEqual(Object.keys(result).sort(), ['expiresAt', 'issuedAt', 'keyId', 'signature']);
     assert.equal(result.signature.length, 86);
     await verifyDeploymentAuthorization({
       fields: fields({ runId: '555-1-canary', issuedAt: result.issuedAt, expiresAt: result.expiresAt }),
       signature: result.signature,
-      keyring: { 'canary-primary': { role: 'canary', publicKey: canary.publicKey } },
+      keyring: { 'canary-2026-07': { role: 'canary', publicKey: canary.publicKey } },
       nowSeconds: now
     });
 
@@ -158,8 +156,8 @@ test('signer reads a safe Ed25519 private key and rejects the wrong key type', a
     await fs.writeFile(rsaPath, rsa.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
     await assert.rejects(createSignedAuthorization([
       '--role', 'canary', '--command', 'verify', '--run-id', '555-2-canary',
-      '--release-sha', sha, '--artifact-sha256', digest, '--artifact-bytes', '4096', '--tag', '-',
-      '--key-id', 'canary-primary', '--private-key', rsaPath
+      '--release-sha', sha, '--artifact-sha256', digest, '--tag', '-',
+      '--key-id', 'canary-2026-07', '--private-key', rsaPath
     ], { nowSeconds: now, expectedUid: process.getuid?.() }), DeploymentAuthorizationError);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -173,35 +171,17 @@ test('replay ledger consumes once and a new run attempt is independent', async (
     const value = fields();
     const payloadSha256 = crypto.createHash('sha256').update(canonicalAuthorizationPayload(value, { nowSeconds: now }), 'ascii').digest('hex');
     const first = await beginAuthorizationUse({ ledgerRoot: root, fields: value, payloadSha256, nowSeconds: now, expectedUid: process.getuid?.() });
-    await assert.rejects(beginAuthorizationUse({ ledgerRoot: root, fields: value, payloadSha256, nowSeconds: now, expectedUid: process.getuid?.() }), /already consumed/);
+    await assert.rejects(beginAuthorizationUse({ ledgerRoot: root, fields: value, payloadSha256, nowSeconds: now, expectedUid: process.getuid?.() }), /already executing/);
     await assert.rejects(beginAuthorizationUse({
       ledgerRoot: root,
       fields: fields({ artifactSha256: 'c'.repeat(64) }),
       payloadSha256: crypto.createHash('sha256').update('conflict').digest('hex'),
       nowSeconds: now,
       expectedUid: process.getuid?.()
-    }), /already consumed/);
-    await first.complete();
+    }), /conflicts/);
+    await first.complete({ verified: value.releaseSha, activated: false });
     await assert.rejects(first.fail(), /already finalized/);
     assert.equal(JSON.parse(await fs.readFile(first.recordPath, 'utf8')).status, 'completed');
-    const exactTransportRetry = await beginAuthorizationUse({
-      ledgerRoot: root,
-      fields: value,
-      payloadSha256,
-      nowSeconds: now,
-      expectedUid: process.getuid?.(),
-      allowExactCompletedReplay: true
-    });
-    assert.equal(exactTransportRetry.replayed, true);
-    await exactTransportRetry.complete();
-    await assert.rejects(beginAuthorizationUse({
-      ledgerRoot: root,
-      fields: fields({ artifactBytes: 4097 }),
-      payloadSha256: crypto.createHash('sha256').update('mutated').digest('hex'),
-      nowSeconds: now,
-      expectedUid: process.getuid?.(),
-      allowExactCompletedReplay: true
-    }), /already consumed/);
     const retry = await beginAuthorizationUse({
       ledgerRoot: root,
       fields: fields({ runId: '123-2-canary' }),
@@ -211,6 +191,97 @@ test('replay ledger consumes once and a new run attempt is independent', async (
     });
     await retry.fail();
     assert.equal(JSON.parse(await fs.readFile(retry.recordPath, 'utf8')).status, 'failed');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('terminal result finalization retries and remains replay-reconcilable', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-auth-ledger-finalize-'));
+  try {
+    if (process.platform !== 'win32') await fs.chmod(root, 0o700);
+    const value = fields({ runId: '456-1-canary' });
+    const payloadSha256 = crypto.createHash('sha256').update(canonicalAuthorizationPayload(value, { nowSeconds: now }), 'ascii').digest('hex');
+    let replacements = 0;
+    const use = await beginAuthorizationUse({
+      ledgerRoot: root,
+      fields: value,
+      payloadSha256,
+      nowSeconds: now,
+      expectedUid: process.getuid?.(),
+      replaceRecord: async (recordPath, _expected, next) => {
+        replacements += 1;
+        if (replacements === 1) throw new Error('injected transient journal finalization failure');
+        await fs.writeFile(recordPath, next, 'utf8');
+      }
+    });
+    const result = { verified: value.releaseSha, activated: false };
+    await use.complete(result);
+    assert.equal(replacements, 2);
+    const replay = await beginAuthorizationUse({
+      ledgerRoot: root,
+      fields: value,
+      payloadSha256,
+      nowSeconds: now + 601,
+      expectedUid: process.getuid?.()
+    });
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.result, result);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a started record is resumable only when the caller proves it owns the global recovery lock', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-auth-ledger-resume-'));
+  try {
+    if (process.platform !== 'win32') await fs.chmod(root, 0o700);
+    const value = fields({ runId: '458-1-canary' });
+    const payloadSha256 = crypto.createHash('sha256').update(canonicalAuthorizationPayload(value, { nowSeconds: now }), 'ascii').digest('hex');
+    await beginAuthorizationUse({ ledgerRoot: root, fields: value, payloadSha256, nowSeconds: now, expectedUid: process.getuid?.() });
+    await assert.rejects(beginAuthorizationUse({
+      ledgerRoot: root, fields: value, payloadSha256, nowSeconds: now, expectedUid: process.getuid?.()
+    }), /already executing/);
+    const resumed = await beginAuthorizationUse({
+      ledgerRoot: root,
+      fields: value,
+      payloadSha256,
+      nowSeconds: now,
+      expectedUid: process.getuid?.(),
+      allowStartedRecovery: true
+    });
+    assert.equal(resumed.resumed, true);
+    await resumed.complete({ verified: value.releaseSha, activated: false });
+    const replay = await beginAuthorizationUse({
+      ledgerRoot: root, fields: value, payloadSha256, nowSeconds: now + 601, expectedUid: process.getuid?.()
+    });
+    assert.equal(replay.replayed, true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a visible rename is not treated as durable until directory sync succeeds', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-auth-ledger-dir-sync-'));
+  try {
+    if (process.platform !== 'win32') await fs.chmod(root, 0o700);
+    const value = fields({ runId: '457-1-canary' });
+    const payloadSha256 = crypto.createHash('sha256').update(canonicalAuthorizationPayload(value, { nowSeconds: now }), 'ascii').digest('hex');
+    let attempts = 0;
+    const use = await beginAuthorizationUse({
+      ledgerRoot: root,
+      fields: value,
+      payloadSha256,
+      nowSeconds: now,
+      expectedUid: process.getuid?.(),
+      replaceRecord: async (recordPath, _expected, next) => {
+        attempts += 1;
+        if (attempts === 1) await fs.writeFile(recordPath, next, 'utf8');
+        if (attempts < 3) throw Object.assign(new Error('injected directory fsync failure'), { code: 'EIO' });
+      }
+    });
+    await use.complete({ verified: value.releaseSha, activated: false });
+    assert.equal(attempts, 3, 'visible replacement must be retried until its directory sync is acknowledged');
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -229,7 +300,7 @@ test('replay ledger rejects unsafe roots and concurrent consumption has one winn
     ]);
     assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1);
     assert.equal(attempts.filter((attempt) => attempt.status === 'rejected').length, 1);
-    await attempts.find((attempt) => attempt.status === 'fulfilled').value.complete();
+    await attempts.find((attempt) => attempt.status === 'fulfilled').value.complete({ verified: value.releaseSha, activated: false });
 
     if (process.platform !== 'win32') {
       const unsafe = path.join(parent, 'unsafe');
