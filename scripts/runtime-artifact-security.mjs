@@ -113,7 +113,10 @@ async function openStableRegularFile(filePath, label) {
     if (!sameFileIdentity(descriptorStat, pathnameStat)) {
       throw new Error(`${label} was replaced while it was being opened.`);
     }
-    return { handle, stat: descriptorStat };
+    assertStableFile(descriptorStat, pathnameStat, label);
+    const confirmedStat = await handle.stat({ bigint: true });
+    assertStableFile(pathnameStat, confirmedStat, label);
+    return { handle, stat: confirmedStat };
   } catch (error) {
     await handle.close();
     throw error;

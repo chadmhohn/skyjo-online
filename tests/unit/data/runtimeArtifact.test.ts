@@ -592,6 +592,49 @@ describe('runtime artifact safety contract', () => {
     }
   });
 
+  test.each([
+    ['archive', 'before pathname stat'],
+    ['archive', 'after pathname stat'],
+    ['checksum', 'before pathname stat'],
+    ['checksum', 'after pathname stat']
+  ] as const)('rejects an in-place %s mutation %s during the final pathname reopen', async (mutationTarget, mutationWindow) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-artifact-final-reopen-test-'));
+    try {
+      const { archivePath, checksumPath } = await writeValidArtifactFixture(directory);
+      const selectedPath = mutationTarget === 'archive' ? archivePath : checksumPath;
+      const originalOpen = fs.open.bind(fs);
+      const originalLstat = fs.lstat.bind(fs);
+      let targetOpenCount = 0;
+      let finalReopen = false;
+      let mutated = false;
+      vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await originalOpen(...args);
+        if (path.resolve(String(args[0])) === selectedPath) {
+          targetOpenCount += 1;
+          finalReopen = targetOpenCount === 2;
+        }
+        return handle;
+      });
+      vi.spyOn(fs, 'lstat').mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
+        if (finalReopen && !mutated && path.resolve(String(args[0])) === selectedPath) {
+          if (mutationWindow === 'before pathname stat') await fs.appendFile(selectedPath, 'final-reopen-mutation');
+          const pathnameStat = await originalLstat(...args);
+          if (mutationWindow === 'after pathname stat') await fs.appendFile(selectedPath, 'final-reopen-mutation');
+          mutated = true;
+          return pathnameStat;
+        }
+        return originalLstat(...args);
+      });
+      await expect(verifyRuntimeArtifact({ archivePath, checksumPath, expectedReleaseSha: releaseSha }))
+        .rejects.toThrow(`${mutationTarget === 'archive' ? 'Runtime artifact' : 'Runtime artifact checksum'} changed during validation`);
+      expect(targetOpenCount).toBe(2);
+      expect(mutated).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test('rejects descriptor content mutation between its pre-read and post-read fstat checks', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-artifact-mutation-test-'));
     try {
