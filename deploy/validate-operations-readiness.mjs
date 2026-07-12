@@ -15,30 +15,40 @@ const expectedKeys = [
   'status'
 ];
 
-export async function validateOperationsReadiness(filePath, expectedReleaseSha, expectedUid, platform = process.platform) {
+export async function validateOperationsReadiness(
+  filePath,
+  expectedReleaseSha,
+  expectedUid,
+  platform = process.platform,
+  now = Date.now()
+) {
   if (!/^[a-f0-9]{40}$/.test(expectedReleaseSha || '')) throw new Error('Expected release SHA is invalid.');
   if (!Number.isSafeInteger(expectedUid) || expectedUid < 0) throw new Error('Expected monitor user identity is invalid.');
   const stat = await fs.lstat(filePath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 2 || stat.size > 4096) {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size < 2 || stat.size > 4096) {
     throw new Error('Local readiness evidence is not a bounded regular file.');
   }
   if (platform !== 'win32' && (stat.uid !== expectedUid || (stat.mode & 0o777) !== 0o600)) {
     throw new Error('Local readiness evidence ownership or mode is invalid.');
   }
-  const value = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  const text = await fs.readFile(filePath, 'utf8');
+  const value = JSON.parse(text);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Local readiness evidence is invalid.');
   const keys = Object.keys(value).sort();
   if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
     throw new Error('Local readiness evidence has an unexpected shape.');
   }
+  if (text !== `${JSON.stringify(value, null, 2)}\n`) throw new Error('Local readiness evidence is not canonical JSON.');
   const checkedAt = new Date(value.checkedAt);
+  const checkedAtMs = checkedAt.getTime();
   if (
     value.formatVersion !== 1 || value.monitor !== 'local' || value.status !== 'healthy' ||
     value.attempts !== 1 || value.failureClass !== null || value.httpStatus !== 200 ||
     value.releaseSha !== expectedReleaseSha ||
     !Number.isSafeInteger(value.schemaVersion) || value.schemaVersion < 1 ||
     !Number.isSafeInteger(value.protocolVersion) || value.protocolVersion < 1 ||
-    Number.isNaN(checkedAt.getTime()) || checkedAt.toISOString() !== value.checkedAt
+    Number.isNaN(checkedAtMs) || checkedAt.toISOString() !== value.checkedAt ||
+    !Number.isFinite(now) || checkedAtMs < now - 60_000 || checkedAtMs > now + 5_000
   ) {
     throw new Error('Local readiness evidence does not match the active release.');
   }

@@ -112,15 +112,21 @@ test('operations activation accepts only private healthy evidence for its exact 
     const evidence = path.join(root, 'local-readiness.json');
     await fs.writeFile(evidence, `${JSON.stringify(healthyResult({ monitor: 'local' }), null, 2)}\n`, { mode: 0o600 });
     const uid = (await fs.stat(evidence)).uid;
-    assert.deepEqual(await validateOperationsReadiness(evidence, releaseSha, uid), {
+    assert.deepEqual(await validateOperationsReadiness(evidence, releaseSha, uid, process.platform, fixedNow.valueOf()), {
       releaseSha,
       checkedAt: fixedNow.toISOString()
     });
-    await assert.rejects(validateOperationsReadiness(evidence, 'b'.repeat(40), uid), /does not match/);
+    await assert.rejects(
+      validateOperationsReadiness(evidence, 'b'.repeat(40), uid, process.platform, fixedNow.valueOf()),
+      /does not match/
+    );
     const tampered = JSON.parse(await fs.readFile(evidence, 'utf8'));
     tampered.extra = 'not allowed';
     await fs.writeFile(evidence, JSON.stringify(tampered), { mode: 0o600 });
-    await assert.rejects(validateOperationsReadiness(evidence, releaseSha, uid), /unexpected shape/);
+    await assert.rejects(
+      validateOperationsReadiness(evidence, releaseSha, uid, process.platform, fixedNow.valueOf()),
+      /unexpected shape/
+    );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -195,6 +201,7 @@ test('governance apply preflights unique green main checks before its first muta
   await assert.rejects(reconcileGithubGovernance({
     repository: 'owner/repo', apply: true, confirmation: 'owner/repo', api
   }), /not uniquely represented/);
+  assert.ok(requests.some(({ endpoint }) => endpoint.includes('check-runs?filter=latest&per_page=100')));
   assert.ok(requests.every(({ method }) => method === 'GET'));
 });
 
@@ -332,6 +339,8 @@ test('workflow and systemd assets preserve pins, staged activation, and exact sc
   assert.doesNotMatch(codeql, /uses: [^\n]+@v[0-9]/);
   assert.match(codeql, /name: CodeQL \/ Analyze/);
   assert.match(monitor, /SKYJO_MONITOR_ENABLED/);
+  assert.match(monitor, /MONITOR_REF[\s\S]*refs\/heads\/main/);
+  assert.match(monitor, /ref: refs\/heads\/main/);
   assert.match(monitor, /if: always\(\)[\s\S]*reconcile-production-incident/);
   const installFunction = installer.slice(installer.indexOf('install_assets()'), installer.indexOf('activate()'));
   assert.doesNotMatch(installFunction, /systemctl enable|operations\.enabled.*install/);

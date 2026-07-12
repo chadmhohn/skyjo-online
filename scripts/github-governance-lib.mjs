@@ -163,7 +163,7 @@ export async function reconcileGithubGovernance({ repository, api, apply = false
   }
   const mainCommit = await api('GET', `/repos/${target}/commits/main`);
   if (!/^[a-f0-9]{40}$/.test(mainCommit?.sha || '')) throw new Error('Current main commit identity is invalid.');
-  const checks = await api('GET', `/repos/${target}/commits/${mainCommit.sha}/check-runs?per_page=100`);
+  const checks = await api('GET', `/repos/${target}/commits/${mainCommit.sha}/check-runs?filter=latest&per_page=100`);
   const integrationIds = checkRunIntegrations(checks);
   const existingActions = await api('GET', `/repos/${target}/actions/permissions`);
   const existingWorkflowToken = await api('GET', `/repos/${target}/actions/permissions/workflow`);

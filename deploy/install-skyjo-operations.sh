@@ -12,7 +12,12 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 require_root() { [ "$(id -u)" -eq 0 ] || die 'Run the operations installer as root.'; }
-safe_asset() { [ -f "$1" ] && [ ! -L "$1" ] || die "Missing or unsafe operations asset: $1"; }
+safe_asset() {
+  [ -f "$1" ] && [ ! -L "$1" ] || die "Missing or unsafe operations asset: $1"
+  [ "$(/usr/bin/stat -c %u:%h "$1")" = 0:1 ] || die "Operations asset is not a sole root-owned file: $1"
+  permissions=$(/usr/bin/stat -c %A "$1")
+  case "$permissions" in ?????w*|????????w*) die "Operations asset is writable outside root: $1" ;; esac
+}
 reject_link() { [ ! -L "$1" ] || die "Refusing a linked operations target: $1"; }
 
 validate_monitor_user() {
@@ -34,6 +39,10 @@ validate_monitor_user() {
 }
 
 install_assets() {
+  [ -d "$SCRIPT_DIR" ] && [ ! -L "$SCRIPT_DIR" ] && [ "$(/usr/bin/stat -c %u "$SCRIPT_DIR")" -eq 0 ] || \
+    die 'Operations assets must be staged in a root-owned real directory.'
+  source_permissions=$(/usr/bin/stat -c %A "$SCRIPT_DIR")
+  case "$source_permissions" in ?????w*|????????w*) die 'Operations asset directory is writable outside root.' ;; esac
   for asset in \
     install-skyjo-operations.sh \
     validate-operations-readiness.mjs \
@@ -146,12 +155,14 @@ activate() {
   printf '%s' "$release_sha" | /usr/bin/grep -Eq '^[a-f0-9]{40}$' || die 'The active release directory is not a full SHA.'
   [ -d "$release" ] && [ ! -L "$release" ] && [ "$(/usr/bin/stat -c %u "$release")" -eq 0 ] || \
     die 'The active release directory is unsafe.'
+  release_permissions=$(/usr/bin/stat -c %A "$release")
+  case "$release_permissions" in ?????w*|????????w*) die 'The active release directory is writable outside root.' ;; esac
   [ -f "$release/scripts/monitor-readiness.mjs" ] && [ ! -L "$release/scripts/monitor-readiness.mjs" ] || \
     die 'The active release does not contain the readiness monitor.'
   [ -f "$release/scripts/run-scheduled-backup.mjs" ] && [ ! -L "$release/scripts/run-scheduled-backup.mjs" ] || \
     die 'The active release does not contain scheduled backup tooling.'
   if [ -e "$MARKER" ] || [ -L "$MARKER" ]; then
-    [ -f "$MARKER" ] && [ ! -L "$MARKER" ] && [ "$(/usr/bin/stat -c %u:%g:%a "$MARKER")" = 0:0:444 ] || \
+    [ -f "$MARKER" ] && [ ! -L "$MARKER" ] && [ "$(/usr/bin/stat -c %u:%g:%a:%h "$MARKER")" = 0:0:444:1 ] || \
       die 'The operations activation marker is unsafe.'
   else
     /usr/bin/install -o root -g root -m 0444 /dev/null "$MARKER"

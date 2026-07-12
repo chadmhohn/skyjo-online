@@ -24,9 +24,10 @@ jobs:
         id: gate
         env:
           MONITOR_ENABLED: ${{ vars.SKYJO_MONITOR_ENABLED }}
+          MONITOR_REF: ${{ github.ref }}
         run: |
           set -Eeuo pipefail
-          if [[ "$MONITOR_ENABLED" == "true" ]]; then
+          if [[ "$MONITOR_ENABLED" == "true" && "$MONITOR_REF" == "refs/heads/main" ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -46,6 +47,7 @@ jobs:
       - name: Check out immutable monitoring code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: refs/heads/main
           persist-credentials: false
 
       - name: Set up Node

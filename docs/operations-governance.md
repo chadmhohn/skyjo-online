@@ -29,6 +29,8 @@ GITHUB_TOKEN="$(gh auth token)" node scripts/configure-github-governance.mjs \
 
 Apply mode first reads current `main` and refuses to change anything unless every required check is uniquely green and has a trustworthy GitHub App identity. It preserves the repository's current Actions allowlist selection, turns on SHA pinning, applies the settings, and reads back the full ruleset plus Actions/token policies. It never deletes an unrelated ruleset.
 
+Repository governance is the immediate post-merge step for this issue: apply it as soon as the issue-63 main run, including CodeQL, is green. This is separate from VPS operations activation below, which must remain deferred until the tagged `v0.1.1` production cutover in issue 64.
+
 ## Staged VPS operations
 
 The operations installer has three explicit modes:
