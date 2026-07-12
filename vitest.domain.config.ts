@@ -8,7 +8,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./tests/setup/dom.ts'],
-    include: ['./tests/unit/domain/**/*.test.ts', './tests/unit/ui/**/*.test.tsx'],
+    include: ['./tests/unit/domain/**/*.test.ts'],
     restoreMocks: true,
     clearMocks: true,
     coverage: {
@@ -17,8 +17,9 @@ export default defineConfig({
       reporter: ['text', 'json-summary', 'lcov'],
       include: ['src/game.ts', 'src/runtime.ts', 'src/serverValidation.ts'],
       thresholds: {
-        lines: 74,
-        branches: 60,
+        perFile: true,
+        lines: 90,
+        branches: 85,
         functions: 72,
         statements: 69
       }
