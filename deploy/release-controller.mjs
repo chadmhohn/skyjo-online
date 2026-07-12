@@ -6,6 +6,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
+import { fileURLToPath } from 'node:url';
 import {
   assertGithubCommitOnMain,
   authorizeRollback,
@@ -147,9 +148,14 @@ async function prepareCandidate({ runId, releaseSha, digest, bytes }) {
     await run('/usr/bin/chmod', ['--recursive', 'u=rwX,go=rX', candidate]);
     await fsp.writeFile(resolveWithin(candidate, '.skyjo-deployment.json'), `${JSON.stringify({ releaseSha, artifactSha256: digest, artifactBytes: bytes })}\n`, { mode: 0o444 });
     return { workDirectory, candidate, identity };
-  } catch (error) {
-    await fsp.rm(workDirectory, { recursive: true, force: true }).catch(() => {});
-    throw error;
+  } catch (caught) {
+    const primaryError = caught instanceof Error ? caught : new Error(String(caught));
+    try {
+      await cleanupRun(runId, workDirectory);
+    } catch (cleanupCaught) {
+      throw combinedActionAndCleanupError(primaryError, cleanupCaught);
+    }
+    throw primaryError;
   }
 }
 
@@ -368,9 +374,52 @@ async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
   });
 }
 
-async function cleanupRun(runId, workDirectory) {
-  if (path.resolve(workDirectory) !== resolveWithin(PATHS.stage, runId)) throw new Error('Refusing to clean an unexpected deployment path.');
-  await fsp.rm(workDirectory, { recursive: true, force: true }).catch(() => {});
+function combinedActionAndCleanupError(primaryError, cleanupCaught) {
+  const cleanupError = cleanupCaught instanceof Error ? cleanupCaught : new Error(String(cleanupCaught));
+  const combined = new AggregateError(
+    [primaryError, cleanupError],
+    'Deployment action failed and its run directory cleanup also failed.',
+    { cause: primaryError }
+  );
+  Object.defineProperty(combined, 'deploymentActionError', { value: primaryError, enumerable: false });
+  Object.defineProperty(combined, 'deploymentCleanupError', { value: cleanupError, enumerable: false });
+  return combined;
+}
+
+export async function cleanupRun(runId, workDirectory, {
+  stageRoot = PATHS.stage,
+  remove = fsp.rm,
+  inspect = fsp.lstat
+} = {}) {
+  if (path.resolve(workDirectory) !== resolveWithin(stageRoot, runId)) throw new Error('Refusing to clean an unexpected deployment path.');
+  await remove(workDirectory, { recursive: true, force: true });
+  const residue = await inspect(workDirectory).then(() => true).catch((error) => {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  });
+  if (residue) throw new Error('Deployment run directory remains after cleanup.');
+}
+
+export async function executeWithRunCleanup({ runId, workDirectory, action, cleanup = cleanupRun }) {
+  let result;
+  let primaryError;
+  try {
+    result = await action();
+  } catch (caught) {
+    primaryError = caught instanceof Error ? caught : new Error(String(caught));
+  }
+
+  let cleanupError;
+  try {
+    await cleanup(runId, workDirectory);
+  } catch (caught) {
+    cleanupError = caught instanceof Error ? caught : new Error(String(caught));
+  }
+
+  if (primaryError && cleanupError) throw combinedActionAndCleanupError(primaryError, cleanupError);
+  if (primaryError) throw primaryError;
+  if (cleanupError) throw cleanupError;
+  return result;
 }
 
 async function verifyAction(parsed) {
@@ -380,13 +429,15 @@ async function verifyAction(parsed) {
   const rollbackAnchor = await validateRollbackAnchor(oldRelease);
   const prepared = await prepareCandidate(parsed);
   const snapshot = resolveWithin(prepared.workDirectory, 'snapshot');
-  try {
-    await createSnapshot(rollbackAnchor, snapshot);
-    await canary(prepared.candidate, prepared.identity, snapshot, parsed.runId);
-    return { verified: parsed.releaseSha, activated: false };
-  } finally {
-    await cleanupRun(parsed.runId, prepared.workDirectory);
-  }
+  return executeWithRunCleanup({
+    runId: parsed.runId,
+    workDirectory: prepared.workDirectory,
+    action: async () => {
+      await createSnapshot(rollbackAnchor, snapshot);
+      await canary(prepared.candidate, prepared.identity, snapshot, parsed.runId);
+      return { verified: parsed.releaseSha, activated: false };
+    }
+  });
 }
 
 async function readMetadata(releaseDirectory) {
@@ -475,7 +526,10 @@ async function promoteAction(parsed) {
   const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const backup = resolveWithin(PATHS.backups, `${timestamp}-pre-${parsed.releaseSha}`);
   let target;
-  try {
+  return executeWithRunCleanup({
+    runId: parsed.runId,
+    workDirectory: prepared.workDirectory,
+    action: async () => {
     await createSnapshot(rollbackAnchor, backup);
     await canary(prepared.candidate, prepared.identity, backup, parsed.runId);
     target = resolveWithin(PATHS.releases, parsed.releaseSha);
@@ -541,9 +595,8 @@ async function promoteAction(parsed) {
     }
     await pruneReleases();
     return { promoted: parsed.releaseSha, tag: parsed.tag, backup: path.basename(backup) };
-  } finally {
-    await cleanupRun(parsed.runId, prepared.workDirectory);
-  }
+    }
+  });
 }
 
 async function rollbackAction(parsed) {
@@ -820,9 +873,11 @@ export async function main(argv = process.argv.slice(2)) {
   return result;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
-    const command = process.argv[2];
+export async function invokeDirectController(mainImpl = main, argv = process.argv) {
+  try {
+    return await mainImpl();
+  } catch (error) {
+    const command = argv[2];
     const status = error?.deploymentStatus || (command === 'rollback' ? 'rollback-failed' : 'failed');
     process.stderr.write(`Release controller failed: ${JSON.stringify({
       status,
@@ -830,5 +885,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       dataRestored: false
     })}\n`);
     process.exitCode = status === 'rollback-failed' ? 2 : 1;
-  });
+    return undefined;
+  }
+}
+
+const isDirectExecution = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isDirectExecution) {
+  await invokeDirectController();
 }

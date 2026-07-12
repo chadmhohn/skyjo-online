@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { signDeploymentAuthorization } from '../deployment-authorization-lib.mjs';
-import { executeAuthorizedControllerAction } from '../release-controller.mjs';
+import { executeAuthorizedControllerAction, executeWithRunCleanup } from '../release-controller.mjs';
 
 const nowSeconds = 1_800_000_000;
 const keyId = 'canary-primary';
@@ -70,6 +70,39 @@ test('invalid signatures never execute action code or create a replay record', a
   }), /signature/i);
   assert.equal(executed, false);
   assert.deepEqual(await fs.readdir(ledgerRoot), []);
+}));
+
+test('ordinary action failures terminalize the authorization ledger', async () => ledgerFixture(async (ledgerRoot) => {
+  const { signedCommand } = authorization();
+  const primary = new Error('injected action failure');
+  await assert.rejects(executeAuthorizedControllerAction({
+    expectedCommand: 'verify', signedCommand,
+    keyring: new Map([[keyId, { role: 'canary', publicKey: keyPair.publicKey }]]),
+    ledgerRoot, nowSeconds, expectedUid: process.getuid?.(),
+    action: async () => { throw primary; }
+  }), (error) => error === primary);
+  const records = await fs.readdir(ledgerRoot);
+  assert.equal(records.length, 1);
+  assert.equal(JSON.parse(await fs.readFile(path.join(ledgerRoot, records[0]), 'utf8')).status, 'failed');
+}));
+
+test('run cleanup failures terminalize the authorization ledger', async () => ledgerFixture(async (ledgerRoot) => {
+  const { signedCommand } = authorization();
+  const cleanup = new Error('injected cleanup failure');
+  await assert.rejects(executeAuthorizedControllerAction({
+    expectedCommand: 'verify', signedCommand,
+    keyring: new Map([[keyId, { role: 'canary', publicKey: keyPair.publicKey }]]),
+    ledgerRoot, nowSeconds, expectedUid: process.getuid?.(),
+    action: () => executeWithRunCleanup({
+      runId: '123-1-canary',
+      workDirectory: '/var/tmp/skyjo-deploy/123-1-canary',
+      action: async () => ({ verified: 'a'.repeat(40), activated: false }),
+      cleanup: async () => { throw cleanup; }
+    })
+  }), (error) => error === cleanup);
+  const records = await fs.readdir(ledgerRoot);
+  assert.equal(records.length, 1);
+  assert.equal(JSON.parse(await fs.readFile(path.join(ledgerRoot, records[0]), 'utf8')).status, 'failed');
 }));
 
 test('ledger finalization failure never masks the primary deployment error', async () => ledgerFixture(async (ledgerRoot) => {

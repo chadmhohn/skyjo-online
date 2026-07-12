@@ -206,8 +206,10 @@ async function testLinuxRemoteClient() {
     };
     const canaryEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: bashCanaryAuthorizationKey };
     const productionEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: bashProductionAuthorizationKey };
-    await execFileAsync(bash, [bashClient, 'verify', '123-1-canary', fullSha, bashArchive, bashChecksum], { env: canaryEnv });
-    await execFileAsync(bash, [bashClient, 'promote', '123-1-production', fullSha, bashArchive, bashChecksum, 'v0.1.1'], { env: productionEnv });
+    const verifyExecution = await execFileAsync(bash, [bashClient, 'verify', '123-1-canary', fullSha, bashArchive, bashChecksum], { env: canaryEnv });
+    assert.equal(verifyExecution.stdout, `{"verified":"${fullSha}","activated":false}\nverify completed for release ${fullSha}.\n`);
+    const promoteExecution = await execFileAsync(bash, [bashClient, 'promote', '123-1-production', fullSha, bashArchive, bashChecksum, 'v0.1.1'], { env: productionEnv });
+    assert.match(promoteExecution.stdout, new RegExp(`^\\{"promoted":"${fullSha}","tag":"v0\\.1\\.1","backup":"[^"]+"\\}\\npromote completed for release ${fullSha}\\.\\n$`));
     const rollbackExecution = await execFileAsync(bash, [bashClient, 'rollback', '123-1-production', fullSha, bashChecksum, 'v0.1.1'], { env: productionEnv });
     assert.equal(rollbackExecution.stdout, `{"rolledBackTo":"${'0'.repeat(40)}","legacy":false}\n`);
     const calls = await fs.readFile(log, 'utf8');
@@ -227,6 +229,18 @@ async function testLinuxRemoteClient() {
     assert.match(calls, new RegExp(`upload 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
     assert.match(calls, new RegExp(`promote 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
     assert.match(calls, new RegExp(`rollback 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
+    await assert.rejects(
+      execFileAsync(bash, [bashClient, 'verify', '124-1-canary', fullSha, bashArchive, bashChecksum], {
+        env: { ...canaryEnv, SKYJO_FAKE_CONTROLLER_RESULT: 'empty' }
+      }),
+      /invalid or incomplete result/i
+    );
+    await assert.rejects(
+      execFileAsync(bash, [bashClient, 'verify', '125-1-canary', fullSha, bashArchive, bashChecksum], {
+        env: { ...canaryEnv, SKYJO_FAKE_CONTROLLER_RESULT: 'failed' }
+      }),
+      /transport or execution failed/i
+    );
     await assert.rejects(
       execFileAsync(bash, [bashClient, 'promote', '123-1-production', fullSha, bashArchive, bashChecksum, 'main'], { env: productionEnv }),
       /immutable release tag/i

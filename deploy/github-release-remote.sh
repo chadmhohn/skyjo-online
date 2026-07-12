@@ -62,6 +62,7 @@ authorization_key_file="${SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE:-}"
 ssh_bin="${SKYJO_SSH_BIN:-ssh}"
 node_bin="${SKYJO_NODE_BIN:-node}"
 signer="${SKYJO_DEPLOY_AUTH_SIGNER:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sign-deployment-authorization.mjs}"
+result_validator="${SKYJO_DEPLOY_RESULT_VALIDATOR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../scripts" && pwd)/validate-deployment-controller-result.mjs}"
 
 [[ "$run_id" =~ ^[0-9]+-[0-9]+-(canary|production)$ ]] || die 'invalid run ID'
 [[ "$release_sha" =~ ^[a-f0-9]{40}$ ]] || die 'invalid release SHA'
@@ -73,6 +74,7 @@ signer="${SKYJO_DEPLOY_AUTH_SIGNER:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 
 [[ -f "$known_hosts_file" && ! -L "$known_hosts_file" ]] || die 'missing pinned known-hosts file'
 [[ -f "$authorization_key_file" && ! -L "$authorization_key_file" ]] || die 'missing deployment authorization private key'
 [[ -f "$signer" && ! -L "$signer" ]] || die 'missing deployment authorization signer'
+[[ -f "$result_validator" && ! -L "$result_validator" ]] || die 'missing deployment controller result validator'
 
 if [[ "$mode" != "verify" ]]; then
   [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'invalid immutable release tag'
@@ -141,10 +143,10 @@ if [[ "$mode" == "verify" || "$mode" == "promote" ]]; then
   upload_command="$(sign_command upload)"
   [[ "$upload_command" != *$'\n'* && "$upload_command" != *$'\r'* ]] || die 'signer returned an invalid upload command'
   [[ "$upload_command" == "upload $run_id $release_sha $expected_digest $archive_size $authorization_tag "* ]] || die 'signer returned a mismatched upload command'
-  if ! "$ssh_bin" "${ssh_options[@]}" "$target" "$upload_command" < "$archive_path"; then
+  if ! "$ssh_bin" "${ssh_options[@]}" "$target" "$upload_command" < "$archive_path" > /dev/null; then
     printf '%s\n' 'Upload transport failed; retrying the exact signed, idempotent request once.' >&2
     sleep 1
-    "$ssh_bin" "${ssh_options[@]}" "$target" "$upload_command" < "$archive_path"
+    "$ssh_bin" "${ssh_options[@]}" "$target" "$upload_command" < "$archive_path" > /dev/null
   fi
 fi
 
@@ -152,11 +154,16 @@ signed_command="$(sign_command "$mode")"
 [[ "$signed_command" != *$'\n'* && "$signed_command" != *$'\r'* ]] || die 'signer returned an invalid command'
 [[ "$signed_command" == "$mode $run_id $release_sha $expected_digest $archive_size $authorization_tag "* ]] || die 'signer returned a mismatched command'
 
-controller_result="$("$ssh_bin" "${ssh_options[@]}" "$target" "$signed_command")"
+if ! controller_result="$("$ssh_bin" "${ssh_options[@]}" "$target" "$signed_command")"; then
+  die "$mode controller transport or execution failed"
+fi
+if ! validated_result="$(printf '%s' "$controller_result" | "$node_bin" "$result_validator" \
+  --mode "$mode" --release-sha "$release_sha" --tag "$authorization_tag")"; then
+  die "$mode controller returned an invalid or incomplete result"
+fi
 if [[ "$mode" == rollback ]]; then
-  [[ -n "$controller_result" && "$controller_result" != *$'\n'* && "$controller_result" != *$'\r'* ]] || die 'rollback controller returned an invalid result envelope'
-  printf '%s\n' "$controller_result"
+  printf '%s\n' "$validated_result"
 else
-  [[ -n "$controller_result" ]] && printf '%s\n' "$controller_result"
+  printf '%s\n' "$validated_result"
   printf '%s completed for release %s.\n' "$mode" "$release_sha"
 fi

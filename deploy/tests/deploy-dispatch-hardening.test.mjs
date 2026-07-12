@@ -86,6 +86,20 @@ test('signed upload authorization completes before the first staged write', asyn
   assert.deepEqual(calls, ['authorize:rejected']);
 });
 
+test('non-upload controller failures propagate through the forced-command dispatcher', async () => {
+  const command = signedCommand('verify');
+  let observed;
+  const status = await dispatch({
+    originalCommand: command,
+    runControllerImpl: async (parsed) => {
+      observed = parsed.signedCommand;
+      return 42;
+    }
+  });
+  assert.equal(observed, command);
+  assert.equal(status, 42);
+});
+
 test('upload publishes with no-overwrite hard link and removes only its unique partial', async () => fixture(async (root) => {
   const first = await performUpload({ stageRoot: root, runId, releaseSha, digest: digest('first'), bytes: 5, input: input('first') });
   assert.equal(first.idempotent, false);

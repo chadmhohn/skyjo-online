@@ -4,11 +4,20 @@ set -Eeuo pipefail
 command_line="${*: -1}"
 printf '%s\n' "$command_line" >> "$SKYJO_FAKE_SSH_LOG"
 if [[ "$command_line" != upload\ * ]]; then
-  if [[ "$command_line" == rollback\ * ]]; then
-    printf '{"rolledBackTo":"%040d","legacy":false}\n' 0
-  else
-    printf '{"ok":true}\n'
-  fi
+  case "${SKYJO_FAKE_CONTROLLER_RESULT:-valid}" in
+    empty) exit 0 ;;
+    failed) exit 42 ;;
+    valid) ;;
+    *) exit 64 ;;
+  esac
+  read -r action run_id release_sha artifact_digest artifact_bytes tag issued_at expires_at key_id signature extra <<< "$command_line"
+  [[ -z "${extra:-}" ]]
+  case "$action" in
+    verify) printf '{"verified":"%s","activated":false}\n' "$release_sha" ;;
+    promote) printf '{"promoted":"%s","tag":"%s","backup":"20260712T010203Z-pre-%s"}\n' "$release_sha" "$tag" "$release_sha" ;;
+    rollback) printf '{"rolledBackTo":"%040d","legacy":false}\n' 0 ;;
+    *) exit 64 ;;
+  esac
   exit 0
 fi
 
