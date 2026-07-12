@@ -55,6 +55,7 @@ const AUTHORIZATION_KEYRING = new Map([
   ['canary-primary', Object.freeze({ role: 'canary', publicKeyPath: '/etc/skyjo-deploy-auth/canary-public.pem' })],
   ['production-primary', Object.freeze({ role: 'production', publicKeyPath: '/etc/skyjo-deploy-auth/production-public.pem' })]
 ]);
+const controllerLifecycleKeepAliveMs = 60_000;
 
 export function parseArguments(argv) {
   const command = argv.shift();
@@ -873,19 +874,29 @@ export async function main(argv = process.argv.slice(2)) {
   return result;
 }
 
-export async function invokeDirectController(mainImpl = main, argv = process.argv) {
+export async function invokeDirectController(mainImpl = main, argv = process.argv, {
+  setIntervalImpl = setInterval,
+  clearIntervalImpl = clearInterval
+} = {}) {
+  let keepAlive;
   try {
-    return await mainImpl();
-  } catch (error) {
-    const command = argv[2];
-    const status = error?.deploymentStatus || (command === 'rollback' ? 'rollback-failed' : 'failed');
-    process.stderr.write(`Release controller failed: ${JSON.stringify({
-      status,
-      message: error?.message || 'unknown error',
-      dataRestored: false
-    })}\n`);
-    process.exitCode = status === 'rollback-failed' ? 2 : 1;
-    return undefined;
+    keepAlive = setIntervalImpl(() => {}, controllerLifecycleKeepAliveMs);
+    keepAlive?.ref?.();
+    try {
+      return await mainImpl();
+    } catch (error) {
+      const command = argv[2];
+      const status = error?.deploymentStatus || (command === 'rollback' ? 'rollback-failed' : 'failed');
+      process.stderr.write(`Release controller failed: ${JSON.stringify({
+        status,
+        message: error?.message || 'unknown error',
+        dataRestored: false
+      })}\n`);
+      process.exitCode = status === 'rollback-failed' ? 2 : 1;
+      return undefined;
+    }
+  } finally {
+    if (keepAlive !== undefined) clearIntervalImpl(keepAlive);
   }
 }
 
