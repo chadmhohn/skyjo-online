@@ -40,3 +40,9 @@ Start a canary against the isolated copies and run `npm run smoke:deployed` befo
 ## Live recovery rule
 
 There is intentionally no automatic live database restore. If production has accepted traffic after a deployment, do not replace its database automatically or combine a restored database with newer room state. Stop the service, preserve the failed state, select a verified backup, restore it into a fresh isolated directory, validate it with a canary, and only then perform a deliberate operator-controlled cutover.
+
+## Scheduled retention and restore drills
+
+The governance release installs staged daily/monthly systemd assets. They remain disabled until the immutable release readiness contract, one daily backup, and one monthly isolated restore drill all pass during explicit activation. See [Repository governance and production operations](operations-governance.md).
+
+Scheduled backups have isolated namespaces and cannot prune deployment or bootstrap backups. The service retains 30 verified daily snapshots, 12 verified monthly snapshots, and 12 monthly drill records. Verification and isolated restore accept known checksum-valid historical migration/protocol prefixes; new backups from live state still require the exact current migration and release identity.

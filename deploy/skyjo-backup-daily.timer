@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Skyjo verified backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+AccuracySec=1m
+Unit=skyjo-backup-daily.service
+
+[Install]
+WantedBy=timers.target

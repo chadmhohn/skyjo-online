@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Skyjo monthly backup and isolated restore drill
+
+[Timer]
+OnCalendar=*-*-01 04:15:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+AccuracySec=1m
+Unit=skyjo-backup-monthly.service
+
+[Install]
+WantedBy=timers.target

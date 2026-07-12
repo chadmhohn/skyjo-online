@@ -1,0 +1,38 @@
+[Unit]
+Description=Skyjo local readiness contract monitor
+ConditionPathExists=/etc/skyjo-online-operations.enabled
+After=skyjo-online.service
+
+[Service]
+Type=oneshot
+User=skyjo-monitor
+Group=skyjo-monitor
+ExecStart=/opt/skyjo-online/node/bin/node /srv/skyjo-online/current/scripts/monitor-readiness.mjs --monitor local --base-url http://127.0.0.1:4180 --attempts 1 --timeout-ms 10000 --output /var/lib/skyjo-monitor/local-readiness.json --fail-unhealthy
+TimeoutStartSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/skyjo-monitor
+InaccessiblePaths=/etc/skyjo-online.env /var/lib/skyjo-online /var/backups/skyjo-online

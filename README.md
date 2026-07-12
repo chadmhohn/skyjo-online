@@ -72,6 +72,9 @@ Release smoke checklist:
 Verified backup and isolated restore guide:
 [docs/data-recovery.md](docs/data-recovery.md)
 
+Repository governance, scheduled operations, monitoring, and incident guide:
+[docs/operations-governance.md](docs/operations-governance.md)
+
 Agent handoff and operating guide:
 [AGENTS.md](AGENTS.md)
 

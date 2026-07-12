@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Skyjo local readiness every two minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=2m
+AccuracySec=10s
+Unit=skyjo-readiness-monitor.service
+
+[Install]
+WantedBy=timers.target

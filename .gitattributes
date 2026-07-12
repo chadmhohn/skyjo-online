@@ -6,10 +6,12 @@
 *.sh text eol=lf
 *.service text eol=lf
 *.sudoers text eol=lf
+*.tmpfiles text eol=lf
 *.yml text eol=lf
 deploy/skyjo-canary-launch text eol=lf
 deploy/skyjo-controller-launch text eol=lf
 deploy/skyjo-delivery-bootstrap text eol=lf
+deploy/skyjo-ops-launch text eol=lf
 deploy/skyjo-release-controller text eol=lf
 deploy/skyjo-smoke-launch text eol=lf
 deploy/skyjo-state-proof-launch text eol=lf

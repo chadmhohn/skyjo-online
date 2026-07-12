@@ -1,0 +1,99 @@
+import fsConstants from 'node:fs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const expectedKeys = [
+  'attempts',
+  'checkedAt',
+  'failureClass',
+  'formatVersion',
+  'httpStatus',
+  'monitor',
+  'protocolVersion',
+  'releaseSha',
+  'schemaVersion',
+  'status'
+];
+
+export async function validateOperationsReadiness(
+  filePath,
+  expectedReleaseSha,
+  expectedUid,
+  platform = process.platform,
+  now = Date.now()
+) {
+  if (!/^[a-f0-9]{40}$/.test(expectedReleaseSha || '')) throw new Error('Expected release SHA is invalid.');
+  if (!Number.isSafeInteger(expectedUid) || expectedUid < 0) throw new Error('Expected monitor user identity is invalid.');
+  const noFollow = fsConstants.constants.O_NOFOLLOW;
+  if (platform !== 'win32' && !Number.isInteger(noFollow)) {
+    throw new Error('This platform cannot safely open readiness evidence without following links.');
+  }
+  const flags = fsConstants.constants.O_RDONLY | (Number.isInteger(noFollow) ? noFollow : 0);
+  const handle = await fs.open(filePath, flags);
+  let stat;
+  let text;
+  try {
+    stat = await handle.stat();
+    if (
+      !stat.isFile() || stat.nlink !== 1 || stat.size < 2 || stat.size > 4096
+    ) {
+      throw new Error('Local readiness evidence is not one bounded regular file.');
+    }
+    if (platform !== 'win32' && (stat.uid !== expectedUid || (stat.mode & 0o777) !== 0o600)) {
+      throw new Error('Local readiness evidence ownership or mode is invalid.');
+    }
+    const buffer = Buffer.alloc(4097);
+    let totalRead = 0;
+    while (totalRead < buffer.byteLength) {
+      const { bytesRead } = await handle.read(buffer, totalRead, buffer.byteLength - totalRead, totalRead);
+      if (bytesRead === 0) break;
+      totalRead += bytesRead;
+    }
+    if (totalRead !== stat.size) throw new Error('Local readiness evidence changed while it was read.');
+    text = buffer.subarray(0, totalRead).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+  const value = JSON.parse(text);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Local readiness evidence is invalid.');
+  const keys = Object.keys(value).sort();
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error('Local readiness evidence has an unexpected shape.');
+  }
+  if (text !== `${JSON.stringify(value, null, 2)}\n`) throw new Error('Local readiness evidence is not canonical JSON.');
+  const checkedAt = new Date(value.checkedAt);
+  const checkedAtMs = checkedAt.getTime();
+  if (
+    value.formatVersion !== 1 || value.monitor !== 'local' || value.status !== 'healthy' ||
+    value.attempts !== 1 || value.failureClass !== null || value.httpStatus !== 200 ||
+    value.releaseSha !== expectedReleaseSha ||
+    !Number.isSafeInteger(value.schemaVersion) || value.schemaVersion < 1 ||
+    !Number.isSafeInteger(value.protocolVersion) || value.protocolVersion < 1 ||
+    Number.isNaN(checkedAtMs) || checkedAt.toISOString() !== value.checkedAt ||
+    !Number.isFinite(now) || checkedAtMs < now - 60_000 || checkedAtMs > now + 5_000
+  ) {
+    throw new Error('Local readiness evidence does not match the active release.');
+  }
+  return { releaseSha: value.releaseSha, checkedAt: value.checkedAt };
+}
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  const [expectedReleaseSha, expectedUid, extra] = process.argv.slice(2);
+  if (extra !== undefined || !/^(?:0|[1-9][0-9]*)$/.test(expectedUid || '')) {
+    process.stderr.write('Operations readiness validation failed.\n');
+    process.exitCode = 1;
+  } else {
+    try {
+      await validateOperationsReadiness(
+        '/var/lib/skyjo-monitor/local-readiness.json',
+        expectedReleaseSha,
+        Number(expectedUid)
+      );
+    } catch {
+      process.stderr.write('Operations readiness validation failed.\n');
+      process.exitCode = 1;
+    }
+  }
+}

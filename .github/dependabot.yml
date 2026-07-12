@@ -1,0 +1,46 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    rebase-strategy: auto
+    versioning-strategy: increase-if-necessary
+    labels:
+      - area:ci-cd
+      - agent-ready
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      npm-production:
+        dependency-type: production
+        patterns:
+          - "*"
+      npm-development:
+        dependency-type: development
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    labels:
+      - area:ci-cd
+      - agent-ready
+    commit-message:
+      prefix: deps(actions)
+    groups:
+      github-actions:
+        patterns:
+          - "*"

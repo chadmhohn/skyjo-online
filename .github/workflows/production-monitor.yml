@@ -1,0 +1,85 @@
+name: Production readiness monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skyjo-production-incident
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Ops / Monitor activation gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+    steps:
+      - name: Keep monitoring inert until the tagged baseline is live
+        id: gate
+        env:
+          MONITOR_ENABLED: ${{ vars.SKYJO_MONITOR_ENABLED }}
+          MONITOR_REF: ${{ github.ref }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$MONITOR_ENABLED" == "true" && "$MONITOR_REF" == "refs/heads/main" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Production monitoring is staged but not activated."
+          fi
+
+  monitor:
+    name: Ops / Public readiness and incident reconciliation
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out immutable monitoring code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .node-version
+
+      - name: Probe the public readiness contract
+        env:
+          SKYJO_PUBLIC_BASE_URL: ${{ vars.SKYJO_PUBLIC_BASE_URL }}
+        run: |
+          set -Eeuo pipefail
+          node scripts/monitor-readiness.mjs \
+            --monitor public \
+            --base-url "$SKYJO_PUBLIC_BASE_URL" \
+            --attempts 3 \
+            --timeout-ms 10000 \
+            --output "$RUNNER_TEMP/skyjo-readiness-result.json"
+
+      - name: Create, update, or close the single sanitized incident
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SKYJO_MONITOR_RESULT: ${{ runner.temp }}/skyjo-readiness-result.json
+        run: node scripts/reconcile-production-incident.mjs
+
+      - name: Upload sanitized monitor evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: production-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/skyjo-readiness-result.json
+          if-no-files-found: error
+          retention-days: 14

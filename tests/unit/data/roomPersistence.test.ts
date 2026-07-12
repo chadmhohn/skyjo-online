@@ -6,6 +6,7 @@ import {
   ROOMS_FILE_FORMAT,
   ROOMS_FILE_VERSION,
   ROOMS_PROTOCOL_VERSION,
+  SUPPORTED_ROOMS_PROTOCOL_VERSIONS,
   ROOM_STALE_MS,
   RoomPersistenceFormatError,
   atomicWriteJson,
@@ -65,6 +66,12 @@ describe('room persistence', () => {
   it('resolves production paths without sharing state between tests', () => {
     expect(resolveRoomsFilePath({})).toBe(path.resolve(DEFAULT_ROOMS_FILE));
     expect(resolveRoomsFilePath({ SKYJO_ROOMS_FILE: roomsFile })).toBe(roomsFile);
+  });
+
+  it('uses one explicit runtime-readable protocol compatibility set', () => {
+    expect(SUPPORTED_ROOMS_PROTOCOL_VERSIONS).toContain(ROOMS_PROTOCOL_VERSION);
+    expect(new Set(SUPPORTED_ROOMS_PROTOCOL_VERSIONS).size).toBe(SUPPORTED_ROOMS_PROTOCOL_VERSIONS.length);
+    expect(SUPPORTED_ROOMS_PROTOCOL_VERSIONS.every((version: number) => Number.isSafeInteger(version) && version > 0)).toBe(true);
   });
 
   it('writes the v2 envelope and atomically restores socket-free rooms offline', async () => {
@@ -165,7 +172,12 @@ describe('room persistence', () => {
     ['a non-document root', JSON.stringify('rooms'), 'INVALID_ROOMS_FILE'],
     ['an unversioned malformed envelope', JSON.stringify({ rooms: {} }), 'INVALID_ROOMS_FILE'],
     ['a future version', JSON.stringify({ format: 'skyjo-rooms', version: 3, protocolVersion: 1, rooms: [] }), 'UNSUPPORTED_ROOMS_VERSION'],
-    ['a future protocol', JSON.stringify({ format: 'skyjo-rooms', version: 2, protocolVersion: 2, rooms: [] }), 'UNSUPPORTED_ROOMS_PROTOCOL'],
+    ['a future protocol', JSON.stringify({
+      format: 'skyjo-rooms',
+      version: 2,
+      protocolVersion: Math.max(...SUPPORTED_ROOMS_PROTOCOL_VERSIONS) + 1,
+      rooms: []
+    }), 'UNSUPPORTED_ROOMS_PROTOCOL'],
     ['a v2 envelope without savedAt', JSON.stringify({ format: 'skyjo-rooms', version: 2, protocolVersion: 1, rooms: [] }), 'INVALID_ROOMS_FILE'],
     ['a wrong format marker', JSON.stringify({ format: 'other', version: 2, protocolVersion: 1, rooms: [] }), 'INVALID_ROOMS_FORMAT']
   ])('rejects %s without replacing the source file', async (_name, contents, code) => {

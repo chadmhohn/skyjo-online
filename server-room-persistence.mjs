@@ -7,6 +7,7 @@ export const ROOM_STALE_MS = 1000 * 60 * 60 * 6;
 export const ROOMS_FILE_FORMAT = 'skyjo-rooms';
 export const ROOMS_FILE_VERSION = 2;
 export const ROOMS_PROTOCOL_VERSION = 1;
+export const SUPPORTED_ROOMS_PROTOCOL_VERSIONS = Object.freeze([1]);
 
 const validStatuses = new Set(['waiting', 'playing', 'finished']);
 const maxPersistedChatMessages = 80;
@@ -186,7 +187,7 @@ function parseVersionedEnvelope(value) {
     if (value.format !== ROOMS_FILE_FORMAT) {
       throw formatError('Room persistence format marker is invalid.', 'INVALID_ROOMS_FORMAT');
     }
-    if (value.protocolVersion !== ROOMS_PROTOCOL_VERSION) {
+    if (!SUPPORTED_ROOMS_PROTOCOL_VERSIONS.includes(value.protocolVersion)) {
       throw formatError(
         `Room protocol version ${String(value.protocolVersion)} is not supported.`,
         'UNSUPPORTED_ROOMS_PROTOCOL'
@@ -195,7 +196,10 @@ function parseVersionedEnvelope(value) {
     if (!hasOwn(value, 'savedAt')) {
       throw formatError('Current room persistence envelope is missing savedAt.');
     }
-  } else if (value.protocolVersion !== undefined && value.protocolVersion !== ROOMS_PROTOCOL_VERSION) {
+  } else if (
+    value.protocolVersion !== undefined &&
+    !SUPPORTED_ROOMS_PROTOCOL_VERSIONS.includes(value.protocolVersion)
+  ) {
     throw formatError(
       `Legacy room protocol version ${String(value.protocolVersion)} is not supported.`,
       'UNSUPPORTED_ROOMS_PROTOCOL'
@@ -212,7 +216,8 @@ function parseVersionedEnvelope(value) {
     protocolVersion: value.protocolVersion ?? ROOMS_PROTOCOL_VERSION,
     savedAt: optionalTimestamp(value.savedAt, 'savedAt'),
     rooms: value.rooms,
-    legacy: value.version < ROOMS_FILE_VERSION
+    legacy: value.version < ROOMS_FILE_VERSION ||
+      (value.protocolVersion ?? ROOMS_PROTOCOL_VERSION) !== ROOMS_PROTOCOL_VERSION
   };
 }
 

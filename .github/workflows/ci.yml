@@ -48,6 +48,34 @@ jobs:
           # GitHub supports concurrency.queue; actionlint v1.7.12 predates that schema addition.
           "$RUNNER_TEMP/actionlint" -ignore 'unexpected.key..queue.'
 
+      - name: Validate operations shells and systemd units
+        run: |
+          set -Eeuo pipefail
+          sh -n \
+            deploy/bootstrap-skyjo-delivery.sh \
+            deploy/github-release-remote.sh \
+            deploy/install-skyjo-operations.sh \
+            deploy/skyjo-canary-launch \
+            deploy/skyjo-controller-launch \
+            deploy/skyjo-delivery-bootstrap \
+            deploy/skyjo-ops-launch \
+            deploy/skyjo-release-controller \
+            deploy/skyjo-smoke-launch \
+            deploy/skyjo-state-proof-launch
+          if ! getent passwd skyjo-monitor >/dev/null; then
+            sudo useradd --system --user-group --home-dir /var/lib/skyjo-monitor --shell /usr/sbin/nologin skyjo-monitor
+          fi
+          sudo install -D -o root -g root -m 0555 /bin/true /opt/skyjo-online/node/bin/node
+          sudo install -D -o root -g root -m 0555 /bin/true /usr/local/lib/skyjo-online/skyjo-ops-launch
+          sudo systemd-tmpfiles --create "$GITHUB_WORKSPACE/deploy/skyjo-online-operations.tmpfiles"
+          test "$(stat -c '%u:%g:%a:%h' /run/lock/skyjo-release-controller.lock)" = 0:0:600:1
+          sudo install -d -o root -g root -m 0700 \
+            /var/backups/skyjo-online /var/tmp/skyjo-restore-drills
+          systemd-analyze verify \
+            deploy/skyjo-backup-daily.service deploy/skyjo-backup-daily.timer \
+            deploy/skyjo-backup-monthly.service deploy/skyjo-backup-monthly.timer \
+            deploy/skyjo-readiness-monitor.service deploy/skyjo-readiness-monitor.timer
+
       - name: Resolve immutable source identity
         id: source
         run: |
@@ -671,3 +699,80 @@ jobs:
       - name: Remove production deployment credentials
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/skyjo-ssh"
+
+  production-incident:
+    name: Ops / Production deployment incident
+    needs:
+      - runtime-artifact
+      - release-canary
+      - production
+    if: >-
+      always() && startsWith(github.ref, 'refs/tags/v') &&
+      needs.runtime-artifact.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: skyjo-production-incident
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: Check out immutable incident reconciler
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.runtime-artifact.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .node-version
+
+      - name: Create sanitized deployment-failure evidence
+        if: needs.production.result != 'success'
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeMonitorResult } from './scripts/readiness-monitor-lib.mjs';
+          await writeMonitorResult(`${process.env.RUNNER_TEMP}/skyjo-readiness-result.json`, {
+            formatVersion: 1,
+            monitor: 'public',
+            status: 'unhealthy',
+            checkedAt: new Date().toISOString(),
+            attempts: 1,
+            failureClass: 'internal',
+            httpStatus: null,
+            releaseSha: null,
+            schemaVersion: null,
+            protocolVersion: null
+          });
+          NODE
+
+      - name: Prove successful deployment recovery
+        if: needs.production.result == 'success'
+        env:
+          SKYJO_PUBLIC_BASE_URL: ${{ vars.SKYJO_PUBLIC_BASE_URL }}
+        run: |
+          node scripts/monitor-readiness.mjs \
+            --monitor public \
+            --base-url "$SKYJO_PUBLIC_BASE_URL" \
+            --attempts 3 \
+            --timeout-ms 10000 \
+            --output "$RUNNER_TEMP/skyjo-readiness-result.json"
+
+      - name: Create or update the single sanitized incident
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SKYJO_INCIDENT_SOURCE: deployment
+          SKYJO_MONITOR_RESULT: ${{ runner.temp }}/skyjo-readiness-result.json
+        run: node scripts/reconcile-production-incident.mjs
+
+      - name: Upload sanitized deployment evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: production-deployment-incident-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/skyjo-readiness-result.json
+          if-no-files-found: error
+          retention-days: 14
