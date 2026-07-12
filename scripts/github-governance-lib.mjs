@@ -216,6 +216,20 @@ function assertDetailedRuleset(actual, expected) {
     }
     return actualValue === expectedValue;
   }
+  function isCanonicalOmittedFalseUpdateParameters(actualRule, expectedRule) {
+    if (
+      expected.target !== 'tag' ||
+      expectedRule.type !== 'update' ||
+      Object.hasOwn(actualRule, 'parameters') ||
+      !expectedRule.parameters ||
+      typeof expectedRule.parameters !== 'object' ||
+      Array.isArray(expectedRule.parameters)
+    ) return false;
+    const keys = Reflect.ownKeys(expectedRule.parameters);
+    return keys.length === 1 &&
+      keys[0] === 'update_allows_fetch_and_merge' &&
+      expectedRule.parameters.update_allows_fetch_and_merge === false;
+  }
   if (
     actual?.name !== expected.name || actual?.target !== expected.target || actual?.enforcement !== 'active' ||
     !contains(actual.bypass_actors, expected.bypass_actors) ||
@@ -229,7 +243,11 @@ function assertDetailedRuleset(actual, expected) {
   for (const expectedRule of expected.rules) {
     const matches = actual.rules.filter((rule) => rule.type === expectedRule.type);
     if (matches.length !== 1) throw new Error(`Detailed ruleset does not contain one ${expectedRule.type} rule.`);
-    if (expectedRule.parameters && !contains(matches[0].parameters, expectedRule.parameters)) {
+    if (
+      expectedRule.parameters &&
+      !contains(matches[0].parameters, expectedRule.parameters) &&
+      !isCanonicalOmittedFalseUpdateParameters(matches[0], expectedRule)
+    ) {
       throw new Error(`Detailed ${expectedRule.type} rule parameters did not match.`);
     }
   }
