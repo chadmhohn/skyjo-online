@@ -467,7 +467,13 @@ test('admission fsync failure stays isolated while the global FD rejects a same-
     (error) => error.exitCode === 75 && /admission is already active/i.test(error.message)
   );
   releaseParentSync();
-  await assert.rejects(creator, /injected admission parent fsync failure/i);
+  await assert.rejects(creator, (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.cause?.message, 'injected admission parent fsync failure');
+    assert.equal(error.cause?.code, 'EIO');
+    assert.deepEqual(error.errors.map((entry) => entry.code), ['EIO', 'EIO']);
+    return true;
+  });
   await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
   const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('safe') });
   assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'safe');
