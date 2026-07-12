@@ -68,8 +68,28 @@ async function assertSafeDirectory(directory, description) {
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw commandError(`${description} is unsafe.`, 70);
 }
 
-async function assertSafeStageRoot(stageRoot) {
+async function assertSafeStageRoot(stageRoot, contract) {
   await assertSafeDirectory(stageRoot, 'Deployment staging root');
+  const stat = await fsp.lstat(stageRoot);
+  if (contract) {
+    if (stat.uid !== contract.uid || stat.gid !== contract.gid ||
+        (process.platform !== 'win32' && (stat.mode & 0o7777) !== 0o1731)) {
+      throw commandError('Deployment staging root does not match its non-enumerable ownership contract.', 70);
+    }
+  }
+  return stat;
+}
+
+async function fsyncCreatedStageParent(stageRoot, { contract, syncDirectory = fsyncDirectory } = {}) {
+  try {
+    await syncDirectory(stageRoot);
+  } catch (error) {
+    if (error?.code !== 'EACCES' || !contract) throw error;
+    // The deployment identity intentionally has write+execute but no read on
+    // the exact 1731 parent. Revalidate after mkdir before accepting that one
+    // expected durability limitation; every other error remains fatal.
+    await assertSafeStageRoot(stageRoot, contract);
+  }
 }
 
 function processIsAlive(pid) {
@@ -229,16 +249,40 @@ async function receiveExactly(input, expectedBytes, handle) {
   return received;
 }
 
-export async function performUpload({ stageRoot = DEFAULT_STAGE_ROOT, runId, releaseSha, digest, bytes, input = process.stdin }) {
+export async function performUpload({
+  stageRoot = DEFAULT_STAGE_ROOT,
+  runId,
+  releaseSha,
+  digest,
+  bytes,
+  input = process.stdin,
+  enforceStageRootContract = process.platform === 'linux' && path.resolve(stageRoot) === path.resolve(DEFAULT_STAGE_ROOT),
+  expectedStageRootUid = 0,
+  expectedStageRootGid = process.getgid?.(),
+  stageRootFsync = fsyncDirectory
+}) {
   if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '') ||
       !DIGEST_PATTERN.test(digest || '') || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_ARCHIVE_BYTES) throw commandError();
-  await assertSafeStageRoot(stageRoot);
+  const stageRootContract = enforceStageRootContract
+    ? { uid: expectedStageRootUid, gid: expectedStageRootGid }
+    : undefined;
+  if (stageRootContract && (!Number.isSafeInteger(stageRootContract.uid) || !Number.isSafeInteger(stageRootContract.gid))) {
+    throw commandError('Deployment staging ownership contract is unavailable.', 70);
+  }
+  await assertSafeStageRoot(stageRoot, stageRootContract);
   const stageDirectory = resolveWithin(stageRoot, runId);
   const created = await fsp.mkdir(stageDirectory, { mode: 0o700, recursive: false }).then(() => true).catch((error) => {
     if (error.code === 'EEXIST') return false;
     throw error;
   });
-  if (created) await fsyncDirectory(stageRoot);
+  if (created) {
+    try {
+      await fsyncCreatedStageParent(stageRoot, { contract: stageRootContract, syncDirectory: stageRootFsync });
+    } catch (error) {
+      await fsp.rmdir(stageDirectory).catch(() => {});
+      throw error;
+    }
+  }
   await assertSafeDirectory(stageDirectory, 'Deployment staging directory');
   const releaseLock = await acquireUploadLock(stageDirectory);
   try {

@@ -103,6 +103,52 @@ test('upload publishes with no-overwrite hard link and removes only its unique p
   assert.equal(await fs.readFile(first.archivePath, 'utf8'), 'first');
 }));
 
+test('first upload tolerates only EACCES for the verified 1731 stage parent', async () => fixture(async (root) => {
+  await fs.chmod(root, 0o1731);
+  const stageRootStat = await fs.lstat(root);
+  const body = 'first-authorized-upload';
+  let parentSyncAttempts = 0;
+  const result = await performUpload({
+    stageRoot: root,
+    runId,
+    releaseSha,
+    digest: digest(body),
+    bytes: Buffer.byteLength(body),
+    input: input(body),
+    enforceStageRootContract: true,
+    expectedStageRootUid: stageRootStat.uid,
+    expectedStageRootGid: stageRootStat.gid,
+    stageRootFsync: async () => {
+      parentSyncAttempts += 1;
+      throw Object.assign(new Error('non-enumerable parent cannot be opened for read'), { code: 'EACCES' });
+    }
+  });
+  assert.equal(result.idempotent, false, 'the clean first attempt must publish rather than rely on retry');
+  assert.equal(parentSyncAttempts, 1);
+  assert.equal(await fs.readFile(result.archivePath, 'utf8'), body);
+  assert.equal(digest(await fs.readFile(result.archivePath)), digest(body));
+
+  const rejected = [
+    { run: '124-1-canary', enforce: false, code: 'EACCES' },
+    { run: '125-1-canary', enforce: true, code: 'EIO' }
+  ];
+  for (const scenario of rejected) {
+    await assert.rejects(performUpload({
+      stageRoot: root,
+      runId: scenario.run,
+      releaseSha,
+      digest: digest(body),
+      bytes: Buffer.byteLength(body),
+      input: input(body),
+      enforceStageRootContract: scenario.enforce,
+      expectedStageRootUid: stageRootStat.uid,
+      expectedStageRootGid: stageRootStat.gid,
+      stageRootFsync: async () => { throw Object.assign(new Error(`injected ${scenario.code}`), { code: scenario.code }); }
+    }), (error) => error.code === scenario.code);
+    await assert.rejects(fs.lstat(path.join(root, scenario.run)), (error) => error.code === 'ENOENT');
+  }
+}));
+
 test('a concurrent upload fails nonblocking while the lock owner completes intact', async () => fixture(async (root) => {
   let releaseInput;
   let firstChunkRead;
