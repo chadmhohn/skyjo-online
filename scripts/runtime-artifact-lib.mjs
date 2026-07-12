@@ -8,6 +8,7 @@ import { loadReleaseIdentity, sha256 } from '../server-release.mjs';
 import {
   artifactNames,
   assertFullReleaseSha,
+  isForbiddenArchivePathSegment,
   RUNTIME_ROOT_FILES,
   RUNTIME_SBOM_NAME,
   RUNTIME_SCRIPT_FILES,
@@ -40,6 +41,26 @@ async function copyRegularTree(sourceDirectory, targetDirectory) {
     else if (child.isFile()) await copyRegularFile(sourcePath, targetPath);
     else throw new Error(`Runtime source contains a special filesystem entry: ${sourcePath}.`);
   }
+}
+
+export async function pruneForbiddenRuntimePaths(rootDirectory) {
+  const root = path.resolve(rootDirectory);
+  const removed = [];
+  async function visit(directory) {
+    const children = await fs.readdir(directory, { withFileTypes: true });
+    children.sort((left, right) => left.name.localeCompare(right.name, 'en'));
+    for (const child of children) {
+      const childPath = path.join(directory, child.name);
+      if (isForbiddenArchivePathSegment(child.name)) {
+        await fs.rm(childPath, { recursive: child.isDirectory(), force: true });
+        removed.push(path.relative(root, childPath).split(path.sep).join('/'));
+      } else if (child.isDirectory()) {
+        await visit(childPath);
+      }
+    }
+  }
+  await visit(root);
+  return removed;
 }
 
 async function normalizeRuntimeTree(rootDirectory) {
@@ -160,6 +181,7 @@ export async function buildRuntimeArtifact({ projectRoot, outputDirectory, relea
       fs.rm(path.join(stage, 'node_modules', '.bin'), { recursive: true, force: true }),
       fs.rm(path.join(stage, 'node_modules', '.package-lock.json'), { force: true })
     ]);
+    await pruneForbiddenRuntimePaths(path.join(stage, 'node_modules'));
     await generateRuntimeSbom({ projectRoot: root, packageRoot: stage, outputPath: path.join(stage, RUNTIME_SBOM_NAME), releaseSha: normalizedSha });
     await copyRegularFile(path.join(stage, RUNTIME_SBOM_NAME), externalSbomPath);
     await normalizeRuntimeTree(stage);

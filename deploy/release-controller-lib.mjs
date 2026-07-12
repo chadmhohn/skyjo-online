@@ -79,6 +79,11 @@ export function resolveWithin(baseDirectory, ...segments) {
   return resolved;
 }
 
+export function isForbiddenArchivePathSegment(segment) {
+  const normalized = typeof segment === 'string' ? segment.toLowerCase() : '';
+  return normalized === '.git' || normalized === '.github' || normalized.startsWith('.env');
+}
+
 export function normalizeArchiveEntry(value) {
   if (typeof value !== 'string' || value.length === 0 || value.includes('\0') || value.includes('\\')) {
     throw new Error('Archive contains an invalid path.');
@@ -89,7 +94,10 @@ export function normalizeArchiveEntry(value) {
   if (parts.some((part) => !part || part === '.' || part === '..')) {
     throw new Error('Archive contains a path traversal entry.');
   }
-  if (parts.some((part) => part === '.git' || part === '.github' || /^\.env(?:\.|$)/i.test(part))) {
+  if (parts.some((part) => /[\u0000-\u001f\u007f]/.test(part))) {
+    throw new Error('Archive contains a path control character.');
+  }
+  if (parts.some(isForbiddenArchivePathSegment)) {
     throw new Error('Archive contains a forbidden path.');
   }
   return entry;

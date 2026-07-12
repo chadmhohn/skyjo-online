@@ -13,6 +13,7 @@ import {
   MAX_UNCOMPRESSED_BYTES,
   normalizeArchivePath,
   parseTarArchive,
+  pruneForbiddenRuntimePaths,
   REQUIRED_ARCHIVE_FILES,
   validateRuntimeEntries,
   verifyRuntimeArtifact
@@ -199,21 +200,49 @@ describe('runtime artifact safety contract', () => {
     'C:/Windows/System32',
     'dist\\index.html',
     'dist//index.html',
-    'dist/./index.html'
+    'dist/./index.html',
+    '././dist/index.html'
   ])('rejects unsafe archive path %s', (unsafePath) => {
     expect(() => normalizeArchivePath(unsafePath)).toThrow();
   });
 
   test('normalizes canonical root and directory spellings without broadening the allowlist', () => {
-    expect(normalizeArchivePath('././dist/')).toBe('dist');
+    expect(normalizeArchivePath('./dist/')).toBe('dist');
+    expect(() => normalizeArchivePath('././dist/')).toThrow('traversal or ambiguous');
     expect(normalizeArchivePath('.', { allowRoot: true })).toBe('');
     expect(() => normalizeArchivePath('.')).toThrow('archive root');
     expect(() => normalizeArchivePath('')).toThrow('empty path');
     expect(() => normalizeArchivePath('dist/evil\u0000name')).toThrow('control characters');
+    expect(() => normalizeArchivePath('node_modules/minimist/bad\tname')).toThrow('control characters');
+    expect(() => normalizeArchivePath('node_modules/minimist/bad\u007fname')).toThrow('control characters');
     expect(isAllowedRuntimePath('.', true)).toBe(true);
     expect(isAllowedRuntimePath('dist', true)).toBe(true);
     expect(isAllowedRuntimePath('server.mjs', true)).toBe(false);
     expect(isAllowedRuntimePath('scripts', true)).toBe(true);
+  });
+
+  test.each([
+    'node_modules/minimist/.github/FUNDING.yml',
+    'node_modules/minimist/.GitHub/workflow.yml',
+    'node_modules/minimist/.git/config',
+    'node_modules/minimist/.GIT/config',
+    'node_modules/minimist/.env',
+    'node_modules/minimist/.env.production',
+    'node_modules/minimist/.ENV.local',
+    'node_modules/minimist/.envrc',
+    'node_modules/minimist/.EnViRoNmEnT'
+  ])('rejects forbidden SCM and environment path %s', (forbiddenPath) => {
+    expect(() => normalizeArchivePath(forbiddenPath)).toThrow('forbidden SCM or environment');
+    expect(() => isAllowedRuntimePath(forbiddenPath)).toThrow('forbidden SCM or environment');
+  });
+
+  test('keeps non-secret package dotfiles coherent with the deployment allowlist', () => {
+    expect(normalizeArchivePath('node_modules/minimist/.gitignore')).toBe('node_modules/minimist/.gitignore');
+    expect(normalizeArchivePath('node_modules/minimist/.npmignore')).toBe('node_modules/minimist/.npmignore');
+    expect(normalizeArchivePath('node_modules/minimist/.github-actions/config.yml')).toBe('node_modules/minimist/.github-actions/config.yml');
+    expect(isAllowedRuntimePath('node_modules/minimist/.gitignore')).toBe(true);
+    expect(isAllowedRuntimePath('node_modules/minimist/.npmignore')).toBe(true);
+    expect(isAllowedRuntimePath('node_modules/minimist/.github-actions/config.yml')).toBe(true);
   });
 
   test('allows only compiled output, production dependencies, metadata, and exact runtime scripts', () => {
@@ -223,7 +252,63 @@ describe('runtime artifact safety contract', () => {
     expect(isAllowedRuntimePath('scripts/smoke-chat.mjs')).toBe(false);
     expect(isAllowedRuntimePath('src/game.ts')).toBe(false);
     expect(isAllowedRuntimePath('tests/unit/data/foo.test.ts')).toBe(false);
-    expect(isAllowedRuntimePath('.env')).toBe(false);
+    expect(() => isAllowedRuntimePath('.env')).toThrow('forbidden SCM or environment');
+  });
+
+  test('deterministically prunes forbidden dependency metadata before packaging', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-runtime-prune-'));
+    const nodeModulesRoot = path.join(root, 'node_modules');
+    const packageRoot = path.join(nodeModulesRoot, 'minimist');
+    const forbidden = [
+      '.github/FUNDING.yml',
+      '.git/config',
+      '.env',
+      '.env.production',
+      '.envrc',
+      '.EnViRoNmEnT'
+    ];
+    const allowed = ['.gitignore', '.npmignore', '.github-actions/config.yml', 'index.js'];
+    try {
+      for (const relativePath of [...forbidden, ...allowed]) {
+        const filePath = path.join(packageRoot, ...relativePath.split('/'));
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.writeFile(filePath, relativePath);
+      }
+      const firstPartyForbidden = path.join(root, 'dist', '.github', 'workflow.yml');
+      await fs.mkdir(path.dirname(firstPartyForbidden), { recursive: true });
+      await fs.writeFile(firstPartyForbidden, 'must fail validation rather than be pruned');
+      const removed = await pruneForbiddenRuntimePaths(nodeModulesRoot);
+      const expectedRemoved = [
+        'minimist/.env',
+        'minimist/.env.production',
+        'minimist/.envrc',
+        'minimist/.EnViRoNmEnT',
+        'minimist/.git',
+        'minimist/.github'
+      ].sort((left, right) => left.localeCompare(right, 'en'));
+      expect(removed).toEqual(expectedRemoved);
+      for (const relativePath of forbidden) {
+        await expect(fs.lstat(path.join(packageRoot, ...relativePath.split('/')))).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      for (const relativePath of allowed) {
+        await expect(fs.readFile(path.join(packageRoot, ...relativePath.split('/')), 'utf8')).resolves.toBe(relativePath);
+      }
+      await expect(fs.readFile(firstPartyForbidden, 'utf8')).resolves.toBe('must fail validation rather than be pruned');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    'node_modules/minimist/.github/FUNDING.yml',
+    'node_modules/minimist/.git/config',
+    'node_modules/minimist/.env.production',
+    'dist/.github/workflow.yml'
+  ])('rejects forbidden packaged entry %s before inventory validation', (rawPath) => {
+    const entries = fixtureEntries();
+    const data = Buffer.from('forbidden');
+    entries.push({ ...entries[0], rawPath, data, size: data.length });
+    expect(() => validateRuntimeEntries(entries, releaseSha)).toThrow('forbidden SCM or environment');
   });
 
   test('validates the complete allowlisted runtime and byte-identical release identities', () => {

@@ -8,6 +8,9 @@ import {
   sha256,
   validateReleaseIdentity
 } from '../server-release.mjs';
+import { isForbiddenArchivePathSegment } from '../deploy/release-controller-lib.mjs';
+
+export { isForbiddenArchivePathSegment };
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
@@ -83,7 +86,7 @@ export function normalizeArchivePath(rawPath, { allowRoot = false } = {}) {
   if (typeof rawPath !== 'string' || rawPath.length === 0) throw new Error('Archive entry has an empty path.');
   if (rawPath.includes('\\')) throw new Error(`Unsafe archive path: ${JSON.stringify(rawPath)}.`);
   let candidate = rawPath;
-  while (candidate.startsWith('./')) candidate = candidate.slice(2);
+  if (candidate.startsWith('./')) candidate = candidate.slice(2);
   if (candidate === '.' || candidate === '') {
     if (allowRoot) return '';
     throw new Error('Archive entry cannot target the archive root.');
@@ -98,6 +101,9 @@ export function normalizeArchivePath(rawPath, { allowRoot = false } = {}) {
   }
   if (segments.some((segment) => /[\u0000-\u001f\u007f]/.test(segment))) {
     throw new Error(`Archive path contains control characters: ${JSON.stringify(rawPath)}.`);
+  }
+  if (segments.some(isForbiddenArchivePathSegment)) {
+    throw new Error(`Archive path contains a forbidden SCM or environment segment: ${JSON.stringify(rawPath)}.`);
   }
   return normalized;
 }

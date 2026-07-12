@@ -6,6 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { loadReleaseIdentity } from '../server-release.mjs';
+import {
+  isForbiddenArchivePathSegment,
+  validateArchiveListing
+} from '../deploy/release-controller-lib.mjs';
 import { buildRuntimeArtifact } from './runtime-artifact-lib.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -67,6 +71,23 @@ let server = null;
 let logs = '';
 try {
   const first = await buildRuntimeArtifact({ projectRoot, outputDirectory: firstDirectory, releaseSha });
+  const [{ stdout: namesOutput }, { stdout: verboseOutput }] = await Promise.all([
+    execFileAsync('tar', ['--gzip', '--list', '--file', first.archivePath], { maxBuffer: 4 * 1024 * 1024 }),
+    execFileAsync('tar', ['--gzip', '--list', '--verbose', '--full-time', '--numeric-owner', '--file', first.archivePath], { maxBuffer: 4 * 1024 * 1024 })
+  ]);
+  const archiveLines = (value) => value.replace(/\r/g, '').split('\n').filter(Boolean);
+  const controllerContract = validateArchiveListing(archiveLines(namesOutput), archiveLines(verboseOutput));
+  assert.ok(controllerContract.entries.has('node_modules/minimist/package.json'), 'The real production tree must exercise minimist pruning.');
+  assert.equal(
+    [...controllerContract.entries].some((entry) => entry.split('/').some(isForbiddenArchivePathSegment)),
+    false,
+    'The packaged artifact retained a forbidden SCM or environment segment.'
+  );
+  assert.equal(
+    [...controllerContract.entries].some((entry) => entry.startsWith('node_modules/minimist/.github')),
+    false,
+    'The real minimist .github directory was not pruned.'
+  );
   const second = await buildRuntimeArtifact({ projectRoot, outputDirectory: secondDirectory, releaseSha });
   for (const key of ['archivePath', 'checksumPath', 'sbomPath']) {
     const [left, right] = await Promise.all([fs.readFile(first[key]), fs.readFile(second[key])]);

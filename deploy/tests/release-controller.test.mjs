@@ -57,8 +57,24 @@ test('path and archive validation reject traversal, links, duplicates, and forbi
   });
   assert.equal(normalizeArchiveEntry('./dist/index.html'), 'dist/index.html');
   assert.throws(() => normalizeArchiveEntry('../secret'), /traversal/);
+  assert.throws(() => normalizeArchiveEntry('././dist/index.html'), /traversal/);
   assert.throws(() => normalizeArchiveEntry('C:\\secret'), /invalid|absolute/);
-  assert.throws(() => normalizeArchiveEntry('.env.production'), /forbidden/);
+  assert.throws(() => normalizeArchiveEntry('node_modules/minimist/bad\tname'), /control/);
+  assert.throws(() => normalizeArchiveEntry('node_modules/minimist/bad\u007fname'), /control/);
+  for (const forbidden of [
+    'node_modules/minimist/.github/FUNDING.yml',
+    'node_modules/minimist/.GitHub/workflow.yml',
+    'node_modules/minimist/.git/config',
+    'node_modules/minimist/.GIT/config',
+    'node_modules/minimist/.env',
+    'node_modules/minimist/.env.production',
+    'node_modules/minimist/.ENV.local',
+    'node_modules/minimist/.envrc',
+    'node_modules/minimist/.EnViRoNmEnT'
+  ]) assert.throws(() => normalizeArchiveEntry(forbidden), /forbidden/);
+  assert.equal(normalizeArchiveEntry('node_modules/minimist/.gitignore'), 'node_modules/minimist/.gitignore');
+  assert.equal(normalizeArchiveEntry('node_modules/minimist/.npmignore'), 'node_modules/minimist/.npmignore');
+  assert.equal(normalizeArchiveEntry('node_modules/minimist/.github-actions/config.yml'), 'node_modules/minimist/.github-actions/config.yml');
   assert.throws(() => resolveWithin('/srv/releases', '..', 'etc'), /escapes/);
   const verbose = required.map((entry) => entry === './' ? 'drwxr-xr-x 0/0 0 2026-07-11 00:00:00 ./' : regularLine);
   assert.equal(validateArchiveListing(required, verbose).entries.has('server.mjs'), true);
