@@ -194,11 +194,12 @@ test('identity and close failures aggregate and acquisition cleanup never masks 
   });
   const original = `${options.lockPath}.identity-original`;
   await fs.rename(options.lockPath, original);
-  await fs.writeFile(options.lockPath, '', { mode: 0o640, flag: 'wx' });
+  await fs.writeFile(options.lockPath, 'x', { mode: 0o640, flag: 'wx' });
   if (process.platform !== 'win32') await fs.chmod(options.lockPath, 0o640);
   await assert.rejects(admission.release(), (error) => error instanceof AggregateError &&
     error.errors[1] === identityCloseError && /identity changed/.test(error.errors[0].message));
   await identityHandle.close();
+  await fs.truncate(options.lockPath, 0);
 
   const primary = new Error('injected flock helper failure');
   const cleanup = new Error('injected acquisition close failure');
