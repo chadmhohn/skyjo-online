@@ -185,32 +185,28 @@ async function testWorkflowContract() {
 }
 
 async function testLinuxRemoteClient() {
-  const bash = process.env.SKYJO_TEST_BASH || (process.platform === 'linux' ? 'bash' : '');
-  if (!bash) return 'skipped without a POSIX Bash runtime';
-  const bashPath = async (value) => {
-    if (process.platform !== 'win32') return value;
-    const { stdout } = await execFileAsync(bash, ['-c', 'cygpath -u "$1"', '_', value]);
-    return stdout.trim();
-  };
-  const installerRegression = await bashPath(path.join(root, 'deploy', 'tests', 'node-runtime-installer.test.sh'));
+  if (process.platform === 'win32') return 'skipped on Windows: Linux-only remote transport suite';
+  if (process.platform !== 'linux') return `skipped on ${process.platform}: Linux-only remote transport suite`;
+  const bash = '/bin/bash';
+  const installerRegression = path.join(root, 'deploy', 'tests', 'node-runtime-installer.test.sh');
   await execFileAsync(bash, [installerRegression]);
-  const transportKeyRegression = await bashPath(path.join(root, 'deploy', 'tests', 'transport-key-crlf.test.sh'));
+  const transportKeyRegression = path.join(root, 'deploy', 'tests', 'transport-key-crlf.test.sh');
   await execFileAsync(bash, [transportKeyRegression]);
-  const bootstrapSafetyRegression = await bashPath(path.join(root, 'deploy', 'tests', 'bootstrap-safety.test.sh'));
+  const bootstrapSafetyRegression = path.join(root, 'deploy', 'tests', 'bootstrap-safety.test.sh');
   await execFileAsync(bash, [bootstrapSafetyRegression]);
-  const nodeGuardRegression = await bashPath(path.join(root, 'deploy', 'tests', 'node-runtime-guard.test.sh'));
+  const nodeGuardRegression = path.join(root, 'deploy', 'tests', 'node-runtime-guard.test.sh');
   await execFileAsync(bash, [nodeGuardRegression]);
-  const bootstrapGuardRegression = await bashPath(path.join(root, 'deploy', 'tests', 'bootstrap-generation-guard.test.sh'));
+  const bootstrapGuardRegression = path.join(root, 'deploy', 'tests', 'bootstrap-generation-guard.test.sh');
   await execFileAsync(bash, [bootstrapGuardRegression]);
-  const activationTransactionRegression = await bashPath(path.join(root, 'deploy', 'tests', 'activation-transaction.test.sh'));
+  const activationTransactionRegression = path.join(root, 'deploy', 'tests', 'activation-transaction.test.sh');
   await execFileAsync(bash, [activationTransactionRegression]);
-  const activationUnitStateRegression = await bashPath(path.join(root, 'deploy', 'tests', 'activation-unit-state.test.sh'));
+  const activationUnitStateRegression = path.join(root, 'deploy', 'tests', 'activation-unit-state.test.sh');
   await execFileAsync(bash, [activationUnitStateRegression]);
-  const adoptionStateRegression = await bashPath(path.join(root, 'deploy', 'tests', 'adoption-state.test.sh'));
+  const adoptionStateRegression = path.join(root, 'deploy', 'tests', 'adoption-state.test.sh');
   await execFileAsync(bash, [adoptionStateRegression]);
-  const legacyProofEnvironmentRegression = await bashPath(path.join(root, 'deploy', 'tests', 'legacy-proof-environment.test.sh'));
+  const legacyProofEnvironmentRegression = path.join(root, 'deploy', 'tests', 'legacy-proof-environment.test.sh');
   await execFileAsync(bash, [legacyProofEnvironmentRegression]);
-  const legacyProofUnitCleanupRegression = await bashPath(path.join(root, 'deploy', 'tests', 'legacy-proof-unit-cleanup.test.sh'));
+  const legacyProofUnitCleanupRegression = path.join(root, 'deploy', 'tests', 'legacy-proof-unit-cleanup.test.sh');
   await execFileAsync(bash, [legacyProofUnitCleanupRegression], { timeout: 60_000 });
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-delivery-smoke-'));
   try {
@@ -242,10 +238,10 @@ async function testLinuxRemoteClient() {
     const [
       bashIdentity, bashKnownHosts, bashCanaryKey, bashProductionKey, bashLog, bashState,
       bashFakeSsh, bashClient, bashArchive, bashChecksum
-    ] = await Promise.all([
+    ] = [
       identity, knownHosts, canaryAuthorizationKey, productionAuthorizationKey, log, state,
       fakeSsh, path.join(root, 'deploy', 'github-release-remote.sh'), archive, checksum
-    ].map(bashPath));
+    ];
     const baseEnv = {
       ...process.env,
       SKYJO_DEPLOY_HOST: 'deploy.example.test',

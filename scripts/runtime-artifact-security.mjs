@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
@@ -69,6 +70,77 @@ const exactAllowedPaths = new Set([
 ]);
 const allowedDirectoryRoots = new Set(['dist', 'server-dist', 'scripts', 'node_modules']);
 const fullShaPattern = /^[a-f0-9]{40}$/;
+const artifactOpenFlags = fsConstants.O_RDONLY
+  | (typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0);
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameFileMetadata(left, right) {
+  return sameFileIdentity(left, right)
+    && left.mode === right.mode
+    && left.nlink === right.nlink
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
+}
+
+function assertStableFile(expected, actual, label) {
+  if (!actual.isFile() || !sameFileMetadata(expected, actual)) {
+    throw new Error(`${label} changed during validation.`);
+  }
+}
+
+async function openStableRegularFile(filePath, label) {
+  let handle;
+  try {
+    handle = await fs.open(filePath, artifactOpenFlags);
+  } catch (error) {
+    if (error?.code === 'ELOOP') {
+      throw new Error(`${label} must be a regular file and cannot be a symbolic link.`);
+    }
+    throw error;
+  }
+  try {
+    const descriptorStat = await handle.stat({ bigint: true });
+    const pathnameStat = await fs.lstat(filePath, { bigint: true });
+    if (!descriptorStat.isFile() || !pathnameStat.isFile() || pathnameStat.isSymbolicLink()) {
+      throw new Error(`${label} must be a regular file and cannot be a symbolic link.`);
+    }
+    if (!sameFileIdentity(descriptorStat, pathnameStat)) {
+      throw new Error(`${label} was replaced while it was being opened.`);
+    }
+    return { handle, stat: descriptorStat };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function readStableFile(openedFile, label) {
+  const beforeRead = await openedFile.handle.stat({ bigint: true });
+  assertStableFile(openedFile.stat, beforeRead, label);
+  const data = await openedFile.handle.readFile();
+  const afterRead = await openedFile.handle.stat({ bigint: true });
+  assertStableFile(beforeRead, afterRead, label);
+  return { data, stat: afterRead };
+}
+
+async function assertPathStillReferencesFile(filePath, expectedStat, label) {
+  let reopened;
+  try {
+    reopened = await openStableRegularFile(filePath, label);
+    assertStableFile(expectedStat, reopened.stat, label);
+  } catch (error) {
+    if (error?.message === `${label} changed during validation.`) throw error;
+    throw new Error(`${label} changed during validation.`);
+  } finally {
+    await reopened?.handle.close();
+  }
+}
 
 export function assertFullReleaseSha(value) {
   const releaseSha = typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -374,33 +446,46 @@ export async function verifyRuntimeArtifact({ archivePath, checksumPath, expecte
   if (path.basename(resolvedArchive) !== names.archiveName || path.basename(resolvedChecksum) !== names.checksumName) {
     throw new Error('Runtime artifact filenames do not match the expected release SHA.');
   }
-  const [archiveStat, checksumStat] = await Promise.all([fs.lstat(resolvedArchive), fs.lstat(resolvedChecksum)]);
-  if (!archiveStat.isFile() || archiveStat.isSymbolicLink() || !checksumStat.isFile() || checksumStat.isSymbolicLink()) {
-    throw new Error('Runtime artifact and checksum must be regular files.');
-  }
-  if (archiveStat.size <= 0 || archiveStat.size > MAX_ARCHIVE_BYTES) throw new Error('Runtime artifact size is outside the allowed range.');
-  const checksumText = await fs.readFile(resolvedChecksum, 'utf8');
-  const checksumMatch = checksumText.match(/^([a-f0-9]{64})  ([a-zA-Z0-9.-]+)\n$/);
-  if (!checksumMatch || checksumMatch[2] !== names.archiveName) throw new Error('Invalid runtime artifact checksum sidecar.');
-  const archiveData = await fs.readFile(resolvedArchive);
-  const actualChecksum = sha256(archiveData);
-  if (!crypto.timingSafeEqual(Buffer.from(checksumMatch[1]), Buffer.from(actualChecksum))) throw new Error('Runtime artifact checksum mismatch.');
-  let tarData;
+  let archiveFile;
+  let checksumFile;
   try {
-    tarData = gunzipSync(archiveData, { maxOutputLength: MAX_UNCOMPRESSED_BYTES });
-  } catch (error) {
-    throw new Error(`Runtime artifact gzip validation failed: ${error.message}`);
+    archiveFile = await openStableRegularFile(resolvedArchive, 'Runtime artifact');
+    checksumFile = await openStableRegularFile(resolvedChecksum, 'Runtime artifact checksum');
+    if (archiveFile.stat.size <= 0n || archiveFile.stat.size > BigInt(MAX_ARCHIVE_BYTES)) {
+      throw new Error('Runtime artifact size is outside the allowed range.');
+    }
+    const checksumRead = await readStableFile(checksumFile, 'Runtime artifact checksum');
+    const checksumMatch = checksumRead.data.toString('utf8').match(/^([a-f0-9]{64})  ([a-zA-Z0-9.-]+)\n$/);
+    if (!checksumMatch || checksumMatch[2] !== names.archiveName) throw new Error('Invalid runtime artifact checksum sidecar.');
+    const archiveRead = await readStableFile(archiveFile, 'Runtime artifact');
+    const actualChecksum = sha256(archiveRead.data);
+    if (!crypto.timingSafeEqual(Buffer.from(checksumMatch[1]), Buffer.from(actualChecksum))) throw new Error('Runtime artifact checksum mismatch.');
+    let tarData;
+    try {
+      tarData = gunzipSync(archiveRead.data, { maxOutputLength: MAX_UNCOMPRESSED_BYTES });
+    } catch (error) {
+      throw new Error(`Runtime artifact gzip validation failed: ${error.message}`);
+    }
+    const entries = parseTarArchive(tarData);
+    const { releaseIdentity, inventory } = validateRuntimeEntries(entries, releaseSha);
+    const finalArchiveStat = await archiveFile.handle.stat({ bigint: true });
+    const finalChecksumStat = await checksumFile.handle.stat({ bigint: true });
+    assertStableFile(archiveRead.stat, finalArchiveStat, 'Runtime artifact');
+    assertStableFile(checksumRead.stat, finalChecksumStat, 'Runtime artifact checksum');
+    await assertPathStillReferencesFile(resolvedArchive, finalArchiveStat, 'Runtime artifact');
+    await assertPathStillReferencesFile(resolvedChecksum, finalChecksumStat, 'Runtime artifact checksum');
+    return {
+      releaseSha,
+      archivePath: resolvedArchive,
+      checksumPath: resolvedChecksum,
+      sha256: actualChecksum,
+      size: Number(finalArchiveStat.size),
+      releaseIdentity,
+      packages: inventory.packages.length,
+      entries: entries.length
+    };
+  } finally {
+    await checksumFile?.handle.close();
+    await archiveFile?.handle.close();
   }
-  const entries = parseTarArchive(tarData);
-  const { releaseIdentity, inventory } = validateRuntimeEntries(entries, releaseSha);
-  return {
-    releaseSha,
-    archivePath: resolvedArchive,
-    checksumPath: resolvedChecksum,
-    sha256: actualChecksum,
-    size: archiveStat.size,
-    releaseIdentity,
-    packages: inventory.packages.length,
-    entries: entries.length
-  };
 }

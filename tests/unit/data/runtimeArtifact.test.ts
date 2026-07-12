@@ -169,6 +169,16 @@ function createTar(entries: TarEntry[]) {
   return Buffer.concat(chunks);
 }
 
+async function writeValidArtifactFixture(directory: string) {
+  const names = artifactNames(releaseSha);
+  const archivePath = path.join(directory, names.archiveName);
+  const checksumPath = path.join(directory, names.checksumName);
+  const archive = gzipSync(createTar(fixtureEntries()), { level: 9 });
+  await fs.writeFile(archivePath, archive);
+  await fs.writeFile(checksumPath, `${sha256(archive)}  ${names.archiveName}\n`);
+  return { names, archivePath, checksumPath };
+}
+
 function replaceFile(entries: TarEntry[], rawPath: string, data: Buffer) {
   const index = entries.findIndex((entry) => entry.rawPath === rawPath);
   entries[index] = { ...entries[index], data, size: data.length };
@@ -529,6 +539,83 @@ describe('runtime artifact safety contract', () => {
       await fs.writeFile(checksumPath, `${'0'.repeat(64)}  ${names.archiveName}\n`);
       await expect(verifyRuntimeArtifact({ archivePath, checksumPath, expectedReleaseSha: releaseSha })).rejects.toThrow('checksum mismatch');
     } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === 'win32').each([
+    'archive',
+    'checksum'
+  ] as const)('rejects a symbolic-link %s without following it', async (linkTarget) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-artifact-symlink-test-'));
+    try {
+      const { names, archivePath, checksumPath } = await writeValidArtifactFixture(directory);
+      const selectedPath = linkTarget === 'archive' ? archivePath : checksumPath;
+      const actualPath = `${selectedPath}.actual`;
+      await fs.rename(selectedPath, actualPath);
+      await fs.symlink(path.basename(actualPath), selectedPath, 'file');
+      await expect(verifyRuntimeArtifact({ archivePath, checksumPath, expectedReleaseSha: releaseSha }))
+        .rejects.toThrow(linkTarget === 'archive' ? 'cannot be a symbolic link' : 'checksum must be a regular file');
+      expect(path.basename(archivePath)).toBe(names.archiveName);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    'archive',
+    'checksum'
+  ] as const)('rejects an adversarial %s pathname replacement after opening', async (replacementTarget) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-artifact-replacement-test-'));
+    try {
+      const { archivePath, checksumPath } = await writeValidArtifactFixture(directory);
+      const selectedPath = replacementTarget === 'archive' ? archivePath : checksumPath;
+      const replacementPath = path.join(directory, `${replacementTarget}.replacement`);
+      await fs.writeFile(replacementPath, 'untrusted replacement');
+      const originalOpen = fs.open.bind(fs);
+      let replaced = false;
+      vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await originalOpen(...args);
+        if (!replaced && path.resolve(String(args[0])) === selectedPath) {
+          replaced = true;
+          await fs.rename(selectedPath, `${selectedPath}.opened`);
+          await fs.copyFile(replacementPath, selectedPath);
+        }
+        return handle;
+      });
+      await expect(verifyRuntimeArtifact({ archivePath, checksumPath, expectedReleaseSha: releaseSha }))
+        .rejects.toThrow(/replaced while it was being opened|changed during validation/);
+      expect(replaced).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects descriptor content mutation between its pre-read and post-read fstat checks', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-artifact-mutation-test-'));
+    try {
+      const { archivePath, checksumPath } = await writeValidArtifactFixture(directory);
+      const originalOpen = fs.open.bind(fs);
+      let mutated = false;
+      vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await originalOpen(...args);
+        if (path.resolve(String(args[0])) === checksumPath) {
+          const originalReadFile = handle.readFile.bind(handle);
+          vi.spyOn(handle, 'readFile').mockImplementationOnce(async () => {
+            const data = await originalReadFile();
+            await fs.appendFile(checksumPath, 'mutation');
+            mutated = true;
+            return data;
+          });
+        }
+        return handle;
+      });
+      await expect(verifyRuntimeArtifact({ archivePath, checksumPath, expectedReleaseSha: releaseSha }))
+        .rejects.toThrow('Runtime artifact checksum changed during validation');
+      expect(mutated).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
       await fs.rm(directory, { recursive: true, force: true });
     }
   });
