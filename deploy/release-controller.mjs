@@ -5,7 +5,6 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import {
   assertGithubCommitOnMain,
@@ -56,6 +55,7 @@ const AUTHORIZATION_KEYRING = new Map([
   ['production-primary', Object.freeze({ role: 'production', publicKeyPath: '/etc/skyjo-deploy-auth/production-public.pem' })]
 ]);
 const controllerLifecycleKeepAliveMs = 60_000;
+const archiveCopyBufferBytes = 64 * 1024;
 
 export function parseArguments(argv) {
   const command = argv.shift();
@@ -99,21 +99,73 @@ async function assertNode24() {
   if (version !== 'v24.18.0') throw new Error('Pinned Skyjo Node v24.18.0 is required.');
 }
 
-async function copyArchive(source, destination) {
-  const sourceHandle = await fsp.open(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+function normalizeError(caught) {
+  return caught instanceof Error ? caught : new Error(String(caught));
+}
+
+export async function copyArchive(source, destination, {
+  openFile = fsp.open,
+  removeFile = fsp.rm
+} = {}) {
+  let sourceHandle;
+  let destinationHandle;
+  let destinationCreated = false;
+  let copiedBytes;
+  let primaryError;
   try {
+    sourceHandle = await openFile(source, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
     const stat = await sourceHandle.stat();
     if (!stat.isFile() || stat.size < 1 || stat.size > MAX_ARCHIVE_BYTES) throw new Error('Staged artifact is not a safe regular file.');
-    const destinationHandle = await fsp.open(destination, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o400);
-    try {
-      await pipeline(sourceHandle.createReadStream({ autoClose: false }), destinationHandle.createWriteStream({ autoClose: false }));
-      await destinationHandle.sync();
-    } finally {
-      await destinationHandle.close().catch(() => {});
+    destinationHandle = await openFile(destination, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o400);
+    destinationCreated = true;
+    const buffer = Buffer.allocUnsafe(archiveCopyBufferBytes);
+    let position = 0;
+    while (position < stat.size) {
+      const requested = Math.min(buffer.length, stat.size - position);
+      const { bytesRead } = await sourceHandle.read(buffer, 0, requested, position);
+      if (!Number.isSafeInteger(bytesRead) || bytesRead < 1 || bytesRead > requested) {
+        throw new Error('Staged artifact changed or ended during copy.');
+      }
+      let writeOffset = 0;
+      while (writeOffset < bytesRead) {
+        const remaining = bytesRead - writeOffset;
+        const { bytesWritten } = await destinationHandle.write(buffer, writeOffset, remaining, position + writeOffset);
+        if (!Number.isSafeInteger(bytesWritten) || bytesWritten < 1 || bytesWritten > remaining) {
+          throw new Error('Staged artifact copy made no forward progress.');
+        }
+        writeOffset += bytesWritten;
+      }
+      position += bytesRead;
     }
-  } finally {
-    await sourceHandle.close().catch(() => {});
+    const trailing = Buffer.allocUnsafe(1);
+    if ((await sourceHandle.read(trailing, 0, 1, position)).bytesRead !== 0) {
+      throw new Error('Staged artifact grew during copy.');
+    }
+    await destinationHandle.sync();
+    copiedBytes = position;
+  } catch (caught) {
+    primaryError = normalizeError(caught);
   }
+
+  const cleanupErrors = [];
+  for (const handle of [destinationHandle, sourceHandle]) {
+    if (!handle) continue;
+    try { await handle.close(); }
+    catch (caught) { cleanupErrors.push(normalizeError(caught)); }
+  }
+  if ((primaryError || cleanupErrors.length > 0) && destinationCreated) {
+    try { await removeFile(destination, { force: true }); }
+    catch (caught) { cleanupErrors.push(normalizeError(caught)); }
+  }
+  if (primaryError) {
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([primaryError, ...cleanupErrors], 'Archive copy failed and cleanup was incomplete.', { cause: primaryError });
+    }
+    throw primaryError;
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, 'Archive copy cleanup failed.');
+  return copiedBytes;
 }
 
 function lines(value) {
