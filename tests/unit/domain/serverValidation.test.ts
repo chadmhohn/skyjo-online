@@ -12,6 +12,7 @@ import {
   replaceCard,
   revealOpeningCard
 } from '../../../src/game';
+import { createSeededRandom, systemRandom } from '../../../src/runtime';
 import type { Card, GameState } from '../../../src/types';
 
 function card(id: string, value: number, faceUp = true, removed = false): Card {
@@ -27,7 +28,19 @@ function finishOpening(initial: GameState): GameState {
   return state;
 }
 
+function initialRoomState() {
+  return createInitialRoomState(
+    [{ id: 'ada', name: 'Ada' }, { id: 'grace', name: 'Grace' }],
+    createSeededRandom(0x51a7e)
+  );
+}
+
 describe('server-side multiplayer validation', () => {
+  it('keeps the production random source behind a deterministic test boundary', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.25);
+    expect(systemRandom()).toBe(0.25);
+  });
+
   it('compares nested primitives, arrays, and records independent of object key order', () => {
     expect(deepEqual({ b: [2, { c: 3 }], a: 1 }, { a: 1, b: [2, { c: 3 }] })).toBe(true);
     expect(deepEqual(Number.NaN, Number.NaN)).toBe(true);
@@ -42,7 +55,7 @@ describe('server-side multiplayer validation', () => {
   });
 
   it('accepts legal opening moves and rejects tampered, malformed, or out-of-turn updates', () => {
-    const state = createInitialRoomState([{ id: 'ada', name: 'Ada' }, { id: 'grace', name: 'Grace' }]);
+    const state = initialRoomState();
     const active = state.players[state.currentPlayerIndex];
     const index = active.grid.findIndex((item) => !item.faceUp);
     const legal = revealOpeningCard(state, index);
@@ -64,7 +77,7 @@ describe('server-side multiplayer validation', () => {
   });
 
   it('enumerates opening, source, discard replacement, and draw replacement moves', () => {
-    const opening = createInitialRoomState([{ id: 'ada', name: 'Ada' }, { id: 'grace', name: 'Grace' }]);
+    const opening = initialRoomState();
     expect(legalMultiplayerStateUpdates(opening)).toHaveLength(12);
     const partiallyOpened = revealOpeningCard(opening, 0);
     expect(legalMultiplayerStateUpdates(partiallyOpened)).toHaveLength(11);
@@ -96,7 +109,7 @@ describe('server-side multiplayer validation', () => {
   });
 
   it('accepts any legal recycle draw order and rejects forged recycled piles and cards', () => {
-    const source = finishOpening(createInitialRoomState([{ id: 'ada', name: 'Ada' }, { id: 'grace', name: 'Grace' }]));
+    const source = finishOpening(initialRoomState());
     const recycleBase: GameState = {
       ...source,
       drawPile: [],
@@ -121,7 +134,7 @@ describe('server-side multiplayer validation', () => {
   });
 
   it('validates representative replacement actions and carries round history forward', () => {
-    const source = finishOpening(createInitialRoomState([{ id: 'ada', name: 'Ada' }, { id: 'grace', name: 'Grace' }]));
+    const source = finishOpening(initialRoomState());
     const discard = chooseDiscard(source);
     const discardMove = replaceCard(discard, 0);
     expect(validateMultiplayerStateUpdate(discard, discardMove, discard.players[discard.currentPlayerIndex].id)).toEqual({ ok: true });
@@ -133,11 +146,14 @@ describe('server-side multiplayer validation', () => {
 
     source.roundHistory.push({ round: 1, closerId: 'ada', scores: [] });
     source.nextStarterId = 'grace';
-    const next = createNextRoundRoomState(source);
+    const next = createNextRoundRoomState(source, createSeededRandom(0x51a7e));
     expect(next.round).toBe(2);
     expect(next.roundHistory).toEqual(source.roundHistory);
 
-    const withoutHistory = createNextRoundRoomState({ ...source, roundHistory: undefined as never });
+    const withoutHistory = createNextRoundRoomState(
+      { ...source, roundHistory: undefined as never },
+      createSeededRandom(0x51a7e)
+    );
     expect(withoutHistory.roundHistory).toEqual([]);
   });
 });
