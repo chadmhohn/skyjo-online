@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+: "${SKYJO_CANARY_RELEASE_DIR:?missing release directory}"
+: "${SKYJO_EXPECTED_RELEASE_SHA:?missing expected release SHA}"
+: "${SKYJO_EXPECTED_PROTOCOL_VERSION:?missing expected protocol version}"
+: "${SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL:?missing deploy smoke account email}"
+: "${SKYJO_DEPLOY_SMOKE_ACCOUNT_PASSWORD:?missing deploy smoke account password}"
+: "${SKYJO_ACCESS_PASSWORD:?missing shared access password}"
+case "$SKYJO_CANARY_RELEASE_DIR" in
+  /var/tmp/skyjo-deploy/*/release)
+    instance=${SKYJO_CANARY_RELEASE_DIR#/var/tmp/skyjo-deploy/}; instance=${instance%/release}
+    printf '%s' "$instance" | /usr/bin/grep -Eq '^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(canary|production)$' || exit 64
+    ;;
+  /srv/skyjo-online/releases/*)
+    release_sha=${SKYJO_CANARY_RELEASE_DIR#/srv/skyjo-online/releases/}
+    printf '%s' "$release_sha" | /usr/bin/grep -Eq '^[a-f0-9]{40}$' || exit 64
+    ;;
+  *) exit 64 ;;
+esac
+[ -d "$SKYJO_CANARY_RELEASE_DIR" ] && [ ! -L "$SKYJO_CANARY_RELEASE_DIR" ] || exit 64
+[ -f "$SKYJO_CANARY_RELEASE_DIR/scripts/smoke-deployed.mjs" ] && [ ! -L "$SKYJO_CANARY_RELEASE_DIR/scripts/smoke-deployed.mjs" ] || exit 64
+export SKYJO_SMOKE_ACCESS_PASSWORD="$SKYJO_ACCESS_PASSWORD"
+export SKYJO_SMOKE_ACCOUNT_EMAIL="$SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL"
+export SKYJO_SMOKE_ACCOUNT_PASSWORD="$SKYJO_DEPLOY_SMOKE_ACCOUNT_PASSWORD"
+export SKYJO_SMOKE_BASE_URL="${SKYJO_SMOKE_BASE_URL:-http://127.0.0.1:4181}"
+cd "$SKYJO_CANARY_RELEASE_DIR"
+exec /opt/skyjo-online/node/bin/node "$SKYJO_CANARY_RELEASE_DIR/scripts/smoke-deployed.mjs"

@@ -1,0 +1,2 @@
+Defaults:skyjo-deploy !requiretty
+skyjo-deploy ALL=(root) NOPASSWD: /usr/local/sbin/skyjo-release-controller *

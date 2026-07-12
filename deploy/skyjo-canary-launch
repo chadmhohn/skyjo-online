@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in *[!0-9A-Za-z-]*|'') exit 64;; esac
+case "${SKYJO_CANARY_RELEASE_DIR:-}" in /var/tmp/skyjo-deploy/"$1"/release) ;; *) exit 64;; esac
+case "${SKYJO_DB_FILE:-}" in /var/tmp/skyjo-deploy/"$1"/canary-state/skyjo.sqlite) ;; *) exit 64;; esac
+case "${SKYJO_ROOMS_FILE:-}" in /var/tmp/skyjo-deploy/"$1"/canary-state/rooms.json) ;; *) exit 64;; esac
+[ -d "$SKYJO_CANARY_RELEASE_DIR" ] && [ ! -L "$SKYJO_CANARY_RELEASE_DIR" ] || exit 64
+[ -f "$SKYJO_CANARY_RELEASE_DIR/server.mjs" ] && [ ! -L "$SKYJO_CANARY_RELEASE_DIR/server.mjs" ] || exit 64
+cd "$SKYJO_CANARY_RELEASE_DIR"
+exec /opt/skyjo-online/node/bin/node ./server.mjs

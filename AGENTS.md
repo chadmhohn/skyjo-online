@@ -47,6 +47,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 - `src/audio.ts`: client-only Web Audio settings and generated cues. Sound effects are on by default, background music is off by default, and settings persist in browser `localStorage`.
 - `src/index.css`: most layout and visual behavior, including the mobile locked play surface and desktop/tablet responsive rules.
 - `scripts/smoke-*.mjs`: focused release smoke tests for validation, AI, persistence, and room/chat flows.
+- `deploy/` and `docs/atomic-vps-releases.md`: checksum-pinned Node 24 bootstrap, forced-command upload identity, hardened systemd units, isolated canary, atomic release controller, and code-only rollback contract.
 - `docs/deployment-smoke-checklist.md`: operational release and smoke checklist.
 
 ## Safety Rules
@@ -72,7 +73,7 @@ npm run smoke:release
 npm run smoke:chat
 ```
 
-`npm run smoke:release` includes `git diff --check`, lint, build, high-severity audit, validation smoke, AI smoke, persistence smoke, account/store smoke, operational readiness/recovery smoke, and backup/restore smoke.
+`npm run smoke:release` includes `git diff --check`, lint, build, high-severity audit, validation smoke, AI smoke, persistence smoke, account/store smoke, operational readiness/recovery smoke, backup/restore smoke, controller transition tests, and the delivery contract smoke.
 
 For layout changes, also perform visual QA at minimum widths around:
 
@@ -113,7 +114,9 @@ Restart is normally needed for:
 
 Restart is normally not needed for documentation-only work or client-only static bundle changes when the running Node process can keep serving the updated `dist/` files.
 
-Approved restart sequence:
+Once the immutable service cutover is active, do not deploy with `git pull`, an in-place build, `npm install`, or a manual service restart. Merge through the required CI checks; `main` exercises the exact attested artifact on the isolated canary, and only an immutable `vX.Y.Z` tag may promote it. Follow [docs/immutable-deployment.md](docs/immutable-deployment.md).
+
+The legacy restart sequence below is valid only before the one-time immutable cutover or as an explicitly selected legacy recovery procedure:
 
 ```sh
 npm run smoke:release

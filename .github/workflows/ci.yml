@@ -7,14 +7,16 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -25,11 +27,34 @@ jobs:
     name: CI / Quality & Security
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Resolve immutable source identity
+        id: source
+        run: |
+          set -Eeuo pipefail
+          source_sha="$(git rev-parse 'HEAD^{commit}')"
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            git fetch --no-tags origin main:refs/remotes/origin/main
+            main_sha="$(git rev-parse 'refs/remotes/origin/main^{commit}')"
+            [[ "$main_sha" =~ ^[a-f0-9]{40}$ ]]
+            git merge-base --is-ancestor "$source_sha" "$main_sha"
+            test "$(git merge-base "$source_sha" "$main_sha")" = "$source_sha"
+          fi
+
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "SKYJO_RELEASE_SHA=$source_sha" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$source_sha")" >> "$GITHUB_ENV"
 
       - name: Set up Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -51,12 +76,13 @@ jobs:
           node scripts/smoke-accounts.mjs
           node scripts/smoke-ops.mjs
           node scripts/smoke-backup.mjs
+          npm run smoke:delivery
           node scripts/smoke-chat.mjs
 
       - name: Upload shared production build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
-          name: skyjo-build-${{ github.sha }}
+          name: skyjo-build-${{ steps.source.outputs.sha }}
           path: |
             dist
             server-dist
@@ -146,7 +172,7 @@ jobs:
       - name: Download shared production build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
-          name: skyjo-build-${{ github.sha }}
+          name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
       - name: Install pinned Chromium
         run: npm exec -- playwright install --with-deps chromium
@@ -183,7 +209,7 @@ jobs:
       - name: Download shared production build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
-          name: skyjo-build-${{ github.sha }}
+          name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
       - name: Install pinned Chromium
         run: npm exec -- playwright install --with-deps chromium
@@ -220,7 +246,7 @@ jobs:
       - name: Download shared production build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
-          name: skyjo-build-${{ github.sha }}
+          name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
       - name: Install pinned WebKit
         run: npm exec -- playwright install --with-deps webkit
@@ -257,7 +283,7 @@ jobs:
       - name: Download shared production build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
-          name: skyjo-build-${{ github.sha }}
+          name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
       - name: Install pinned Chromium and WebKit
         run: npm exec -- playwright install --with-deps chromium webkit
@@ -296,7 +322,7 @@ jobs:
       - name: Download shared production build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
-          name: skyjo-build-${{ github.sha }}
+          name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
       - name: Install pinned Chromium
         run: npm exec -- playwright install --with-deps chromium
@@ -313,3 +339,305 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
+
+  runtime-artifact:
+    name: CI / Runtime Artifact
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      source-sha: ${{ needs.quality.outputs.source-sha }}
+      archive-name: ${{ steps.artifact.outputs.archive-name }}
+    steps:
+      - name: Check out exact tested source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.quality.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install locked packaging dependencies
+        run: npm ci
+
+      - name: Download the one tested production build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          name: skyjo-build-${{ needs.quality.outputs.source-sha }}
+          path: .
+
+      - name: Package release-only runtime and CycloneDX SBOM
+        id: artifact
+        env:
+          SKYJO_RELEASE_SHA: ${{ needs.quality.outputs.source-sha }}
+        run: |
+          set -Eeuo pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct '${{ needs.quality.outputs.source-sha }}')"
+          npm run release:artifact
+          npm run test:artifact:integration
+          echo "archive-name=skyjo-runtime-${{ needs.quality.outputs.source-sha }}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Verify archive allowlist, checksum, and release identity
+        run: |
+          npm run release:artifact:verify -- \
+            --archive "release/${{ steps.artifact.outputs.archive-name }}" \
+            --checksum "release/${{ steps.artifact.outputs.archive-name }}.sha256" \
+            --release-sha "${{ needs.quality.outputs.source-sha }}"
+
+      - name: Upload immutable release subjects
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: skyjo-release-${{ needs.quality.outputs.source-sha }}
+          path: release
+          if-no-files-found: error
+          retention-days: 14
+
+  runtime-attestation:
+    name: CI / Runtime Attestation
+    if: github.event_name != 'pull_request'
+    needs: runtime-artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download immutable release subjects
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          name: skyjo-release-${{ needs.runtime-artifact.outputs.source-sha }}
+          path: release
+
+      - name: Attest immutable runtime, checksum, and SBOM
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: |
+            release/${{ needs.runtime-artifact.outputs.archive-name }}
+            release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256
+            release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json
+
+      - name: Reverify generated GitHub provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verification=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+            --source-digest "${{ needs.runtime-artifact.outputs.source-sha }}"
+            --source-ref "$GITHUB_REF"
+            --deny-self-hosted-runners
+          )
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" "${verification[@]}"
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" "${verification[@]}"
+          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" "${verification[@]}"
+
+  release-canary:
+    name: CI / Release Canary
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs:
+      - runtime-artifact
+      - runtime-attestation
+      - unit-domain
+      - unit-data
+      - e2e-chromium-1
+      - e2e-chromium-2
+      - e2e-webkit
+      - visual-accessibility
+      - lighthouse
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: canary
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    concurrency:
+      group: skyjo-production
+      queue: max
+    steps:
+      - name: Check out tested deployment client
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.runtime-artifact.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Set up pinned Node 24 deployment client
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .node-version
+
+      - name: Download attested release subjects
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          name: skyjo-release-${{ needs.runtime-artifact.outputs.source-sha }}
+          path: release
+
+      - name: Reverify downloaded GitHub provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verification=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+            --source-digest "${{ needs.runtime-artifact.outputs.source-sha }}"
+            --source-ref "$GITHUB_REF"
+            --deny-self-hosted-runners
+          )
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" "${verification[@]}"
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" "${verification[@]}"
+          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" "${verification[@]}"
+
+      - name: Configure pinned deploy transport
+        env:
+          DEPLOY_KEY: ${{ secrets.SKYJO_DEPLOY_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SKYJO_DEPLOY_KNOWN_HOSTS }}
+          AUTH_KEY: ${{ secrets.SKYJO_DEPLOY_AUTH_PRIVATE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          test -n "$AUTH_KEY"
+          install -d -m 0700 "$RUNNER_TEMP/skyjo-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/skyjo-ssh/id_ed25519"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/skyjo-ssh/known_hosts"
+          printf '%s\n' "$AUTH_KEY" > "$RUNNER_TEMP/skyjo-ssh/canary-auth.pem"
+          test -s "$RUNNER_TEMP/skyjo-ssh/id_ed25519"
+          test -s "$RUNNER_TEMP/skyjo-ssh/known_hosts"
+          test -s "$RUNNER_TEMP/skyjo-ssh/canary-auth.pem"
+
+      - name: Upload and exercise isolated localhost canary
+        env:
+          SKYJO_DEPLOY_HOST: ${{ vars.SKYJO_DEPLOY_HOST }}
+          SKYJO_DEPLOY_PORT: ${{ vars.SKYJO_DEPLOY_PORT || '22' }}
+          SKYJO_DEPLOY_USER: ${{ vars.SKYJO_DEPLOY_USER || 'skyjo-deploy' }}
+          SKYJO_DEPLOY_IDENTITY_FILE: ${{ runner.temp }}/skyjo-ssh/id_ed25519
+          SKYJO_DEPLOY_KNOWN_HOSTS_FILE: ${{ runner.temp }}/skyjo-ssh/known_hosts
+          SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: ${{ runner.temp }}/skyjo-ssh/canary-auth.pem
+        run: |
+          set -Eeuo pipefail
+          run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-canary"
+          sha="${{ needs.runtime-artifact.outputs.source-sha }}"
+          archive="release/${{ needs.runtime-artifact.outputs.archive-name }}"
+          checksum="$archive.sha256"
+          deploy/github-release-remote.sh verify "$run_id" "$sha" "$archive" "$checksum"
+
+      - name: Remove canary deployment credentials
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/skyjo-ssh"
+
+  production:
+    name: CI / Production
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - runtime-artifact
+      - release-canary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: ${{ vars.SKYJO_PUBLIC_BASE_URL }}
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    concurrency:
+      group: skyjo-production
+      queue: max
+    steps:
+      - name: Check out tested deployment client
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.runtime-artifact.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Set up pinned Node 24 deployment client
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .node-version
+
+      - name: Download the canary-proven release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          name: skyjo-release-${{ needs.runtime-artifact.outputs.source-sha }}
+          path: release
+
+      - name: Reverify downloaded GitHub provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verification=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+            --source-digest "${{ needs.runtime-artifact.outputs.source-sha }}"
+            --source-ref "$GITHUB_REF"
+            --deny-self-hosted-runners
+          )
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" "${verification[@]}"
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" "${verification[@]}"
+          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" "${verification[@]}"
+
+      - name: Configure pinned deploy transport
+        env:
+          DEPLOY_KEY: ${{ secrets.SKYJO_DEPLOY_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SKYJO_DEPLOY_KNOWN_HOSTS }}
+          AUTH_KEY: ${{ secrets.SKYJO_DEPLOY_AUTH_PRIVATE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test -n "$DEPLOY_KEY"
+          test -n "$KNOWN_HOSTS"
+          test -n "$AUTH_KEY"
+          install -d -m 0700 "$RUNNER_TEMP/skyjo-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/skyjo-ssh/id_ed25519"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/skyjo-ssh/known_hosts"
+          printf '%s\n' "$AUTH_KEY" > "$RUNNER_TEMP/skyjo-ssh/production-auth.pem"
+          test -s "$RUNNER_TEMP/skyjo-ssh/id_ed25519"
+          test -s "$RUNNER_TEMP/skyjo-ssh/known_hosts"
+          test -s "$RUNNER_TEMP/skyjo-ssh/production-auth.pem"
+
+      - name: Promote tag and roll code back if the public edge fails
+        env:
+          SKYJO_DEPLOY_HOST: ${{ vars.SKYJO_DEPLOY_HOST }}
+          SKYJO_DEPLOY_PORT: ${{ vars.SKYJO_DEPLOY_PORT || '22' }}
+          SKYJO_DEPLOY_USER: ${{ vars.SKYJO_DEPLOY_USER || 'skyjo-deploy' }}
+          SKYJO_DEPLOY_IDENTITY_FILE: ${{ runner.temp }}/skyjo-ssh/id_ed25519
+          SKYJO_DEPLOY_KNOWN_HOSTS_FILE: ${{ runner.temp }}/skyjo-ssh/known_hosts
+          SKYJO_PUBLIC_BASE_URL: ${{ vars.SKYJO_PUBLIC_BASE_URL }}
+          SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: ${{ runner.temp }}/skyjo-ssh/production-auth.pem
+        run: |
+          set -Eeuo pipefail
+          run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-production"
+          sha="${{ needs.runtime-artifact.outputs.source-sha }}"
+          archive="release/${{ needs.runtime-artifact.outputs.archive-name }}"
+          checksum="$archive.sha256"
+          [[ "$SKYJO_PUBLIC_BASE_URL" =~ ^https://[A-Za-z0-9.-]+/?$ ]]
+          deploy/github-release-remote.sh promote "$run_id" "$sha" "$archive" "$checksum" "$GITHUB_REF_NAME"
+
+          if ! node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --release-sha "$sha"; then
+            echo "Public release smoke failed; requesting code-only rollback." >&2
+            rollback_result="$(deploy/github-release-remote.sh rollback "$run_id" "$sha" "$checksum" "$GITHUB_REF_NAME")"
+            rollback_target="$(printf '%s' "$rollback_result" | node scripts/parse-code-rollback-result.mjs --failed-release-sha "$sha")"
+            if [[ "$rollback_target" == legacy ]]; then
+              echo "Rollback controller restored the verified legacy anchor."
+              node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --allow-legacy-rollback
+            elif [[ "$rollback_target" =~ ^[a-f0-9]{40}$ ]]; then
+              echo "Rollback controller restored release $rollback_target."
+              node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --release-sha "$rollback_target"
+            else
+              echo "Rollback controller returned an invalid recovery target." >&2
+              exit 2
+            fi
+            exit 1
+          fi
+
+      - name: Remove production deployment credentials
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/skyjo-ssh"

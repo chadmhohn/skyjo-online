@@ -1,0 +1,162 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+function usage() {
+  return 'Usage: node scripts/smoke-public-release.mjs --base-url <https-url> [--release-sha <40-char-sha>] [--allow-legacy-rollback]';
+}
+
+function parseArgs(argv) {
+  const values = new Map();
+  let allowLegacyRollback = false;
+  for (let index = 0; index < argv.length;) {
+    const flag = argv[index];
+    if (flag === '--allow-legacy-rollback') {
+      if (allowLegacyRollback) throw new Error(`Duplicate argument: ${flag}`);
+      allowLegacyRollback = true;
+      index += 1;
+      continue;
+    }
+    const value = argv[index + 1];
+    if (!['--base-url', '--release-sha'].includes(flag) || !value || value.startsWith('--')) throw new Error(usage());
+    if (values.has(flag)) throw new Error(`Duplicate argument: ${flag}`);
+    values.set(flag, value);
+    index += 2;
+  }
+  if (!values.has('--base-url')) throw new Error(usage());
+  if (allowLegacyRollback && values.has('--release-sha')) throw new Error('Legacy rollback smoke cannot expect a release SHA.');
+  return {
+    baseUrl: values.get('--base-url'),
+    releaseSha: values.get('--release-sha'),
+    allowLegacyRollback
+  };
+}
+
+function normalizeBaseUrl(value) {
+  const url = new URL(value);
+  const local = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1';
+  if (url.protocol !== 'https:' && !(local && url.protocol === 'http:')) {
+    throw new Error('Public release smoke requires HTTPS (HTTP is allowed only for localhost tests).');
+  }
+  if (url.username || url.password || url.search || url.hash) throw new Error('Base URL must not include credentials, query, or fragment.');
+  url.pathname = url.pathname.replace(/\/+$/, '');
+  return url;
+}
+
+function assertPublicResponse(response, label, expectedContentType) {
+  assert.equal(response.status, 200, `${label} must return 200`);
+  assert.equal(response.headers.get('set-cookie'), null, `${label} must not create a session`);
+  if (expectedContentType) {
+    assert.match(response.headers.get('content-type') || '', expectedContentType, `${label} content type is invalid`);
+  }
+}
+
+function assertNoStore(response, label) {
+  assert.match(response.headers.get('cache-control') || '', /(?:^|,)\s*no-store\s*(?:,|$)/i, `${label} must be no-store`);
+}
+
+async function fetchPublic(baseUrl, pathname) {
+  return fetch(new URL(pathname, baseUrl), {
+    redirect: 'manual',
+    signal: AbortSignal.timeout(7500),
+    headers: { 'user-agent': 'skyjo-release-smoke/1' }
+  });
+}
+
+async function runOnce(baseUrl, expectedReleaseSha) {
+  const health = await fetchPublic(baseUrl, '/healthz');
+  assertPublicResponse(health, 'healthz', /^text\/plain\b/i);
+  assert.equal(await health.text(), 'ok', 'healthz body is invalid');
+
+  const readiness = await fetchPublic(baseUrl, '/readyz');
+  assertPublicResponse(readiness, 'readyz', /^application\/json\b/i);
+  assertNoStore(readiness, 'readyz');
+  const ready = await readiness.json();
+  assert.equal(ready.status, 'ready', 'readyz did not report ready');
+  assert.match(ready.releaseSha, /^[a-f0-9]{40}$/, 'readyz release SHA is invalid');
+  assert.deepEqual(ready.checks, { database: 'ok', roomState: 'ok', lastPersist: 'ok' });
+
+  const versionResponse = await fetchPublic(baseUrl, '/version');
+  assertPublicResponse(versionResponse, 'version', /^application\/json\b/i);
+  assertNoStore(versionResponse, 'version');
+  const version = await versionResponse.json();
+  assert.equal(version.releaseSha, ready.releaseSha, 'readyz and version disagree about the release');
+  assert.match(version.releaseSha, /^[a-f0-9]{40}$/, 'version release SHA is invalid');
+  assert.ok(Number.isFinite(Date.parse(version.buildTimestamp)), 'version build timestamp is invalid');
+  assert.ok(Number.isInteger(version.protocolVersion) && version.protocolVersion > 0, 'version protocol is invalid');
+  if (expectedReleaseSha) assert.equal(version.releaseSha, expectedReleaseSha, 'public edge serves the wrong release');
+
+  const manifestResponse = await fetchPublic(baseUrl, '/manifest.webmanifest');
+  assertPublicResponse(manifestResponse, 'manifest', /^application\/manifest\+json\b/i);
+  assertNoStore(manifestResponse, 'manifest');
+  const manifest = await manifestResponse.json();
+  assert.equal(manifest.id, '/', 'manifest app id changed unexpectedly');
+  assert.ok(typeof manifest.name === 'string' && manifest.name.length > 0, 'manifest name is missing');
+  assert.ok(Array.isArray(manifest.icons) && manifest.icons.length > 0, 'manifest icons are missing');
+
+  const loginResponse = await fetchPublic(baseUrl, '/login');
+  assertPublicResponse(loginResponse, 'login', /^text\/html\b/i);
+  assertNoStore(loginResponse, 'login');
+  const login = await loginResponse.text();
+  assert.match(login, /<form\b[^>]*\baction=["']\/login["']/i, 'public login form is missing');
+
+  return { releaseSha: version.releaseSha, protocolVersion: version.protocolVersion };
+}
+
+async function runLegacyOnce(baseUrl) {
+  const health = await fetchPublic(baseUrl, '/healthz');
+  assertPublicResponse(health, 'legacy healthz', /^text\/plain\b/i);
+  assert.equal(await health.text(), 'ok', 'legacy healthz body is invalid');
+
+  const manifestResponse = await fetchPublic(baseUrl, '/manifest.webmanifest');
+  assertPublicResponse(manifestResponse, 'legacy manifest', /^application\/manifest\+json\b/i);
+  const manifest = await manifestResponse.json();
+  assert.ok(typeof manifest.name === 'string' && manifest.name.length > 0, 'legacy manifest name is missing');
+  assert.ok(Array.isArray(manifest.icons) && manifest.icons.length > 0, 'legacy manifest icons are missing');
+
+  const loginResponse = await fetchPublic(baseUrl, '/login');
+  assertPublicResponse(loginResponse, 'legacy login', /^text\/html\b/i);
+  const login = await loginResponse.text();
+  assert.match(login, /<form\b[^>]*\baction=["']\/login["']/i, 'legacy public login form is missing');
+  return { releaseSha: 'legacy', protocolVersion: null, legacy: true };
+}
+
+export async function runPublicReleaseSmoke({
+  baseUrl,
+  releaseSha,
+  allowLegacyRollback = false,
+  timeoutMs = 45_000,
+  retryMs = 1000
+}) {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (releaseSha && !/^[a-f0-9]{40}$/.test(releaseSha)) throw new Error('Expected release SHA must be 40 lowercase hex characters.');
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  do {
+    try {
+      return await runOnce(normalized, releaseSha);
+    } catch (error) {
+      lastError = error;
+      if (allowLegacyRollback) {
+        try {
+          return await runLegacyOnce(normalized);
+        } catch (legacyError) {
+          lastError = new Error(`${error.message}; legacy rollback proof also failed: ${legacyError.message}`);
+        }
+      }
+      if (Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
+    }
+  } while (Date.now() < deadline);
+  throw lastError || new Error('Public release smoke failed.');
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  try {
+    const result = await runPublicReleaseSmoke(parseArgs(process.argv.slice(2)));
+    console.log(`Public release smoke passed for ${result.releaseSha}.`);
+  } catch (error) {
+    process.stderr.write(`Public release smoke failed: ${error?.message || 'unknown error'}\n`);
+    process.exitCode = 1;
+  }
+}

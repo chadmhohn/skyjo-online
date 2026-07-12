@@ -1,32 +1,35 @@
-# Deployment Smoke Checklist
+# Deployment smoke checklist
 
-Use this checklist before and after Skyjo Online releases. Do not restart the live `skyjo-online.service` or the OpenClaw Gateway unless the release actually needs it.
+Use this as the concise release checklist. The trust model, bootstrap commands, failure behavior, and recovery procedure are in [immutable-deployment.md](immutable-deployment.md).
 
-## Local Release Checks
+## Before merge
 
-Run the aggregate smoke script from a clean, current `main` branch:
+- [ ] `npm run smoke:release` passes from a clean branch.
+- [ ] Required unit, Chromium, WebKit, visual/accessibility, Lighthouse, and CodeQL checks pass.
+- [ ] `CI / Runtime Artifact` packages the build emitted by `CI / Quality & Security`; it does not invoke an application build again.
+- [ ] Archive allowlist, checksum, exact source SHA, production dependency inventory, CycloneDX SBOM, and GitHub provenance verification pass.
+- [ ] No application, account, VAPID, session, database, SSH, or smoke-account secret appears in source, artifacts, logs, or workflow inputs.
 
-```sh
-npm run smoke:release
-```
+## Main canary
 
-It runs:
+- [ ] `CI / Release Canary` waited for every required test job.
+- [ ] The forced deploy identity accepted only the declared archive byte count and SHA-addressed filename.
+- [ ] The controller verified the checksum and release identity before extraction.
+- [ ] Copied-state migration and authenticated HTTP/WebSocket smoke passed on `127.0.0.1:4181` with push disabled.
+- [ ] The canary stopped and its isolated state was cleaned without stopping or changing production.
 
-- `git diff --check`
-- `npm run lint`
-- `npm run build`
-- `npm audit --audit-level=high`
-- `npm run smoke:validation`
-- `npm run smoke:ai`
-- `npm run smoke:persistence`
-- `npm run smoke:accounts`
-- `npm run smoke:ops`
+## Release tag
 
-If you need to isolate a failure, run the same commands one at a time in that order.
+- [ ] The release commit is on protected `main`, and the exact commit's main CI run is green.
+- [ ] The new tag is immutable `vX.Y.Z`; it is not moved or reused.
+- [ ] The controller independently resolved the public GitHub tag to the archive's full SHA.
+- [ ] `current` and a verified rollback target exist before activation. The first cutover has an explicitly proven legacy anchor.
+- [ ] The pre-activation backup passed SQLite integrity, foreign-key, migration-history, room-format, checksum, and isolated-restore verification.
+- [ ] The copied-state canary passed immediately before live activation.
+- [ ] Production stopped gracefully and flushed rooms before the backward-compatible migration.
+- [ ] `previous` and `current` changed atomically, and the hardened service started as `skyjo` using `/opt/skyjo-online/node/bin/node`.
 
-## Service Health
-
-After deploying the built release, check the local service before using the public hostname:
+## Local production proof
 
 ```sh
 systemctl status skyjo-online.service --no-pager
@@ -35,104 +38,41 @@ curl -fsS http://127.0.0.1:4180/readyz
 curl -fsS http://127.0.0.1:4180/version
 ```
 
-Expected result: systemd reports the service as active, liveness returns `ok`, readiness returns 200 with three `ok` checks, and version reports the expected full release SHA. A 503 readiness response is a release blocker even when liveness remains healthy.
+- [ ] Liveness returns exactly `ok`.
+- [ ] Readiness returns 200, all three checks are `ok`, and its release SHA is exact.
+- [ ] Version returns the same full SHA, valid build timestamp, and expected protocol.
+- [ ] The controller's dedicated account login, identity lookup, and authenticated WebSocket open/close smoke passed without mutating a room.
 
-## Public Health
+## Public edge proof
 
-Check the public `/healthz` endpoint through the production edge:
-
-```sh
-curl -fsS https://skyjo.groundworkrevops.com/healthz
-curl -fsS https://skyjo.groundworkrevops.com/readyz
-curl -fsS https://skyjo.groundworkrevops.com/version
-```
-
-Expected result: all three endpoints are public, `/healthz` returns `ok`, and `/readyz` plus `/version` include `Cache-Control: no-store`. If local checks pass but public checks fail, inspect the public gateway or reverse proxy before changing the app.
-
-Run the deployed authentication and non-mutating WebSocket proof with a dedicated existing smoke account. Do not put these values in git or print them:
+CI runs the no-secret public proof:
 
 ```sh
-SKYJO_SMOKE_BASE_URL=https://skyjo.groundworkrevops.com \
-SKYJO_SMOKE_ACCESS_PASSWORD='...' \
-SKYJO_SMOKE_ACCOUNT_EMAIL='...' \
-SKYJO_SMOKE_ACCOUNT_PASSWORD='...' \
-SKYJO_EXPECTED_RELEASE_SHA="$(git rev-parse HEAD)" \
-SKYJO_EXPECTED_PROTOCOL_VERSION=1 \
-npm run smoke:deployed
+node scripts/smoke-public-release.mjs \
+  --base-url https://skyjo.groundworkrevops.com \
+  --release-sha <expected-40-character-sha>
 ```
 
-The smoke validates liveness, readiness, version identity, both authentication cookies, the account identity, and an authenticated WebSocket open/close without creating or joining a room.
+- [ ] Cloudflare serves public liveness, readiness, and version for the expected SHA.
+- [ ] `/login` returns the password form without creating a session.
+- [ ] `/manifest.webmanifest` is valid and public.
+- [ ] Readiness, version, login, and manifest are `no-store`.
 
-## Login And Static Bundle
+## Functional release proof
 
-Use a private browser session so cached cookies and assets do not hide release issues.
+- [ ] Single player starts, opening reveals complete, the human and AI each take legal turns, and no console error appears.
+- [ ] Two authenticated clients create/join a room, complete opening reveals, exchange one turn each, and observe identical state.
+- [ ] Refresh/rejoin restores the same room and seat.
+- [ ] A graceful restart restores durable rooms and account history.
 
-- Open `https://skyjo.groundworkrevops.com/` and confirm it redirects to the password login screen.
-- Submit the shared password and confirm the app shell loads.
-- Hard refresh once after login and confirm the app still loads from the built static bundle.
-- Open browser devtools and confirm there are no failed `/assets/...` requests, missing JS/CSS bundles, or console errors during first load.
-- Optionally verify from the shell that unauthenticated app routes redirect while `/healthz` remains public:
+## Failure and rollback
 
-```sh
-curl -I https://skyjo.groundworkrevops.com/
-curl -fsS https://skyjo.groundworkrevops.com/healthz
-```
+- [ ] A failure before activation leaves production untouched.
+- [ ] A local post-activation failure automatically switches code to `previous` and verifies it.
+- [ ] A public-edge failure requests the metadata-bound code rollback and verifies the recovered edge.
+- [ ] Normal rollback reports a full release SHA and passes strict readiness/version proof.
+- [ ] Only a controller-confirmed first-cutover legacy anchor may use the reduced legacy health/login/manifest proof.
+- [ ] No automated path restores or overwrites live SQLite or room state.
+- [ ] Five releases remain, plus anything referenced by `current` or `previous`; backup rotation keeps 30 daily and 12 monthly verified sets.
 
-## Single-Player Smoke
-
-- Go to `/single-player`.
-- Start a game with the default AI setup.
-- Reveal the opening cards and play at least two human turns.
-- Confirm the AI moves automatically, legal action buttons enable only at the right time, the discard/draw piles update, and no browser console errors appear.
-
-## Multiplayer Two-Client Smoke
-
-Use two separate clients, such as two browsers or one normal window plus one private window.
-
-- Client A logs in, opens `/lobby`, creates a room, and copies the room code or link.
-- Client B logs in, joins the same room, and appears in Client A's room list.
-- Start the game from the host client.
-- Complete both clients' opening reveals.
-- Make one legal move from Client A and confirm Client B sees the updated board, turn, discard pile, and log.
-- Make one legal move from Client B and confirm Client A sees the same synchronized state.
-- Refresh one client and rejoin with the same room; confirm room persistence and reconnect handling keep the game state available.
-
-## Restart Guidance
-
-A `skyjo-online.service` restart is needed when the running Node process must load new code or configuration:
-
-- `server.mjs`, `server-room-persistence.mjs`, or server validation code changes.
-- Shared game-engine changes that affect `server-dist/` validation used by the Node process.
-- Runtime dependency changes or `package-lock.json` changes that affect production install output.
-- Environment variable changes in `/etc/skyjo-online.env` or the service unit.
-- The service is unhealthy after deployment and normal health checks do not recover.
-
-A service restart is usually not needed for:
-
-- Documentation-only changes.
-- Project plan or README updates.
-- Client-only static bundle changes when the existing Node process keeps serving the same `dist` path and the deploy replaces files atomically.
-- Local-only script changes that are not deployed to the VPS.
-- Reverse proxy or gateway-only changes, unless that component's own procedure requires a reload.
-
-When a restart is needed, use the normal systemd procedure after the local release checks pass and the new files are deployed:
-
-```sh
-sudo systemctl restart skyjo-online.service
-sudo systemctl status skyjo-online.service --no-pager
-curl -fsS http://127.0.0.1:4180/healthz
-curl -fsS https://skyjo.groundworkrevops.com/healthz
-```
-
-## Server-Side Changes And Room Persistence
-
-Room state persists to `SKYJO_ROOMS_FILE` when set, or `.data/rooms.json` by default. Account and game-history data persists to `SKYJO_DB_FILE`, or to `skyjo.sqlite` beside an absolute `SKYJO_ROOMS_FILE`. Treat both files as release state, not disposable build artifacts.
-
-- Before server-side room, validation, or persistence changes, identify the active rooms file used by the service environment.
-- Preserve the rooms file, SQLite database, and their parent directory across deploys; do not delete `.data/rooms.json` or `.data/skyjo.sqlite` as part of cleanup.
-- Back up the rooms file and SQLite database before deploying persistence format changes.
-- Use the checksummed workflow in [data-recovery.md](data-recovery.md); never copy a live SQLite file with a plain filesystem copy.
-- On graceful shutdown, the server marks players disconnected and flushes rooms before exiting. After restart, restored rooms have empty socket clients and players appear offline until their browsers reconnect.
-- Rooms older than the stale-room window are pruned on load or later cleanup, so check `updatedAt` before assuming a missing room indicates a deploy failure.
-- A corrupt or future room format is rejected and room writes remain disabled so the source file cannot be overwritten. Repair or restore it, then restart the service and require `/readyz` to pass.
-- After any server-side change, include the multiplayer two-client smoke and a refresh/rejoin check so persisted room state, WebSocket reconnect, account-gated multiplayer, saved stats, and move validation are all exercised.
+Never repair a release by editing files below `current`, running `npm install` on the VPS, pointing a symlink manually, disabling SSH host verification, widening sudo, or copying a database over live state.
