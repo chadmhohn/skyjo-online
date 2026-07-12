@@ -11,7 +11,7 @@ import {
 
 function parseArguments(argv) {
   const allowed = new Set([
-    '--role', '--command', '--run-id', '--release-sha', '--artifact-sha256', '--tag', '--key-id', '--private-key', '--lifetime-seconds'
+    '--role', '--command', '--run-id', '--release-sha', '--artifact-sha256', '--artifact-bytes', '--tag', '--key-id', '--private-key', '--lifetime-seconds'
   ]);
   const values = new Map();
   for (let index = 0; index < argv.length; index += 2) {
@@ -37,6 +37,7 @@ export async function createSignedAuthorization(argv, options = {}) {
     runId: values.get('--run-id'),
     releaseSha: values.get('--release-sha'),
     artifactSha256: values.get('--artifact-sha256'),
+    artifactBytes: values.get('--artifact-bytes'),
     tag: values.get('--tag'),
     issuedAt,
     expiresAt: issuedAt + lifetime,

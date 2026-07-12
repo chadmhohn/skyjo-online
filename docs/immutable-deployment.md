@@ -7,7 +7,7 @@ Skyjo deploys one CI-built runtime archive, never a mutable Git checkout. A succ
 - The `CI / Quality & Security` job is the only job that compiles `dist/` and `server-dist/`. Browser tests and runtime packaging download those exact files.
 - The runtime archive is named `skyjo-runtime-<40-character-source-sha>.tar.gz`. Its SHA-256 sidecar, external CycloneDX 1.6 SBOM, and GitHub build-provenance attestation bind the same source SHA.
 - Pull requests package and verify the runtime but cannot reach a deployment environment. A green `main` run reaches only the isolated canary. Production is additionally gated to a `vX.Y.Z` tag whose commit is on protected `main`.
-- The deploy identity can upload one size-limited archive and invoke only `verify`, `promote`, or a metadata-bound code rollback. It cannot request a shell, PTY, forwarding, arbitrary files, arbitrary sudo, or database restoration.
+- The deploy identity can submit only signed, size-and-digest-bound `upload`, `verify`, `promote`, or metadata-bound code-rollback requests. It cannot request a shell, PTY, forwarding, arbitrary files, arbitrary sudo, or database restoration.
 - The application runs as non-login user `skyjo` with an isolated Node 24 runtime at `/opt/skyjo-online/node/bin/node`. It never runs as root and does not depend on the host-wide `/usr/bin/node`.
 - A promotion creates and verifies a durable state backup before activation. Migrations must be backward compatible. Automatic recovery changes code only; it never restores a database after traffic may have resumed.
 
@@ -17,9 +17,10 @@ The release lane is part of `.github/workflows/ci.yml`, so it cannot race the re
 
 1. Quality builds once and uploads `dist/` plus `server-dist/`.
 2. Unit, browser, accessibility, visual, and Lighthouse jobs consume or validate that source/build.
-3. `CI / Runtime Artifact` downloads the tested build, installs production dependencies in an isolated staging tree, creates the archive/checksum/SBOM, verifies it, generates GitHub provenance, and verifies the published attestation.
-4. `CI / Release Canary` waits for every required test job, uploads the archive through the forced SSH command, and requests a verify-only canary on `127.0.0.1:4181`.
-5. `CI / Production` exists only for a `push` of `vX.Y.Z`. It promotes the same downloaded artifact, checks the public Cloudflare surface, and requests a code-only rollback if the edge check fails.
+3. `CI / Runtime Artifact` downloads the tested build, installs production dependencies in an isolated staging tree, and creates and verifies the archive/checksum/SBOM without any OIDC or attestation-write permission.
+4. `CI / Runtime Attestation` downloads those immutable subjects without executing them, generates GitHub provenance in the only provenance-privileged job, and reverifies the published attestation.
+5. `CI / Release Canary` waits for every required test job and provenance, uploads the archive through the signed forced SSH command, and requests a verify-only canary on `127.0.0.1:4181`.
+6. `CI / Production` exists only for a `push` of `vX.Y.Z`. It promotes the same downloaded artifact, checks the public Cloudflare surface, and requests a code-only rollback if the edge check fails.
 
 Both VPS jobs use `concurrency: { group: skyjo-production, queue: max }`. The root controller also holds a host `flock`, so GitHub retries and concurrent tags cannot interleave deployment state.
 
@@ -33,6 +34,7 @@ Create `canary` and `production` GitHub environments with no human reviewers. Co
 | Variable | `SKYJO_PUBLIC_BASE_URL` | Production only: `https://skyjo.groundworkrevops.com` |
 | Secret | `SKYJO_DEPLOY_SSH_PRIVATE_KEY` | Private half of the dedicated Ed25519 deploy key |
 | Secret | `SKYJO_DEPLOY_KNOWN_HOSTS` | Operator-verified pinned VPS host-key line |
+| Secret | `SKYJO_DEPLOY_AUTH_PRIVATE_KEY` | Distinct Ed25519 signing key for this environment's canary or production lane |
 
 Do not use `ssh-keyscan` during a workflow. Store the verified host key, not a permissive `StrictHostKeyChecking=no` override. The production environment must allow only protected `v*` tags rooted at protected `main`.
 
@@ -65,7 +67,10 @@ ssh-keygen -t ed25519 -f skyjo-github-deploy -C skyjo-github-actions
 Copy only the public key to a root-readable temporary file on the VPS. From the checked-out release source, run the prepare phase:
 
 ```sh
-sudo deploy/bootstrap-skyjo-delivery.sh prepare /root/skyjo-github-deploy.pub
+sudo deploy/bootstrap-skyjo-delivery.sh prepare \
+  /root/skyjo-github-deploy.pub \
+  /root/canary-public.pem \
+  /root/production-public.pem
 sudo /usr/local/sbin/skyjo-release-controller self-test
 ```
 
@@ -94,8 +99,8 @@ The controller reads these values locally for authenticated HTTP and WebSocket c
 Every non-PR CI run that clears all gates uploads the attested artifact using:
 
 ```text
-upload <run-id>-canary <release-sha> <exact-byte-count>
-verify <run-id>-canary <release-sha> <artifact-sha256>
+upload <run-id>-canary <release-sha> <artifact-sha256> <artifact-bytes> - <issued-at> <expires-at> canary-primary <signature>
+verify <run-id>-canary <release-sha> <artifact-sha256> <artifact-bytes> - <issued-at> <expires-at> canary-primary <signature>
 ```
 
 Verify-only operation checks the archive path, declared size, digest, release identity, archive allowlist, and runtime version. It restores the latest live state backup into an isolated copied-state directory, runs backward-compatible migrations there, starts the hardened canary unit on port 4181 with push disabled, and runs liveness/readiness/version plus authenticated app/WebSocket smoke. It stops the canary and cleans the copied state without stopping or changing production.
@@ -150,7 +155,7 @@ sudo /usr/local/sbin/skyjo-release-controller self-test
 sudo systemd-analyze verify deploy/skyjo-online.service
 sudo systemd-analyze verify deploy/skyjo-online-canary@.service
 sudo systemd-analyze verify deploy/skyjo-online-smoke@.service
-node --test deploy/tests/release-controller.test.mjs
+node --test deploy/tests/*.test.mjs
 npm run smoke:delivery
 ```
 

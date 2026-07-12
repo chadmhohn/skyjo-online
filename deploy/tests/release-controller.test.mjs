@@ -38,8 +38,10 @@ test('deployment identifiers and command lanes are strict', () => {
   assert.equal(validateReleaseTag('v0.2.0'), 'v0.2.0');
   assert.throws(() => validateRunId('../x'), /Invalid/);
   assert.throws(() => validateReleaseTag('latest'), /Invalid/);
-  const signedCommand = `verify 123-1-canary ${sha} ${digest} - ${issuedAt} ${expiresAt} canary-2026-07 ${signature}`;
+  const signedCommand = `verify 123-1-canary ${sha} ${digest} 4096 - ${issuedAt} ${expiresAt} canary-primary ${signature}`;
   assert.deepEqual(parseArguments(['verify', '--authorization-command', signedCommand]), { command: 'verify', signedCommand });
+  const uploadCommand = signedCommand.replace(/^verify /, 'upload ');
+  assert.deepEqual(parseArguments(['upload', '--authorization-command', uploadCommand]), { command: 'upload', signedCommand: uploadCommand });
   assert.deepEqual(parseArguments(['self-test']), { command: 'self-test' });
   assert.throws(() => parseArguments(['verify']), /signed deployment authorization/i);
   assert.throws(() => parseArguments(['verify', '--authorization-command', signedCommand, 'extra']), /signed deployment authorization/i);
@@ -130,9 +132,10 @@ test('activation failures select restart-before-swap or rollback-after-swap with
 });
 
 test('public rollback authorization is exact and release retention keeps five including both links', () => {
-  const metadata = { releaseSha: sha, artifactSha256: digest, tag: 'v0.2.0' };
-  assert.equal(authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: digest, requestedTag: 'v0.2.0' }), true);
-  assert.throws(() => authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: 'c'.repeat(64), requestedTag: 'v0.2.0' }), /does not match/);
+  const metadata = { releaseSha: sha, artifactSha256: digest, artifactBytes: 4096, tag: 'v0.2.0' };
+  assert.equal(authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: digest, requestedBytes: 4096, requestedTag: 'v0.2.0' }), true);
+  assert.throws(() => authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: 'c'.repeat(64), requestedBytes: 4096, requestedTag: 'v0.2.0' }), /does not match/);
+  assert.throws(() => authorizeRollback({ currentReleaseSha: sha, metadata, requestedReleaseSha: sha, requestedDigest: digest, requestedBytes: 4097, requestedTag: 'v0.2.0' }), /does not match/);
   const entries = Array.from({ length: 8 }, (_, index) => ({ path: `/releases/${index}`, mtimeMs: index }));
   assert.deepEqual(selectReleasePathsToPrune(entries, ['/releases/7', '/releases/6'], 5), ['/releases/2', '/releases/1', '/releases/0']);
 });

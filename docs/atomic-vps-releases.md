@@ -23,14 +23,10 @@ The global `/usr/bin/node` is never changed. The bootstrap downloads Node `v24.1
 The `skyjo-deploy` account has a locked password and a forced Ed25519-key command with `restrict`, no PTY, no forwarding, and no user rc. It has no general shell or file-transfer command. The only accepted commands are:
 
 ```text
-upload <run>-<attempt>-canary <40-sha> <byte-count>
-verify <run>-<attempt>-canary <40-sha> <artifact-sha256>
-upload <run>-<attempt>-production <40-sha> <byte-count>
-promote <run>-<attempt>-production <40-sha> <artifact-sha256> <vX.Y.Z>
-rollback <run>-<attempt>-production <failed-40-sha> <artifact-sha256> <vX.Y.Z>
+<action> <run>-<attempt>-<lane> <40-sha> <artifact-sha256> <artifact-bytes> <tag-or-dash> <issued-at> <expires-at> <lane-key-id> <ed25519-signature>
 ```
 
-`upload` writes a bounded partial file, fsyncs it, then atomically renames it to `skyjo-runtime-<sha>.tar.gz`. The other commands invoke one exact sudo wrapper. That wrapper holds a non-blocking global `flock`, so verify, promote, and rollback cannot overlap.
+The only actions are `upload`/`verify` for the canary lane and `upload`/`promote`/`rollback` for the production lane. Every action is signed by that environment's distinct `SKYJO_DEPLOY_AUTH_PRIVATE_KEY`; the root controller verifies the pinned lane public key and consumes the authorization once before upload or release code runs. `upload` verifies the signed size and digest, writes a bounded unique partial, fsyncs it, and publishes with a no-overwrite hard link to `skyjo-runtime-<sha>.tar.gz`. The exact sudo wrapper holds a non-blocking global `flock`, so authorization, verify, promote, and rollback cannot overlap.
 
 `verify` independently checks the SHA-256, tar paths, types, duplicate entries, expansion limits, and matching root/served release identities before extraction. It takes an online Node/SQLite snapshot of live state, restores only into the run directory, blanks VAPID configuration, starts the candidate on `127.0.0.1:4181`, and runs the authenticated HTTP/WebSocket smoke. It never changes `current`, `previous`, the production unit, or the live database.
 
@@ -42,7 +38,7 @@ After the workflow's public Cloudflare checks, `rollback` provides a narrow reco
 
 Preparation is deliberately split so installing delivery tooling cannot make the running legacy service unrestartable:
 
-1. `sudo deploy/bootstrap-skyjo-delivery.sh prepare /root/skyjo-deploy.pub` installs the isolated Node runtime, users, directories, controller, forced-command policy, and canary/smoke units. It stages the hardened production unit but does not replace or restart the live unit.
+1. `sudo deploy/bootstrap-skyjo-delivery.sh prepare /root/skyjo-deploy.pub /root/canary-public.pem /root/production-public.pem` installs the isolated Node runtime, pinned lane public keys, users, directories, controller, forced-command policy, and canary/smoke units. It stages the hardened production unit but does not replace or restart the live unit.
 2. `sudo deploy/bootstrap-skyjo-delivery.sh adopt-legacy <current-40-sha>` copies the exact legacy runtime into the release store, installs production-only dependencies with pinned npm, rejects all symlinks, writes a full checksum manifest, creates `current`, and preserves the original unit. Production is still untouched.
 3. After the release artifact has passed `verify`, `sudo deploy/bootstrap-skyjo-delivery.sh activate-production-unit` gracefully stops the old service, validates and chowns only regular state files, installs the staged unit, starts the immutable legacy anchor under Node 24, and health-checks it. Failure restores the original unit and health-checks the recovered legacy service.
 4. Only then may the tagged `promote` command activate `v0.1.1`. It fails closed when no `current` rollback anchor exists.
@@ -63,7 +59,7 @@ The controller retains five release directories including `current` and `previou
 ## Local controller tests
 
 ```sh
-node --test deploy/tests/release-controller.test.mjs
+node --test deploy/tests/*.test.mjs
 sh -n deploy/bootstrap-skyjo-delivery.sh deploy/skyjo-release-controller \
   deploy/skyjo-canary-launch deploy/skyjo-smoke-launch
 ```

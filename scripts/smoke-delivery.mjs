@@ -86,8 +86,11 @@ async function testWorkflowContract() {
   assert.match(workflow, /release-canary:[\s\S]*?queue: max/);
   assert.match(workflow, /production:[\s\S]*?github\.event_name == 'push' && startsWith\(github\.ref, 'refs\/tags\/v'\)/);
   assert.match(workflow, /runtime-artifact:[\s\S]*?Download the one tested production build[\s\S]*?npm run release:artifact/);
-  const artifactJob = workflow.match(/\n  runtime-artifact:[\s\S]*?\n  release-canary:/)?.[0] || '';
+  const artifactJob = workflow.match(/\n  runtime-artifact:[\s\S]*?\n  runtime-attestation:/)?.[0] || '';
   assert.doesNotMatch(artifactJob, /npm run build(?:\s|$)/, 'artifact job must consume the quality build without rebuilding');
+  assert.doesNotMatch(artifactJob, /id-token: write|attestations: write/, 'PR-controlled packaging must not receive provenance credentials');
+  assert.match(workflow, /runtime-attestation:[\s\S]*?id-token: write[\s\S]*?attestations: write/);
+  assert.match(workflow, /AUTH_KEY: \$\{\{ secrets\.SKYJO_DEPLOY_AUTH_PRIVATE_KEY \}\}/);
   for (const job of ['unit-domain', 'unit-data', 'e2e-chromium-1', 'e2e-chromium-2', 'e2e-webkit', 'visual-accessibility', 'lighthouse']) {
     assert.match(workflow, new RegExp(`release-canary:[\\s\\S]*?- ${job}`), `release canary must wait for ${job}`);
   }
@@ -171,16 +174,17 @@ async function testLinuxRemoteClient() {
       SKYJO_SSH_BIN: fakeSsh
     };
     const client = path.join(root, 'deploy', 'github-release-remote.sh');
-    const canaryEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: canaryAuthorizationKey, SKYJO_DEPLOY_AUTH_KEY_ID: 'canary-2026-07' };
-    const productionEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: productionAuthorizationKey, SKYJO_DEPLOY_AUTH_KEY_ID: 'production-2026-07' };
+    const canaryEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: canaryAuthorizationKey };
+    const productionEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: productionAuthorizationKey };
     await execFileAsync('bash', [client, 'verify', '123-1-canary', fullSha, archive, checksum], { env: canaryEnv });
     await execFileAsync('bash', [client, 'promote', '123-1-production', fullSha, archive, checksum, 'v0.1.1'], { env: productionEnv });
     await execFileAsync('bash', [client, 'rollback', '123-1-production', fullSha, checksum, 'v0.1.1'], { env: productionEnv });
     const calls = await fs.readFile(log, 'utf8');
-    assert.match(calls, new RegExp(`upload 123-1-canary ${fullSha} ${payload.length}`));
-    assert.match(calls, new RegExp(`verify 123-1-canary ${fullSha} ${digest} - [0-9]+ [0-9]+ canary-2026-07 [A-Za-z0-9_-]{86}`));
-    assert.match(calls, new RegExp(`promote 123-1-production ${fullSha} ${digest} v0\\.1\\.1 [0-9]+ [0-9]+ production-2026-07 [A-Za-z0-9_-]{86}`));
-    assert.match(calls, new RegExp(`rollback 123-1-production ${fullSha} ${digest} v0\\.1\\.1 [0-9]+ [0-9]+ production-2026-07 [A-Za-z0-9_-]{86}`));
+    assert.match(calls, new RegExp(`upload 123-1-canary ${fullSha} ${digest} ${payload.length} - [0-9]+ [0-9]+ canary-primary [A-Za-z0-9_-]{86}`));
+    assert.match(calls, new RegExp(`verify 123-1-canary ${fullSha} ${digest} ${payload.length} - [0-9]+ [0-9]+ canary-primary [A-Za-z0-9_-]{86}`));
+    assert.match(calls, new RegExp(`upload 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
+    assert.match(calls, new RegExp(`promote 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
+    assert.match(calls, new RegExp(`rollback 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
     await assert.rejects(
       execFileAsync('bash', [client, 'promote', '123-1-production', fullSha, archive, checksum, 'main'], { env: productionEnv }),
       /immutable release tag/i

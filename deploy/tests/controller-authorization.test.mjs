@@ -8,7 +8,7 @@ import { signDeploymentAuthorization } from '../deployment-authorization-lib.mjs
 import { executeAuthorizedControllerAction } from '../release-controller.mjs';
 
 const nowSeconds = 1_800_000_000;
-const keyId = 'canary-2026-07';
+const keyId = 'canary-primary';
 const keyPair = crypto.generateKeyPairSync('ed25519');
 
 function authorization() {
@@ -18,6 +18,7 @@ function authorization() {
     runId: '123-1-canary',
     releaseSha: 'a'.repeat(40),
     artifactSha256: 'b'.repeat(64),
+    artifactBytes: 4096,
     tag: '-',
     issuedAt: nowSeconds,
     expiresAt: nowSeconds + 300,
@@ -26,7 +27,7 @@ function authorization() {
   const signature = signDeploymentAuthorization(fields, keyPair.privateKey, { nowSeconds });
   return {
     fields,
-    signedCommand: `verify ${fields.runId} ${fields.releaseSha} ${fields.artifactSha256} - ${fields.issuedAt} ${fields.expiresAt} ${fields.keyId} ${signature}`
+    signedCommand: `verify ${fields.runId} ${fields.releaseSha} ${fields.artifactSha256} ${fields.artifactBytes} - ${fields.issuedAt} ${fields.expiresAt} ${fields.keyId} ${signature}`
   };
 }
 

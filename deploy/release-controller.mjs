@@ -51,13 +51,13 @@ const PATHS = Object.freeze({
 });
 
 const AUTHORIZATION_KEYRING = new Map([
-  ['canary-2026-07', Object.freeze({ role: 'canary', publicKeyPath: '/etc/skyjo-deploy-auth/canary-2026-07.pem' })],
-  ['production-2026-07', Object.freeze({ role: 'production', publicKeyPath: '/etc/skyjo-deploy-auth/production-2026-07.pem' })]
+  ['canary-primary', Object.freeze({ role: 'canary', publicKeyPath: '/etc/skyjo-deploy-auth/canary-public.pem' })],
+  ['production-primary', Object.freeze({ role: 'production', publicKeyPath: '/etc/skyjo-deploy-auth/production-public.pem' })]
 ]);
 
 export function parseArguments(argv) {
   const command = argv.shift();
-  if (!['verify', 'promote', 'rollback', 'self-test'].includes(command || '')) throw new Error('Unsupported controller action.');
+  if (!['upload', 'verify', 'promote', 'rollback', 'self-test'].includes(command || '')) throw new Error('Unsupported controller action.');
   if (command === 'self-test') {
     if (argv.length) throw new Error('Self-test takes no arguments.');
     return { command };
@@ -118,7 +118,7 @@ function lines(value) {
   return value.replace(/\r/g, '').split('\n').filter((line) => line.length > 0);
 }
 
-async function prepareCandidate({ runId, releaseSha, digest }) {
+async function prepareCandidate({ runId, releaseSha, digest, bytes }) {
   const stageDirectory = resolveWithin(PATHS.stage, runId);
   const stageStat = await fsp.lstat(stageDirectory);
   if (!stageStat.isDirectory() || stageStat.isSymbolicLink()) throw new Error('Deployment stage is unsafe.');
@@ -130,6 +130,7 @@ async function prepareCandidate({ runId, releaseSha, digest }) {
   try {
     await fsp.rm(privateArchive, { force: true });
     await copyArchive(sourceArchive, privateArchive);
+    if ((await fsp.stat(privateArchive)).size !== bytes) throw new Error('Artifact size does not match the signed deployment authorization.');
     if (await sha256File(privateArchive) !== digest) throw new Error('Artifact SHA-256 does not match the approved digest.');
     const names = lines(await run('/usr/bin/tar', ['--gzip', '--list', '--file', privateArchive], { timeoutMs: 30_000 }));
     const verbose = lines(await run('/usr/bin/tar', ['--gzip', '--list', '--verbose', '--full-time', '--numeric-owner', '--file', privateArchive], { timeoutMs: 30_000 }));
@@ -144,7 +145,7 @@ async function prepareCandidate({ runId, releaseSha, digest }) {
     }
     await run('/usr/bin/chown', ['--recursive', 'root:root', candidate]);
     await run('/usr/bin/chmod', ['--recursive', 'u=rwX,go=rX', candidate]);
-    await fsp.writeFile(resolveWithin(candidate, '.skyjo-deployment.json'), `${JSON.stringify({ releaseSha, artifactSha256: digest })}\n`, { mode: 0o444 });
+    await fsp.writeFile(resolveWithin(candidate, '.skyjo-deployment.json'), `${JSON.stringify({ releaseSha, artifactSha256: digest, artifactBytes: bytes })}\n`, { mode: 0o444 });
     return { workDirectory, candidate, identity };
   } catch (error) {
     await fsp.rm(workDirectory, { recursive: true, force: true }).catch(() => {});
@@ -175,12 +176,15 @@ export async function executeAuthorizedControllerAction({
   keyring = AUTHORIZATION_KEYRING,
   ledgerRoot = PATHS.authorizationReplay,
   nowSeconds = Math.floor(Date.now() / 1000),
-  expectedUid = 0
+  expectedUid = 0,
+  allowExactCompletedReplay = false
 }) {
   const { fields, signature } = parseSignedDeploymentCommand(signedCommand, { nowSeconds });
   if (fields.command !== expectedCommand) throw new Error('Signed deployment command does not match the requested controller action.');
   const verified = await verifyDeploymentAuthorization({ fields, signature, keyring, nowSeconds, expectedUid });
-  const authorizationUse = await beginAuthorizationUse({ ledgerRoot, ...verified, nowSeconds, expectedUid });
+  const authorizationUse = await beginAuthorizationUse({
+    ledgerRoot, ...verified, nowSeconds, expectedUid, allowExactCompletedReplay
+  });
   try {
     const result = await action(fields);
     await authorizationUse.complete();
@@ -222,7 +226,8 @@ async function assertHardenedProductionUnit() {
     ['NoNewPrivileges', 'yes'],
     ['PrivateTmp', 'yes'],
     ['ProtectSystem', 'strict'],
-    ['ProtectHome', 'yes']
+    ['ProtectHome', 'yes'],
+    ['DropInPaths', '']
   ]);
   for (const [property, expected] of exactProperties) {
     const actual = (await run('/usr/bin/systemctl', ['show', PATHS.service, `--property=${property}`, '--value'])).trim();
@@ -443,7 +448,8 @@ async function promoteAction(parsed) {
     if (targetExists) {
       const existingIdentity = await loadVerifiedReleaseIdentity(target, parsed.releaseSha);
       const existingMetadata = await readMetadata(target);
-      if (existingMetadata.artifactSha256 !== parsed.digest || existingMetadata.tag !== parsed.tag || existingIdentity.releaseSha !== parsed.releaseSha) {
+      if (existingMetadata.artifactSha256 !== parsed.digest || existingMetadata.artifactBytes !== parsed.bytes ||
+          existingMetadata.tag !== parsed.tag || existingIdentity.releaseSha !== parsed.releaseSha) {
         throw new Error('An existing release directory conflicts with the approved artifact.');
       }
     } else {
@@ -504,7 +510,10 @@ async function rollbackAction(parsed) {
   await assertHardenedProductionUnit();
   const failed = await readLinkWithin(PATHS.current, PATHS.releases);
   const metadata = await readMetadata(failed);
-  authorizeRollback({ currentReleaseSha: path.basename(failed), metadata, requestedReleaseSha: parsed.releaseSha, requestedDigest: parsed.digest, requestedTag: parsed.tag });
+  authorizeRollback({
+    currentReleaseSha: path.basename(failed), metadata, requestedReleaseSha: parsed.releaseSha,
+    requestedDigest: parsed.digest, requestedBytes: parsed.bytes, requestedTag: parsed.tag
+  });
   const previous = await readLinkWithin(PATHS.previous, PATHS.releases);
   const legacy = await rollbackLinks(failed, previous, parsed.runId);
   return { rolledBackTo: legacy ? 'legacy' : path.basename(previous), legacy };
@@ -572,6 +581,21 @@ function assertUnitDirectives(unitPath, unitText, expected) {
   }
 }
 
+async function assertEffectiveTemplate(unit, fragmentPath, expectedUser, expectedGroup) {
+  const exact = new Map([
+    ['FragmentPath', fragmentPath],
+    ['DropInPaths', ''],
+    ['User', expectedUser],
+    ['Group', expectedGroup],
+    ['NoNewPrivileges', 'yes'],
+    ['ProtectSystem', 'strict']
+  ]);
+  for (const [property, expected] of exact) {
+    const actual = (await run('/usr/bin/systemctl', ['show', unit, `--property=${property}`, '--value'])).trim();
+    if (actual !== expected) throw new Error(`Effective systemd property ${property} is invalid for ${unit}.`);
+  }
+}
+
 async function selfTest() {
   await assertNode24();
   const identities = {};
@@ -588,7 +612,16 @@ async function selfTest() {
     throw new Error('Deployment transport identity must have a locked password.');
   }
 
+  await exactPath(PATHS.appRoot, { type: 'directory', uid: 0, gid: 0, mode: 0o755 });
   await exactPath(PATHS.releases, { type: 'directory', uid: 0, gid: 0, mode: 0o755 });
+  for (const linkPath of [PATHS.current, PATHS.previous]) {
+    const linkStat = await fsp.lstat(linkPath).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (!linkStat) continue;
+    if (!linkStat.isSymbolicLink() || linkStat.uid !== 0 || linkStat.gid !== 0) {
+      throw new Error(`Release link ownership or type is invalid: ${linkPath}`);
+    }
+    await readLinkWithin(linkPath, PATHS.releases);
+  }
   await exactPath(PATHS.backups, { type: 'directory', uid: 0, gid: 0, mode: 0o700 });
   const stateStat = await fsp.lstat(PATHS.state);
   if (!stateStat.isDirectory() || stateStat.isSymbolicLink()) throw new Error('Production state directory is unsafe.');
@@ -623,8 +656,8 @@ async function selfTest() {
     PATHS.assetManifest
   ]) await exactPath(file, { type: 'file', uid: 0, gid: 0, mode: 0o444 });
   for (const file of [
-    `${PATHS.authorizationKeys}/canary-2026-07.pem`,
-    `${PATHS.authorizationKeys}/production-2026-07.pem`
+    `${PATHS.authorizationKeys}/canary-public.pem`,
+    `${PATHS.authorizationKeys}/production-public.pem`
   ]) await exactPath(file, { type: 'file', uid: 0, gid: 0, mode: 0o600 });
   await exactPath('/etc/sudoers.d/skyjo-deploy', { type: 'file', uid: 0, gid: 0, mode: 0o440 });
   await run('/usr/bin/sha256sum', ['--check', '--strict', PATHS.assetManifest]);
@@ -637,8 +670,8 @@ async function selfTest() {
   ]);
 
   await validateDeploymentPublicKeys({
-    canaryPath: `${PATHS.authorizationKeys}/canary-2026-07.pem`,
-    productionPath: `${PATHS.authorizationKeys}/production-2026-07.pem`,
+    canaryPath: `${PATHS.authorizationKeys}/canary-public.pem`,
+    productionPath: `${PATHS.authorizationKeys}/production-public.pem`,
     expectedUid: 0
   });
 
@@ -676,6 +709,30 @@ async function selfTest() {
     }]
   ];
   for (const [unitPath, contract] of unitContracts) assertUnitDirectives(unitPath, await readNoFollow(unitPath), contract);
+  await assertEffectiveTemplate(
+    'skyjo-online-canary@1-1-canary.service',
+    '/etc/systemd/system/skyjo-online-canary@.service',
+    'skyjo-canary',
+    'skyjo-canary'
+  );
+  await assertEffectiveTemplate(
+    'skyjo-online-canary-smoke@1-1-canary.service',
+    '/etc/systemd/system/skyjo-online-canary-smoke@.service',
+    'skyjo-canary',
+    'skyjo-canary'
+  );
+  await assertEffectiveTemplate(
+    'skyjo-online-state-proof@1-1-canary.service',
+    '/etc/systemd/system/skyjo-online-state-proof@.service',
+    'skyjo-canary',
+    'skyjo-canary'
+  );
+  await assertEffectiveTemplate(
+    'skyjo-online-smoke@1-1-production.service',
+    '/etc/systemd/system/skyjo-online-smoke@.service',
+    'skyjo',
+    'skyjo'
+  );
 
   let productionUnit = 'staged';
   const activeUnit = '/etc/systemd/system/skyjo-online.service';
@@ -703,14 +760,17 @@ export async function main(argv = process.argv.slice(2)) {
   const result = await executeAuthorizedControllerAction({
     expectedCommand: parsed.command,
     signedCommand: parsed.signedCommand,
+    allowExactCompletedReplay: parsed.command === 'upload',
     action: async (fields) => {
       const authorized = {
         command: fields.command,
         runId: fields.runId,
         releaseSha: fields.releaseSha,
         digest: fields.artifactSha256,
+        bytes: fields.artifactBytes,
         tag: fields.tag === '-' ? undefined : fields.tag
       };
+      if (authorized.command === 'upload') return { authorized: authorized.releaseSha, bytes: authorized.bytes };
       if (authorized.command === 'verify') return verifyAction(authorized);
       if (authorized.command === 'promote') return promoteAction(authorized);
       return rollbackAction(authorized);

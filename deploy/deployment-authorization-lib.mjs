@@ -3,10 +3,11 @@ import fsConstants from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export const AUTHORIZATION_DOMAIN = 'skyjo-online-deployment-authorization/v1';
+export const AUTHORIZATION_DOMAIN = 'skyjo-online-deployment-authorization/v2';
 export const AUTHORIZATION_REPOSITORY = 'chadmhohn/skyjo-online';
 export const MAX_AUTHORIZATION_LIFETIME_SECONDS = 600;
 export const MAX_AUTHORIZATION_COMMAND_BYTES = 512;
+export const MAX_AUTHORIZED_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 const runIdPattern = /^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(canary|production)$/;
 const releaseShaPattern = /^[a-f0-9]{40}$/;
@@ -15,6 +16,7 @@ const releaseTagPattern = /^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-
 const keyIdPattern = /^(?:canary|production)-[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const signaturePattern = /^[A-Za-z0-9_-]{86}$/;
 const integerPattern = /^(?:0|[1-9][0-9]{0,15})$/;
+const positiveIntegerPattern = /^[1-9][0-9]{0,15}$/;
 
 export class DeploymentAuthorizationError extends Error {
   constructor(code, message = 'Deployment authorization rejected.') {
@@ -44,7 +46,12 @@ function parseEpoch(value, label) {
   return parsed;
 }
 
-function laneFor(command) {
+function laneFor(command, runId) {
+  if (command === 'upload') {
+    const runMatch = typeof runId === 'string' ? runId.match(runIdPattern) : null;
+    if (!runMatch) reject('INVALID_RUN_ID', 'Deployment authorization run ID is invalid.');
+    return { role: runMatch[1], suffix: runMatch[1], tagRequired: runMatch[1] === 'production' };
+  }
   if (command === 'verify') return { role: 'canary', suffix: 'canary', tagRequired: false };
   if (command === 'promote' || command === 'rollback') return { role: 'production', suffix: 'production', tagRequired: true };
   reject('INVALID_COMMAND', 'Deployment authorization command is invalid.');
@@ -53,16 +60,24 @@ function laneFor(command) {
 export function normalizeAuthorizationFields(value, options = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) reject('INVALID_AUTHORIZATION');
   const command = requireAscii(value.command, 'Command');
-  const lane = laneFor(command);
+  const runId = requireAscii(value.runId, 'Run ID');
+  const lane = laneFor(command, runId);
   const role = requireAscii(value.role, 'Role');
   if (role !== lane.role) reject('ROLE_MISMATCH', 'Deployment authorization role is invalid.');
-  const runId = requireAscii(value.runId, 'Run ID');
   const runMatch = runId.match(runIdPattern);
   if (!runMatch || runMatch[1] !== lane.suffix) reject('INVALID_RUN_ID', 'Deployment authorization run ID is invalid.');
   const releaseSha = requireAscii(value.releaseSha, 'Release SHA');
   if (!releaseShaPattern.test(releaseSha)) reject('INVALID_RELEASE_SHA', 'Deployment authorization release SHA is invalid.');
   const artifactSha256 = requireAscii(value.artifactSha256, 'Artifact digest');
   if (!digestPattern.test(artifactSha256)) reject('INVALID_DIGEST', 'Deployment authorization artifact digest is invalid.');
+  const artifactBytesValue = typeof value.artifactBytes === 'number' ? String(value.artifactBytes) : value.artifactBytes;
+  if (typeof artifactBytesValue !== 'string' || !positiveIntegerPattern.test(artifactBytesValue)) {
+    reject('INVALID_ARTIFACT_SIZE', 'Deployment authorization artifact size is invalid.');
+  }
+  const artifactBytes = Number(artifactBytesValue);
+  if (!Number.isSafeInteger(artifactBytes) || artifactBytes > MAX_AUTHORIZED_ARTIFACT_BYTES) {
+    reject('INVALID_ARTIFACT_SIZE', 'Deployment authorization artifact size is invalid.');
+  }
   const tag = requireAscii(value.tag, 'Tag');
   if ((lane.tagRequired && !releaseTagPattern.test(tag)) || (!lane.tagRequired && tag !== '-')) {
     reject('INVALID_TAG', 'Deployment authorization tag is invalid.');
@@ -80,7 +95,7 @@ export function normalizeAuthorizationFields(value, options = {}) {
     if (issuedAt > nowSeconds + 60) reject('NOT_YET_VALID', 'Deployment authorization is not yet valid.');
     if (expiresAt <= nowSeconds) reject('EXPIRED', 'Deployment authorization has expired.');
   }
-  return { role, command, runId, releaseSha, artifactSha256, tag, issuedAt, expiresAt, keyId };
+  return { role, command, runId, releaseSha, artifactSha256, artifactBytes, tag, issuedAt, expiresAt, keyId };
 }
 
 export function canonicalAuthorizationPayload(value, options = {}) {
@@ -93,6 +108,7 @@ export function canonicalAuthorizationPayload(value, options = {}) {
     `run_id=${fields.runId}`,
     `release_sha=${fields.releaseSha}`,
     `artifact_sha256=${fields.artifactSha256}`,
+    `artifact_bytes=${fields.artifactBytes}`,
     `tag=${fields.tag}`,
     `issued_at=${fields.issuedAt}`,
     `expires_at=${fields.expiresAt}`,
@@ -116,6 +132,7 @@ export function formatSignedDeploymentCommand(value, signature, options = {}) {
     fields.runId,
     fields.releaseSha,
     fields.artifactSha256,
+    fields.artifactBytes,
     fields.tag,
     fields.issuedAt,
     fields.expiresAt,
@@ -130,11 +147,11 @@ export function parseSignedDeploymentCommand(value, options = {}) {
     reject('INVALID_COMMAND_LINE', 'Deployment authorization command line is invalid.');
   }
   const tokens = value.split(' ');
-  if (tokens.length !== 9) reject('INVALID_COMMAND_LINE', 'Deployment authorization command line is invalid.');
-  const [command, runId, releaseSha, artifactSha256, tag, issuedAt, expiresAt, keyId, signature] = tokens;
-  const role = laneFor(command).role;
+  if (tokens.length !== 10) reject('INVALID_COMMAND_LINE', 'Deployment authorization command line is invalid.');
+  const [command, runId, releaseSha, artifactSha256, artifactBytes, tag, issuedAt, expiresAt, keyId, signature] = tokens;
+  const role = laneFor(command, runId).role;
   const fields = normalizeAuthorizationFields({
-    role, command, runId, releaseSha, artifactSha256, tag, issuedAt, expiresAt, keyId
+    role, command, runId, releaseSha, artifactSha256, artifactBytes, tag, issuedAt, expiresAt, keyId
   }, options);
   parseAuthorizationSignature(signature);
   return { fields, signature };
@@ -260,7 +277,23 @@ async function replaceLedgerRecord(recordPath, expected, next) {
   }
 }
 
-export async function beginAuthorizationUse({ ledgerRoot, fields: rawFields, payloadSha256, nowSeconds, expectedUid }) {
+async function readCompletedReplay(recordPath, payloadSha256, expectedUid) {
+  let handle;
+  try {
+    handle = await fs.open(recordPath, fsConstants.constants.O_RDONLY | (fsConstants.constants.O_NOFOLLOW || 0));
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.isSymbolicLink() || (expectedUid !== undefined && stat.uid !== expectedUid) ||
+        (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)) return false;
+    const record = JSON.parse(await handle.readFile('utf8'));
+    return record?.formatVersion === 1 && record.status === 'completed' && record.payloadSha256 === payloadSha256;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+export async function beginAuthorizationUse({ ledgerRoot, fields: rawFields, payloadSha256, nowSeconds, expectedUid, allowExactCompletedReplay = false }) {
   const fields = normalizeAuthorizationFields(rawFields, { nowSeconds });
   if (!digestPattern.test(payloadSha256 || '')) reject('INVALID_LEDGER');
   const root = await assertSafeLedgerRoot(ledgerRoot, expectedUid ?? process.getuid?.());
@@ -274,6 +307,7 @@ export async function beginAuthorizationUse({ ledgerRoot, fields: rawFields, pay
     runId: fields.runId,
     releaseSha: fields.releaseSha,
     artifactSha256: fields.artifactSha256,
+    artifactBytes: fields.artifactBytes,
     tag: fields.tag,
     keyId: fields.keyId,
     issuedAt: fields.issuedAt,
@@ -287,7 +321,18 @@ export async function beginAuthorizationUse({ ledgerRoot, fields: rawFields, pay
     await handle.writeFile(started, 'utf8');
     await handle.sync();
   } catch (error) {
-    if (error?.code === 'EEXIST') reject('REPLAY', 'Deployment authorization was already consumed.');
+    if (error?.code === 'EEXIST') {
+      if (allowExactCompletedReplay && await readCompletedReplay(recordPath, payloadSha256, expectedUid ?? process.getuid?.())) {
+        return {
+          key,
+          recordPath,
+          replayed: true,
+          complete: async () => {},
+          fail: async () => {}
+        };
+      }
+      reject('REPLAY', 'Deployment authorization was already consumed.');
+    }
     if (error instanceof DeploymentAuthorizationError) throw error;
     reject('INVALID_LEDGER');
   } finally {
@@ -305,6 +350,7 @@ export async function beginAuthorizationUse({ ledgerRoot, fields: rawFields, pay
   return {
     key,
     recordPath,
+    replayed: false,
     complete: () => finish('completed'),
     fail: () => finish('failed')
   };

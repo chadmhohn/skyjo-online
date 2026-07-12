@@ -68,8 +68,8 @@ prepare() {
   /usr/bin/install -d -o root -g skyjo-deploy -m 1731 /var/tmp/skyjo-deploy
   /usr/bin/install -d -o root -g root -m 0700 "$REPLAY_ROOT"
   /usr/bin/install -d -o root -g root -m 0700 "$AUTH_ROOT"
-  /usr/bin/install -o root -g root -m 0600 "$canary_authorization_key" "$AUTH_ROOT/canary-2026-07.pem"
-  /usr/bin/install -o root -g root -m 0600 "$production_authorization_key" "$AUTH_ROOT/production-2026-07.pem"
+  /usr/bin/install -o root -g root -m 0600 "$canary_authorization_key" "$AUTH_ROOT/canary-public.pem"
+  /usr/bin/install -o root -g root -m 0600 "$production_authorization_key" "$AUTH_ROOT/production-public.pem"
   /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-tmpfiles.conf" /etc/tmpfiles.d/skyjo-online.conf
   /usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/skyjo-online.conf
 
@@ -79,7 +79,7 @@ prepare() {
   for file in skyjo-canary-launch skyjo-smoke-launch skyjo-state-proof-launch; do
     /usr/bin/install -o root -g root -m 0555 "$SCRIPT_DIR/$file" "$LIB_ROOT/$file"
   done
-  /usr/bin/install -o root -g root -m 0755 "$SCRIPT_DIR/skyjo-release-controller" /usr/local/sbin/skyjo-release-controller
+  /usr/bin/install -o root -g root -m 0555 "$SCRIPT_DIR/skyjo-release-controller" /usr/local/sbin/skyjo-release-controller
   /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online.service" "$STAGED_UNIT"
   /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-canary@.service" /etc/systemd/system/skyjo-online-canary@.service
   /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-canary-smoke@.service" /etc/systemd/system/skyjo-online-canary-smoke@.service
@@ -122,8 +122,8 @@ prepare() {
     /etc/systemd/system/skyjo-online-state-proof@.service \
     /etc/tmpfiles.d/skyjo-online.conf \
     /etc/sudoers.d/skyjo-deploy \
-    "$AUTH_ROOT/canary-2026-07.pem" \
-    "$AUTH_ROOT/production-2026-07.pem"; do
+    "$AUTH_ROOT/canary-public.pem" \
+    "$AUTH_ROOT/production-public.pem"; do
     /usr/bin/sha256sum "$asset" >> "$ASSET_MANIFEST"
   done
   /usr/bin/chown root:root "$ASSET_MANIFEST"

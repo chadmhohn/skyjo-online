@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseSignedDeploymentCommand } from './deployment-authorization-lib.mjs';
 import {
+  DIGEST_PATTERN,
   MAX_ARCHIVE_BYTES,
   RELEASE_SHA_PATTERN,
   RUN_ID_PATTERN,
@@ -29,22 +30,15 @@ export function parseCommand(value) {
   if (typeof value !== 'string' || value.length > 512 || value.trim() !== value || /[\0\n\r\t]/.test(value) || value.includes('  ')) {
     throw commandError();
   }
-  const parts = value.split(' ');
-  const [command, runId, releaseSha, fourth] = parts;
-  if (command === 'upload') {
-    if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '') ||
-        parts.length !== 4 || !/^(?:[1-9][0-9]{0,9})$/.test(fourth || '')) throw commandError();
-    const bytes = Number(fourth);
-    if (bytes <= MAX_ARCHIVE_BYTES) return { command, runId, releaseSha, bytes };
-    throw commandError();
-  }
   try {
     const { fields, signature } = parseSignedDeploymentCommand(value);
+    if (fields.artifactBytes > MAX_ARCHIVE_BYTES) throw commandError();
     return {
       command: fields.command,
       runId: fields.runId,
       releaseSha: fields.releaseSha,
       digest: fields.artifactSha256,
+      bytes: fields.artifactBytes,
       tag: fields.tag,
       issuedAt: fields.issuedAt,
       expiresAt: fields.expiresAt,
@@ -203,6 +197,19 @@ async function existingArchiveSize(archivePath) {
   return stat.size;
 }
 
+async function sha256RegularFile(filePath) {
+  const handle = await fsp.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Deployment archive is unsafe.');
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
+    return hash.digest('hex');
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
 async function receiveExactly(input, expectedBytes, handle) {
   let received = 0;
   for await (const value of input) {
@@ -222,9 +229,9 @@ async function receiveExactly(input, expectedBytes, handle) {
   return received;
 }
 
-export async function performUpload({ stageRoot = DEFAULT_STAGE_ROOT, runId, releaseSha, bytes, input = process.stdin }) {
+export async function performUpload({ stageRoot = DEFAULT_STAGE_ROOT, runId, releaseSha, digest, bytes, input = process.stdin }) {
   if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '') ||
-      !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_ARCHIVE_BYTES) throw commandError();
+      !DIGEST_PATTERN.test(digest || '') || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_ARCHIVE_BYTES) throw commandError();
   await assertSafeStageRoot(stageRoot);
   const stageDirectory = resolveWithin(stageRoot, runId);
   const created = await fsp.mkdir(stageDirectory, { mode: 0o700, recursive: false }).then(() => true).catch((error) => {
@@ -240,6 +247,7 @@ export async function performUpload({ stageRoot = DEFAULT_STAGE_ROOT, runId, rel
     const completedSize = await existingArchiveSize(archivePath);
     if (completedSize !== null) {
       if (completedSize !== bytes) throw new Error('Completed deployment archive conflicts with the declared size.');
+      if (await sha256RegularFile(archivePath) !== digest) throw new Error('Completed deployment archive conflicts with the approved digest.');
       const received = await receiveExactly(input, bytes, null);
       return { received, idempotent: true, archivePath };
     }
@@ -252,6 +260,7 @@ export async function performUpload({ stageRoot = DEFAULT_STAGE_ROOT, runId, rel
       await handle.sync();
       await handle.close();
       handle = null;
+      if (await sha256RegularFile(partialPath) !== digest) throw new Error('Upload does not match the approved digest.');
       await fsp.link(partialPath, archivePath);
       await fsyncDirectory(stageDirectory);
       await fsp.unlink(partialPath);
@@ -280,14 +289,22 @@ async function runController(parsed) {
   });
 }
 
-export async function dispatch({ originalCommand = process.env.SSH_ORIGINAL_COMMAND || '', stageRoot = DEFAULT_STAGE_ROOT, input = process.stdin } = {}) {
+export async function dispatch({
+  originalCommand = process.env.SSH_ORIGINAL_COMMAND || '',
+  stageRoot = DEFAULT_STAGE_ROOT,
+  input = process.stdin,
+  runControllerImpl = runController,
+  performUploadImpl = performUpload
+} = {}) {
   const parsed = parseCommand(originalCommand);
   if (parsed.command === 'upload') {
-    const result = await performUpload({ stageRoot, ...parsed, input });
+    const authorizationStatus = await runControllerImpl(parsed);
+    if (authorizationStatus !== 0) return authorizationStatus;
+    const result = await performUploadImpl({ stageRoot, ...parsed, input });
     process.stdout.write(`uploaded ${parsed.runId} ${parsed.releaseSha} ${result.received}${result.idempotent ? ' idempotent' : ''}\n`);
     return 0;
   }
-  return runController(parsed);
+  return runControllerImpl(parsed);
 }
 
 const isDirectExecution = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));

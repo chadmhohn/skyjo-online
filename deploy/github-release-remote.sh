@@ -15,7 +15,6 @@ Required environment:
   SKYJO_DEPLOY_IDENTITY_FILE
   SKYJO_DEPLOY_KNOWN_HOSTS_FILE
   SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE
-  SKYJO_DEPLOY_AUTH_KEY_ID
 EOF
   exit 64
 }
@@ -60,7 +59,6 @@ deploy_user="${SKYJO_DEPLOY_USER:-skyjo-deploy}"
 identity_file="${SKYJO_DEPLOY_IDENTITY_FILE:-}"
 known_hosts_file="${SKYJO_DEPLOY_KNOWN_HOSTS_FILE:-}"
 authorization_key_file="${SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE:-}"
-authorization_key_id="${SKYJO_DEPLOY_AUTH_KEY_ID:-}"
 ssh_bin="${SKYJO_SSH_BIN:-ssh}"
 node_bin="${SKYJO_NODE_BIN:-node}"
 signer="${SKYJO_DEPLOY_AUTH_SIGNER:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sign-deployment-authorization.mjs}"
@@ -85,7 +83,7 @@ if [[ "$mode" == "verify" ]]; then
   authorization_role=canary
   authorization_tag=-
 fi
-[[ "$authorization_key_id" =~ ^${authorization_role}-[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]] || die 'invalid deployment authorization key ID'
+authorization_key_id="${authorization_role}-primary"
 
 expected_archive_name="skyjo-runtime-$release_sha.tar.gz"
 expected_checksum_name="$expected_archive_name.sha256"
@@ -110,7 +108,11 @@ ssh_options=(
 )
 target="$deploy_user@$deploy_host"
 
-if [[ "$mode" == "verify" || "$mode" == "promote" ]]; then
+if [[ "$mode" == "rollback" ]]; then
+  archive_path="${checksum_path%.sha256}"
+fi
+
+if [[ "$mode" == "verify" || "$mode" == "promote" || "$mode" == "rollback" ]]; then
   [[ "$(basename -- "$archive_path")" == "$expected_archive_name" ]] || die 'archive path does not match release SHA'
   [[ -f "$archive_path" && ! -L "$archive_path" ]] || die 'missing release archive'
   actual_digest="$(sha256sum "$archive_path" | awk '{print $1}')"
@@ -118,21 +120,37 @@ if [[ "$mode" == "verify" || "$mode" == "promote" ]]; then
   archive_size="$(wc -c < "$archive_path" | tr -d '[:space:]')"
   [[ "$archive_size" =~ ^[1-9][0-9]*$ ]] || die 'release archive is empty'
 
-  "$ssh_bin" "${ssh_options[@]}" "$target" "upload $run_id $release_sha $archive_size" < "$archive_path"
 fi
 
-signed_command="$("$node_bin" "$signer" \
+sign_command() {
+  command_to_sign="$1"
+  "$node_bin" "$signer" \
   --role "$authorization_role" \
-  --command "$mode" \
+  --command "$command_to_sign" \
   --run-id "$run_id" \
   --release-sha "$release_sha" \
   --artifact-sha256 "$expected_digest" \
+  --artifact-bytes "$archive_size" \
   --tag "$authorization_tag" \
   --key-id "$authorization_key_id" \
   --private-key "$authorization_key_file" \
-  --lifetime-seconds 300)"
+  --lifetime-seconds 300
+}
+
+if [[ "$mode" == "verify" || "$mode" == "promote" ]]; then
+  upload_command="$(sign_command upload)"
+  [[ "$upload_command" != *$'\n'* && "$upload_command" != *$'\r'* ]] || die 'signer returned an invalid upload command'
+  [[ "$upload_command" == "upload $run_id $release_sha $expected_digest $archive_size $authorization_tag "* ]] || die 'signer returned a mismatched upload command'
+  if ! "$ssh_bin" "${ssh_options[@]}" "$target" "$upload_command" < "$archive_path"; then
+    printf '%s\n' 'Upload transport failed; retrying the exact signed, idempotent request once.' >&2
+    sleep 1
+    "$ssh_bin" "${ssh_options[@]}" "$target" "$upload_command" < "$archive_path"
+  fi
+fi
+
+signed_command="$(sign_command "$mode")"
 [[ "$signed_command" != *$'\n'* && "$signed_command" != *$'\r'* ]] || die 'signer returned an invalid command'
-[[ "$signed_command" == "$mode $run_id $release_sha $expected_digest $authorization_tag "* ]] || die 'signer returned a mismatched command'
+[[ "$signed_command" == "$mode $run_id $release_sha $expected_digest $archive_size $authorization_tag "* ]] || die 'signer returned a mismatched command'
 
 "$ssh_bin" "${ssh_options[@]}" "$target" "$signed_command"
 

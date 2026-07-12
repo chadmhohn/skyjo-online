@@ -286,9 +286,11 @@ export async function resolveGithubTag(tag, fetchImpl = fetch) {
   return object.sha;
 }
 
-export function authorizeRollback({ currentReleaseSha, metadata, requestedReleaseSha, requestedDigest, requestedTag }) {
+export function authorizeRollback({ currentReleaseSha, metadata, requestedReleaseSha, requestedDigest, requestedBytes, requestedTag }) {
   if (currentReleaseSha !== validateReleaseSha(requestedReleaseSha)) throw new Error('Current release does not match the requested failed SHA.');
-  if (!metadata || metadata.releaseSha !== requestedReleaseSha || metadata.artifactSha256 !== validateDigest(requestedDigest) || metadata.tag !== validateReleaseTag(requestedTag)) {
+  if (!Number.isSafeInteger(requestedBytes) || requestedBytes < 1 || requestedBytes > MAX_ARCHIVE_BYTES ||
+      !metadata || metadata.releaseSha !== requestedReleaseSha || metadata.artifactSha256 !== validateDigest(requestedDigest) ||
+      metadata.artifactBytes !== requestedBytes || metadata.tag !== validateReleaseTag(requestedTag)) {
     throw new Error('Rollback authorization does not match current release metadata.');
   }
   return true;
