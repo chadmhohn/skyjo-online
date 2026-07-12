@@ -16,25 +16,31 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 die() { printf '%s\n' "$*" >&2; exit 1; }
 require_root() { [ "$(id -u)" -eq 0 ] || die 'Run this bootstrap as root.'; }
 valid_sha() { printf '%s' "$1" | grep -Eq '^[a-f0-9]{40}$'; }
+[ -f "$SCRIPT_DIR/node-runtime-installer.sh" ] && [ ! -L "$SCRIPT_DIR/node-runtime-installer.sh" ] || die 'Node runtime installer library is missing or unsafe.'
+. "$SCRIPT_DIR/node-runtime-installer.sh"
 
 install_node() {
   [ "$(uname -m)" = x86_64 ] || die 'The pinned runtime installer currently supports x86_64 only.'
   target="$NODE_ROOT/node-v$NODE_VERSION"
-  if [ ! -x "$target/bin/node" ]; then
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    skyjo_node_target_valid "$target" "$NODE_VERSION" || die 'Existing pinned Node runtime is incomplete or invalid.'
+  else
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT INT TERM
+    cleanup_node_download() {
+      case "$tmp" in /tmp/tmp.*|/var/tmp/tmp.*) /usr/bin/rm -rf -- "$tmp" ;; *) die 'Refusing to clean an unexpected Node download path.' ;; esac
+    }
+    trap cleanup_node_download EXIT INT TERM
     archive="$tmp/node.tar.xz"
     /usr/bin/curl --fail --silent --show-error --location \
       "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-x64.tar.xz" --output "$archive"
-    printf '%s  %s\n' "$NODE_SHA256" "$archive" | /usr/bin/sha256sum --check --status || die 'Pinned Node archive checksum failed.'
     /usr/bin/mkdir -p "$NODE_ROOT"
-    /usr/bin/tar --extract --xz --file "$archive" --directory "$NODE_ROOT"
-    /usr/bin/chown -R root:root "$target"
-    /usr/bin/chmod -R u=rwX,go=rX "$target"
-    rm -rf "$tmp"
+    skyjo_install_node_archive \
+      "$archive" "$NODE_SHA256" "$NODE_ROOT" "$target" \
+      "node-v$NODE_VERSION-linux-x64" "$NODE_VERSION" root:root || die 'Pinned Node runtime installation failed.'
+    cleanup_node_download
     trap - EXIT INT TERM
   fi
-  [ "$($target/bin/node --version)" = "v$NODE_VERSION" ] || die 'Pinned Node runtime validation failed.'
+  skyjo_node_target_valid "$target" "$NODE_VERSION" || die 'Pinned Node runtime validation failed.'
   /usr/bin/ln -sfn "node-v$NODE_VERSION" "$NODE_ROOT/node.next"
   /usr/bin/mv -Tf "$NODE_ROOT/node.next" "$NODE_ROOT/node"
 }

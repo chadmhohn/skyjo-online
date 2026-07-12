@@ -74,7 +74,7 @@ sudo deploy/bootstrap-skyjo-delivery.sh prepare \
 sudo /usr/local/sbin/skyjo-release-controller self-test
 ```
 
-Preparation installs and checksum-verifies the isolated Node 24 runtime, creates the restricted identities/directories, installs the root-owned dispatcher/controller, validates sudoers and SSH configuration, installs only the canary unit, and stages the hardened production unit. It deliberately does not replace or restart the legacy production service. Delete the temporary public-key file afterward.
+Preparation installs the checksum-pinned Node 24 runtime through validated platform-root stripping and an atomic same-filesystem rename, creates the restricted identities/directories, installs the root-owned dispatcher/controller, validates sudoers and SSH configuration, installs only the canary unit, and stages the hardened production unit. Failed Node staging is cleaned and a valid existing runtime is reused without replacement. Preparation deliberately does not replace or restart the legacy production service. Delete the temporary public-key file afterward.
 
 Before the first tagged promotion, create and activate a verified rollback anchor for the currently healthy legacy service. These are deliberately separate, explicit steps; neither runs during prepare:
 

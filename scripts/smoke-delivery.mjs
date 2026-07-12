@@ -155,6 +155,8 @@ async function testLinuxRemoteClient() {
     const { stdout } = await execFileAsync(bash, ['-c', 'cygpath -u "$1"', '_', value]);
     return stdout.trim();
   };
+  const installerRegression = await bashPath(path.join(root, 'deploy', 'tests', 'node-runtime-installer.test.sh'));
+  await execFileAsync(bash, [installerRegression]);
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-delivery-smoke-'));
   try {
     const archiveName = `skyjo-runtime-${fullSha}.tar.gz`;
@@ -236,4 +238,4 @@ async function testLinuxRemoteClient() {
 await testPublicSmoke();
 await testWorkflowContract();
 const linuxRemote = await testLinuxRemoteClient();
-console.log(`delivery smoke passed: public/current and explicit legacy recovery, build-once CI contract, hardened units, remote transport ${linuxRemote}`);
+console.log(`delivery smoke passed: public/current and explicit legacy recovery, build-once CI contract, hardened units, atomic Node installer and remote transport ${linuxRemote}`);

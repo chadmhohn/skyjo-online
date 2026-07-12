@@ -16,7 +16,7 @@ Skyjo production runs only from immutable release directories. Application and s
 /usr/local/lib/skyjo-online/           root-owned controller and launchers
 ```
 
-The global `/usr/bin/node` is never changed. The bootstrap downloads Node `v24.18.0` from nodejs.org and verifies the pinned official Linux x64 SHA-256 before installing it under `/opt/skyjo-online`.
+The global `/usr/bin/node` is never changed. The bootstrap downloads Node `v24.18.0` from nodejs.org, verifies the pinned official Linux x64 SHA-256 and sole `node-v24.18.0-linux-x64` archive root, strips that root into a private same-filesystem staging directory, validates Node and npm, and atomically publishes the exact `/opt/skyjo-online/node-v24.18.0` target. Failed staging is removed; a valid target is reused without replacement, while an incomplete existing target is never clobbered.
 
 ## Restricted SSH interface
 
