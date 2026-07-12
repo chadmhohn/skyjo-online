@@ -20,7 +20,7 @@ The global `/usr/bin/node` is never changed. The bootstrap downloads Node `v24.1
 
 ## Restricted SSH interface
 
-The `skyjo-deploy` account has a locked password and a forced Ed25519-key command with `restrict`, no PTY, no forwarding, and no user rc. It has no general shell or file-transfer command. The only accepted commands are:
+The `skyjo-deploy` account has a locked password and a forced Ed25519-key command with `restrict`, no PTY, no forwarding, and no user rc. Bootstrap accepts one LF- or CRLF-terminated Ed25519 public-key record, verifies its pinned fingerprint, rejects embedded controls or extra lines, and writes one canonical LF-only `authorized_keys` record. The account has no general shell or file-transfer command. The only accepted commands are:
 
 ```text
 <action> <run>-<attempt>-<lane> <40-sha> <artifact-sha256> <artifact-bytes> <tag-or-dash> <issued-at> <expires-at> <lane-key-id> <ed25519-signature>

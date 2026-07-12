@@ -18,6 +18,8 @@ require_root() { [ "$(id -u)" -eq 0 ] || die 'Run this bootstrap as root.'; }
 valid_sha() { printf '%s' "$1" | grep -Eq '^[a-f0-9]{40}$'; }
 [ -f "$SCRIPT_DIR/node-runtime-installer.sh" ] && [ ! -L "$SCRIPT_DIR/node-runtime-installer.sh" ] || die 'Node runtime installer library is missing or unsafe.'
 . "$SCRIPT_DIR/node-runtime-installer.sh"
+[ -f "$SCRIPT_DIR/transport-key-lib.sh" ] && [ ! -L "$SCRIPT_DIR/transport-key-lib.sh" ] || die 'Transport-key validation library is missing or unsafe.'
+. "$SCRIPT_DIR/transport-key-lib.sh"
 
 install_node() {
   [ "$(uname -m)" = x86_64 ] || die 'The pinned runtime installer currently supports x86_64 only.'
@@ -51,11 +53,7 @@ prepare() {
   production_authorization_key=${3:-}
   [ "$#" -eq 3 ] && [ -f "$public_key" ] && [ -f "$canary_authorization_key" ] && [ -f "$production_authorization_key" ] || \
     die 'Usage: bootstrap-skyjo-delivery.sh prepare <transport-public-key> <canary-authorization-public-pem> <production-authorization-public-pem>'
-  key=$(sed -n '1p' "$public_key")
-  printf '%s' "$key" | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/=]+([[:space:]].*)?$' || die 'Deploy key must be a single Ed25519 public key.'
-  [ "$(wc -l < "$public_key")" -eq 1 ] || die 'Deploy public key file must contain exactly one line.'
-  [ "$(/usr/bin/ssh-keygen -lf "$public_key" -E sha256 | /usr/bin/awk '{print $2}')" = "$TRANSPORT_KEY_FINGERPRINT" ] || \
-    die 'Deploy transport key does not match the pinned GitHub environment key.'
+  key=$(skyjo_canonical_transport_public_key "$public_key" "$TRANSPORT_KEY_FINGERPRINT") || die 'Deploy transport public-key validation failed.'
 
   install_node
   /opt/skyjo-online/node/bin/node "$SCRIPT_DIR/validate-deployment-public-keys.mjs" \

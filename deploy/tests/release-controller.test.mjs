@@ -158,6 +158,7 @@ test('operational assets keep the safety contracts explicit', async () => {
   assert.match(bootstrap, /Prepared Skyjo delivery assets\. The live production unit was not replaced/);
   assert.match(bootstrap, /skyjo_install_node_archive/);
   assert.match(bootstrap, /node-v\$NODE_VERSION-linux-x64/);
+  assert.match(bootstrap, /skyjo_canonical_transport_public_key "\$public_key" "\$TRANSPORT_KEY_FINGERPRINT"/);
   assert.match(bootstrap, /Legacy rollback snapshot contains a symbolic link/);
   assert.match(service, /User=skyjo/);
   assert.match(service, /\/opt\/skyjo-online\/node\/bin\/node/);

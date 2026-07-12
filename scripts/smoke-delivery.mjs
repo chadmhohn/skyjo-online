@@ -157,6 +157,8 @@ async function testLinuxRemoteClient() {
   };
   const installerRegression = await bashPath(path.join(root, 'deploy', 'tests', 'node-runtime-installer.test.sh'));
   await execFileAsync(bash, [installerRegression]);
+  const transportKeyRegression = await bashPath(path.join(root, 'deploy', 'tests', 'transport-key-crlf.test.sh'));
+  await execFileAsync(bash, [transportKeyRegression]);
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-delivery-smoke-'));
   try {
     const archiveName = `skyjo-runtime-${fullSha}.tar.gz`;
