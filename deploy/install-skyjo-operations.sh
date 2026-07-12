@@ -20,6 +20,32 @@ safe_asset() {
 }
 reject_link() { [ ! -L "$1" ] || die "Refusing a linked operations target: $1"; }
 
+assert_install_inactive() {
+  [ ! -e "$MARKER" ] && [ ! -L "$MARKER" ] || die 'Refusing to install while operations are activated.'
+  for unit in \
+    skyjo-readiness-monitor.service skyjo-readiness-monitor.timer \
+    skyjo-backup-daily.service skyjo-backup-daily.timer \
+    skyjo-backup-monthly.service skyjo-backup-monthly.timer; do
+    if /usr/bin/systemctl is-active --quiet "$unit"; then
+      die "Refusing to replace an active operations unit: $unit"
+    else
+      result=$?
+      [ "$result" -eq 3 ] || [ "$result" -eq 4 ] || die "Could not prove operations unit inactive: $unit"
+    fi
+    set +e
+    enabled_state=$(/usr/bin/systemctl is-enabled "$unit" 2>/dev/null)
+    result=$?
+    set -e
+    case "$enabled_state:$result" in
+      disabled:1|static:1|indirect:0|masked:1|not-found:1) ;;
+      enabled:*|enabled-runtime:*|linked:*|linked-runtime:*|alias:*)
+        die "Refusing to replace an enabled operations unit: $unit"
+        ;;
+      *) die "Could not prove operations unit disabled: $unit" ;;
+    esac
+  done
+}
+
 validate_monitor_user() {
   if /usr/bin/id skyjo-monitor >/dev/null 2>&1; then
     entry=$(/usr/bin/getent passwd skyjo-monitor)
@@ -43,6 +69,7 @@ install_assets() {
     die 'Operations assets must be staged in a root-owned real directory.'
   source_permissions=$(/usr/bin/stat -c %A "$SCRIPT_DIR")
   case "$source_permissions" in ?????w*|????????w*) die 'Operations asset directory is writable outside root.' ;; esac
+  assert_install_inactive
   for asset in \
     install-skyjo-operations.sh \
     validate-operations-readiness.mjs \

@@ -142,6 +142,15 @@ function assertDetailedRuleset(actual, expected) {
   }
 }
 
+export function assertDependabotReadbacks(vulnerabilityAlerts, securityUpdates) {
+  if (vulnerabilityAlerts !== null) {
+    throw new Error('Dependabot vulnerability-alert readback did not confirm enablement.');
+  }
+  if (securityUpdates?.enabled !== true || securityUpdates.paused === true) {
+    throw new Error('Dependabot security-update readback did not confirm active enablement.');
+  }
+}
+
 export async function reconcileGithubGovernance({ repository, api, apply = false, confirmation }) {
   const target = assertGovernanceRepository(repository);
   if (typeof api !== 'function') throw new Error('A GitHub API implementation is required.');
@@ -196,7 +205,14 @@ export async function reconcileGithubGovernance({ repository, api, apply = false
   }
   if (!Number.isSafeInteger(rulesetId)) throw new Error('Managed ruleset identity is invalid.');
 
-  const [verifiedRepository, verifiedRuleset, verifiedActions, verifiedWorkflowToken] = await Promise.all([
+  const [
+    verifiedRepository,
+    verifiedRuleset,
+    verifiedActions,
+    verifiedWorkflowToken,
+    verifiedVulnerabilityAlerts,
+    verifiedSecurityUpdates
+  ] = await Promise.all([
     api('GET', `/repos/${target}`),
     api('GET', `/repos/${target}/rulesets/${rulesetId}`),
     api('GET', `/repos/${target}/actions/permissions`),
@@ -205,6 +221,7 @@ export async function reconcileGithubGovernance({ repository, api, apply = false
     api('GET', `/repos/${target}/automated-security-fixes`)
   ]);
   assertDetailedRuleset(verifiedRuleset, payload);
+  assertDependabotReadbacks(verifiedVulnerabilityAlerts, verifiedSecurityUpdates);
   if (
     verifiedRepository.allow_squash_merge !== true ||
     verifiedRepository.allow_merge_commit !== false ||

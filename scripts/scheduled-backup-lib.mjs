@@ -59,11 +59,17 @@ export async function enforceBackupRetention(categoryDirectory, kind, keep = RET
   if (!Number.isSafeInteger(keep) || keep < 1 || keep > 366) throw new Error('Scheduled-backup retention is invalid.');
   const root = path.resolve(categoryDirectory);
   const names = await listBackups(root, kind);
+  for (const name of names) {
+    const candidate = path.resolve(root, name);
+    if (!pathInside(root, candidate) || path.basename(candidate) !== name) {
+      throw new Error('Scheduled-backup verification target escaped its namespace.');
+    }
+    await verifyStateBackup(candidate);
+  }
   const pruned = [];
   for (const name of names.slice(keep)) {
     const candidate = path.resolve(root, name);
     if (!pathInside(root, candidate) || path.basename(candidate) !== name) throw new Error('Scheduled-backup prune target escaped its namespace.');
-    await verifyStateBackup(candidate);
     await fs.rm(candidate, { recursive: true, force: false });
     pruned.push(name);
   }

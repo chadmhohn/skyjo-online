@@ -41,7 +41,7 @@ sudo /usr/local/share/skyjo-online/operations/install-skyjo-operations.sh activa
 sudo /usr/local/share/skyjo-online/operations/install-skyjo-operations.sh deactivate
 ```
 
-For release work, copy the reviewed installer and its eight sibling assets to a root-owned staging directory first. `install` validates and installs root-owned units, validators, and the backup launcher, creates private directories, verifies the units, and reloads systemd. It never creates the activation marker and never enables a timer.
+For release work, copy the reviewed installer and its eight sibling assets to a root-owned staging directory first. `install` refuses to run if the activation marker exists or any managed unit is active/enabled; an inactive reinstall remains idempotent. It then validates and installs root-owned units, validators, and the backup launcher, creates private directories, verifies the units, and reloads systemd. It never creates the activation marker and never enables a timer.
 
 Run `activate` only after the immutable `v0.1.1` release is healthy and its local `/readyz` reports the expected release SHA. Activation:
 
@@ -62,6 +62,8 @@ The backup services never load `/etc/skyjo-online.env`. Their root-owned launche
 ```
 
 Daily retention is 30 verified snapshots. Monthly retention is 12 verified snapshots and 12 drill records. Retention only enumerates exact managed names in those namespaces, verifies an old backup before deleting it, and never visits bootstrap or pre-deployment backups. A monthly drill restores into a fresh directory below `/var/tmp/skyjo-restore-drills`, reverifies the complete payload and semantic metadata, records sanitized evidence, and removes the isolated copy. It never writes live state.
+
+Scheduled backup services run as root because they must read the private `skyjo`-owned SQLite/room files while writing root-only recovery material. That trust boundary is constrained to fixed paths, a root-owned sole-link launcher and assets, no application environment file, no network access, the shared release lock, and a read-only system image with only backup/restore namespaces writable. Retention verifies every managed backup—including the retained set—before it deletes anything.
 
 Backup verification accepts a checksum-valid, contiguous historical migration/protocol prefix supported by the current code so a valid older monthly snapshot remains testable after additive releases. Creating a new backup from live state is stricter: the live database and release identity must be exactly current. Future, unknown, discontinuous, empty, or checksum-drifted histories remain rejected.
 

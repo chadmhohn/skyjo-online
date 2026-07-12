@@ -8,6 +8,7 @@ import { saveRoomsToDisk } from '../../server-room-persistence.mjs';
 import { writeReleaseIdentity } from '../../server-release.mjs';
 import {
   governanceRuleset,
+  assertDependabotReadbacks,
   reconcileGithubGovernance,
   REQUIRED_CHECKS,
   repositorySettings
@@ -111,7 +112,7 @@ test('operations activation accepts only private healthy evidence for its exact 
   try {
     const evidence = path.join(root, 'local-readiness.json');
     await fs.writeFile(evidence, `${JSON.stringify(healthyResult({ monitor: 'local' }), null, 2)}\n`, { mode: 0o600 });
-    const uid = (await fs.stat(evidence)).uid;
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
     assert.deepEqual(await validateOperationsReadiness(evidence, releaseSha, uid, process.platform, fixedNow.valueOf()), {
       releaseSha,
       checkedAt: fixedNow.toISOString()
@@ -120,13 +121,19 @@ test('operations activation accepts only private healthy evidence for its exact 
       validateOperationsReadiness(evidence, 'b'.repeat(40), uid, process.platform, fixedNow.valueOf()),
       /does not match/
     );
-    const tampered = JSON.parse(await fs.readFile(evidence, 'utf8'));
-    tampered.extra = 'not allowed';
+    const tampered = { ...healthyResult({ monitor: 'local' }), extra: 'not allowed' };
     await fs.writeFile(evidence, JSON.stringify(tampered), { mode: 0o600 });
     await assert.rejects(
       validateOperationsReadiness(evidence, releaseSha, uid, process.platform, fixedNow.valueOf()),
       /unexpected shape/
     );
+    if (process.platform !== 'win32') {
+      const linkedEvidence = path.join(root, 'linked-readiness.json');
+      await fs.symlink(evidence, linkedEvidence);
+      await assert.rejects(
+        validateOperationsReadiness(linkedEvidence, releaseSha, uid, process.platform, fixedNow.valueOf())
+      );
+    }
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -243,7 +250,10 @@ test('governance apply binds checks to their app and verifies detailed settings 
       return detailedRuleset;
     }
     if (endpoint.endsWith('/rulesets/91')) return { ...detailedRuleset };
-    if (endpoint.endsWith('/vulnerability-alerts') || endpoint.endsWith('/automated-security-fixes')) return null;
+    if (endpoint.endsWith('/vulnerability-alerts')) return null;
+    if (endpoint.endsWith('/automated-security-fixes')) {
+      return method === 'GET' ? { enabled: true, paused: false } : null;
+    }
     throw new Error(`unexpected API request ${method} ${endpoint}`);
   };
   const result = await reconcileGithubGovernance({
@@ -255,6 +265,13 @@ test('governance apply binds checks to their app and verifies detailed settings 
   const required = detailedRuleset.rules.find((rule) => rule.type === 'required_status_checks');
   assert.ok(required.parameters.required_status_checks.every((check) => check.integration_id === 15368));
   assert.ok(mutations.some(({ endpoint }) => endpoint.endsWith('/automated-security-fixes')));
+});
+
+test('governance rejects disabled or paused Dependabot security readbacks', () => {
+  assert.doesNotThrow(() => assertDependabotReadbacks(null, { enabled: true, paused: false }));
+  assert.throws(() => assertDependabotReadbacks({ enabled: false }, { enabled: true, paused: false }), /vulnerability-alert/);
+  assert.throws(() => assertDependabotReadbacks(null, { enabled: false, paused: false }), /security-update/);
+  assert.throws(() => assertDependabotReadbacks(null, { enabled: true, paused: true }), /security-update/);
 });
 
 async function backupFixture(root) {
@@ -323,6 +340,29 @@ test('retention refuses unexpected or unverified entries instead of deleting bro
   }
 });
 
+test('retention verifies retained backups before deleting any older backup', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-retained-corruption-'));
+  try {
+    const env = await backupFixture(root);
+    const backupRoot = path.join(root, 'backups');
+    const restoreRoot = path.join(root, 'restores');
+    for (let day = 1; day <= 3; day += 1) {
+      await runScheduledBackup({
+        kind: 'daily', env, backupRoot, restoreRoot, keep: 10,
+        now: new Date(`2026-07-0${day}T03:15:00.000Z`)
+      });
+    }
+    const category = path.join(backupRoot, 'daily');
+    await fs.appendFile(path.join(category, 'daily-20260703T031500Z', 'rooms.json'), 'corrupt');
+    await assert.rejects(enforceBackupRetention(category, 'daily', 2), /size or SHA-256/);
+    assert.deepEqual((await fs.readdir(category)).sort(), [
+      'daily-20260701T031500Z', 'daily-20260702T031500Z', 'daily-20260703T031500Z'
+    ]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('workflow and systemd assets preserve pins, staged activation, and exact schedules', async () => {
   const [dependabot, codeql, monitor, installer, dailyTimer, monthlyTimer, readinessTimer, readinessService] = await Promise.all([
     fs.readFile(path.join(repoRoot, '.github', 'dependabot.yml'), 'utf8'),
@@ -344,6 +384,9 @@ test('workflow and systemd assets preserve pins, staged activation, and exact sc
   assert.match(monitor, /if: always\(\)[\s\S]*reconcile-production-incident/);
   const installFunction = installer.slice(installer.indexOf('install_assets()'), installer.indexOf('activate()'));
   assert.doesNotMatch(installFunction, /systemctl enable|operations\.enabled.*install/);
+  assert.match(installFunction, /assert_install_inactive/);
+  assert.match(installer, /Refusing to replace an active operations unit/);
+  assert.match(installer, /Refusing to replace an enabled operations unit/);
   assert.doesNotMatch(installer, /disable --now[\s\S]{0,200}\|\| true/);
   assert.match(installer, /activation marker was removed, but one or more timers could not be disabled/i);
   assert.match(installer, /\[ ! -L "\$MARKER" \]/);
