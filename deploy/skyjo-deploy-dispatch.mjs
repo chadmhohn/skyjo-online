@@ -23,6 +23,7 @@ import {
 
 export const DEFAULT_STAGE_ROOT = '/var/tmp/skyjo-deploy';
 export const UPLOAD_INPUT_TIMEOUT_MS = 15 * 60 * 1000;
+export const UPLOAD_INPUT_CLEANUP_TIMEOUT_MS = 5 * 1000;
 export const MAX_STAGE_DIRECTORY_ENTRIES = 128;
 export const MAX_PARTIALS_CLEANED_PER_UPLOAD = 32;
 export const MAX_STAGED_RUNS = 32;
@@ -172,20 +173,49 @@ async function existingArchiveSize(archivePath) {
   return stat.size;
 }
 
-async function receiveExactly(input, expectedBytes, handle, timeoutMs = UPLOAD_INPUT_TIMEOUT_MS) {
+async function closeFailedUploadInput(input, iterator, cleanupTimeoutMs) {
+  try {
+    const destroyResult = input.destroy?.();
+    destroyResult?.catch?.(() => {});
+  } catch {}
+  if (typeof iterator.return !== 'function') return;
+
+  let cleanupTimer;
+  const cleanup = Promise.resolve()
+    .then(() => iterator.return())
+    .catch(() => undefined);
+  const deadline = new Promise((resolve) => {
+    cleanupTimer = setTimeout(resolve, cleanupTimeoutMs);
+  });
+  try {
+    await Promise.race([cleanup, deadline]);
+  } finally {
+    clearTimeout(cleanupTimer);
+    cleanup.catch(() => {});
+  }
+}
+
+async function receiveExactly(
+  input,
+  expectedBytes,
+  handle,
+  timeoutMs = UPLOAD_INPUT_TIMEOUT_MS,
+  cleanupTimeoutMs = UPLOAD_INPUT_CLEANUP_TIMEOUT_MS
+) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > UPLOAD_INPUT_TIMEOUT_MS) {
     throw commandError('Upload input timeout is invalid.', 70);
+  }
+  if (!Number.isSafeInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1 || cleanupTimeoutMs > UPLOAD_INPUT_CLEANUP_TIMEOUT_MS) {
+    throw commandError('Upload input cleanup timeout is invalid.', 70);
   }
   const iterator = input?.[Symbol.asyncIterator]?.();
   if (!iterator) throw commandError('Upload input is unavailable.', 70);
   let received = 0;
   let timeout;
-  let timeoutError;
+  let successful = false;
   const deadline = new Promise((_, reject) => {
     timeout = setTimeout(() => {
-      timeoutError = commandError('Upload input timed out.', 75);
-      input.destroy?.();
-      reject(timeoutError);
+      reject(commandError('Upload input timed out.', 75));
     }, timeoutMs);
   });
   try {
@@ -204,12 +234,16 @@ async function receiveExactly(input, expectedBytes, handle, timeoutMs = UPLOAD_I
         }
       }
     }
+    if (received !== expectedBytes) throw new Error('Upload did not match declared size.');
+    successful = true;
+    return received;
   } finally {
     clearTimeout(timeout);
-    if (timeoutError) input.destroy?.();
+    if (!successful) {
+      try { await closeFailedUploadInput(input, iterator, cleanupTimeoutMs); }
+      catch {}
+    }
   }
-  if (received !== expectedBytes) throw new Error('Upload did not match declared size.');
-  return received;
 }
 
 async function readAdmissionMarker(stageDirectory, runId, contract) {
@@ -515,6 +549,7 @@ export async function performUpload({
   afterCleanupDirectoryRead,
   afterExistingAdmissionRead,
   uploadInputTimeoutMs = UPLOAD_INPUT_TIMEOUT_MS,
+  uploadInputCleanupTimeoutMs = UPLOAD_INPUT_CLEANUP_TIMEOUT_MS,
   controllerRunContract = { uid: 0, gid: 0, modes: [0o700, 0o711] },
   acceptControllerOwnedRun = enforceStageRootContract
 }) {
@@ -567,7 +602,7 @@ export async function performUpload({
     });
     await admission.assertHeld();
     if (controllerOwned) {
-      const received = await receiveExactly(input, bytes, null, uploadInputTimeoutMs);
+      const received = await receiveExactly(input, bytes, null, uploadInputTimeoutMs, uploadInputCleanupTimeoutMs);
       await admission.assertHeld();
       return {
         received,
@@ -590,7 +625,7 @@ export async function performUpload({
       const completedSize = await existingArchiveSize(archivePath);
       if (completedSize !== null) {
         if (completedSize !== bytes) throw new Error('Completed deployment archive conflicts with the declared size.');
-        const received = await receiveExactly(input, bytes, null, uploadInputTimeoutMs);
+        const received = await receiveExactly(input, bytes, null, uploadInputTimeoutMs, uploadInputCleanupTimeoutMs);
         await admission.assertHeld();
         return { received, idempotent: true, archivePath };
       }
@@ -599,7 +634,7 @@ export async function performUpload({
       let handle;
       try {
         handle = await fsp.open(partialPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
-        const received = await receiveExactly(input, bytes, handle, uploadInputTimeoutMs);
+        const received = await receiveExactly(input, bytes, handle, uploadInputTimeoutMs, uploadInputCleanupTimeoutMs);
         await handle.sync();
         await handle.close();
         handle = null;

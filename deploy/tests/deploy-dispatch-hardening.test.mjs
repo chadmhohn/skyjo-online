@@ -18,6 +18,7 @@ import {
   MAX_STAGED_RUNS,
   parseCommand,
   performUpload,
+  UPLOAD_INPUT_CLEANUP_TIMEOUT_MS,
   UPLOAD_INPUT_TIMEOUT_MS
 } from '../skyjo-deploy-dispatch.mjs';
 
@@ -234,6 +235,145 @@ test('failed or short streams leave no completed archive, partial, or lock', asy
     /did not match declared size/
   );
   await assert.rejects(fs.access(path.join(root, runId)), { code: 'ENOENT' });
+}));
+
+test('normal upload EOF does not destroy or return an already completed input', async () => fixture(async (root) => {
+  let nextCalls = 0;
+  let destroyCalls = 0;
+  let returnCalls = 0;
+  const exactInput = {
+    destroy() { destroyCalls += 1; },
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          nextCalls += 1;
+          return nextCalls === 1 ? { value: Buffer.from('ok'), done: false } : { value: undefined, done: true };
+        },
+        async return() {
+          returnCalls += 1;
+          return { value: undefined, done: true };
+        }
+      };
+    }
+  };
+
+  const result = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 2, input: exactInput });
+  assert.equal(await fs.readFile(result.archivePath, 'utf8'), 'ok');
+  assert.equal(destroyCalls, 0);
+  assert.equal(returnCalls, 0);
+}));
+
+test('oversize input destroys the source, runs generator return/finally, and releases admission for retry', async () => fixture(async (root) => {
+  let destroyCalls = 0;
+  let returnCalls = 0;
+  let finalized = false;
+  async function* oversizeValues() {
+    try {
+      yield Buffer.from('too-large');
+    } finally {
+      finalized = true;
+    }
+  }
+  const generator = oversizeValues();
+  const oversizeInput = {
+    destroy() { destroyCalls += 1; },
+    [Symbol.asyncIterator]() {
+      return {
+        next: (...args) => generator.next(...args),
+        return: async (...args) => {
+          returnCalls += 1;
+          await generator.return(...args);
+          throw new Error('injected iterator cleanup failure');
+        }
+      };
+    }
+  };
+
+  await assert.rejects(
+    performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: oversizeInput }),
+    /exceeded declared size/
+  );
+  assert.equal(destroyCalls, 1);
+  assert.equal(returnCalls, 1);
+  assert.equal(finalized, true);
+  await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
+  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: input('x') });
+  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
+}));
+
+test('input failure remains primary while return cleanup runs and admission becomes retryable', async () => fixture(async (root) => {
+  const primary = new Error('injected upload input failure');
+  let destroyCalls = 0;
+  let returnCalls = 0;
+  let finalized = false;
+  async function* failingValues() {
+    try {
+      yield Buffer.from('x');
+      throw primary;
+    } finally {
+      finalized = true;
+    }
+  }
+  const generator = failingValues();
+  const failingInput = {
+    destroy() { destroyCalls += 1; },
+    [Symbol.asyncIterator]() {
+      return {
+        next: (...args) => generator.next(...args),
+        return: (...args) => {
+          returnCalls += 1;
+          return generator.return(...args);
+        }
+      };
+    }
+  };
+
+  await assert.rejects(
+    performUpload({ stageRoot: root, runId, releaseSha, bytes: 2, input: failingInput }),
+    (error) => error === primary
+  );
+  assert.equal(destroyCalls, 1);
+  assert.equal(returnCalls, 1);
+  assert.equal(finalized, true);
+  await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
+  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: input('x') });
+  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
+}));
+
+test('a hanging iterator return is bounded and cannot retain upload admission', async () => fixture(async (root) => {
+  let destroyCalls = 0;
+  let returnCalls = 0;
+  const hangingReturnInput = {
+    destroy() { destroyCalls += 1; },
+    [Symbol.asyncIterator]() {
+      return {
+        async next() { return { value: Buffer.from('too-large'), done: false }; },
+        return() {
+          returnCalls += 1;
+          return new Promise(() => {});
+        }
+      };
+    }
+  };
+  const startedAt = Date.now();
+  await assert.rejects(
+    performUpload({
+      stageRoot: root,
+      runId,
+      releaseSha,
+      bytes: 1,
+      input: hangingReturnInput,
+      uploadInputCleanupTimeoutMs: 25
+    }),
+    /exceeded declared size/
+  );
+  assert.ok(Date.now() - startedAt < 1_000, 'iterator cleanup must remain bounded');
+  assert.equal(destroyCalls, 1);
+  assert.equal(returnCalls, 1);
+  await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
+  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: input('x') });
+  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
+  assert.equal(UPLOAD_INPUT_CLEANUP_TIMEOUT_MS, 5 * 1000);
 }));
 
 test('a stalled upload times out deterministically, releases the admission FD, and remains retryable', async () => fixture(async (root) => {
