@@ -8,6 +8,7 @@ action=${1:-}
 case "$action" in daily|monthly) ;; *) exit 64 ;; esac
 [ "$(/usr/bin/id -u)" -eq 0 ] || exit 77
 
+# This exact inode is shared with release promotion and recreated at boot by tmpfiles.
 exec 9>/run/lock/skyjo-release-controller.lock
 /usr/bin/flock --exclusive --wait 300 9 || exit 75
 

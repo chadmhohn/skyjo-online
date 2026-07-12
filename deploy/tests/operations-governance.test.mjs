@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
 import { createAccountStore } from '../../server-account-store.mjs';
 import { saveRoomsToDisk } from '../../server-room-persistence.mjs';
 import { writeReleaseIdentity } from '../../server-release.mjs';
 import {
   governanceRuleset,
   assertDependabotReadbacks,
+  assertGovernanceReadbacks,
+  immutableReleaseTagsRuleset,
   reconcileGithubGovernance,
+  releaseTagCreationRuleset,
   REQUIRED_CHECKS,
   repositorySettings
 } from '../../scripts/github-governance-lib.mjs';
@@ -37,6 +42,8 @@ const deployRoot = path.resolve(import.meta.dirname, '..');
 const repoRoot = path.resolve(deployRoot, '..');
 const fixedNow = new Date('2026-07-11T12:34:56.000Z');
 const releaseSha = 'a'.repeat(40);
+const execFileAsync = promisify(execFile);
+const repositoryOwner = { login: 'owner', type: 'User', id: 42 };
 
 function healthyResult(overrides = {}) {
   return {
@@ -121,10 +128,11 @@ test('operations activation accepts only private healthy evidence for its exact 
       validateOperationsReadiness(evidence, 'b'.repeat(40), uid, process.platform, fixedNow.valueOf()),
       /does not match/
     );
+    const tamperedEvidence = path.join(root, 'tampered-evidence.json');
     const tampered = { ...healthyResult({ monitor: 'local' }), extra: 'not allowed' };
-    await fs.writeFile(evidence, JSON.stringify(tampered), { mode: 0o600 });
+    await fs.writeFile(tamperedEvidence, JSON.stringify(tampered), { mode: 0o600, flag: 'wx' });
     await assert.rejects(
-      validateOperationsReadiness(evidence, releaseSha, uid, process.platform, fixedNow.valueOf()),
+      validateOperationsReadiness(tamperedEvidence, releaseSha, uid, process.platform, fixedNow.valueOf()),
       /unexpected shape/
     );
     if (process.platform !== 'win32') {
@@ -171,6 +179,48 @@ test('incident reconciliation creates one issue, updates it, and closes it on re
   assert.ok(requests.every((request) => !JSON.stringify(request).includes('secret')));
 });
 
+test('incident reconciliation preserves independent failure sources and deduplicates marker issues', async () => {
+  const marked = (sources) => `${INCIDENT_MARKER}\n<!-- skyjo-production-active-sources:${sources} -->`;
+  const issues = [
+    { number: 73, state: 'closed', body: marked('') },
+    { number: 72, state: 'open', body: marked('deployment') },
+    { number: 71, state: 'open', body: marked('readiness') },
+    { number: 99, state: 'open', body: 'User-created incident without the managed marker.' }
+  ];
+  const requests = [];
+  const api = async (method, endpoint, body) => {
+    requests.push({ method, endpoint, body });
+    if (method === 'GET') return issues.map((issue) => ({ ...issue }));
+    const number = Number(endpoint.split('/').at(-1));
+    const issue = issues.find((entry) => entry.number === number);
+    Object.assign(issue, body);
+    return { ...issue };
+  };
+  const unhealthy = healthyResult({
+    status: 'unhealthy', failureClass: 'internal', httpStatus: null,
+    releaseSha: null, schemaVersion: null, protocolVersion: null
+  });
+  assert.deepEqual(await reconcileProductionIncident({
+    repository: 'owner/repo', runId: '201', result: unhealthy, source: 'deployment', api
+  }), { action: 'reopened', issueNumber: 73 });
+  assert.equal(issues.find(({ number }) => number === 72).state_reason, 'not_planned');
+  assert.equal(issues.find(({ number }) => number === 71).state_reason, 'not_planned');
+  assert.equal(issues.find(({ number }) => number === 99).state, 'open');
+  assert.match(issues.find(({ number }) => number === 73).body, /active-sources:deployment,readiness/);
+
+  assert.equal((await reconcileProductionIncident({
+    repository: 'owner/repo', runId: '202', result: healthyResult(), source: 'readiness', api
+  })).action, 'updated');
+  assert.equal(issues.find(({ number }) => number === 73).state, 'open');
+  assert.match(issues.find(({ number }) => number === 73).body, /active-sources:deployment/);
+
+  assert.equal((await reconcileProductionIncident({
+    repository: 'owner/repo', runId: '203', result: healthyResult(), source: 'deployment', api
+  })).action, 'closed');
+  assert.equal(issues.find(({ number }) => number === 73).state_reason, 'completed');
+  assert.ok(requests.every((request) => !JSON.stringify(request).includes('secret')));
+});
+
 test('governance policy has no bypass, zero approvals, exact checks, and squash-only settings', async () => {
   const ruleset = governanceRuleset();
   assert.deepEqual(ruleset.bypass_actors, []);
@@ -182,14 +232,39 @@ test('governance policy has no bypass, zero approvals, exact checks, and squash-
   assert.equal(pullRequest.required_review_thread_resolution, true);
   const checks = ruleset.rules.find((rule) => rule.type === 'required_status_checks').parameters;
   assert.deepEqual(checks.required_status_checks.map(({ context }) => context), [...REQUIRED_CHECKS]);
+  assert.deepEqual(ruleset.rules.find((rule) => rule.type === 'code_scanning'), {
+    type: 'code_scanning',
+    parameters: {
+      code_scanning_tools: [{
+        tool: 'CodeQL', alerts_threshold: 'errors', security_alerts_threshold: 'high_or_higher'
+      }]
+    }
+  });
+  assert.deepEqual(releaseTagCreationRuleset(repositoryOwner.id), {
+    name: 'Release tag creation', target: 'tag', enforcement: 'active',
+    bypass_actors: [{ actor_id: 42, actor_type: 'User', bypass_mode: 'always' }],
+    conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } },
+    rules: [{ type: 'creation' }]
+  });
+  assert.deepEqual(immutableReleaseTagsRuleset(), {
+    name: 'Immutable release tags', target: 'tag', enforcement: 'active', bypass_actors: [],
+    conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } },
+    rules: [{ type: 'update' }, { type: 'deletion' }]
+  });
   assert.deepEqual(repositorySettings(), {
     has_issues: true, allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false,
     allow_auto_merge: true, delete_branch_on_merge: true,
     squash_merge_commit_title: 'PR_TITLE', squash_merge_commit_message: 'PR_BODY'
   });
 
-  const plan = await reconcileGithubGovernance({ repository: 'owner/repo', api: async () => null });
+  let dryRunCalls = 0;
+  const plan = await reconcileGithubGovernance({
+    repository: 'owner/repo',
+    api: async () => { dryRunCalls += 1; return null; }
+  });
   assert.equal(plan.applied, false);
+  assert.equal(dryRunCalls, 0);
+  assert.equal(plan.plan.releaseTagRulesets.length, 2);
   await assert.rejects(
     reconcileGithubGovernance({ repository: 'owner/repo', apply: true, confirmation: 'wrong/repo', api: async () => null }),
     /exact repository confirmation/
@@ -200,7 +275,7 @@ test('governance apply preflights unique green main checks before its first muta
   const requests = [];
   const api = async (method, endpoint) => {
     requests.push({ method, endpoint });
-    if (endpoint === '/repos/owner/repo') return { full_name: 'owner/repo', default_branch: 'main' };
+    if (endpoint === '/repos/owner/repo') return { full_name: 'owner/repo', default_branch: 'main', owner: repositoryOwner };
     if (endpoint.endsWith('/commits/main')) return { sha: releaseSha };
     if (endpoint.includes('/check-runs')) return { check_runs: [] };
     throw new Error('unexpected API request');
@@ -212,15 +287,47 @@ test('governance apply preflights unique green main checks before its first muta
   assert.ok(requests.every(({ method }) => method === 'GET'));
 });
 
+test('governance apply rejects ambiguous managed rulesets before its first mutation', async () => {
+  const requests = [];
+  const api = async (method, endpoint) => {
+    requests.push({ method, endpoint });
+    if (endpoint === '/repos/owner/repo') return { full_name: 'owner/repo', default_branch: 'main', owner: repositoryOwner };
+    if (endpoint.endsWith('/commits/main')) return { sha: releaseSha };
+    if (endpoint.includes('/check-runs')) {
+      return {
+        check_runs: REQUIRED_CHECKS.map((name) => ({
+          name, status: 'completed', conclusion: 'success', app: { id: 15368 }
+        }))
+      };
+    }
+    if (endpoint.endsWith('/actions/permissions/workflow')) {
+      return { default_workflow_permissions: 'read', can_approve_pull_request_reviews: false };
+    }
+    if (endpoint.endsWith('/actions/permissions')) return { enabled: true, allowed_actions: 'all' };
+    if (endpoint.includes('/rulesets?')) {
+      return [
+        { id: 90, name: 'Protect main', target: 'branch' },
+        { id: 91, name: 'Protect main', target: 'branch' }
+      ];
+    }
+    throw new Error(`unexpected API request ${method} ${endpoint}`);
+  };
+  await assert.rejects(reconcileGithubGovernance({
+    repository: 'owner/repo', apply: true, confirmation: 'owner/repo', api
+  }), /ambiguous/);
+  assert.ok(requests.every(({ method }) => method === 'GET'));
+});
+
 test('governance apply binds checks to their app and verifies detailed settings readback', async () => {
   const repository = {
-    full_name: 'owner/repo', default_branch: 'main',
+    full_name: 'owner/repo', default_branch: 'main', owner: repositoryOwner,
     allow_squash_merge: false, allow_merge_commit: true, allow_rebase_merge: true,
     allow_auto_merge: false, delete_branch_on_merge: false
   };
   const actions = { enabled: true, allowed_actions: 'all', sha_pinning_required: false };
   const workflowToken = { default_workflow_permissions: 'write', can_approve_pull_request_reviews: true };
-  let detailedRuleset = null;
+  const detailedRulesets = new Map();
+  let nextRulesetId = 91;
   const mutations = [];
   const api = async (method, endpoint, body) => {
     if (method !== 'GET') mutations.push({ method, endpoint, body });
@@ -244,12 +351,21 @@ test('governance apply binds checks to their app and verifies detailed settings 
       if (method === 'PUT') Object.assign(actions, body);
       return { ...actions };
     }
-    if (endpoint.includes('/rulesets?')) return detailedRuleset ? [{ id: 91, name: detailedRuleset.name, target: 'branch' }] : [];
-    if (endpoint.endsWith('/rulesets') && method === 'POST') {
-      detailedRuleset = { id: 91, ...body };
-      return detailedRuleset;
+    if (endpoint.includes('/rulesets?')) {
+      return [...detailedRulesets.values()].map(({ id, name, target }) => ({ id, name, target }));
     }
-    if (endpoint.endsWith('/rulesets/91')) return { ...detailedRuleset };
+    if (endpoint.endsWith('/rulesets') && method === 'POST') {
+      const detailedRuleset = { id: nextRulesetId, ...body };
+      nextRulesetId += 1;
+      detailedRulesets.set(detailedRuleset.id, detailedRuleset);
+      return { ...detailedRuleset };
+    }
+    const rulesetMatch = endpoint.match(/\/rulesets\/([1-9][0-9]*)$/);
+    if (rulesetMatch) {
+      const id = Number(rulesetMatch[1]);
+      if (method === 'PUT') detailedRulesets.set(id, { id, ...body });
+      return { ...detailedRulesets.get(id) };
+    }
     if (endpoint.endsWith('/vulnerability-alerts')) return null;
     if (endpoint.endsWith('/automated-security-fixes')) {
       return method === 'GET' ? { enabled: true, paused: false } : null;
@@ -259,12 +375,29 @@ test('governance apply binds checks to their app and verifies detailed settings 
   const result = await reconcileGithubGovernance({
     repository: 'owner/repo', apply: true, confirmation: 'owner/repo', api
   });
-  assert.deepEqual(result, { applied: true, repository: 'owner/repo', rulesetId: 91, mainSha: releaseSha });
+  assert.deepEqual(result, {
+    applied: true, repository: 'owner/repo', rulesetId: 93,
+    releaseTagRulesetIds: [92, 91], mainSha: releaseSha
+  });
   assert.equal(actions.sha_pinning_required, true);
   assert.deepEqual(workflowToken, { default_workflow_permissions: 'read', can_approve_pull_request_reviews: false });
-  const required = detailedRuleset.rules.find((rule) => rule.type === 'required_status_checks');
+  const mainRuleset = [...detailedRulesets.values()].find(({ name }) => name === 'Protect main');
+  const required = mainRuleset.rules.find((rule) => rule.type === 'required_status_checks');
   assert.ok(required.parameters.required_status_checks.every((check) => check.integration_id === 15368));
+  const creationRuleset = [...detailedRulesets.values()].find(({ name }) => name === 'Release tag creation');
+  assert.deepEqual(creationRuleset.bypass_actors, [{ actor_id: 42, actor_type: 'User', bypass_mode: 'always' }]);
+  assert.deepEqual([...detailedRulesets.values()].find(({ name }) => name === 'Immutable release tags').bypass_actors, []);
   assert.ok(mutations.some(({ endpoint }) => endpoint.endsWith('/automated-security-fixes')));
+  assert.equal(repository.has_issues, true);
+  assert.equal(repository.squash_merge_commit_title, 'PR_TITLE');
+  assert.equal(repository.squash_merge_commit_message, 'PR_BODY');
+
+  const second = await reconcileGithubGovernance({
+    repository: 'owner/repo', apply: true, confirmation: 'owner/repo', api
+  });
+  assert.deepEqual(second, result);
+  assert.equal(mutations.filter(({ method, endpoint }) => method === 'POST' && endpoint.endsWith('/rulesets')).length, 3);
+  assert.equal(mutations.filter(({ method, endpoint }) => method === 'PUT' && /\/rulesets\/[1-9]/.test(endpoint)).length, 3);
 });
 
 test('governance rejects disabled or paused Dependabot security readbacks', () => {
@@ -272,6 +405,66 @@ test('governance rejects disabled or paused Dependabot security readbacks', () =
   assert.throws(() => assertDependabotReadbacks({ enabled: false }, { enabled: true, paused: false }), /vulnerability-alert/);
   assert.throws(() => assertDependabotReadbacks(null, { enabled: false, paused: false }), /security-update/);
   assert.throws(() => assertDependabotReadbacks(null, { enabled: true, paused: true }), /security-update/);
+});
+
+test('governance readback fails closed on every requested setting and CodeQL threshold', () => {
+  const makeReadback = () => {
+    const expectedRuleset = governanceRuleset(new Map(REQUIRED_CHECKS.map((name) => [name, 15368])));
+    const expectedCreationRuleset = releaseTagCreationRuleset(repositoryOwner.id);
+    const expectedImmutableRuleset = immutableReleaseTagsRuleset();
+    return {
+      repository: {
+        has_issues: true, allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false,
+        allow_auto_merge: true, delete_branch_on_merge: true,
+        squash_merge_commit_title: 'PR_TITLE', squash_merge_commit_message: 'PR_BODY'
+      },
+      ruleset: { id: 91, ...structuredClone(expectedRuleset) },
+      expectedRuleset,
+      additionalRulesets: [
+        { actual: { id: 92, ...structuredClone(expectedCreationRuleset) }, expected: expectedCreationRuleset },
+        { actual: { id: 93, ...structuredClone(expectedImmutableRuleset) }, expected: expectedImmutableRuleset }
+      ],
+      actions: { enabled: true, allowed_actions: 'all', sha_pinning_required: true },
+      expectedAllowedActions: 'all',
+      workflowToken: { default_workflow_permissions: 'read', can_approve_pull_request_reviews: false },
+      vulnerabilityAlerts: null,
+      securityUpdates: { enabled: true, paused: false }
+    };
+  };
+  const corruptions = [
+    (value) => { value.repository.has_issues = false; },
+    (value) => { value.repository.squash_merge_commit_title = 'COMMIT_OR_PR_TITLE'; },
+    (value) => { value.repository.squash_merge_commit_message = 'COMMIT_MESSAGES'; },
+    (value) => { value.actions.sha_pinning_required = false; },
+    (value) => { value.workflowToken.default_workflow_permissions = 'write'; },
+    (value) => { value.workflowToken.can_approve_pull_request_reviews = true; },
+    (value) => {
+      value.ruleset.rules.find(({ type }) => type === 'code_scanning')
+        .parameters.code_scanning_tools[0].security_alerts_threshold = 'critical';
+    },
+    (value) => { value.additionalRulesets[0].actual.bypass_actors[0].actor_id = 99; },
+    (value) => { value.additionalRulesets[1].actual.rules.pop(); },
+    (value) => { value.vulnerabilityAlerts = { enabled: false }; },
+    (value) => { value.securityUpdates.paused = true; }
+  ];
+  assert.doesNotThrow(() => assertGovernanceReadbacks(makeReadback()));
+  for (const corrupt of corruptions) {
+    const value = makeReadback();
+    corrupt(value);
+    assert.throws(() => assertGovernanceReadbacks(value));
+  }
+});
+
+test('incident reconciliation rejects malformed active-source markers without mutation', async () => {
+  const requests = [];
+  const api = async (method, endpoint) => {
+    requests.push({ method, endpoint });
+    return [{ number: 81, state: 'open', body: `${INCIDENT_MARKER}\n<!-- skyjo-production-active-sources:deployment,unknown -->` }];
+  };
+  await assert.rejects(reconcileProductionIncident({
+    repository: 'owner/repo', runId: '301', result: healthyResult(), source: 'readiness', api
+  }), /invalid active source marker/);
+  assert.deepEqual(requests.map(({ method }) => method), ['GET']);
 });
 
 async function backupFixture(root) {
@@ -364,12 +557,16 @@ test('retention verifies retained backups before deleting any older backup', asy
 });
 
 test('workflow and systemd assets preserve pins, staged activation, and exact schedules', async () => {
-  const [dependabot, codeql, monitor, installer, dailyTimer, monthlyTimer, readinessTimer, readinessService] = await Promise.all([
+  const [dependabot, ci, codeql, monitor, installer, tmpfiles, dailyService, dailyTimer, monthlyService, monthlyTimer, readinessTimer, readinessService] = await Promise.all([
     fs.readFile(path.join(repoRoot, '.github', 'dependabot.yml'), 'utf8'),
+    fs.readFile(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8'),
     fs.readFile(path.join(repoRoot, '.github', 'workflows', 'codeql.yml'), 'utf8'),
     fs.readFile(path.join(repoRoot, '.github', 'workflows', 'production-monitor.yml'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'install-skyjo-operations.sh'), 'utf8'),
+    fs.readFile(path.join(deployRoot, 'skyjo-online-operations.tmpfiles'), 'utf8'),
+    fs.readFile(path.join(deployRoot, 'skyjo-backup-daily.service'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'skyjo-backup-daily.timer'), 'utf8'),
+    fs.readFile(path.join(deployRoot, 'skyjo-backup-monthly.service'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'skyjo-backup-monthly.timer'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'skyjo-readiness-monitor.timer'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'skyjo-readiness-monitor.service'), 'utf8')
@@ -378,15 +575,23 @@ test('workflow and systemd assets preserve pins, staged activation, and exact sc
   assert.match(dependabot, /package-ecosystem: github-actions[\s\S]*github-actions:/);
   assert.doesNotMatch(codeql, /uses: [^\n]+@v[0-9]/);
   assert.match(codeql, /name: CodeQL \/ Analyze/);
+  assert.match(ci, /Validate operations shells and systemd units[\s\S]*sh -n[\s\S]*systemd-analyze verify/);
+  assert.match(ci, /production-incident:[\s\S]*needs:[\s\S]*- runtime-artifact[\s\S]*needs\.runtime-artifact\.result == 'success'/);
+  assert.match(ci, /ref: \$\{\{ needs\.runtime-artifact\.outputs\.source-sha \}\}[\s\S]*SKYJO_INCIDENT_SOURCE: deployment/);
   assert.match(monitor, /SKYJO_MONITOR_ENABLED/);
   assert.match(monitor, /MONITOR_REF[\s\S]*refs\/heads\/main/);
-  assert.match(monitor, /ref: refs\/heads\/main/);
+  assert.match(monitor, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(monitor, /if: always\(\)[\s\S]*reconcile-production-incident/);
   const installFunction = installer.slice(installer.indexOf('install_assets()'), installer.indexOf('activate()'));
   assert.doesNotMatch(installFunction, /systemctl enable|operations\.enabled.*install/);
   assert.match(installFunction, /assert_install_inactive/);
   assert.match(installer, /Refusing to replace an active operations unit/);
   assert.match(installer, /Refusing to replace an enabled operations unit/);
+  assert.match(installer, /non-root-owned or hardlinked operations target/);
+  assert.match(installer, /operations asset checksums did not verify/i);
+  assert.match(installer, /systemd-tmpfiles --create "\$TMPFILES_CONFIG"/);
+  assert.match(installer, /Timed out waiting for the shared release lock/);
+  assert.match(installer, /safe_installed_asset "\$asset" 444/);
   assert.doesNotMatch(installer, /disable --now[\s\S]{0,200}\|\| true/);
   assert.match(installer, /activation marker was removed, but one or more timers could not be disabled/i);
   assert.match(installer, /\[ ! -L "\$MARKER" \]/);
@@ -397,6 +602,31 @@ test('workflow and systemd assets preserve pins, staged activation, and exact sc
   assert.match(readinessTimer, /OnUnitActiveSec=2m/);
   assert.match(readinessService, /ConditionPathExists=\/etc\/skyjo-online-operations\.enabled/);
   assert.match(readinessService, /IPAddressAllow=localhost/);
+  assert.equal(tmpfiles.trim(), 'f /run/lock/skyjo-release-controller.lock 0600 root root -');
+  assert.match(dailyService, /ReadWritePaths=\/run\/lock\/skyjo-release-controller\.lock \/var\/backups\/skyjo-online\n/);
+  assert.doesNotMatch(dailyService, /ReadWritePaths=.*skyjo-restore-drills/);
+  assert.match(monthlyService, /ReadWritePaths=\/run\/lock\/skyjo-release-controller\.lock \/var\/backups\/skyjo-online \/var\/tmp\/skyjo-restore-drills/);
+
+  if (process.platform !== 'win32') {
+    const start = installer.indexOf('inactive_enablement_state() {');
+    const end = installer.indexOf('\n}\n', start) + 3;
+    assert.ok(start >= 0 && end > start, 'inactive enablement helper must be extractable');
+    const helper = installer.slice(start, end);
+    await execFileAsync('/bin/sh', ['-eu', '-c', `${helper}
+      inactive_enablement_state example.service static 0
+      inactive_enablement_state example.service not-found 4
+      inactive_enablement_state example.timer disabled 1
+      inactive_enablement_state example.timer not-found 4
+      for tuple in \
+        'example.service disabled 1' 'example.service static 1' \
+        'example.service not-found 1' 'example.timer static 0' \
+        'example.timer enabled 0' 'example.timer indirect 0' \
+        'example.timer masked 1' 'example.timer not-found 1'; do
+        set -- $tuple
+        if inactive_enablement_state "$1" "$2" "$3"; then exit 71; fi
+      done
+    `]);
+  }
 });
 
 test('artifact producer and live controller require the same operations scripts', () => {

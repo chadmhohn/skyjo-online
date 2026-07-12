@@ -35,5 +35,5 @@ AmbientCapabilities=CAP_DAC_READ_SEARCH
 RestrictAddressFamilies=AF_UNIX
 IPAddressDeny=any
 SystemCallArchitectures=native
-ReadWritePaths=/var/backups/skyjo-online /var/tmp/skyjo-restore-drills
+ReadWritePaths=/run/lock/skyjo-release-controller.lock /var/backups/skyjo-online
 InaccessiblePaths=/etc/skyjo-online.env

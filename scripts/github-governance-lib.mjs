@@ -1,4 +1,6 @@
 export const GOVERNANCE_RULESET_NAME = 'Protect main';
+export const RELEASE_TAG_CREATION_RULESET_NAME = 'Release tag creation';
+export const RELEASE_TAG_IMMUTABILITY_RULESET_NAME = 'Immutable release tags';
 export const REQUIRED_CHECKS = Object.freeze([
   'CI / Quality & Security',
   'CI / Unit (domain)',
@@ -54,8 +56,53 @@ export function governanceRuleset(integrationIds = new Map()) {
             ...(integrationIds.has(context) ? { integration_id: integrationIds.get(context) } : {})
           }))
         }
+      },
+      {
+        type: 'code_scanning',
+        parameters: {
+          code_scanning_tools: [{
+            tool: 'CodeQL',
+            alerts_threshold: 'errors',
+            security_alerts_threshold: 'high_or_higher'
+          }]
+        }
       }
     ]
+  };
+}
+
+function releaseTagConditions() {
+  return {
+    ref_name: {
+      include: ['refs/tags/v*'],
+      exclude: []
+    }
+  };
+}
+
+export function releaseTagCreationRuleset(releaseActorId = null) {
+  return {
+    name: RELEASE_TAG_CREATION_RULESET_NAME,
+    target: 'tag',
+    enforcement: 'active',
+    bypass_actors: [{
+      actor_id: releaseActorId,
+      actor_type: 'User',
+      bypass_mode: 'always'
+    }],
+    conditions: releaseTagConditions(),
+    rules: [{ type: 'creation' }]
+  };
+}
+
+export function immutableReleaseTagsRuleset() {
+  return {
+    name: RELEASE_TAG_IMMUTABILITY_RULESET_NAME,
+    target: 'tag',
+    enforcement: 'active',
+    bypass_actors: [],
+    conditions: releaseTagConditions(),
+    rules: [{ type: 'update' }, { type: 'deletion' }]
   };
 }
 
@@ -124,8 +171,8 @@ function assertDetailedRuleset(actual, expected) {
     return actualValue === expectedValue;
   }
   if (
-    actual?.name !== expected.name || actual?.target !== 'branch' || actual?.enforcement !== 'active' ||
-    !Array.isArray(actual.bypass_actors) || actual.bypass_actors.length !== 0 ||
+    actual?.name !== expected.name || actual?.target !== expected.target || actual?.enforcement !== 'active' ||
+    !contains(actual.bypass_actors, expected.bypass_actors) ||
     !contains(actual.conditions?.ref_name, expected.conditions.ref_name)
   ) {
     throw new Error('Detailed ruleset identity, conditions, enforcement, or bypass policy did not match.');
@@ -151,6 +198,39 @@ export function assertDependabotReadbacks(vulnerabilityAlerts, securityUpdates) 
   }
 }
 
+export function assertGovernanceReadbacks({
+  repository,
+  ruleset,
+  expectedRuleset,
+  actions,
+  expectedAllowedActions,
+  workflowToken,
+  vulnerabilityAlerts,
+  securityUpdates,
+  additionalRulesets = []
+}) {
+  assertDetailedRuleset(ruleset, expectedRuleset);
+  for (const pair of additionalRulesets) assertDetailedRuleset(pair.actual, pair.expected);
+  assertDependabotReadbacks(vulnerabilityAlerts, securityUpdates);
+  if (
+    repository?.has_issues !== true ||
+    repository?.allow_squash_merge !== true ||
+    repository?.allow_merge_commit !== false ||
+    repository?.allow_rebase_merge !== false ||
+    repository?.allow_auto_merge !== true ||
+    repository?.delete_branch_on_merge !== true ||
+    repository?.squash_merge_commit_title !== 'PR_TITLE' ||
+    repository?.squash_merge_commit_message !== 'PR_BODY' ||
+    actions?.enabled !== true ||
+    actions?.allowed_actions !== expectedAllowedActions ||
+    actions?.sha_pinning_required !== true ||
+    workflowToken?.default_workflow_permissions !== 'read' ||
+    workflowToken?.can_approve_pull_request_reviews !== false
+  ) {
+    throw new Error('GitHub governance readback did not match the requested policy.');
+  }
+}
+
 export async function reconcileGithubGovernance({ repository, api, apply = false, confirmation }) {
   const target = assertGovernanceRepository(repository);
   if (typeof api !== 'function') throw new Error('A GitHub API implementation is required.');
@@ -158,6 +238,7 @@ export async function reconcileGithubGovernance({ repository, api, apply = false
     repository: target,
     repositorySettings: repositorySettings(),
     ruleset: governanceRuleset(),
+    releaseTagRulesets: [releaseTagCreationRuleset(), immutableReleaseTagsRuleset()],
     dependabotAlerts: true,
     dependabotSecurityUpdates: true,
     actions: actionsPermissions(),
@@ -169,6 +250,14 @@ export async function reconcileGithubGovernance({ repository, api, apply = false
   const repositoryState = await api('GET', `/repos/${target}`);
   if (repositoryState?.full_name?.toLowerCase() !== target.toLowerCase() || repositoryState?.default_branch !== 'main') {
     throw new Error('Repository identity or default branch does not match the governance contract.');
+  }
+  const [ownerName] = target.split('/');
+  if (
+    repositoryState.owner?.login?.toLowerCase() !== ownerName.toLowerCase() ||
+    repositoryState.owner?.type !== 'User' ||
+    !Number.isSafeInteger(repositoryState.owner?.id) || repositoryState.owner.id < 1
+  ) {
+    throw new Error('The user-owned repository release identity is invalid.');
   }
   const mainCommit = await api('GET', `/repos/${target}/commits/main`);
   if (!/^[a-f0-9]{40}$/.test(mainCommit?.sha || '')) throw new Error('Current main commit identity is invalid.');
@@ -183,60 +272,94 @@ export async function reconcileGithubGovernance({ repository, api, apply = false
   if (!['read', 'write'].includes(existingWorkflowToken?.default_workflow_permissions)) {
     throw new Error('Current workflow-token policy is invalid.');
   }
+  const rulesets = await api('GET', `/repos/${target}/rulesets?includes_parents=false`);
+  if (!Array.isArray(rulesets)) throw new Error('Ruleset listing is invalid.');
+  const desiredRulesets = [
+    { key: 'immutableReleaseTags', payload: immutableReleaseTagsRuleset() },
+    { key: 'releaseTagCreation', payload: releaseTagCreationRuleset(repositoryState.owner.id) },
+    { key: 'main', payload: governanceRuleset(integrationIds) }
+  ];
+  const existingRulesetIds = new Map();
+  for (const desired of desiredRulesets) {
+    const matches = rulesets.filter((ruleset) => ruleset.name === desired.payload.name);
+    if (matches.length > 1 || (matches.length === 1 && matches[0].target !== desired.payload.target)) {
+      throw new Error(`Managed ruleset ${desired.payload.name} is ambiguous or targets the wrong ref type.`);
+    }
+    if (matches.length === 0) {
+      existingRulesetIds.set(desired.key, null);
+      continue;
+    }
+    const rulesetId = matches[0].id;
+    if (!Number.isSafeInteger(rulesetId) || rulesetId < 1) throw new Error('Managed ruleset identity is invalid.');
+    const existingRuleset = await api('GET', `/repos/${target}/rulesets/${rulesetId}`);
+    if (existingRuleset?.id !== rulesetId || existingRuleset?.name !== desired.payload.name || existingRuleset?.target !== desired.payload.target) {
+      throw new Error('Managed ruleset detail does not match its listing.');
+    }
+    existingRulesetIds.set(desired.key, rulesetId);
+  }
 
+  // All fallible discovery and identity checks happen before the first write. GitHub
+  // does not offer a transaction across these repository settings, so each write is
+  // deliberately idempotent and the complete policy is verified again below.
+  const rulesetIds = new Map();
+  for (const desired of desiredRulesets) {
+    const existingRulesetId = existingRulesetIds.get(desired.key);
+    let rulesetId;
+    if (existingRulesetId === null) {
+      const created = await api('POST', `/repos/${target}/rulesets`, desired.payload);
+      rulesetId = created?.id;
+    } else {
+      rulesetId = existingRulesetId;
+      await api('PUT', `/repos/${target}/rulesets/${rulesetId}`, desired.payload);
+    }
+    if (!Number.isSafeInteger(rulesetId) || rulesetId < 1) throw new Error('Managed ruleset identity is invalid.');
+    rulesetIds.set(desired.key, rulesetId);
+  }
   await api('PATCH', `/repos/${target}`, repositorySettings());
   await api('PUT', `/repos/${target}/actions/permissions`, actionsPermissions(existingActions));
   await api('PUT', `/repos/${target}/actions/permissions/workflow`, workflowTokenPermissions());
   await api('PUT', `/repos/${target}/vulnerability-alerts`);
   await api('PUT', `/repos/${target}/automated-security-fixes`);
 
-  const rulesets = await api('GET', `/repos/${target}/rulesets?includes_parents=false`);
-  if (!Array.isArray(rulesets)) throw new Error('Ruleset listing is invalid.');
-  const matches = rulesets.filter((ruleset) => ruleset.name === GOVERNANCE_RULESET_NAME && ruleset.target === 'branch');
-  if (matches.length > 1) throw new Error('Multiple managed rulesets exist; refusing an ambiguous update.');
-  const payload = governanceRuleset(integrationIds);
-  let rulesetId;
-  if (matches.length === 1) {
-    rulesetId = matches[0].id;
-    await api('PUT', `/repos/${target}/rulesets/${rulesetId}`, payload);
-  } else {
-    const created = await api('POST', `/repos/${target}/rulesets`, payload);
-    rulesetId = created?.id;
-  }
-  if (!Number.isSafeInteger(rulesetId)) throw new Error('Managed ruleset identity is invalid.');
-
   const [
     verifiedRepository,
-    verifiedRuleset,
+    verifiedRulesets,
     verifiedActions,
     verifiedWorkflowToken,
     verifiedVulnerabilityAlerts,
-    verifiedSecurityUpdates
+    verifiedSecurityUpdates,
+    verifiedMainCommit
   ] = await Promise.all([
     api('GET', `/repos/${target}`),
-    api('GET', `/repos/${target}/rulesets/${rulesetId}`),
+    Promise.all(desiredRulesets.map((desired) => api('GET', `/repos/${target}/rulesets/${rulesetIds.get(desired.key)}`))),
     api('GET', `/repos/${target}/actions/permissions`),
     api('GET', `/repos/${target}/actions/permissions/workflow`),
     api('GET', `/repos/${target}/vulnerability-alerts`),
-    api('GET', `/repos/${target}/automated-security-fixes`)
+    api('GET', `/repos/${target}/automated-security-fixes`),
+    api('GET', `/repos/${target}/commits/main`)
   ]);
-  assertDetailedRuleset(verifiedRuleset, payload);
-  assertDependabotReadbacks(verifiedVulnerabilityAlerts, verifiedSecurityUpdates);
-  if (
-    verifiedRepository.allow_squash_merge !== true ||
-    verifiedRepository.allow_merge_commit !== false ||
-    verifiedRepository.allow_rebase_merge !== false ||
-    verifiedRepository.allow_auto_merge !== true ||
-    verifiedRepository.delete_branch_on_merge !== true ||
-    verifiedActions.enabled !== true ||
-    verifiedActions.allowed_actions !== existingActions.allowed_actions ||
-    verifiedActions.sha_pinning_required !== true ||
-    verifiedWorkflowToken.default_workflow_permissions !== 'read' ||
-    verifiedWorkflowToken.can_approve_pull_request_reviews !== false
-  ) {
-    throw new Error('GitHub governance readback did not match the requested policy.');
-  }
-  return { applied: true, repository: target, rulesetId, mainSha: mainCommit.sha };
+  if (verifiedMainCommit?.sha !== mainCommit.sha) throw new Error('Main advanced while repository governance was being applied.');
+  const mainIndex = desiredRulesets.findIndex(({ key }) => key === 'main');
+  assertGovernanceReadbacks({
+    repository: verifiedRepository,
+    ruleset: verifiedRulesets[mainIndex],
+    expectedRuleset: desiredRulesets[mainIndex].payload,
+    additionalRulesets: desiredRulesets
+      .map((desired, index) => ({ actual: verifiedRulesets[index], expected: desired.payload, key: desired.key }))
+      .filter(({ key }) => key !== 'main'),
+    actions: verifiedActions,
+    expectedAllowedActions: existingActions.allowed_actions,
+    workflowToken: verifiedWorkflowToken,
+    vulnerabilityAlerts: verifiedVulnerabilityAlerts,
+    securityUpdates: verifiedSecurityUpdates
+  });
+  return {
+    applied: true,
+    repository: target,
+    rulesetId: rulesetIds.get('main'),
+    releaseTagRulesetIds: [rulesetIds.get('releaseTagCreation'), rulesetIds.get('immutableReleaseTags')],
+    mainSha: mainCommit.sha
+  };
 }
 
 export function createGovernanceApi({ token, fetchImpl = fetch, apiBase = 'https://api.github.com' }) {

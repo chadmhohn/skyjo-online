@@ -8,6 +8,8 @@ UNIT_ROOT=/etc/systemd/system
 MARKER=/etc/skyjo-online-operations.enabled
 MANIFEST=/usr/local/share/skyjo-online/operations-assets.sha256
 ASSET_ROOT=/usr/local/share/skyjo-online/operations
+RELEASE_LOCK=/run/lock/skyjo-release-controller.lock
+TMPFILES_CONFIG=/etc/tmpfiles.d/skyjo-online-operations.conf
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -19,6 +21,44 @@ safe_asset() {
   case "$permissions" in ?????w*|????????w*) die "Operations asset is writable outside root: $1" ;; esac
 }
 reject_link() { [ ! -L "$1" ] || die "Refusing a linked operations target: $1"; }
+safe_file_target() {
+  reject_link "$1"
+  [ ! -e "$1" ] || { [ -f "$1" ] && [ "$(/usr/bin/stat -c %u:%h "$1")" = 0:1 ]; } || \
+    die "Refusing a non-root-owned or hardlinked operations target: $1"
+  if [ -e "$1" ]; then
+    target_permissions=$(/usr/bin/stat -c %A "$1")
+    case "$target_permissions" in ?????w*|????????w*) die "Refusing an operations target writable outside root: $1" ;; esac
+  fi
+}
+safe_installed_asset() {
+  safe_asset "$1"
+  [ "$(/usr/bin/stat -c %u:%g:%a:%h "$1")" = "0:0:$2:1" ] || \
+    die "Installed operations asset ownership or mode drifted: $1"
+}
+operations_asset_paths() {
+  printf '%s\n' \
+    "$ASSET_ROOT/install-skyjo-operations.sh" \
+    "$ASSET_ROOT/validate-operations-readiness.mjs" \
+    "$ASSET_ROOT/skyjo-ops-launch" \
+    "$ASSET_ROOT/skyjo-online-operations.tmpfiles" \
+    "$ASSET_ROOT/skyjo-backup-daily.service" "$ASSET_ROOT/skyjo-backup-daily.timer" \
+    "$ASSET_ROOT/skyjo-backup-monthly.service" "$ASSET_ROOT/skyjo-backup-monthly.timer" \
+    "$ASSET_ROOT/skyjo-readiness-monitor.service" "$ASSET_ROOT/skyjo-readiness-monitor.timer" \
+    "$LIB_ROOT/skyjo-ops-launch" \
+    "$TMPFILES_CONFIG" \
+    "$UNIT_ROOT/skyjo-backup-daily.service" "$UNIT_ROOT/skyjo-backup-daily.timer" \
+    "$UNIT_ROOT/skyjo-backup-monthly.service" "$UNIT_ROOT/skyjo-backup-monthly.timer" \
+    "$UNIT_ROOT/skyjo-readiness-monitor.service" "$UNIT_ROOT/skyjo-readiness-monitor.timer"
+}
+inactive_enablement_state() {
+  unit=$1
+  state=$2
+  result=$3
+  case "$unit:$state:$result" in
+    *.service:static:0|*.service:not-found:4|*.timer:disabled:1|*.timer:not-found:4) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 assert_install_inactive() {
   [ ! -e "$MARKER" ] && [ ! -L "$MARKER" ] || die 'Refusing to install while operations are activated.'
@@ -36,14 +76,65 @@ assert_install_inactive() {
     enabled_state=$(/usr/bin/systemctl is-enabled "$unit" 2>/dev/null)
     result=$?
     set -e
-    case "$enabled_state:$result" in
-      disabled:1|static:1|indirect:0|masked:1|not-found:1) ;;
-      enabled:*|enabled-runtime:*|linked:*|linked-runtime:*|alias:*)
+    if inactive_enablement_state "$unit" "$enabled_state" "$result"; then
+      :
+    else
+      case "$enabled_state" in
+      enabled|enabled-runtime|linked|linked-runtime|alias)
         die "Refusing to replace an enabled operations unit: $unit"
         ;;
       *) die "Could not prove operations unit disabled: $unit" ;;
-    esac
+      esac
+    fi
   done
+}
+
+verify_installed_assets() {
+  [ -f "$MANIFEST" ] && [ ! -L "$MANIFEST" ] && \
+    [ "$(/usr/bin/stat -c %u:%g:%a:%h "$MANIFEST")" = 0:0:444:1 ] || \
+    die 'The operations asset manifest is missing or unsafe.'
+  expected_count=$(operations_asset_paths | /usr/bin/wc -l)
+  actual_count=$(/usr/bin/wc -l < "$MANIFEST")
+  [ "$actual_count" -eq "$expected_count" ] || die 'The operations asset manifest has an unexpected entry count.'
+  /usr/bin/sha256sum --strict --check "$MANIFEST" >/dev/null || die 'Installed operations asset checksums did not verify.'
+  for asset in \
+    "$ASSET_ROOT/install-skyjo-operations.sh" \
+    "$ASSET_ROOT/validate-operations-readiness.mjs" \
+    "$ASSET_ROOT/skyjo-ops-launch" \
+    "$LIB_ROOT/skyjo-ops-launch"; do
+    safe_installed_asset "$asset" 555
+  done
+  for asset in \
+    "$ASSET_ROOT/skyjo-online-operations.tmpfiles" \
+    "$TMPFILES_CONFIG" \
+    "$ASSET_ROOT/skyjo-backup-daily.service" "$ASSET_ROOT/skyjo-backup-daily.timer" \
+    "$ASSET_ROOT/skyjo-backup-monthly.service" "$ASSET_ROOT/skyjo-backup-monthly.timer" \
+    "$ASSET_ROOT/skyjo-readiness-monitor.service" "$ASSET_ROOT/skyjo-readiness-monitor.timer" \
+    "$UNIT_ROOT/skyjo-backup-daily.service" "$UNIT_ROOT/skyjo-backup-daily.timer" \
+    "$UNIT_ROOT/skyjo-backup-monthly.service" "$UNIT_ROOT/skyjo-backup-monthly.timer" \
+    "$UNIT_ROOT/skyjo-readiness-monitor.service" "$UNIT_ROOT/skyjo-readiness-monitor.timer"; do
+    safe_installed_asset "$asset" 444
+  done
+  operations_asset_paths | while IFS= read -r asset; do
+    expected_line=$(/usr/bin/sha256sum "$asset")
+    /usr/bin/grep -Fqx -- "$expected_line" "$MANIFEST" || die "Operations manifest does not bind the expected asset: $asset"
+  done
+  [ -f "$RELEASE_LOCK" ] && [ ! -L "$RELEASE_LOCK" ] && \
+    [ "$(/usr/bin/stat -c %u:%g:%a:%h "$RELEASE_LOCK")" = 0:0:600:1 ] || \
+    die 'The shared release lock is missing or unsafe.'
+}
+
+prepare_release_lock() {
+  safe_file_target "$RELEASE_LOCK"
+  if [ ! -e "$RELEASE_LOCK" ]; then
+    /usr/bin/install -o root -g root -m 0600 /dev/null "$RELEASE_LOCK"
+  else
+    /usr/bin/chown root:root "$RELEASE_LOCK"
+    /usr/bin/chmod 0600 "$RELEASE_LOCK"
+  fi
+  release_lock_identity=$(/usr/bin/stat -c %d:%i "$RELEASE_LOCK")
+  exec 8>"$RELEASE_LOCK"
+  /usr/bin/flock --exclusive --wait 300 8 || die 'Timed out waiting for the shared release lock.'
 }
 
 validate_monitor_user() {
@@ -74,11 +165,13 @@ install_assets() {
     install-skyjo-operations.sh \
     validate-operations-readiness.mjs \
     skyjo-ops-launch \
+    skyjo-online-operations.tmpfiles \
     skyjo-backup-daily.service skyjo-backup-daily.timer \
     skyjo-backup-monthly.service skyjo-backup-monthly.timer \
     skyjo-readiness-monitor.service skyjo-readiness-monitor.timer; do
     safe_asset "$SCRIPT_DIR/$asset"
   done
+  prepare_release_lock
   validate_monitor_user
   for directory in "$LIB_ROOT" /usr/local/share/skyjo-online "$ASSET_ROOT"; do
     reject_link "$directory"
@@ -88,14 +181,16 @@ install_assets() {
     for target in \
       "$ASSET_ROOT/install-skyjo-operations.sh" "$ASSET_ROOT/skyjo-ops-launch" \
       "$ASSET_ROOT/validate-operations-readiness.mjs" \
+      "$ASSET_ROOT/skyjo-online-operations.tmpfiles" \
       "$ASSET_ROOT/skyjo-backup-daily.service" "$ASSET_ROOT/skyjo-backup-daily.timer" \
       "$ASSET_ROOT/skyjo-backup-monthly.service" "$ASSET_ROOT/skyjo-backup-monthly.timer" \
       "$ASSET_ROOT/skyjo-readiness-monitor.service" "$ASSET_ROOT/skyjo-readiness-monitor.timer"; do
-      reject_link "$target"
+      safe_file_target "$target"
     done
     /usr/bin/install -o root -g root -m 0555 "$SCRIPT_DIR/install-skyjo-operations.sh" "$ASSET_ROOT/install-skyjo-operations.sh"
     /usr/bin/install -o root -g root -m 0555 "$SCRIPT_DIR/validate-operations-readiness.mjs" "$ASSET_ROOT/validate-operations-readiness.mjs"
     /usr/bin/install -o root -g root -m 0555 "$SCRIPT_DIR/skyjo-ops-launch" "$ASSET_ROOT/skyjo-ops-launch"
+    /usr/bin/install -o root -g root -m 0444 "$SCRIPT_DIR/skyjo-online-operations.tmpfiles" "$ASSET_ROOT/skyjo-online-operations.tmpfiles"
     for asset in \
       skyjo-backup-daily.service skyjo-backup-daily.timer \
       skyjo-backup-monthly.service skyjo-backup-monthly.timer \
@@ -121,32 +216,37 @@ install_assets() {
     /var/backups/skyjo-online/scheduled/monthly \
     /var/backups/skyjo-online/scheduled/drills \
     /var/tmp/skyjo-restore-drills
-  reject_link "$LIB_ROOT/skyjo-ops-launch"
+  safe_file_target "$TMPFILES_CONFIG"
+  /usr/bin/install -o root -g root -m 0444 "$ASSET_ROOT/skyjo-online-operations.tmpfiles" "$TMPFILES_CONFIG"
+  /usr/bin/systemd-tmpfiles --create "$TMPFILES_CONFIG"
+  [ "$(/usr/bin/stat -c %u:%g:%a:%h "$RELEASE_LOCK")" = 0:0:600:1 ] || die 'The shared release lock was not recreated safely.'
+  [ "$(/usr/bin/stat -c %d:%i "$RELEASE_LOCK")" = "$release_lock_identity" ] || die 'The shared release lock identity changed during installation.'
+  safe_file_target "$LIB_ROOT/skyjo-ops-launch"
   /usr/bin/install -o root -g root -m 0555 "$ASSET_ROOT/skyjo-ops-launch" "$LIB_ROOT/skyjo-ops-launch"
   for asset in \
     skyjo-backup-daily.service skyjo-backup-daily.timer \
     skyjo-backup-monthly.service skyjo-backup-monthly.timer \
       skyjo-readiness-monitor.service skyjo-readiness-monitor.timer; do
-    reject_link "$UNIT_ROOT/$asset"
+    safe_file_target "$UNIT_ROOT/$asset"
     /usr/bin/install -o root -g root -m 0444 "$ASSET_ROOT/$asset" "$UNIT_ROOT/$asset"
   done
   /usr/bin/systemd-analyze verify \
     "$UNIT_ROOT/skyjo-backup-daily.service" "$UNIT_ROOT/skyjo-backup-daily.timer" \
     "$UNIT_ROOT/skyjo-backup-monthly.service" "$UNIT_ROOT/skyjo-backup-monthly.timer" \
     "$UNIT_ROOT/skyjo-readiness-monitor.service" "$UNIT_ROOT/skyjo-readiness-monitor.timer" >/dev/null
-  reject_link "$MANIFEST"
-  [ ! -e "$MANIFEST" ] || { [ -f "$MANIFEST" ] && [ "$(/usr/bin/stat -c %u:%h "$MANIFEST")" = 0:1 ]; } || \
-    die 'Existing operations asset manifest is unsafe.'
+  safe_file_target "$MANIFEST"
   /usr/bin/rm -f "$MANIFEST"
   /usr/bin/install -o root -g root -m 0600 /dev/null "$MANIFEST"
   for asset in \
     "$ASSET_ROOT/install-skyjo-operations.sh" \
     "$ASSET_ROOT/validate-operations-readiness.mjs" \
     "$ASSET_ROOT/skyjo-ops-launch" \
+    "$ASSET_ROOT/skyjo-online-operations.tmpfiles" \
     "$ASSET_ROOT/skyjo-backup-daily.service" "$ASSET_ROOT/skyjo-backup-daily.timer" \
     "$ASSET_ROOT/skyjo-backup-monthly.service" "$ASSET_ROOT/skyjo-backup-monthly.timer" \
     "$ASSET_ROOT/skyjo-readiness-monitor.service" "$ASSET_ROOT/skyjo-readiness-monitor.timer" \
     "$LIB_ROOT/skyjo-ops-launch" \
+    "$TMPFILES_CONFIG" \
     "$UNIT_ROOT/skyjo-backup-daily.service" "$UNIT_ROOT/skyjo-backup-daily.timer" \
     "$UNIT_ROOT/skyjo-backup-monthly.service" "$UNIT_ROOT/skyjo-backup-monthly.timer" \
     "$UNIT_ROOT/skyjo-readiness-monitor.service" "$UNIT_ROOT/skyjo-readiness-monitor.timer"; do
@@ -154,6 +254,7 @@ install_assets() {
   done
   /usr/bin/chown root:root "$MANIFEST"
   /usr/bin/chmod 0444 "$MANIFEST"
+  verify_installed_assets
   /usr/bin/systemctl daemon-reload
   printf '%s\n' 'Installed staged Skyjo operations assets; no timer or monitor was enabled.'
 }
@@ -173,7 +274,10 @@ fail_activation() {
 }
 
 activate() {
+  assert_install_inactive
   [ -x "$LIB_ROOT/skyjo-ops-launch" ] || die 'Install operations assets before activation.'
+  verify_installed_assets
+  /usr/bin/systemctl daemon-reload
   [ -L /srv/skyjo-online/current ] || die 'The active release link is missing or unsafe.'
   release=$(/usr/bin/readlink -f /srv/skyjo-online/current)
   case "$release" in /srv/skyjo-online/releases/*) ;; *) die 'The active release is outside the immutable release store.' ;; esac
@@ -206,6 +310,15 @@ activate() {
   fi
   if ! /usr/bin/systemctl start skyjo-backup-monthly.service; then
     fail_activation 'The first monthly backup and isolated restore drill failed.'
+  fi
+  [ "$(/usr/bin/readlink -f /srv/skyjo-online/current)" = "$release" ] || \
+    fail_activation 'The active release changed during operations certification.'
+  if ! /usr/bin/systemctl start skyjo-readiness-monitor.service; then
+    fail_activation 'Final local readiness did not pass after backup certification.'
+  fi
+  if ! /opt/skyjo-online/node/bin/node "$ASSET_ROOT/validate-operations-readiness.mjs" \
+    "$release_sha" "$(/usr/bin/id -u skyjo-monitor)"; then
+    fail_activation 'Final local readiness no longer identifies the certified release.'
   fi
   if ! /usr/bin/systemctl enable --now \
     skyjo-readiness-monitor.timer skyjo-backup-daily.timer skyjo-backup-monthly.timer >/dev/null; then

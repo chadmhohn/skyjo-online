@@ -1,8 +1,10 @@
 import { normalizeMonitorResult } from './readiness-monitor-lib.mjs';
 
 export const INCIDENT_MARKER = '<!-- skyjo-production-readiness-incident -->';
-export const INCIDENT_TITLE = '[P0][Incident] Skyjo production readiness failure';
+export const INCIDENT_SOURCES_MARKER = 'skyjo-production-active-sources';
+export const INCIDENT_TITLE = '[P0][Incident] Skyjo production release or readiness failure';
 export const INCIDENT_LABELS = Object.freeze(['priority:p0', 'area:ops', 'incident:production', 'agent-ready']);
+const incidentSources = new Set(['readiness', 'deployment']);
 
 function assertRepository(value) {
   const repository = String(value || '');
@@ -15,17 +17,47 @@ function runUrl(repository, runId) {
   return `https://github.com/${repository}/actions/runs/${runId}`;
 }
 
-function incidentBody(result, repository, runId) {
-  const observed = result.status === 'healthy' ? 'recovered' : 'failing';
+function assertIncidentSource(value) {
+  const source = String(value || 'readiness');
+  if (!incidentSources.has(source)) throw new Error('Production incident source is invalid.');
+  return source;
+}
+
+function activeSourcesFromIssue(issue) {
+  const body = String(issue?.body || '');
+  const markerPrefix = `<!-- ${INCIDENT_SOURCES_MARKER}:`;
+  const matches = [...body.matchAll(/<!-- skyjo-production-active-sources:([^<>]*) -->/g)];
+  if (matches.length === 0) {
+    if (body.includes(markerPrefix)) throw new Error('Production incident contains an invalid active source marker.');
+    return issue?.state === 'open' ? new Set(['readiness']) : new Set();
+  }
+  if (matches.length !== 1) throw new Error('Production incident contains an invalid active source marker.');
+  const serialized = matches[0][1];
+  const sources = new Set(serialized.split(',').filter(Boolean));
+  if (
+    [...sources].some((source) => !incidentSources.has(source)) ||
+    [...sources].sort().join(',') !== serialized
+  ) {
+    throw new Error('Production incident contains an invalid active source marker.');
+  }
+  return sources;
+}
+
+function incidentBody(result, repository, runId, activeSources, source) {
+  const sortedSources = [...activeSources].sort();
+  const observed = sortedSources.length === 0 ? 'recovered' : 'failing';
   const failureClass = result.failureClass || 'none';
   const httpStatus = result.httpStatus === null ? 'not available' : String(result.httpStatus);
   const releaseSha = result.releaseSha || 'not available';
   return [
     INCIDENT_MARKER,
+    `<!-- ${INCIDENT_SOURCES_MARKER}:${sortedSources.join(',')} -->`,
     '',
-    'Skyjo production readiness monitoring is reporting a sanitized operational state.',
+    'Skyjo production automation is reporting a sanitized operational state.',
     '',
     `- State: **${observed}**`,
+    `- Active failure sources: \`${sortedSources.join(', ') || 'none'}\``,
+    `- Latest signal: \`${source}:${result.status}\``,
     `- Checked at: \`${result.checkedAt}\``,
     `- Monitor: \`${result.monitor}\``,
     `- Failure class: \`${failureClass}\``,
@@ -35,9 +67,9 @@ function incidentBody(result, repository, runId) {
     '',
     'Response bodies, exception messages, host paths, credentials, room data, and user data are intentionally excluded.',
     '',
-    result.status === 'healthy'
+    sortedSources.length === 0
       ? 'The monitor recovered. This incident is closed automatically.'
-      : 'The next agent should inspect sanitized workflow evidence and the VPS journal, then keep remediation on this issue until readiness recovers.',
+      : 'The next agent should inspect sanitized workflow evidence and the VPS journal, then keep remediation on this issue until every active failure source recovers.',
     ''
   ].join('\n');
 }
@@ -53,6 +85,7 @@ export async function reconcileProductionIncident(options) {
   const repository = assertRepository(options.repository);
   const runId = String(options.runId || '');
   const result = normalizeMonitorResult(options.result);
+  const source = assertIncidentSource(options.source);
   if (result.monitor !== 'public') throw new Error('Only public monitor results can reconcile GitHub incidents.');
   const api = options.api;
   if (typeof api !== 'function') throw new Error('A GitHub API implementation is required.');
@@ -60,22 +93,37 @@ export async function reconcileProductionIncident(options) {
   const issues = incidentIssues(await api('GET', `/repos/${repository}/issues?state=all&labels=incident%3Aproduction&per_page=100`));
   const primary = issues[0];
   const duplicates = issues.slice(1).filter((issue) => issue.state === 'open');
+  const activeSources = new Set();
+  for (const issue of issues.filter((entry) => entry.state === 'open')) {
+    for (const activeSource of activeSourcesFromIssue(issue)) activeSources.add(activeSource);
+  }
   for (const duplicate of duplicates) {
     await api('PATCH', `/repos/${repository}/issues/${duplicate.number}`, { state: 'closed', state_reason: 'not_planned' });
   }
 
   if (result.status === 'healthy') {
-    for (const issue of issues.filter((entry) => entry.state === 'open')) {
-      await api('PATCH', `/repos/${repository}/issues/${issue.number}`, {
-        body: incidentBody(result, repository, runId),
-        state: 'closed',
-        state_reason: 'completed'
-      });
+    activeSources.delete(source);
+    if (!primary || activeSources.size === 0) {
+      if (primary?.state === 'open') {
+        await api('PATCH', `/repos/${repository}/issues/${primary.number}`, {
+          body: incidentBody(result, repository, runId, activeSources, source),
+          state: 'closed',
+          state_reason: 'completed'
+        });
+      }
+      return { action: primary?.state === 'open' ? 'closed' : 'none', issueNumber: primary?.number || null };
     }
-    return { action: issues.some((entry) => entry.state === 'open') ? 'closed' : 'none', issueNumber: primary?.number || null };
+    await api('PATCH', `/repos/${repository}/issues/${primary.number}`, {
+      title: INCIDENT_TITLE,
+      body: incidentBody(result, repository, runId, activeSources, source),
+      labels: [...INCIDENT_LABELS],
+      state: 'open'
+    });
+    return { action: primary.state === 'open' ? 'updated' : 'reopened', issueNumber: primary.number };
   }
 
-  const body = incidentBody(result, repository, runId);
+  activeSources.add(source);
+  const body = incidentBody(result, repository, runId, activeSources, source);
   if (primary) {
     await api('PATCH', `/repos/${repository}/issues/${primary.number}`, {
       title: INCIDENT_TITLE,

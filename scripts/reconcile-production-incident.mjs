@@ -14,6 +14,7 @@ export async function runIncidentReconciliation(env = process.env, dependencies 
     repository: env.GITHUB_REPOSITORY,
     runId: env.GITHUB_RUN_ID,
     result,
+    source: env.SKYJO_INCIDENT_SOURCE || 'readiness',
     api
   });
   process.stdout.write(`${JSON.stringify(outcome)}\n`);

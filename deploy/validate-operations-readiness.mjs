@@ -26,17 +26,17 @@ export async function validateOperationsReadiness(
   if (!/^[a-f0-9]{40}$/.test(expectedReleaseSha || '')) throw new Error('Expected release SHA is invalid.');
   if (!Number.isSafeInteger(expectedUid) || expectedUid < 0) throw new Error('Expected monitor user identity is invalid.');
   const noFollow = fsConstants.constants.O_NOFOLLOW;
+  if (platform !== 'win32' && !Number.isInteger(noFollow)) {
+    throw new Error('This platform cannot safely open readiness evidence without following links.');
+  }
   const flags = fsConstants.constants.O_RDONLY | (Number.isInteger(noFollow) ? noFollow : 0);
   const handle = await fs.open(filePath, flags);
   let stat;
   let text;
   try {
     stat = await handle.stat();
-    const pathStat = await fs.lstat(filePath);
     if (
-      !stat.isFile() || stat.nlink !== 1 || stat.size < 2 || stat.size > 4096 ||
-      !pathStat.isFile() || pathStat.isSymbolicLink() ||
-      pathStat.dev !== stat.dev || pathStat.ino !== stat.ino
+      !stat.isFile() || stat.nlink !== 1 || stat.size < 2 || stat.size > 4096
     ) {
       throw new Error('Local readiness evidence is not one bounded regular file.');
     }

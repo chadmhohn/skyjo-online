@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: skyjo-production-monitor
+  group: skyjo-production-incident
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -47,7 +48,7 @@ jobs:
       - name: Check out immutable monitoring code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: refs/heads/main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up Node

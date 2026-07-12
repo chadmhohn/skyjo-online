@@ -7,7 +7,8 @@ Issue 63 ships repository policy, scheduled backup, readiness monitoring, and in
 The managed policy has these invariants:
 
 - `main` accepts pull requests only, requires linear history and resolved conversations, disallows deletion and force pushes, has no bypass actors, and requires zero approving human reviews.
-- The nine named CI and CodeQL checks must pass strictly against the current base before merging. Each required context is bound to the GitHub App that produced the unique successful check on current `main`.
+- A separate `v*` tag-creation ruleset permits only the authenticated user owner resolved from the repository API. A second no-bypass tag ruleset blocks every update and deletion, so the release actor may create a version tag exactly once but cannot move or remove it afterward.
+- The nine named CI and CodeQL workflow checks must pass strictly against the current base before merging. Each required context is bound to the GitHub App that produced the unique successful check on current `main`. A separate CodeQL code-scanning rule blocks error-level findings and high-or-critical security findings; it does not rely on the workflow completion check to infer alert severity.
 - Only squash merging is available. Auto-merge and automatic branch deletion are enabled.
 - Actions must use full commit SHAs. The default `GITHUB_TOKEN` is read-only and cannot approve pull requests; individual jobs must request narrower write permissions explicitly.
 - Dependabot alerts and automatic security fixes are enabled. Weekly npm and Actions updates are grouped by ecosystem and dependency type.
@@ -27,7 +28,7 @@ GITHUB_TOKEN="$(gh auth token)" node scripts/configure-github-governance.mjs \
   --confirm chadmhohn/skyjo-online
 ```
 
-Apply mode first reads current `main` and refuses to change anything unless every required check is uniquely green and has a trustworthy GitHub App identity. It preserves the repository's current Actions allowlist selection, turns on SHA pinning, applies the settings, and reads back the full ruleset plus Actions/token policies. It never deletes an unrelated ruleset.
+Apply mode first reads current `main`, current Actions policy, and every repository ruleset. It refuses to change anything unless every required check is uniquely green with a trustworthy GitHub App identity and any existing managed ruleset has an unambiguous identity. It preserves the repository's current Actions allowlist selection, turns on SHA pinning, applies the settings, and reads back the full ruleset (including the CodeQL severity gate) plus repository, Actions, token, and Dependabot policies. It never deletes an unrelated ruleset.
 
 Repository governance is the immediate post-merge step for this issue: apply it as soon as the issue-63 main run, including CodeQL, is green. This is separate from VPS operations activation below, which must remain deferred until the tagged `v0.1.1` production cutover in issue 64.
 
@@ -41,11 +42,11 @@ sudo /usr/local/share/skyjo-online/operations/install-skyjo-operations.sh activa
 sudo /usr/local/share/skyjo-online/operations/install-skyjo-operations.sh deactivate
 ```
 
-For release work, copy the reviewed installer and its eight sibling assets to a root-owned staging directory first. `install` refuses to run if the activation marker exists or any managed unit is active/enabled; an inactive reinstall remains idempotent. It then validates and installs root-owned units, validators, and the backup launcher, creates private directories, verifies the units, and reloads systemd. It never creates the activation marker and never enables a timer.
+For release work, copy the reviewed installer and its nine sibling assets to a root-owned staging directory first. `install` refuses to run if the activation marker exists or any managed unit is active/enabled; an inactive reinstall remains idempotent. It rejects linked, hardlinked, non-root-owned, or externally writable file targets, then installs exact-mode root-owned units, validators, the backup launcher, and a separate operations-owned tmpfiles rule that recreates the shared root-only release lock after every boot. It creates private directories, verifies the units, and reloads systemd. It writes and immediately verifies an exact 18-entry checksum manifest. It never creates the activation marker and never enables a timer.
 
 Run `activate` only after the immutable `v0.1.1` release is healthy and its local `/readyz` reports the expected release SHA. Activation:
 
-1. resolves `current` to an exact root-owned `releases/<40-sha>` directory and refuses an unsafe activation marker;
+1. re-proves every service inactive/static, every timer inactive/disabled, and the exact installed-asset checksum/owner/mode manifest before resolving `current` to a root-owned `releases/<40-sha>` directory;
 2. proves local readiness once and requires the private result to name that exact release SHA;
 3. creates and verifies one daily backup;
 4. creates a monthly backup and completes an isolated restore drill;
@@ -79,7 +80,7 @@ SKYJO_MONITOR_ENABLED=true
 
 Before enabling it, set repository variable `SKYJO_PUBLIC_BASE_URL` to the production HTTPS origin and prove public `/readyz` and `/version` on `v0.1.1`. A missing or invalid URL after activation produces sanitized `internal` failure evidence and still reaches incident reconciliation; it cannot silently skip monitoring.
 
-An unhealthy result creates or reopens one issue identified by an internal marker and labelled `priority:p0`, `area:ops`, `incident:production`, and `agent-ready`. Later failures update the same issue. Duplicate open marker issues are closed, and recovery closes the incident. Issue text contains no response body, exception message, host path, credential, room content, or user data. No GitHub token or PAT is installed on the VPS.
+An unhealthy readiness result or failed tag deployment creates or reopens one issue identified by an internal marker and labelled `priority:p0`, `area:ops`, `incident:production`, and `agent-ready`. Later failures update the same issue. The marker tracks `readiness` and `deployment` as independent active sources: healthy production cannot hide a failed release, and a later successful deployment must prove the public readiness contract before clearing its source. Duplicate open marker issues are folded into the primary issue and closed; the primary closes only after every active source recovers. Issue text contains no response body, exception message, host path, credential, room content, or user data. No GitHub token or PAT is installed on the VPS.
 
 Monitor evidence is retained as a GitHub Actions artifact for 14 days. Keep the public workflow gated while production is legacy; enabling it early would intentionally report the missing readiness contract as an incident.
 
