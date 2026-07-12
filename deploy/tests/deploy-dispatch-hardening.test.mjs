@@ -93,6 +93,28 @@ function spawnAdmissionChild(args) {
   return { child, done };
 }
 
+async function runSameUidNode(source, args) {
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', source, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const result = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+  assert.deepEqual(
+    { code: result.code, signal: result.signal, stderr: result.stderr },
+    { code: 0, signal: null, stderr: '' },
+    'same-UID adversarial child must complete its deterministic filesystem schedule'
+  );
+  return result.stdout;
+}
+
 test('forced-command grammar remains strict', () => {
   assert.deepEqual(parseCommand(`upload ${runId} ${releaseSha} 4`), { command: 'upload', runId, releaseSha, bytes: 4 });
   assert.throws(() => parseCommand(`upload ${runId} ${releaseSha} 0`), /rejected/);
@@ -204,6 +226,33 @@ test('a concurrent upload fails nonblocking while the lock owner completes intac
   const result = await first;
   assert.equal(await fs.readFile(result.archivePath, 'utf8'), 'abcd');
   assert.deepEqual((await fs.readdir(path.dirname(result.archivePath))).sort(), [ADMISSION_MARKER, `skyjo-runtime-${releaseSha}.tar.gz`].sort());
+}));
+
+test('zero-byte and partial owner-write failures remove only the inode created by this lock attempt', async () => fixture(async (root) => {
+  const cases = [
+    {
+      name: 'zero',
+      writeOwnerFile: async () => {
+        throw Object.assign(new Error('injected zero-byte owner write failure'), { code: 'EIO' });
+      }
+    },
+    {
+      name: 'partial',
+      writeOwnerFile: async (handle, ownerText) => {
+        await handle.writeFile(ownerText.slice(0, 7), 'utf8');
+        throw Object.assign(new Error('injected partial owner write failure'), { code: 'EIO' });
+      }
+    }
+  ];
+  for (const scenario of cases) {
+    const stage = path.join(root, `${scenario.name}-owner-failure`);
+    await fs.mkdir(stage, { mode: 0o700 });
+    await assert.rejects(
+      acquireUploadLock(stage, { writeOwnerFile: scenario.writeOwnerFile }),
+      new RegExp(`injected ${scenario.name}(?:-byte)? owner write failure`)
+    );
+    assert.deepEqual(await fs.readdir(stage), [], `${scenario.name} owner failure must not strand a lock`);
+  }
 }));
 
 test('failed or short streams leave no completed archive, partial, or lock', async () => fixture(async (root) => {
@@ -579,6 +628,164 @@ test('only a proven dead stale owner can be reclaimed and live ownership is neve
   });
   await releaseReclaimed();
   assert.deepEqual(await fs.readdir(stage), []);
+}));
+
+test('O_NOFOLLOW refuses a symlinked stale owner without reading or removing its target', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
+  const stage = path.join(root, 'symlink-owner');
+  const lock = path.join(stage, '.upload.lock');
+  const outsideOwner = path.join(root, 'outside-owner.json');
+  const ownerText = `${JSON.stringify({ pid: 999_999, token: 'c'.repeat(32), createdAt: 1_000 })}\n`;
+  await fs.mkdir(stage, { mode: 0o700 });
+  await fs.mkdir(lock, { mode: 0o700 });
+  await fs.writeFile(outsideOwner, ownerText, { mode: 0o600, flag: 'wx' });
+  await fs.symlink(outsideOwner, path.join(lock, 'owner.json'));
+
+  await assert.rejects(acquireUploadLock(stage, {
+    now: 1_000 + UPLOAD_LOCK_STALE_MS + 1,
+    isProcessAlive: () => false
+  }), (error) => error.exitCode === 75 && /already active/i.test(error.message));
+  assert.equal(await fs.readFile(outsideOwner, 'utf8'), ownerText);
+  assert.equal((await fs.lstat(path.join(lock, 'owner.json'))).isSymbolicLink(), true);
+}));
+
+test('stale reclaim never unlinks an identical same-UID inode swapped by another session', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
+  const stage = path.join(root, 'stale-inode-swap');
+  const lock = path.join(stage, '.upload.lock');
+  const ownerPath = path.join(lock, 'owner.json');
+  const savedPath = path.join(lock, 'owner.original');
+  const ownerText = `${JSON.stringify({ pid: 999_999, token: 'd'.repeat(32), createdAt: 1_000 })}\n`;
+  let childUid;
+  await fs.mkdir(stage, { mode: 0o700 });
+  await fs.mkdir(lock, { mode: 0o700 });
+  await fs.writeFile(ownerPath, ownerText, { mode: 0o600, flag: 'wx' });
+
+  await assert.rejects(acquireUploadLock(stage, {
+    now: 1_000 + UPLOAD_LOCK_STALE_MS + 1,
+    isProcessAlive: () => false,
+    beforeStaleOwnerUnlink: async () => {
+      childUid = await runSameUidNode(`
+        import fs from 'node:fs/promises';
+        const [ownerPath, savedPath, encoded] = process.argv.slice(1);
+        await fs.rename(ownerPath, savedPath);
+        await fs.writeFile(ownerPath, Buffer.from(encoded, 'base64'), { flag: 'wx', mode: 0o600 });
+        process.stdout.write(String(process.getuid()));
+      `, [ownerPath, savedPath, Buffer.from(ownerText).toString('base64')]);
+    }
+  }), (error) => error.exitCode === 70 && /identity|changed/i.test(error.message));
+  assert.equal(childUid, String(process.getuid()));
+  assert.equal(await fs.readFile(ownerPath, 'utf8'), ownerText);
+  assert.equal(await fs.readFile(savedPath, 'utf8'), ownerText);
+  assert.notEqual((await fs.lstat(ownerPath)).ino, (await fs.lstat(savedPath)).ino);
+}));
+
+test('release never unlinks an identical same-UID inode swapped by another session', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
+  const stage = path.join(root, 'release-inode-swap');
+  const ownerPath = path.join(stage, '.upload.lock', 'owner.json');
+  const savedPath = path.join(stage, '.upload.lock', 'owner.original');
+  let ownerText;
+  let childUid;
+  await fs.mkdir(stage, { mode: 0o700 });
+  const release = await acquireUploadLock(stage, {
+    beforeReleaseOwnerUnlink: async () => {
+      ownerText = await fs.readFile(ownerPath, 'utf8');
+      childUid = await runSameUidNode(`
+        import fs from 'node:fs/promises';
+        const [ownerPath, savedPath, encoded] = process.argv.slice(1);
+        await fs.rename(ownerPath, savedPath);
+        await fs.writeFile(ownerPath, Buffer.from(encoded, 'base64'), { flag: 'wx', mode: 0o600 });
+        process.stdout.write(String(process.getuid()));
+      `, [ownerPath, savedPath, Buffer.from(ownerText).toString('base64')]);
+    }
+  });
+  await assert.rejects(release(), (error) => error instanceof AggregateError && error.exitCode === 70 &&
+    error.errors.some((entry) => /identity|changed/i.test(entry.message)));
+  assert.equal(childUid, String(process.getuid()));
+  assert.equal(await fs.readFile(ownerPath, 'utf8'), ownerText);
+  assert.equal(await fs.readFile(savedPath, 'utf8'), ownerText);
+  assert.notEqual((await fs.lstat(ownerPath)).ino, (await fs.lstat(savedPath)).ino);
+}));
+
+test('release rejects restored-content mutation and extra-link changes made by same-UID sessions', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
+  for (const scenario of ['mutation', 'hardlink']) {
+    const stage = path.join(root, `owner-${scenario}`);
+    const ownerPath = path.join(stage, '.upload.lock', 'owner.json');
+    const aliasPath = path.join(stage, 'owner.alias');
+    let originalText;
+    let childUid;
+    await fs.mkdir(stage, { mode: 0o700 });
+    const release = await acquireUploadLock(stage, {
+      beforeReleaseOwnerUnlink: async () => {
+        originalText = await fs.readFile(ownerPath, 'utf8');
+        if (scenario === 'mutation') {
+          childUid = await runSameUidNode(`
+            import fs from 'node:fs/promises';
+            const [ownerPath] = process.argv.slice(1);
+            const before = await fs.stat(ownerPath);
+            const original = await fs.readFile(ownerPath);
+            const changed = Buffer.from(original);
+            changed[0] = changed[0] === 0x7b ? 0x5b : 0x7b;
+            await fs.writeFile(ownerPath, changed);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            await fs.writeFile(ownerPath, original);
+            await fs.utimes(ownerPath, before.atime, before.mtime);
+            process.stdout.write(String(process.getuid()));
+          `, [ownerPath]);
+        } else {
+          childUid = await runSameUidNode(`
+            import fs from 'node:fs/promises';
+            const [ownerPath, aliasPath] = process.argv.slice(1);
+            await fs.link(ownerPath, aliasPath);
+            process.stdout.write(String(process.getuid()));
+          `, [ownerPath, aliasPath]);
+        }
+      }
+    });
+    await assert.rejects(release(), (error) => error instanceof AggregateError && error.exitCode === 70 &&
+      error.errors.some((entry) => /owner identity|changed/i.test(entry.message)));
+    assert.equal(childUid, String(process.getuid()));
+    assert.equal(await fs.readFile(ownerPath, 'utf8'), originalText);
+    if (scenario === 'hardlink') {
+      assert.equal((await fs.lstat(ownerPath)).nlink, 2);
+      assert.equal((await fs.lstat(aliasPath)).ino, (await fs.lstat(ownerPath)).ino);
+    }
+  }
+}));
+
+test('release never removes a replacement lock directory swapped by a same-UID session', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
+  const stage = path.join(root, 'release-directory-swap');
+  const lock = path.join(stage, '.upload.lock');
+  const savedLock = path.join(stage, '.upload.lock.original');
+  let childUid;
+  await fs.mkdir(stage, { mode: 0o700 });
+  const release = await acquireUploadLock(stage, {
+    beforeReleaseLockRmdir: async () => {
+      childUid = await runSameUidNode(`
+        import fs from 'node:fs/promises';
+        const [lock, savedLock] = process.argv.slice(1);
+        await fs.rename(lock, savedLock);
+        await fs.mkdir(lock, { mode: 0o700 });
+        process.stdout.write(String(process.getuid()));
+      `, [lock, savedLock]);
+    }
+  });
+  await assert.rejects(release(), (error) => error instanceof AggregateError && error.exitCode === 70 &&
+    error.errors.some((entry) => /directory identity|directory changed/i.test(entry.message)));
+  assert.equal(childUid, String(process.getuid()));
+  assert.equal((await fs.lstat(lock)).isDirectory(), true);
+  assert.equal((await fs.lstat(savedLock)).isDirectory(), true);
+  assert.deepEqual(await fs.readdir(lock), []);
+  assert.deepEqual(await fs.readdir(savedLock), []);
+  assert.notEqual((await fs.lstat(lock)).ino, (await fs.lstat(savedLock)).ino);
 }));
 
 test('unsafe lock objects are rejected without following or removing them', { skip: process.platform === 'win32' }, async () => fixture(async (root) => {

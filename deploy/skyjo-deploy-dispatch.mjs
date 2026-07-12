@@ -29,6 +29,12 @@ export const MAX_STAGED_RUNS = 32;
 export const ADMISSION_MARKER = '.quota-admitted';
 export const UNADMITTED_STALE_MS = 15 * 60 * 1000;
 
+const UPLOAD_LOCK_MODE = 0o700;
+const UPLOAD_LOCK_OWNER_MODE = 0o600;
+const MAX_UPLOAD_LOCK_OWNER_BYTES = 512;
+const READ_NOFOLLOW_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+const READ_DIRECTORY_NOFOLLOW_FLAGS = READ_NOFOLLOW_FLAGS | (fs.constants.O_DIRECTORY || 0);
+
 export { ADMISSION_LOCK_NAME, acquireAdmissionLock };
 
 export function admittedDirectoryCountFromLinkCount(nlink) {
@@ -133,42 +139,226 @@ function processIsAlive(pid) {
   }
 }
 
-async function removeDeadUploadLock(lockDirectory, { now = Date.now(), isProcessAlive = processIsAlive } = {}) {
-  const ownerPath = resolveWithin(lockDirectory, 'owner.json');
-  let ownerText;
-  let owner;
-  let ownerStat;
-  let lockStat;
+function exactUploadLockDirectory(stat, { uid, gid } = {}) {
+  return stat?.isDirectory() && !stat.isSymbolicLink() &&
+    (uid === undefined || stat.uid === uid) && (gid === undefined || stat.gid === gid) &&
+    (process.platform === 'win32' || (stat.mode & 0o7777) === UPLOAD_LOCK_MODE) &&
+    Number.isSafeInteger(stat.nlink) && stat.nlink >= 1 &&
+    (process.platform === 'win32' || stat.nlink === 2);
+}
+
+function exactUploadLockOwner(stat, {
+  uid,
+  gid,
+  size,
+  minimumSize = 2,
+  maximumSize = MAX_UPLOAD_LOCK_OWNER_BYTES
+} = {}) {
+  return stat?.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 &&
+    (uid === undefined || stat.uid === uid) && (gid === undefined || stat.gid === gid) &&
+    (process.platform === 'win32' || (stat.mode & 0o7777) === UPLOAD_LOCK_OWNER_MODE) &&
+    Number.isSafeInteger(stat.size) && stat.size >= minimumSize && stat.size <= maximumSize &&
+    (size === undefined || stat.size === size);
+}
+
+function sameStableFilesystemState(left, right) {
+  return sameFilesystemIdentity(left, right) && left.uid === right.uid && left.gid === right.gid &&
+    (left.mode & 0o7777) === (right.mode & 0o7777) && left.nlink === right.nlink &&
+    left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
+
+function unsafeUploadLock(message) {
+  return commandError(message, 70);
+}
+
+async function openVerifiedLockDirectory(lockDirectory, expectedIdentity) {
+  let handle;
   try {
-    lockStat = await fsp.lstat(lockDirectory);
-    if (!lockStat.isDirectory() || lockStat.isSymbolicLink()) return false;
-    ownerStat = await fsp.lstat(ownerPath);
-    if (!ownerStat.isFile() || ownerStat.isSymbolicLink()) return false;
-    ownerText = await fsp.readFile(ownerPath, 'utf8');
-    owner = JSON.parse(ownerText);
-  } catch (error) {
-    if (error?.code === 'ENOENT' && lockStat && now - lockStat.mtimeMs >= UPLOAD_LOCK_STALE_MS) {
-      const entries = await fsp.readdir(lockDirectory).catch(() => null);
-      if (entries?.length === 0) {
-        await fsp.rmdir(lockDirectory);
-        await fsyncDirectory(path.dirname(lockDirectory));
-        return true;
-      }
+    if (process.platform !== 'win32') {
+      handle = await fsp.open(lockDirectory, READ_DIRECTORY_NOFOLLOW_FLAGS);
     }
-    return false;
+    const handleStat = handle ? await handle.stat() : await fsp.lstat(lockDirectory);
+    const pathStat = await fsp.lstat(lockDirectory);
+    const expectedUid = process.getuid?.();
+    const contract = { uid: expectedUid, gid: expectedUid === undefined ? undefined : handleStat.gid };
+    if (!exactUploadLockDirectory(handleStat, contract) || !exactUploadLockDirectory(pathStat, contract) ||
+        !sameFilesystemIdentity(handleStat, pathStat) ||
+        (expectedIdentity && (!sameStableFilesystemState(expectedIdentity, handleStat) ||
+          !sameStableFilesystemState(expectedIdentity, pathStat)))) {
+      throw unsafeUploadLock('Upload lock directory identity is unsafe.');
+    }
+    return { handle, identity: handleStat, contract: { uid: handleStat.uid, gid: handleStat.gid } };
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    throw error;
   }
-  if (!Number.isSafeInteger(owner?.pid) || owner.pid < 1 ||
-      typeof owner?.token !== 'string' || !/^[a-f0-9]{32}$/.test(owner.token) ||
-      !Number.isSafeInteger(owner?.createdAt) || now - owner.createdAt < UPLOAD_LOCK_STALE_MS || isProcessAlive(owner.pid)) {
-    return false;
+}
+
+async function snapshotVerifiedLockDirectory(lockDirectory, session) {
+  const handleStat = session.handle ? await session.handle.stat() : await fsp.lstat(lockDirectory);
+  const pathStat = await fsp.lstat(lockDirectory);
+  if (!exactUploadLockDirectory(handleStat, session.contract) || !exactUploadLockDirectory(pathStat, session.contract) ||
+      !sameFilesystemIdentity(handleStat, pathStat) ||
+      !sameFilesystemIdentity(session.identity, handleStat) ||
+      !sameFilesystemIdentity(session.identity, pathStat) ||
+      !sameStableFilesystemState(handleStat, pathStat)) {
+    throw unsafeUploadLock('Upload lock directory identity changed unexpectedly.');
   }
-  const currentText = await fsp.readFile(ownerPath, 'utf8').catch(() => null);
-  if (currentText !== ownerText) return false;
-  await fsp.unlink(ownerPath);
-  await fsyncDirectory(lockDirectory);
-  await fsp.rmdir(lockDirectory);
-  await fsyncDirectory(path.dirname(lockDirectory));
-  return true;
+  return handleStat;
+}
+
+async function assertVerifiedLockDirectory(lockDirectory, session, expectedState = session.identity) {
+  const current = await snapshotVerifiedLockDirectory(lockDirectory, session);
+  if (!sameStableFilesystemState(expectedState, current)) {
+    throw unsafeUploadLock('Upload lock directory changed unexpectedly.');
+  }
+  return current;
+}
+
+async function openStableOwnerFile(ownerPath, contract, expectedIdentity) {
+  let handle;
+  try {
+    handle = await fsp.open(ownerPath, READ_NOFOLLOW_FLAGS);
+    const beforeHandle = await handle.stat();
+    const beforePath = await fsp.lstat(ownerPath);
+    if (!exactUploadLockOwner(beforeHandle, contract) || !exactUploadLockOwner(beforePath, contract) ||
+        !sameFilesystemIdentity(beforeHandle, beforePath) ||
+        (expectedIdentity && (!sameStableFilesystemState(expectedIdentity, beforeHandle) ||
+          !sameStableFilesystemState(expectedIdentity, beforePath)))) {
+      throw unsafeUploadLock('Upload lock owner identity is unsafe.');
+    }
+    const text = await handle.readFile('utf8');
+    const afterHandle = await handle.stat();
+    const afterPath = await fsp.lstat(ownerPath);
+    if (Buffer.byteLength(text, 'utf8') !== beforeHandle.size ||
+        !exactUploadLockOwner(afterHandle, contract) || !exactUploadLockOwner(afterPath, contract) ||
+        !sameStableFilesystemState(beforeHandle, afterHandle) ||
+        !sameStableFilesystemState(beforeHandle, afterPath)) {
+      throw unsafeUploadLock('Upload lock owner changed while it was read.');
+    }
+    return { handle, identity: beforeHandle, contract, text };
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function assertStableOwnerPath(ownerPath, session) {
+  const handleStat = await session.handle.stat();
+  const pathStat = await fsp.lstat(ownerPath);
+  if (!exactUploadLockOwner(handleStat, session.contract) || !exactUploadLockOwner(pathStat, session.contract) ||
+      !sameStableFilesystemState(session.identity, handleStat) ||
+      !sameStableFilesystemState(session.identity, pathStat)) {
+    throw unsafeUploadLock('Upload lock owner identity changed unexpectedly.');
+  }
+}
+
+async function unlinkVerifiedOwner(ownerPath, session, unlinkOwner = fsp.unlink) {
+  await assertStableOwnerPath(ownerPath, session);
+  await unlinkOwner(ownerPath);
+  const detached = await session.handle.stat();
+  if (!sameFilesystemIdentity(session.identity, detached) || detached.nlink !== 0 ||
+      detached.uid !== session.identity.uid || detached.gid !== session.identity.gid ||
+      (detached.mode & 0o7777) !== (session.identity.mode & 0o7777) ||
+      detached.size !== session.identity.size || detached.mtimeMs !== session.identity.mtimeMs) {
+    throw unsafeUploadLock('Upload lock owner unlink did not detach the verified inode.');
+  }
+  const replacement = await fsp.lstat(ownerPath).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
+  if (replacement) throw unsafeUploadLock('Upload lock owner path was recreated during unlink.');
+}
+
+async function rmdirVerifiedLock(lockDirectory, session, {
+  expectedState,
+  beforeRmdir,
+  rmdirLock = fsp.rmdir
+} = {}) {
+  const entries = await fsp.readdir(lockDirectory);
+  if (entries.length !== 0) throw unsafeUploadLock('Upload lock directory changed before removal.');
+  await beforeRmdir?.({ lockDirectory });
+  await assertVerifiedLockDirectory(lockDirectory, session, expectedState);
+  if ((await fsp.readdir(lockDirectory)).length !== 0) {
+    throw unsafeUploadLock('Upload lock directory changed before removal.');
+  }
+  await assertVerifiedLockDirectory(lockDirectory, session, expectedState);
+  await rmdirLock(lockDirectory);
+  if (session.handle) {
+    const detached = await session.handle.stat();
+    if (!sameFilesystemIdentity(session.identity, detached) || detached.nlink !== 0) {
+      throw unsafeUploadLock('Upload lock directory removal did not detach the verified inode.');
+    }
+  }
+  const replacement = await fsp.lstat(lockDirectory).catch((error) => error?.code === 'ENOENT' ? null : Promise.reject(error));
+  if (replacement) throw unsafeUploadLock('Upload lock directory path was recreated during removal.');
+}
+
+async function removeDeadUploadLock(lockDirectory, {
+  now = Date.now(),
+  isProcessAlive = processIsAlive,
+  beforeStaleOwnerUnlink,
+  beforeStaleLockRmdir,
+  staleUnlink = fsp.unlink,
+  staleRmdir = fsp.rmdir
+} = {}) {
+  const ownerPath = resolveWithin(lockDirectory, 'owner.json');
+  let lockSession;
+  let ownerSession;
+  try {
+    try {
+      lockSession = await openVerifiedLockDirectory(lockDirectory);
+    } catch {
+      return false;
+    }
+    try {
+      ownerSession = await openStableOwnerFile(ownerPath, lockSession.contract);
+    } catch (error) {
+      if (error?.code !== 'ENOENT' || now - lockSession.identity.mtimeMs < UPLOAD_LOCK_STALE_MS) return false;
+      if ((await fsp.readdir(lockDirectory)).length !== 0) return false;
+      await rmdirVerifiedLock(lockDirectory, lockSession, {
+        expectedState: lockSession.identity,
+        beforeRmdir: beforeStaleLockRmdir,
+        rmdirLock: staleRmdir
+      });
+      await fsyncDirectory(path.dirname(lockDirectory));
+      return true;
+    }
+    let owner;
+    try {
+      owner = JSON.parse(ownerSession.text);
+    } catch {
+      return false;
+    }
+    if (!Number.isSafeInteger(owner?.pid) || owner.pid < 1 ||
+        typeof owner?.token !== 'string' || !/^[a-f0-9]{32}$/.test(owner.token) ||
+        !Number.isSafeInteger(owner?.createdAt) || now - owner.createdAt < UPLOAD_LOCK_STALE_MS || isProcessAlive(owner.pid)) {
+      return false;
+    }
+    await beforeStaleOwnerUnlink?.({ lockDirectory, ownerPath });
+    await assertVerifiedLockDirectory(lockDirectory, lockSession);
+    await unlinkVerifiedOwner(ownerPath, ownerSession, staleUnlink);
+    await fsyncDirectory(lockDirectory);
+    await ownerSession.handle.close();
+    ownerSession = null;
+    const postUnlinkLockState = lockSession.handle ? await lockSession.handle.stat() : await fsp.lstat(lockDirectory);
+    const postUnlinkPathState = await fsp.lstat(lockDirectory);
+    if (!exactUploadLockDirectory(postUnlinkLockState, lockSession.contract) ||
+        !sameFilesystemIdentity(lockSession.identity, postUnlinkLockState) ||
+        !sameStableFilesystemState(postUnlinkLockState, postUnlinkPathState)) {
+      throw unsafeUploadLock('Upload lock directory changed after owner removal.');
+    }
+    await rmdirVerifiedLock(lockDirectory, lockSession, {
+      expectedState: postUnlinkLockState,
+      beforeRmdir: beforeStaleLockRmdir,
+      rmdirLock: staleRmdir
+    });
+    await fsyncDirectory(path.dirname(lockDirectory));
+    return true;
+  } catch (error) {
+    if (error?.exitCode === 70) throw error;
+    return false;
+  } finally {
+    await ownerSession?.handle.close().catch(() => {});
+    await lockSession?.handle?.close().catch(() => {});
+  }
 }
 
 export async function acquireUploadLock(stageDirectory, options = {}) {
@@ -177,62 +367,148 @@ export async function acquireUploadLock(stageDirectory, options = {}) {
   const token = crypto.randomBytes(16).toString('hex');
   const createdAt = options.now ?? Date.now();
   const ownerText = `${JSON.stringify({ pid: process.pid, token, createdAt })}\n`;
+  let lockIdentity;
+  let ownerIdentity;
   let acquired = false;
   for (let attempt = 0; attempt < 2 && !acquired; attempt += 1) {
     try {
-      await fsp.mkdir(lockDirectory, { mode: 0o700 });
+      await fsp.mkdir(lockDirectory, { mode: UPLOAD_LOCK_MODE });
       acquired = true;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      const removed = attempt === 0 && await removeDeadUploadLock(lockDirectory, {
-        now: createdAt,
-        isProcessAlive: options.isProcessAlive
-      });
+      const removed = attempt === 0 && await removeDeadUploadLock(lockDirectory, { ...options, now: createdAt });
       if (!removed) throw commandError('Another upload is already active for this deployment run.', 75);
     }
   }
   if (!acquired) throw commandError('Another upload is already active for this deployment run.', 75);
+  let creationLockSession;
+  let createdOwnerIdentity;
   try {
-    const handle = await fsp.open(ownerPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
+    creationLockSession = await openVerifiedLockDirectory(lockDirectory);
+    const handle = await fsp.open(
+      ownerPath,
+      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0),
+      UPLOAD_LOCK_OWNER_MODE
+    );
     try {
-      await handle.writeFile(ownerText, 'utf8');
+      createdOwnerIdentity = await handle.stat();
+      if (options.writeOwnerFile) await options.writeOwnerFile(handle, ownerText);
+      else await handle.writeFile(ownerText, 'utf8');
       await handle.sync();
     } finally {
+      createdOwnerIdentity = await handle.stat().catch(() => createdOwnerIdentity);
       await handle.close();
     }
     await fsyncDirectory(lockDirectory);
+    const ownerSession = await openStableOwnerFile(ownerPath, {
+      ...creationLockSession.contract,
+      size: Buffer.byteLength(ownerText, 'utf8')
+    }, createdOwnerIdentity);
+    try {
+      if (ownerSession.text !== ownerText) throw unsafeUploadLock('Upload lock ownership changed during creation.');
+      ownerIdentity = ownerSession.identity;
+    } finally {
+      await ownerSession.handle.close();
+    }
+    const currentLockIdentity = await snapshotVerifiedLockDirectory(lockDirectory, creationLockSession);
+    creationLockSession.identity = currentLockIdentity;
+    lockIdentity = currentLockIdentity;
   } catch (error) {
-    await fsp.unlink(ownerPath).catch(() => {});
-    await fsp.rmdir(lockDirectory).catch(() => {});
-    await fsyncDirectory(stageDirectory).catch(() => {});
+    const cleanupErrors = [];
+    try {
+      creationLockSession ||= await openVerifiedLockDirectory(lockDirectory);
+      if (createdOwnerIdentity) {
+        const cleanupOwner = await openStableOwnerFile(ownerPath, {
+          ...creationLockSession.contract,
+          minimumSize: 0
+        }, createdOwnerIdentity);
+        try {
+          await unlinkVerifiedOwner(ownerPath, cleanupOwner);
+        } finally {
+          await cleanupOwner.handle.close().catch(() => {});
+        }
+        await fsyncDirectory(lockDirectory);
+      } else {
+        const ownerStillExists = await fsp.lstat(ownerPath).then(() => true, (candidateError) => {
+          if (candidateError?.code === 'ENOENT') return false;
+          throw candidateError;
+        });
+        if (ownerStillExists) throw unsafeUploadLock('Unverified upload lock owner remains after creation failure.');
+      }
+      const cleanupLockState = await snapshotVerifiedLockDirectory(lockDirectory, creationLockSession);
+      creationLockSession.identity = cleanupLockState;
+      await rmdirVerifiedLock(lockDirectory, creationLockSession, { expectedState: cleanupLockState });
+      await fsyncDirectory(stageDirectory);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([error, ...cleanupErrors], 'Upload lock creation failed and cleanup could not be proven safe.', { cause: error });
+    }
     throw error;
+  } finally {
+    await creationLockSession?.handle?.close().catch(() => {});
   }
 
   let released = false;
   return async () => {
     if (released) return;
-    const lockStat = await fsp.lstat(lockDirectory).catch(() => null);
-    const ownerStat = await fsp.lstat(ownerPath).catch(() => null);
-    if (!lockStat?.isDirectory() || lockStat.isSymbolicLink() || !ownerStat?.isFile() || ownerStat.isSymbolicLink()) {
-      throw new Error('Upload lock became unsafe before release.');
-    }
-    const currentOwner = await fsp.readFile(ownerPath, 'utf8').catch(() => null);
-    if (currentOwner !== ownerText) throw new Error('Upload lock ownership changed unexpectedly.');
     const releaseErrors = [];
     const releaseUnlink = options.releaseUnlink || fsp.unlink;
     const releaseRmdir = options.releaseRmdir || fsp.rmdir;
     const releaseSyncDirectory = options.releaseSyncDirectory || fsyncDirectory;
-    for (const operation of [
-      () => releaseUnlink(ownerPath),
-      () => releaseSyncDirectory(lockDirectory),
-      () => releaseRmdir(lockDirectory),
-      () => releaseSyncDirectory(stageDirectory)
-    ]) {
-      try { await operation(); }
+    let lockSession;
+    let ownerSession;
+    let ownerRemoved = false;
+    try {
+      lockSession = await openVerifiedLockDirectory(lockDirectory, lockIdentity);
+      ownerSession = await openStableOwnerFile(ownerPath, {
+        ...lockSession.contract,
+        size: Buffer.byteLength(ownerText, 'utf8')
+      }, ownerIdentity);
+      if (ownerSession.text !== ownerText) throw unsafeUploadLock('Upload lock ownership changed unexpectedly.');
+      await options.beforeReleaseOwnerUnlink?.({ lockDirectory, ownerPath });
+      await assertVerifiedLockDirectory(lockDirectory, lockSession, lockIdentity);
+      await unlinkVerifiedOwner(ownerPath, ownerSession, releaseUnlink);
+      ownerRemoved = true;
+    } catch (error) {
+      releaseErrors.push(error);
+    }
+    if (ownerRemoved) {
+      try { await releaseSyncDirectory(lockDirectory); }
+      catch (error) { releaseErrors.push(error); }
+      try { await ownerSession?.handle.close(); ownerSession = null; }
+      catch (error) { releaseErrors.push(error); }
+      let postUnlinkLockState;
+      try {
+        postUnlinkLockState = await snapshotVerifiedLockDirectory(lockDirectory, lockSession);
+      } catch (error) {
+        releaseErrors.push(error);
+      }
+      if (postUnlinkLockState) {
+        try {
+          await rmdirVerifiedLock(lockDirectory, lockSession, {
+            expectedState: postUnlinkLockState,
+            beforeRmdir: options.beforeReleaseLockRmdir,
+            rmdirLock: releaseRmdir
+          });
+        } catch (error) {
+          releaseErrors.push(error);
+        }
+      }
+      try { await releaseSyncDirectory(stageDirectory); }
       catch (error) { releaseErrors.push(error); }
     }
+    try { await ownerSession?.handle.close(); }
+    catch (error) { releaseErrors.push(error); }
+    try { await lockSession?.handle?.close(); }
+    catch (error) { releaseErrors.push(error); }
     released = releaseErrors.length === 0;
-    if (releaseErrors.length > 0) throw new AggregateError(releaseErrors, 'Upload lock release did not complete cleanly.');
+    if (releaseErrors.length > 0) {
+      const failure = new AggregateError(releaseErrors, 'Upload lock release did not complete cleanly.', { cause: releaseErrors[0] });
+      failure.exitCode = releaseErrors[0]?.exitCode || 70;
+      throw failure;
+    }
   };
 }
 
