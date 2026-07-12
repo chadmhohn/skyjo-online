@@ -18,7 +18,7 @@ The release lane is part of `.github/workflows/ci.yml`, so it cannot race the re
 1. Quality builds once and uploads `dist/` plus `server-dist/`.
 2. Unit, browser, accessibility, visual, and Lighthouse jobs consume or validate that source/build.
 3. `CI / Runtime Artifact` downloads the tested build, installs production dependencies in an isolated staging tree, and creates and verifies the archive/checksum/SBOM without any OIDC or attestation-write permission.
-4. `CI / Runtime Attestation` downloads those immutable subjects without executing them, generates GitHub provenance in the only provenance-privileged job, and reverifies the published attestation.
+4. `CI / Runtime Attestation` downloads those immutable subjects without executing them, generates GitHub provenance in the only provenance-privileged job, and reverifies the published attestation against this exact workflow, tested source SHA, triggering ref, and GitHub-hosted runner policy. Canary and production repeat the same constrained verification after download.
 5. `CI / Release Canary` waits for every required test job and provenance, uploads the archive through the signed forced SSH command, and requests a verify-only canary on `127.0.0.1:4181`.
 6. `CI / Production` exists only for a `push` of `vX.Y.Z`. It promotes the same downloaded artifact, checks the public Cloudflare surface, and requests a code-only rollback if the edge check fails.
 
@@ -130,7 +130,7 @@ CI independently verifies the tag syntax and ancestry. The controller resolves t
 
 Failure before step 7 leaves production untouched. Failure during or after local activation switches `current` back to `previous`, restarts it, and verifies it. A public-edge failure requests the same metadata-bound code rollback. The rollback command is rejected unless the current release, failed SHA, artifact digest, tag, run ID, and controller metadata all match.
 
-For the one-time legacy anchor, rollback output explicitly reports `"legacy": true`. Only that exact controller result allows CI to use the reduced legacy edge proof (`healthz`, login, and manifest) because the old service may not implement `/readyz` or `/version`. Every normal rollback requires a full release SHA and the strict readiness/version proof.
+For the one-time legacy anchor, rollback output must be exactly `{"rolledBackTo":"legacy","legacy":true}`. Only that strictly parsed controller result allows CI to use the reduced legacy edge proof (`healthz`, login, and manifest) because the old service may not implement `/readyz` or `/version`. Every normal rollback must return exactly a different full release SHA, and CI passes that recovered SHA into the strict readiness/version public smoke.
 
 ## Retention and recovery
 

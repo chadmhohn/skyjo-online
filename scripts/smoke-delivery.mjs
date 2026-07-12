@@ -91,6 +91,17 @@ async function testWorkflowContract() {
   assert.doesNotMatch(artifactJob, /id-token: write|attestations: write/, 'PR-controlled packaging must not receive provenance credentials');
   assert.match(workflow, /runtime-attestation:[\s\S]*?id-token: write[\s\S]*?attestations: write/);
   assert.match(workflow, /AUTH_KEY: \$\{\{ secrets\.SKYJO_DEPLOY_AUTH_PRIVATE_KEY \}\}/);
+  for (const policy of [
+    '--signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml"',
+    '--source-digest "${{ needs.runtime-artifact.outputs.source-sha }}"',
+    '--source-ref "$GITHUB_REF"',
+    '--deny-self-hosted-runners'
+  ]) {
+    assert.equal(workflow.split(policy).length - 1, 3, `every attestation stage must enforce ${policy}`);
+  }
+  assert.match(workflow, /parse-code-rollback-result\.mjs --failed-release-sha "\$sha"/);
+  assert.match(workflow, /--release-sha "\$rollback_target"/);
+  assert.doesNotMatch(workflow, /rollback_result.*=~.*legacy/);
   for (const job of ['unit-domain', 'unit-data', 'e2e-chromium-1', 'e2e-chromium-2', 'e2e-webkit', 'visual-accessibility', 'lighthouse']) {
     assert.match(workflow, new RegExp(`release-canary:[\\s\\S]*?- ${job}`), `release canary must wait for ${job}`);
   }
@@ -137,7 +148,13 @@ async function testWorkflowContract() {
 }
 
 async function testLinuxRemoteClient() {
-  if (process.platform !== 'linux') return 'skipped outside Linux';
+  const bash = process.env.SKYJO_TEST_BASH || (process.platform === 'linux' ? 'bash' : '');
+  if (!bash) return 'skipped without a POSIX Bash runtime';
+  const bashPath = async (value) => {
+    if (process.platform !== 'win32') return value;
+    const { stdout } = await execFileAsync(bash, ['-c', 'cygpath -u "$1"', '_', value]);
+    return stdout.trim();
+  };
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-delivery-smoke-'));
   try {
     const archiveName = `skyjo-runtime-${fullSha}.tar.gz`;
@@ -148,6 +165,7 @@ async function testLinuxRemoteClient() {
     const canaryAuthorizationKey = path.join(temp, 'canary-auth.pem');
     const productionAuthorizationKey = path.join(temp, 'production-auth.pem');
     const log = path.join(temp, 'ssh.log');
+    const state = path.join(temp, 'ssh-state');
     const fakeSsh = path.join(temp, 'ssh');
     const payload = Buffer.from('deterministic-runtime-archive');
     const digest = crypto.createHash('sha256').update(payload).digest('hex');
@@ -160,33 +178,53 @@ async function testLinuxRemoteClient() {
       fs.writeFile(knownHosts, 'example.test ssh-ed25519 test\n'),
       fs.writeFile(canaryAuthorizationKey, canaryKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 }),
       fs.writeFile(productionAuthorizationKey, productionKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 }),
-      fs.writeFile(fakeSsh, `#!/usr/bin/env bash\nset -Eeuo pipefail\nprintf '%s\\n' "\${*: -1}" >> "$SKYJO_FAKE_SSH_LOG"\nif [[ "\${*: -1}" == upload\\ * ]]; then wc -c >> "$SKYJO_FAKE_SSH_LOG"; else printf '{"legacy":false}\\n'; fi\n`)
+      fs.mkdir(state),
+      fs.copyFile(path.join(root, 'deploy', 'tests', 'fake-ssh-disconnect.sh'), fakeSsh)
     ]);
     await fs.chmod(fakeSsh, 0o700);
+    const [
+      bashIdentity, bashKnownHosts, bashCanaryAuthorizationKey, bashProductionAuthorizationKey,
+      bashLog, bashState, bashFakeSsh, bashClient, bashArchive, bashChecksum
+    ] = await Promise.all([
+      identity, knownHosts, canaryAuthorizationKey, productionAuthorizationKey,
+      log, state, fakeSsh, path.join(root, 'deploy', 'github-release-remote.sh'), archive, checksum
+    ].map(bashPath));
     const baseEnv = {
       ...process.env,
       SKYJO_DEPLOY_HOST: 'deploy.example.test',
       SKYJO_DEPLOY_PORT: '22',
       SKYJO_DEPLOY_USER: 'skyjo-deploy',
-      SKYJO_DEPLOY_IDENTITY_FILE: identity,
-      SKYJO_DEPLOY_KNOWN_HOSTS_FILE: knownHosts,
-      SKYJO_FAKE_SSH_LOG: log,
-      SKYJO_SSH_BIN: fakeSsh
+      SKYJO_DEPLOY_IDENTITY_FILE: bashIdentity,
+      SKYJO_DEPLOY_KNOWN_HOSTS_FILE: bashKnownHosts,
+      SKYJO_FAKE_SSH_LOG: bashLog,
+      SKYJO_FAKE_SSH_STATE: bashState,
+      SKYJO_SSH_BIN: bashFakeSsh
     };
-    const client = path.join(root, 'deploy', 'github-release-remote.sh');
-    const canaryEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: canaryAuthorizationKey };
-    const productionEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: productionAuthorizationKey };
-    await execFileAsync('bash', [client, 'verify', '123-1-canary', fullSha, archive, checksum], { env: canaryEnv });
-    await execFileAsync('bash', [client, 'promote', '123-1-production', fullSha, archive, checksum, 'v0.1.1'], { env: productionEnv });
-    await execFileAsync('bash', [client, 'rollback', '123-1-production', fullSha, checksum, 'v0.1.1'], { env: productionEnv });
+    const canaryEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: bashCanaryAuthorizationKey };
+    const productionEnv = { ...baseEnv, SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE: bashProductionAuthorizationKey };
+    await execFileAsync(bash, [bashClient, 'verify', '123-1-canary', fullSha, bashArchive, bashChecksum], { env: canaryEnv });
+    await execFileAsync(bash, [bashClient, 'promote', '123-1-production', fullSha, bashArchive, bashChecksum, 'v0.1.1'], { env: productionEnv });
+    const rollbackExecution = await execFileAsync(bash, [bashClient, 'rollback', '123-1-production', fullSha, bashChecksum, 'v0.1.1'], { env: productionEnv });
+    assert.equal(rollbackExecution.stdout, `{"rolledBackTo":"${'0'.repeat(40)}","legacy":false}\n`);
     const calls = await fs.readFile(log, 'utf8');
+    const commandLines = calls.trim().split('\n');
+    const canaryUploads = commandLines.filter((line) => line.startsWith('upload 123-1-canary '));
+    const productionUploads = commandLines.filter((line) => line.startsWith('upload 123-1-production '));
+    const canaryVerifications = commandLines.filter((line) => line.startsWith('verify 123-1-canary '));
+    assert.equal(canaryUploads.length, 2, 'a post-publication disconnect must retry upload exactly once');
+    assert.equal(canaryUploads[0], canaryUploads[1], 'the retry must reuse the exact signed authorization');
+    assert.equal(productionUploads.length, 1, 'a successful upload must not be repeated');
+    assert.equal(canaryVerifications.length, 1, 'an upload retry must not duplicate candidate execution');
+    assert.equal(await fs.readFile(path.join(state, '123-1-canary.applied'), 'utf8'), '1\n');
+    assert.equal(await fs.readFile(path.join(state, '123-1-canary.retries'), 'utf8'), '1\n');
+    assert.equal(await fs.readFile(path.join(state, '123-1-production.applied'), 'utf8'), '1\n');
     assert.match(calls, new RegExp(`upload 123-1-canary ${fullSha} ${digest} ${payload.length} - [0-9]+ [0-9]+ canary-primary [A-Za-z0-9_-]{86}`));
     assert.match(calls, new RegExp(`verify 123-1-canary ${fullSha} ${digest} ${payload.length} - [0-9]+ [0-9]+ canary-primary [A-Za-z0-9_-]{86}`));
     assert.match(calls, new RegExp(`upload 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
     assert.match(calls, new RegExp(`promote 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
     assert.match(calls, new RegExp(`rollback 123-1-production ${fullSha} ${digest} ${payload.length} v0\\.1\\.1 [0-9]+ [0-9]+ production-primary [A-Za-z0-9_-]{86}`));
     await assert.rejects(
-      execFileAsync('bash', [client, 'promote', '123-1-production', fullSha, archive, checksum, 'main'], { env: productionEnv }),
+      execFileAsync(bash, [bashClient, 'promote', '123-1-production', fullSha, bashArchive, bashChecksum, 'main'], { env: productionEnv }),
       /immutable release tag/i
     );
   } finally {

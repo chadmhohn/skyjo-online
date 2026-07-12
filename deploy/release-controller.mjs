@@ -268,6 +268,45 @@ async function validateRollbackAnchor(releaseDirectory) {
   return { legacy: true, releaseSha: path.basename(releaseDirectory) };
 }
 
+export async function executeCanaryLifecycle(operations) {
+  let primaryError;
+  try {
+    await operations.prepareEnvironment();
+    await operations.startServer();
+    await operations.waitUntilReady();
+    await operations.runAuthenticatedSmoke();
+    await operations.runStateProof();
+    await operations.verifySourceSnapshot();
+  } catch (caught) {
+    primaryError = caught instanceof Error ? caught : new Error(String(caught));
+  }
+
+  const cleanupErrors = [];
+  for (const [name, cleanup] of [
+    ['stop-server', operations.stopServer],
+    ['reset-units', operations.resetUnits],
+    ['remove-environment', operations.removeEnvironment]
+  ]) {
+    try {
+      await cleanup();
+    } catch (caught) {
+      const error = caught instanceof Error ? caught : new Error(String(caught));
+      Object.defineProperty(error, 'canaryCleanupStage', { value: name, enumerable: true });
+      cleanupErrors.push(error);
+    }
+  }
+
+  if (primaryError) {
+    if (cleanupErrors.length > 0) {
+      Object.defineProperty(primaryError, 'canaryCleanupErrors', { value: cleanupErrors, enumerable: false });
+    }
+    throw primaryError;
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, 'Canary passed but cleanup did not complete safely.');
+  }
+}
+
 async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
   const runDirectory = resolveWithin(PATHS.stage, runId);
   // prepareCandidate has already taken ownership from the upload identity. Keep
@@ -310,22 +349,23 @@ async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
     'HOST=127.0.0.1', 'PORT=4181', 'NODE_ENV=production',
     'SKYJO_VAPID_PUBLIC_KEY=', 'SKYJO_VAPID_PRIVATE_KEY=', 'SKYJO_VAPID_SUBJECT='
   ].join('\n');
-  await fsp.writeFile(envPath, `${env}\n`, { mode: 0o640 });
-  await run('/usr/bin/chown', ['root:skyjo-canary', envPath]);
   const serverUnit = `skyjo-online-canary@${runId}.service`;
   const smokeUnit = `skyjo-online-canary-smoke@${runId}.service`;
   const stateProofUnit = `skyjo-online-state-proof@${runId}.service`;
-  try {
-    await run('/usr/bin/systemctl', ['start', serverUnit]);
-    await waitForRelease('http://127.0.0.1:4181', identity.releaseSha);
-    await run('/usr/bin/systemctl', ['start', smokeUnit]);
-    await run('/usr/bin/systemctl', ['start', stateProofUnit]);
-    await verifyPredeploySnapshot(snapshotDirectory, { expectedOwnerUid: 0, expectedOwnerGid: 0 });
-  } finally {
-    await run('/usr/bin/systemctl', ['stop', serverUnit]).catch(() => {});
-    await run('/usr/bin/systemctl', ['reset-failed', serverUnit, smokeUnit, stateProofUnit]).catch(() => {});
-    await fsp.rm(envPath, { force: true });
-  }
+  await executeCanaryLifecycle({
+    prepareEnvironment: async () => {
+      await fsp.writeFile(envPath, `${env}\n`, { mode: 0o640, flag: 'wx' });
+      await run('/usr/bin/chown', ['root:skyjo-canary', envPath]);
+    },
+    startServer: () => run('/usr/bin/systemctl', ['start', serverUnit]),
+    waitUntilReady: () => waitForRelease('http://127.0.0.1:4181', identity.releaseSha),
+    runAuthenticatedSmoke: () => run('/usr/bin/systemctl', ['start', smokeUnit]),
+    runStateProof: () => run('/usr/bin/systemctl', ['start', stateProofUnit]),
+    verifySourceSnapshot: () => verifyPredeploySnapshot(snapshotDirectory, { expectedOwnerUid: 0, expectedOwnerGid: 0 }),
+    stopServer: () => run('/usr/bin/systemctl', ['stop', serverUnit]),
+    resetUnits: () => run('/usr/bin/systemctl', ['reset-failed', serverUnit, smokeUnit, stateProofUnit]),
+    removeEnvironment: () => fsp.rm(envPath, { force: true })
+  });
 }
 
 async function cleanupRun(runId, workDirectory) {

@@ -152,6 +152,11 @@ signed_command="$(sign_command "$mode")"
 [[ "$signed_command" != *$'\n'* && "$signed_command" != *$'\r'* ]] || die 'signer returned an invalid command'
 [[ "$signed_command" == "$mode $run_id $release_sha $expected_digest $archive_size $authorization_tag "* ]] || die 'signer returned a mismatched command'
 
-"$ssh_bin" "${ssh_options[@]}" "$target" "$signed_command"
-
-printf '%s completed for release %s.\n' "$mode" "$release_sha"
+controller_result="$("$ssh_bin" "${ssh_options[@]}" "$target" "$signed_command")"
+if [[ "$mode" == rollback ]]; then
+  [[ -n "$controller_result" && "$controller_result" != *$'\n'* && "$controller_result" != *$'\r'* ]] || die 'rollback controller returned an invalid result envelope'
+  printf '%s\n' "$controller_result"
+else
+  [[ -n "$controller_result" ]] && printf '%s\n' "$controller_result"
+  printf '%s completed for release %s.\n' "$mode" "$release_sha"
+fi

@@ -427,9 +427,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" --repo "$GITHUB_REPOSITORY"
-          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" --repo "$GITHUB_REPOSITORY"
-          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" --repo "$GITHUB_REPOSITORY"
+          verification=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+            --source-digest "${{ needs.runtime-artifact.outputs.source-sha }}"
+            --source-ref "$GITHUB_REF"
+            --deny-self-hosted-runners
+          )
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" "${verification[@]}"
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" "${verification[@]}"
+          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" "${verification[@]}"
 
   release-canary:
     name: CI / Release Canary
@@ -476,9 +483,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" --repo "$GITHUB_REPOSITORY"
-          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" --repo "$GITHUB_REPOSITORY"
-          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" --repo "$GITHUB_REPOSITORY"
+          verification=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+            --source-digest "${{ needs.runtime-artifact.outputs.source-sha }}"
+            --source-ref "$GITHUB_REF"
+            --deny-self-hosted-runners
+          )
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" "${verification[@]}"
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" "${verification[@]}"
+          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" "${verification[@]}"
 
       - name: Configure pinned deploy transport
         env:
@@ -559,9 +573,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" --repo "$GITHUB_REPOSITORY"
-          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" --repo "$GITHUB_REPOSITORY"
-          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" --repo "$GITHUB_REPOSITORY"
+          verification=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "github.com/$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+            --source-digest "${{ needs.runtime-artifact.outputs.source-sha }}"
+            --source-ref "$GITHUB_REF"
+            --deny-self-hosted-runners
+          )
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}" "${verification[@]}"
+          gh attestation verify "release/${{ needs.runtime-artifact.outputs.archive-name }}.sha256" "${verification[@]}"
+          gh attestation verify "release/skyjo-runtime-${{ needs.runtime-artifact.outputs.source-sha }}.cdx.json" "${verification[@]}"
 
       - name: Configure pinned deploy transport
         env:
@@ -603,11 +624,16 @@ jobs:
           if ! node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --release-sha "$sha"; then
             echo "Public release smoke failed; requesting code-only rollback." >&2
             rollback_result="$(deploy/github-release-remote.sh rollback "$run_id" "$sha" "$checksum" "$GITHUB_REF_NAME")"
-            printf '%s\n' "$rollback_result"
-            if [[ "$rollback_result" =~ \"legacy\"[[:space:]]*:[[:space:]]*true ]]; then
+            rollback_target="$(printf '%s' "$rollback_result" | node scripts/parse-code-rollback-result.mjs --failed-release-sha "$sha")"
+            if [[ "$rollback_target" == legacy ]]; then
+              echo "Rollback controller restored the verified legacy anchor."
               node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --allow-legacy-rollback
+            elif [[ "$rollback_target" =~ ^[a-f0-9]{40}$ ]]; then
+              echo "Rollback controller restored release $rollback_target."
+              node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --release-sha "$rollback_target"
             else
-              node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL"
+              echo "Rollback controller returned an invalid recovery target." >&2
+              exit 2
             fi
             exit 1
           fi

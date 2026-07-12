@@ -32,7 +32,7 @@ The only actions are `upload`/`verify` for the canary lane and `upload`/`promote
 
 `promote` additionally requires a semver tag and resolves that public GitHub tag to the exact commit SHA. It creates and verifies a durable pre-activation backup, repeats the copied-state canary, gracefully stops production, changes state ownership for the non-root service, swaps `previous` and `current`, and performs readiness/version/authenticated smoke checks. Any post-link failure automatically switches code back to `previous` and rechecks it. Database files are never automatically restored after activation because migrations are additive and backward compatible.
 
-After the workflow's public Cloudflare checks, `rollback` provides a narrow recovery action. It is allowed only when the current release SHA, stored artifact digest, and stored tag all match the request. It swaps code to `previous`, never restores state, and emits one sanitized JSON result. A first-cutover legacy result is exactly `{"rolledBackTo":"legacy","legacy":true}`; normal rollback reports the previous SHA and `legacy:false`.
+After the workflow's public Cloudflare checks, `rollback` provides a narrow recovery action. It is allowed only when the current release SHA, stored artifact digest, and stored tag all match the request. It swaps code to `previous`, never restores state, and emits one sanitized JSON line. CI rejects extra fields, extra lines, inconsistent legacy flags, the failed SHA, and malformed targets. A first-cutover legacy result is exactly `{"rolledBackTo":"legacy","legacy":true}`; normal rollback reports the previous full SHA with `legacy:false`, and that recovered SHA is required by the public readiness/version smoke.
 
 ## First cutover from the legacy checkout
 
