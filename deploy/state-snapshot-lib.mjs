@@ -17,6 +17,28 @@ const allNames = Object.freeze([...payloadNames, PREDEPLOY_SNAPSHOT_FILES.manife
 const fullShaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^[a-f0-9]{64}$/;
 const maxRoomsBytes = 64 * 1024 * 1024;
+const sqliteBackupKeepAliveMs = 60_000;
+
+export async function backupWithKeepAlive(databasePath, destinationPath, {
+  openDatabase = (sourcePath) => new DatabaseSync(sourcePath, { readOnly: true }),
+  backupImpl = backup,
+  setIntervalImpl = setInterval,
+  clearIntervalImpl = clearInterval
+} = {}) {
+  const sourceDatabase = openDatabase(databasePath);
+  let keepAlive;
+  try {
+    keepAlive = setIntervalImpl(() => {}, sqliteBackupKeepAliveMs);
+    keepAlive?.ref?.();
+    return await backupImpl(sourceDatabase, destinationPath);
+  } finally {
+    try {
+      if (keepAlive !== undefined) clearIntervalImpl(keepAlive);
+    } finally {
+      sourceDatabase.close();
+    }
+  }
+}
 
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -369,12 +391,7 @@ export async function createPredeploySnapshot({
   const staging = `${destination}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
   await freshDirectory(staging);
   try {
-    const sourceDatabase = new DatabaseSync(databaseSource, { readOnly: true });
-    try {
-      await backup(sourceDatabase, path.join(staging, PREDEPLOY_SNAPSHOT_FILES.database));
-    } finally {
-      sourceDatabase.close();
-    }
+    await backupWithKeepAlive(databaseSource, path.join(staging, PREDEPLOY_SNAPSHOT_FILES.database));
     normalizeSnapshotDatabase(path.join(staging, PREDEPLOY_SNAPSHOT_FILES.database));
     await Promise.all([
       fs.rm(path.join(staging, `${PREDEPLOY_SNAPSHOT_FILES.database}-wal`), { force: true }),

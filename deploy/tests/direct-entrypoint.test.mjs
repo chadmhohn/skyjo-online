@@ -9,7 +9,7 @@ import test from 'node:test';
 
 const execFileAsync = promisify(execFile);
 
-test('the direct controller waits for asynchronous SQLite backup and terminal output', async () => {
+test('the direct controller keepalive completes SQLite backup and terminal output', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-direct-controller-'));
   try {
     const sourcePath = path.join(root, 'source.sqlite');
@@ -33,6 +33,26 @@ test('the direct controller waits for asynchronous SQLite backup and terminal ou
 
     const controller = await fs.readFile(path.resolve(import.meta.dirname, '..', 'release-controller.mjs'), 'utf8');
     assert.match(controller, /if \(isDirectExecution\) \{\s*await invokeDirectController\(\);\s*\}/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the child-process baseline exits 13 when top-level await has no referenced work', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-unsettled-controller-'));
+  try {
+    const fixture = path.join(import.meta.dirname, 'fixtures', 'direct-await-sqlite.mjs');
+    const ledgerPath = path.join(root, 'ledger.json');
+    await assert.rejects(
+      execFileAsync(process.execPath, [fixture, path.join(root, 'unused.sqlite'), path.join(root, 'unused-backup.sqlite'), ledgerPath, 'unsettled']),
+      (error) => {
+        assert.equal(error.code, 13);
+        assert.equal(error.stdout, '');
+        assert.match(error.stderr, /unsettled top-level await/i);
+        return true;
+      }
+    );
+    assert.deepEqual(JSON.parse(await fs.readFile(ledgerPath, 'utf8')), { status: 'started' });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

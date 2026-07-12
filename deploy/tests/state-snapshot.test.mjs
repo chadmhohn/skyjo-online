@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import {
+  backupWithKeepAlive,
   createPredeploySnapshot,
   materializePredeploySnapshot,
   PREDEPLOY_SNAPSHOT_FILES,
@@ -12,6 +13,54 @@ import {
 } from '../state-snapshot-lib.mjs';
 
 const releaseSha = 'a'.repeat(40);
+
+test('SQLite backup keepalive is refed only during backup and always cleaned up', async () => {
+  for (const failure of [null, new Error('injected backup failure')]) {
+    const calls = [];
+    const database = { close: () => calls.push('close') };
+    const timer = { ref: () => calls.push('ref') };
+    const operation = backupWithKeepAlive('/source.sqlite', '/backup.sqlite', {
+      openDatabase: () => { calls.push('open'); return database; },
+      setIntervalImpl: (callback, milliseconds) => {
+        assert.equal(typeof callback, 'function');
+        assert.equal(milliseconds, 60_000);
+        calls.push('set');
+        return timer;
+      },
+      clearIntervalImpl: (value) => {
+        assert.equal(value, timer);
+        calls.push('clear');
+      },
+      backupImpl: async (value, destination) => {
+        assert.equal(value, database);
+        assert.equal(destination, '/backup.sqlite');
+        calls.push('backup');
+        if (failure) throw failure;
+        return 'complete';
+      }
+    });
+    if (failure) await assert.rejects(operation, (error) => error === failure);
+    else assert.equal(await operation, 'complete');
+    assert.deepEqual(calls, ['open', 'set', 'ref', 'backup', 'clear', 'close']);
+  }
+});
+
+test('SQLite backup closes its database even when keepalive setup or cleanup fails', async () => {
+  for (const stage of ['set', 'clear']) {
+    const failure = new Error(`injected ${stage} failure`);
+    let closed = 0;
+    await assert.rejects(backupWithKeepAlive('/source.sqlite', '/backup.sqlite', {
+      openDatabase: () => ({ close: () => { closed += 1; } }),
+      setIntervalImpl: () => {
+        if (stage === 'set') throw failure;
+        return { ref() {} };
+      },
+      clearIntervalImpl: () => { throw failure; },
+      backupImpl: async () => 'complete'
+    }), (error) => error === failure);
+    assert.equal(closed, 1);
+  }
+});
 
 async function fixture({ rooms = [] } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-predeploy-test-'));
