@@ -11,7 +11,6 @@ import {
   ADMISSION_LOCK_NAME,
   ADMISSION_MARKER,
   acquireAdmissionLock,
-  acquireUploadLock,
   admissionLockLocationForStage,
   admittedDirectoryCountFromLinkCount,
   DEFAULT_STAGE_ROOT,
@@ -19,12 +18,14 @@ import {
   MAX_STAGED_RUNS,
   parseCommand,
   performUpload,
-  UPLOAD_LOCK_STALE_MS
+  UPLOAD_INPUT_CLEANUP_TIMEOUT_MS,
+  UPLOAD_INPUT_TIMEOUT_MS
 } from '../skyjo-deploy-dispatch.mjs';
 
 const releaseSha = 'a'.repeat(40);
 const runId = '123-1-canary';
 const admissionChild = fileURLToPath(new URL('./fixtures/admission-upload-child.mjs', import.meta.url));
+const dispatcherPath = fileURLToPath(new URL('../skyjo-deploy-dispatch.mjs', import.meta.url));
 
 async function prepareStageRoot(root) {
   if (process.platform !== 'win32') await fs.chmod(root, 0o700);
@@ -100,6 +101,23 @@ test('forced-command grammar remains strict', () => {
   assert.throws(() => parseCommand(`upload ${runId} ${releaseSha} 4\nrollback`), /rejected/);
 });
 
+test('the forced upload path acquires one inherited FD before reservation and has no pathname owner lock', async () => {
+  const source = await fs.readFile(dispatcherPath, 'utf8');
+  const performStart = source.indexOf('export async function performUpload');
+  const performEnd = source.indexOf('\nasync function runController', performStart);
+  const performSource = source.slice(performStart, performEnd);
+  assert.equal((performSource.match(/acquireAdmissionLock\(/g) || []).length, 1);
+  assert.ok(performSource.indexOf('const admission = await acquireAdmissionLock') < performSource.indexOf('await reserveRunDirectory'));
+  assert.doesNotMatch(source, /acquireUploadLock|UPLOAD_LOCK_STALE_MS|owner\.json|\.upload\.lock|releaseUnlink|releaseRmdir/);
+  assert.match(performSource, /await admission\.assertHeld\(\);[\s\S]*receiveExactly[\s\S]*await admission\.assertHeld\(\);/);
+
+  const cleanupStart = source.indexOf('async function removeEmptyCreatedRun');
+  const cleanupEnd = source.indexOf('\nasync function reserveExistingRun', cleanupStart);
+  const cleanupSource = source.slice(cleanupStart, cleanupEnd);
+  assert.match(cleanupSource, /typeof options\.assertAdmissionHeld !== 'function'/);
+  assert.ok((cleanupSource.match(/await assertExpectedRun\(\);/g) || []).length >= 3);
+});
+
 test('only the exact Linux production stage selects the external admission lock', () => {
   assert.deepEqual(admissionLockLocationForStage(DEFAULT_STAGE_ROOT, 'linux'), {
     production: true,
@@ -166,7 +184,9 @@ test('an admitted run remains bound to its first completed release SHA', async (
   ].sort());
 }));
 
-test('concurrent different-SHA uploads publish at most one archive per admitted run', async () => fixture(async (root) => {
+test('the inherited admission FD permits at most one concurrent archive publisher', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
   const otherSha = 'b'.repeat(40);
   await admitRun(root, runId);
   const attempts = await Promise.allSettled([
@@ -183,7 +203,9 @@ test('concurrent different-SHA uploads publish at most one archive per admitted 
   ].includes(archiveNames[0]));
 }));
 
-test('a concurrent upload fails nonblocking while the lock owner completes intact', async () => fixture(async (root) => {
+test('the inherited admission FD stays held across input and rejects a contender nonblocking', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
   let releaseInput;
   let firstChunkRead;
   const gate = new Promise((resolve) => { releaseInput = resolve; });
@@ -198,12 +220,13 @@ test('a concurrent upload fails nonblocking while the lock owner completes intac
   await started;
   await assert.rejects(
     performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('evil') }),
-    (error) => error.exitCode === 75 && /already active/.test(error.message)
+    (error) => error.exitCode === 75 && /admission is already active/.test(error.message)
   );
   releaseInput();
   const result = await first;
   assert.equal(await fs.readFile(result.archivePath, 'utf8'), 'abcd');
   assert.deepEqual((await fs.readdir(path.dirname(result.archivePath))).sort(), [ADMISSION_MARKER, `skyjo-runtime-${releaseSha}.tar.gz`].sort());
+  assert.equal((await fs.readdir(path.dirname(result.archivePath))).some((name) => name.includes('upload.lock')), false);
 }));
 
 test('failed or short streams leave no completed archive, partial, or lock', async () => fixture(async (root) => {
@@ -212,6 +235,167 @@ test('failed or short streams leave no completed archive, partial, or lock', asy
     /did not match declared size/
   );
   await assert.rejects(fs.access(path.join(root, runId)), { code: 'ENOENT' });
+}));
+
+test('normal upload EOF does not destroy or return an already completed input', async () => fixture(async (root) => {
+  let nextCalls = 0;
+  let destroyCalls = 0;
+  let returnCalls = 0;
+  const exactInput = {
+    destroy() { destroyCalls += 1; },
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          nextCalls += 1;
+          return nextCalls === 1 ? { value: Buffer.from('ok'), done: false } : { value: undefined, done: true };
+        },
+        async return() {
+          returnCalls += 1;
+          return { value: undefined, done: true };
+        }
+      };
+    }
+  };
+
+  const result = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 2, input: exactInput });
+  assert.equal(await fs.readFile(result.archivePath, 'utf8'), 'ok');
+  assert.equal(destroyCalls, 0);
+  assert.equal(returnCalls, 0);
+}));
+
+test('oversize input destroys the source, runs generator return/finally, and releases admission for retry', async () => fixture(async (root) => {
+  let destroyCalls = 0;
+  let returnCalls = 0;
+  let finalized = false;
+  async function* oversizeValues() {
+    try {
+      yield Buffer.from('too-large');
+    } finally {
+      finalized = true;
+    }
+  }
+  const generator = oversizeValues();
+  const oversizeInput = {
+    destroy() { destroyCalls += 1; },
+    [Symbol.asyncIterator]() {
+      return {
+        next: (...args) => generator.next(...args),
+        return: async (...args) => {
+          returnCalls += 1;
+          await generator.return(...args);
+          throw new Error('injected iterator cleanup failure');
+        }
+      };
+    }
+  };
+
+  await assert.rejects(
+    performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: oversizeInput }),
+    /exceeded declared size/
+  );
+  assert.equal(destroyCalls, 1);
+  assert.equal(returnCalls, 1);
+  assert.equal(finalized, true);
+  await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
+  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: input('x') });
+  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
+}));
+
+test('input failure remains primary while return cleanup runs and admission becomes retryable', async () => fixture(async (root) => {
+  const primary = new Error('injected upload input failure');
+  let destroyCalls = 0;
+  let returnCalls = 0;
+  let finalized = false;
+  async function* failingValues() {
+    try {
+      yield Buffer.from('x');
+      throw primary;
+    } finally {
+      finalized = true;
+    }
+  }
+  const generator = failingValues();
+  const failingInput = {
+    destroy() { destroyCalls += 1; },
+    [Symbol.asyncIterator]() {
+      return {
+        next: (...args) => generator.next(...args),
+        return: (...args) => {
+          returnCalls += 1;
+          return generator.return(...args);
+        }
+      };
+    }
+  };
+
+  await assert.rejects(
+    performUpload({ stageRoot: root, runId, releaseSha, bytes: 2, input: failingInput }),
+    (error) => error === primary
+  );
+  assert.equal(destroyCalls, 1);
+  assert.equal(returnCalls, 1);
+  assert.equal(finalized, true);
+  await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
+  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: input('x') });
+  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
+}));
+
+test('a hanging iterator return is bounded and cannot retain upload admission', async () => fixture(async (root) => {
+  let destroyCalls = 0;
+  let returnCalls = 0;
+  const hangingReturnInput = {
+    destroy() { destroyCalls += 1; },
+    [Symbol.asyncIterator]() {
+      return {
+        async next() { return { value: Buffer.from('too-large'), done: false }; },
+        return() {
+          returnCalls += 1;
+          return new Promise(() => {});
+        }
+      };
+    }
+  };
+  const startedAt = Date.now();
+  await assert.rejects(
+    performUpload({
+      stageRoot: root,
+      runId,
+      releaseSha,
+      bytes: 1,
+      input: hangingReturnInput,
+      uploadInputCleanupTimeoutMs: 25
+    }),
+    /exceeded declared size/
+  );
+  assert.ok(Date.now() - startedAt < 1_000, 'iterator cleanup must remain bounded');
+  assert.equal(destroyCalls, 1);
+  assert.equal(returnCalls, 1);
+  await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
+  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: input('x') });
+  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
+  assert.equal(UPLOAD_INPUT_CLEANUP_TIMEOUT_MS, 5 * 1000);
+}));
+
+test('a stalled upload times out deterministically, releases the admission FD, and remains retryable', async () => fixture(async (root) => {
+  let destroyed = false;
+  const stalled = {
+    destroy() { destroyed = true; },
+    [Symbol.asyncIterator]() { return this; },
+    next() { return new Promise(() => {}); }
+  };
+  await assert.rejects(performUpload({
+    stageRoot: root,
+    runId,
+    releaseSha,
+    bytes: 1,
+    input: stalled,
+    uploadInputTimeoutMs: 25
+  }), (error) => error.exitCode === 75 && error.message === 'Upload input timed out.');
+  assert.equal(destroyed, true);
+  await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
+  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 1, input: input('x') });
+  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
+  assert.equal(UPLOAD_INPUT_TIMEOUT_MS, 15 * 60 * 1000);
 }));
 
 test('a controller-owned interrupted run consumes a fresh upload without mutating staged bytes', async () => fixture(async (root) => {
@@ -234,30 +418,33 @@ test('a controller-owned interrupted run consumes a fresh upload without mutatin
   assert.equal(await fs.readFile(archivePath, 'utf8'), 'kept');
 }));
 
-test('post-publication lock-release failure preserves an admitted retryable archive', async () => fixture(async (root) => {
-  let syncCalls = 0;
+test('post-publication admission-FD close failure preserves an admitted retryable archive', async () => fixture(async (root) => {
+  let closeCalls = 0;
   await assert.rejects(performUpload({
     stageRoot: root,
     runId,
     releaseSha,
     bytes: 4,
     input: input('safe'),
-    uploadLockOptions: {
-      releaseSyncDirectory: async () => {
-        syncCalls += 1;
-        if (syncCalls === 1) throw Object.assign(new Error('injected lock-directory fsync failure'), { code: 'EIO' });
+    admissionLockOptions: {
+      closeLock: async (handle) => {
+        closeCalls += 1;
+        await handle.close();
+        if (closeCalls === 1) throw Object.assign(new Error('injected upload admission-FD close failure'), { code: 'EIO' });
       }
     }
-  }), (error) => error instanceof AggregateError &&
-    error.errors.some((entry) => /lock release|remains retryable/i.test(entry.message)));
+  }), /injected upload admission-FD close failure/);
   const stage = path.join(root, runId);
   assert.equal(await fs.readFile(path.join(stage, ADMISSION_MARKER), 'utf8'), `${runId}\n`);
   assert.equal(await fs.readFile(path.join(stage, `skyjo-runtime-${releaseSha}.tar.gz`), 'utf8'), 'safe');
   const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('safe') });
   assert.equal(retry.idempotent, true);
+  assert.equal(closeCalls, 1);
 }));
 
-test('admission fsync failure never removes a marker after a same-run contender publishes', async () => fixture(async (root) => {
+test('admission fsync failure stays isolated while the global FD rejects a same-run contender', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
   let reachedParentSync;
   let releaseParentSync;
   const atParentSync = new Promise((resolve) => { reachedParentSync = resolve; });
@@ -275,42 +462,26 @@ test('admission fsync failure never removes a marker after a same-run contender 
     }
   });
   await atParentSync;
-  const contender = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('safe') });
+  await assert.rejects(
+    performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('safe') }),
+    (error) => error.exitCode === 75 && /admission is already active/i.test(error.message)
+  );
   releaseParentSync();
-  await assert.rejects(creator, /could not be removed safely/i);
-  assert.equal(await fs.readFile(path.join(root, runId, ADMISSION_MARKER), 'utf8'), `${runId}\n`);
-  assert.equal(await fs.readFile(contender.archivePath, 'utf8'), 'safe');
-  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('safe') });
-  assert.equal(retry.idempotent, true);
-}));
-
-test('admission cleanup leaves the marker intact when the per-run upload lock is busy', async () => fixture(async (root) => {
-  const stage = path.join(root, runId);
-  let holder;
-  let parentSyncCalls = 0;
-  const creator = performUpload({
-    stageRoot: root,
-    runId,
-    releaseSha,
-    bytes: 4,
-    input: input('lost'),
-    stageRootFsync: async () => {
-      parentSyncCalls += 1;
-      if (parentSyncCalls === 1) {
-        holder = await acquireUploadLock(stage);
-        throw Object.assign(new Error('injected admission parent fsync failure'), { code: 'EIO' });
-      }
-    }
+  await assert.rejects(creator, (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.cause?.message, 'injected admission parent fsync failure');
+    assert.equal(error.cause?.code, 'EIO');
+    assert.deepEqual(error.errors.map((entry) => entry.code), ['EIO', 'EIO']);
+    return true;
   });
-  await assert.rejects(creator, (error) => error instanceof AggregateError &&
-    /could not be removed safely/i.test(error.message) && error.errors[1]?.exitCode === 75);
-  assert.equal(await fs.readFile(path.join(stage, ADMISSION_MARKER), 'utf8'), `${runId}\n`);
-  await holder();
+  await assert.rejects(fs.lstat(path.join(root, runId)), (error) => error.code === 'ENOENT');
   const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('safe') });
   assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'safe');
 }));
 
-test('same-run upload starting after cleanup readdir cannot publish into a markerless run', async () => fixture(async (root) => {
+test('same-run upload starting during cleanup cannot bypass the held global admission FD', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
   const stage = path.join(root, runId);
   let parentSyncCalls = 0;
   let cleanupReadCalls = 0;
@@ -331,7 +502,7 @@ test('same-run upload starting after cleanup readdir cannot publish into a marke
       assert.equal(await fs.readFile(path.join(stage, ADMISSION_MARKER), 'utf8'), `${runId}\n`);
       await assert.rejects(
         performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('race') }),
-        (error) => error.exitCode === 75 && /upload is already active/i.test(error.message)
+        (error) => error.exitCode === 75 && /admission is already active/i.test(error.message)
       );
       assert.equal(await fs.readFile(path.join(stage, ADMISSION_MARKER), 'utf8'), `${runId}\n`);
     }
@@ -341,121 +512,6 @@ test('same-run upload starting after cleanup readdir cannot publish into a marke
   await assert.rejects(fs.lstat(stage), (error) => error.code === 'ENOENT');
   const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('safe') });
   assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'safe');
-}));
-
-test('an uploader that observed admission before cleanup must revalidate after taking the per-run lock', async () => fixture(async (root) => {
-  const stage = path.join(root, runId);
-  let parentSyncCalls = 0;
-  let reachedParentSync;
-  let failParentSync;
-  let observedAdmission;
-  let resumeContender;
-  const atParentSync = new Promise((resolve) => { reachedParentSync = resolve; });
-  const parentFailureGate = new Promise((resolve) => { failParentSync = resolve; });
-  const admissionObserved = new Promise((resolve) => { observedAdmission = resolve; });
-  const contenderGate = new Promise((resolve) => { resumeContender = resolve; });
-  let contender;
-
-  const creator = performUpload({
-    stageRoot: root,
-    runId,
-    releaseSha,
-    bytes: 4,
-    input: input('lost'),
-    stageRootFsync: async () => {
-      parentSyncCalls += 1;
-      if (parentSyncCalls === 1) {
-        reachedParentSync();
-        await parentFailureGate;
-        throw Object.assign(new Error('injected admission parent fsync failure'), { code: 'EIO' });
-      }
-    },
-    afterCleanupUploadLockRelease: async () => {
-      resumeContender();
-      await contender.catch(() => {});
-    }
-  });
-  await atParentSync;
-  contender = performUpload({
-    stageRoot: root,
-    runId,
-    releaseSha,
-    bytes: 4,
-    input: input('race'),
-    afterExistingAdmissionRead: async () => {
-      observedAdmission();
-      await contenderGate;
-    }
-  });
-  await admissionObserved;
-  failParentSync();
-  await assert.rejects(contender, (error) => error.exitCode === 75 && /admission changed before upload publication/i.test(error.message));
-  await assert.rejects(creator, /injected admission parent fsync failure/);
-  await assert.rejects(fs.lstat(stage), (error) => error.code === 'ENOENT');
-  const retry = await performUpload({ stageRoot: root, runId, releaseSha, bytes: 4, input: input('safe') });
-  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'safe');
-}));
-
-test('cleanup upload-lock release failures durably restore admission before returning an error', async () => fixture(async (root) => {
-  const cases = [
-    {
-      runId: '781-1-canary',
-      cleanupUploadLockOptions: {
-        releaseUnlink: async () => { throw Object.assign(new Error('injected cleanup owner unlink failure'), { code: 'EIO' }); }
-      },
-      prepareRetry: async (stage) => ({
-        now: Date.now() + UPLOAD_LOCK_STALE_MS + 1_000,
-        isProcessAlive: () => false,
-        stage
-      })
-    },
-    {
-      runId: '782-1-canary',
-      cleanupUploadLockOptions: {
-        releaseRmdir: async () => { throw Object.assign(new Error('injected cleanup lock rmdir failure'), { code: 'EIO' }); }
-      },
-      prepareRetry: async (stage) => {
-        const lock = path.join(stage, '.upload.lock');
-        const old = new Date(Date.now() - UPLOAD_LOCK_STALE_MS - 1_000);
-        await fs.utimes(lock, old, old);
-        return { now: Date.now(), isProcessAlive: () => false };
-      }
-    },
-    {
-      runId: '783-1-canary',
-      cleanupUploadLockOptions: {
-        releaseSyncDirectory: async (directory) => {
-          if (path.basename(directory) !== '.upload.lock') {
-            throw Object.assign(new Error('injected cleanup post-rmdir fsync failure'), { code: 'EIO' });
-          }
-        }
-      },
-      prepareRetry: async () => ({})
-    }
-  ];
-
-  for (const scenario of cases) {
-    const stage = path.join(root, scenario.runId);
-    await assert.rejects(performUpload({
-      stageRoot: root,
-      runId: scenario.runId,
-      releaseSha,
-      bytes: 2,
-      input: input('x'),
-      cleanupUploadLockOptions: scenario.cleanupUploadLockOptions
-    }), /could not be removed|retryable admission recovery/i);
-    assert.equal(await fs.readFile(path.join(stage, ADMISSION_MARKER), 'utf8'), `${scenario.runId}\n`);
-    const uploadLockOptions = await scenario.prepareRetry(stage);
-    const retry = await performUpload({
-      stageRoot: root,
-      runId: scenario.runId,
-      releaseSha,
-      bytes: 1,
-      input: input('x'),
-      uploadLockOptions
-    });
-    assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
-  }
 }));
 
 test('a post-rmdir staging-parent fsync failure never recreates the removed run', async () => fixture(async (root) => {
@@ -479,41 +535,6 @@ test('a post-rmdir staging-parent fsync failure never recreates the removed run'
   await assert.rejects(fs.lstat(stage), (error) => error.code === 'ENOENT');
   const retry = await performUpload({ stageRoot: root, runId: failedRunId, releaseSha, bytes: 1, input: input('x') });
   assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
-}));
-
-test('post-lock admission failure remains primary when upload-lock release also fails', async () => fixture(async (root) => {
-  const failedRunId = '785-1-canary';
-  const stage = await admitRun(root, failedRunId);
-  await assert.rejects(performUpload({
-    stageRoot: root,
-    runId: failedRunId,
-    releaseSha,
-    bytes: 1,
-    input: input('x'),
-    afterExistingAdmissionRead: async () => {
-      await fs.unlink(path.join(stage, ADMISSION_MARKER));
-    },
-    uploadLockOptions: {
-      releaseRmdir: async () => { throw Object.assign(new Error('injected upload-lock release failure'), { code: 'EIO' }); }
-    }
-  }), (error) => error instanceof AggregateError &&
-    error.errors[0]?.exitCode === 75 && /admission changed before upload publication/i.test(error.errors[0].message) &&
-    error.errors[1] instanceof AggregateError);
-}));
-
-test('an exact empty stale release lock is eventually reclaimable', async () => fixture(async (root) => {
-  const stage = await admitRun(root, runId);
-  const release = await acquireUploadLock(stage, {
-    releaseRmdir: async () => { throw Object.assign(new Error('injected rmdir failure'), { code: 'EIO' }); }
-  });
-  await assert.rejects(release(), /lock release/i);
-  const lock = path.join(stage, '.upload.lock');
-  assert.deepEqual(await fs.readdir(lock), []);
-  const old = new Date(Date.now() - UPLOAD_LOCK_STALE_MS - 1_000);
-  await fs.utimes(lock, old, old);
-  const reclaimed = await acquireUploadLock(stage, { now: Date.now(), isProcessAlive: () => false });
-  await reclaimed();
-  assert.deepEqual(await fs.readdir(stage), [ADMISSION_MARKER]);
 }));
 
 test('first upload tolerates only EACCES for the verified 1731 stage parent', { skip: process.platform === 'win32' }, async () => fixture(async (root) => {
@@ -562,39 +583,6 @@ test('directory link-count admission rejects anomalous filesystems', () => {
   assert.equal(admittedDirectoryCountFromLinkCount(34), 32);
   assert.throws(() => admittedDirectoryCountFromLinkCount(1), /link-count admission/i);
 });
-
-test('only a proven dead stale owner can be reclaimed and live ownership is never unlinked', async () => fixture(async (root) => {
-  const stage = path.join(root, runId);
-  await fs.mkdir(stage);
-  const release = await acquireUploadLock(stage, { now: 1_000 });
-  await assert.rejects(acquireUploadLock(stage, { now: 1_000 + UPLOAD_LOCK_STALE_MS + 1, isProcessAlive: () => true }), /already active/);
-  await release();
-
-  const lock = path.join(stage, '.upload.lock');
-  await fs.mkdir(lock);
-  await fs.writeFile(path.join(lock, 'owner.json'), `${JSON.stringify({ pid: 999_999, token: 'b'.repeat(32), createdAt: 1_000 })}\n`);
-  const releaseReclaimed = await acquireUploadLock(stage, {
-    now: 1_000 + UPLOAD_LOCK_STALE_MS + 1,
-    isProcessAlive: () => false
-  });
-  await releaseReclaimed();
-  assert.deepEqual(await fs.readdir(stage), []);
-}));
-
-test('unsafe lock objects are rejected without following or removing them', { skip: process.platform === 'win32' }, async () => fixture(async (root) => {
-  const stage = path.join(root, runId);
-  const outside = path.join(root, 'outside');
-  await fs.mkdir(stage);
-  await fs.mkdir(outside);
-  const owner = path.join(outside, 'owner.json');
-  await fs.writeFile(owner, `${JSON.stringify({ pid: 999_999, token: 'c'.repeat(32), createdAt: 1_000 })}\n`);
-  await fs.symlink(outside, path.join(stage, '.upload.lock'), 'dir');
-  await assert.rejects(acquireUploadLock(stage, {
-    now: 1_000 + UPLOAD_LOCK_STALE_MS + 1,
-    isProcessAlive: () => false
-  }), /already active/);
-  assert.equal(await fs.readFile(owner, 'utf8'), `${JSON.stringify({ pid: 999_999, token: 'c'.repeat(32), createdAt: 1_000 })}\n`);
-}));
 
 test('abandoned-partial cleanup is bounded and refuses an unbounded stage', async () => fixture(async (root) => {
   const stage = await admitRun(root, runId);
@@ -788,7 +776,7 @@ test('stale top-level cleanup never bypasses a busy admission lock', { skip: pro
   await assert.rejects(fs.lstat(stale), (error) => error.code === 'ENOENT');
 }));
 
-test('post-upload failure leaves its admitted run retryable when cleanup cannot take the global lock', {
+test('post-upload failure cleans the admitted run before releasing its held global lock', {
   skip: process.platform !== 'linux'
 }, async () => fixture(async (root) => {
   let inputStarted;
@@ -802,12 +790,15 @@ test('post-upload failure leaves its admitted run retryable when cleanup cannot 
   }
   const failed = performUpload({ stageRoot: root, runId: '779-1-canary', releaseSha, bytes: 2, input: shortInput() });
   await started;
-  const holder = await acquireTestAdmission(root);
+  await assert.rejects(
+    acquireTestAdmission(root),
+    (error) => error.exitCode === 75 && /admission is already active/.test(error.message)
+  );
   releaseInput();
-  await assert.rejects(failed, (error) => error instanceof AggregateError &&
-    /did not match declared size/.test(error.errors[0].message) && error.errors[1].exitCode === 75);
+  await assert.rejects(failed, /did not match declared size/);
   const stage = path.join(root, '779-1-canary');
-  assert.equal(await fs.readFile(path.join(stage, ADMISSION_MARKER), 'utf8'), '779-1-canary\n');
+  await assert.rejects(fs.lstat(stage), (error) => error.code === 'ENOENT');
+  const holder = await acquireTestAdmission(root);
   await holder.release();
   const retry = await performUpload({ stageRoot: root, runId: '779-1-canary', releaseSha, bytes: 1, input: input('x') });
   assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');

@@ -21,6 +21,16 @@ async function getOpenPort() {
   return port;
 }
 
+function fixedOriginUrl(baseUrl, pathname) {
+  const base = new URL(baseUrl);
+  assert.equal(base.protocol, 'http:', 'chat smoke only targets its loopback HTTP server');
+  assert.equal(base.hostname, '127.0.0.1', 'chat smoke only targets loopback');
+  const target = new URL(base.origin);
+  target.pathname = pathname.startsWith('/') ? pathname : `/${pathname}`;
+  assert.equal(target.origin, base.origin, 'request path cannot change the smoke server origin');
+  return target;
+}
+
 async function waitForHealth(url) {
   const deadline = Date.now() + 8000;
   let lastError;
@@ -291,6 +301,18 @@ try {
   await assert.rejects(openSocket(baseUrl, cookie), /Unexpected server response|401/, 'multiplayer sockets require account auth');
   const hostAccount = await createAccount(baseUrl, cookie, 'ada@example.com', 'Ada');
   const guestAccount = await createAccount(baseUrl, cookie, 'grace@example.com', 'Grace');
+  const hostilePathUrl = fixedOriginUrl(baseUrl, '//attacker.invalid/invite?<script>');
+  assert.equal(hostilePathUrl.origin, new URL(baseUrl).origin, 'hostile path text stays on the loopback origin');
+  assert.equal(hostilePathUrl.hostname, '127.0.0.1', 'hostile path text cannot become URL authority');
+  const controlledValidation = await accountRequest(baseUrl, cookie, '/api/account/signup', {
+    email: '<img src=x onerror=alert(1)>@example.com',
+    displayName: '<script>validation-marker</script>',
+    password: 'first-password',
+    confirmPassword: 'different-password'
+  });
+  assert.equal(controlledValidation.response.status, 400, 'controlled validation remains a client error');
+  assert.deepEqual(controlledValidation.payload, { error: 'Passwords must match.' });
+  assert.equal(controlledValidation.response.headers.get('x-content-type-options'), 'nosniff');
   const pushConfig = await getJson(baseUrl, hostAccount.cookie, '/api/push/config');
   assert.equal(typeof pushConfig.enabled, 'boolean', 'push config reports enabled state');
   const fakePushSubscription = {
@@ -356,11 +378,26 @@ try {
     clientGameKey: 'host-solo'
   });
   assert.equal(soloSave.response.status, 201, 'logged-in single-player games are saved');
+  const invalidInternalState = completedSoloState();
+  invalidInternalState.players[0] = {
+    ...invalidInternalState.players[0],
+    id: null,
+    name: '<script>internal-sqlite-marker</script>'
+  };
+  const internalFailure = await accountRequest(baseUrl, hostAccount.cookie, '/api/stats/single-player', {
+    state: invalidInternalState,
+    clientGameKey: 'internal-error-smoke'
+  });
+  assert.equal(internalFailure.response.status, 500, 'unknown persistence failures stay server errors');
+  assert.deepEqual(internalFailure.payload, { error: 'Request failed.' }, 'unknown exception details are not disclosed');
+  assert.equal(internalFailure.response.headers.get('x-content-type-options'), 'nosniff');
+  assert.doesNotMatch(JSON.stringify(internalFailure.payload), /sqlite|constraint|script|internal-sqlite-marker/i);
 
   parkingHostSocket = await openSocket(baseUrl, hostAccount.cookie);
   parkingHostSocket.send(JSON.stringify({ type: 'create-room', name: 'Offline Host' }));
   const parkingHostJoined = await waitForMessage(parkingHostSocket, (message) => message.type === 'joined', 'parking host join');
   const parkingRoomCode = parkingHostJoined.room.code;
+  assert.match(parkingRoomCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$/, 'room codes use the secure unambiguous alphabet');
   const unauthenticatedInvite = await accountRequest(baseUrl, cookie, '/api/rooms/invite', { roomCode: parkingRoomCode });
   assert.equal(unauthenticatedInvite.response.status, 401, 'room invite creation requires account auth');
   const outsiderInvite = await accountRequest(baseUrl, adminAccount.cookie, '/api/rooms/invite', { roomCode: parkingRoomCode });
@@ -372,15 +409,15 @@ try {
   const inviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(inviteLanding.status, 200, 'valid room invite opens the install/browser choice page');
   const inviteLandingHtml = await inviteLanding.text();
-  assert.match(inviteLandingHtml, new RegExp(`Join Room ${parkingRoomCode}`), 'invite landing shows the room code');
+  assert.equal(inviteLandingHtml.includes(`Join Room ${parkingRoomCode}`), true, 'invite landing shows the room code');
   assert.match(inviteLandingHtml, /Add Skyjo to your Home Screen/, 'invite landing explains the home screen path');
   assert.match(inviteLandingHtml, /Open in Browser/, 'invite landing keeps the browser path available');
-  const installCode = inviteLandingHtml.match(/id="invite-code" readonly value="([A-Z0-9]{7})"/)?.[1];
+  const installCode = inviteLandingHtml.match(/id="invite-code" readonly value="([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{7})"/)?.[1];
   assert.ok(installCode, 'invite landing includes a short install code');
   const secondInviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(secondInviteLanding.status, 200, 'the same group invite can be opened by another player');
   const secondInviteLandingHtml = await secondInviteLanding.text();
-  const secondInstallCode = secondInviteLandingHtml.match(/id="invite-code" readonly value="([A-Z0-9]{7})"/)?.[1];
+  const secondInstallCode = secondInviteLandingHtml.match(/id="invite-code" readonly value="([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{7})"/)?.[1];
   assert.ok(secondInstallCode, 'a second invite landing includes a short install code');
   assert.notEqual(secondInstallCode, installCode, 'each invite landing mints its own install code');
   const redeemedInvite = await fetch(`${baseUrl}${hostInvite.payload.path}?open=browser`, { redirect: 'manual' });
@@ -428,10 +465,12 @@ try {
   });
   assert.equal(invalidInstallCode.status, 303, 'invalid install code redirects back to login');
   assert.equal(invalidInstallCode.headers.get('location'), '/login?inviteError=1');
-  const invalidInvitePayload = Buffer.from(JSON.stringify({ room: parkingRoomCode, exp: Date.now() + 60000 })).toString('base64url');
-  const invalidInvite = await fetch(`${baseUrl}/invite/${invalidInvitePayload}.bad-signature`, { redirect: 'manual' });
+  const invalidInviteRoom = 'ABCDE';
+  const invalidInvitePayload = Buffer.from(JSON.stringify({ room: invalidInviteRoom, exp: Date.now() + 60000 })).toString('base64url');
+  const invalidInviteUrl = fixedOriginUrl(baseUrl, `/invite/${invalidInvitePayload}.bad-signature`);
+  const invalidInvite = await fetch(invalidInviteUrl, { redirect: 'manual' });
   assert.equal(invalidInvite.status, 302, 'invalid room invite falls back to the normal password gate');
-  assert.equal(invalidInvite.headers.get('location'), `/login?next=${encodeURIComponent(`/lobby?room=${parkingRoomCode}`)}`);
+  assert.equal(invalidInvite.headers.get('location'), `/login?next=${encodeURIComponent(`/lobby?room=${invalidInviteRoom}`)}`);
   parkingHostSocket.close();
   await new Promise((resolve) => parkingHostSocket.once('close', resolve));
   parkingHostSocket = null;

@@ -18,6 +18,9 @@ import {
 } from './server-room-persistence.mjs';
 import {
   createAccountStore,
+  createUniqueRandomCode,
+  PublicApiError,
+  publicApiErrorResponse,
   resolveAccountDatabasePath
 } from './server-account-store.mjs';
 import { createPersistenceHealthTracker } from './server-persistence-health.mjs';
@@ -53,6 +56,8 @@ const maxRoomChatMessages = 80;
 const maxRoomChatMessageLength = 280;
 const inviteCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const inviteCodeLength = 7;
+const roomCodeLength = 5;
+const secureCodeMaxAttempts = 128;
 const inviteInstallCodes = new Map();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
@@ -205,6 +210,7 @@ function currentAccountUser(req) {
 function send(res, status, body, headers = {}) {
   res.writeHead(status, {
     'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
     ...headers
   });
   res.end(body);
@@ -217,13 +223,24 @@ function sendJsonResponse(res, status, payload, headers = {}) {
   });
 }
 
-function makeRoomCode() {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let index = 0; index < 5; index += 1) {
-    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+function makeRoomCode(randomInt = crypto.randomInt) {
+  return createUniqueRandomCode({
+    alphabet: inviteCodeAlphabet,
+    length: roomCodeLength,
+    isTaken: (code) => rooms.has(code),
+    randomInt,
+    maxAttempts: secureCodeMaxAttempts
+  });
+}
+
+function makeRoomCodeForSocket(ws) {
+  try {
+    return makeRoomCode();
+  } catch {
+    console.error('Secure room code allocation failed.');
+    sendJson(ws, { type: 'error', message: 'A room code could not be created. Try again.' });
+    return null;
   }
-  return rooms.has(code) ? makeRoomCode() : code;
 }
 
 function cleanServerRoomCode(value) {
@@ -242,14 +259,6 @@ function cleanInviteInstallCode(value) {
     .slice(0, inviteCodeLength);
 }
 
-function createInviteInstallCodeValue() {
-  let code = '';
-  for (let index = 0; index < inviteCodeLength; index += 1) {
-    code += inviteCodeAlphabet[Math.floor(Math.random() * inviteCodeAlphabet.length)];
-  }
-  return code;
-}
-
 function pruneInviteInstallCodes(timestamp = Date.now()) {
   for (const [code, invite] of inviteInstallCodes) {
     if (invite.expiresAt <= timestamp) inviteInstallCodes.delete(code);
@@ -258,7 +267,7 @@ function pruneInviteInstallCodes(timestamp = Date.now()) {
 
 function createRoomInviteToken(roomCode) {
   const cleanRoom = cleanServerRoomCode(roomCode);
-  if (cleanRoom.length !== 5) throw new Error('Room code is not valid.');
+  if (cleanRoom.length !== roomCodeLength) throw new PublicApiError('INVALID_ROOM_CODE');
   const expiresAt = Date.now() + inviteTtlMs;
   const payload = Buffer.from(
     JSON.stringify({
@@ -292,14 +301,17 @@ function parseRoomInvitePayload(token, { verifySignature }) {
   }
 }
 
-function createInviteInstallCode(token, invite) {
+function createInviteInstallCode(token, invite, randomInt = crypto.randomInt) {
   const timestamp = Date.now();
   pruneInviteInstallCodes(timestamp);
   const expiresAt = Math.min(invite.expiresAt, timestamp + inviteCodeTtlMs);
-  let code = createInviteInstallCodeValue();
-  while (inviteInstallCodes.has(code)) {
-    code = createInviteInstallCodeValue();
-  }
+  const code = createUniqueRandomCode({
+    alphabet: inviteCodeAlphabet,
+    length: inviteCodeLength,
+    isTaken: (candidate) => inviteInstallCodes.has(candidate),
+    randomInt,
+    maxAttempts: secureCodeMaxAttempts
+  });
   inviteInstallCodes.set(code, { token, room: invite.room, expiresAt });
   return { code, expiresAt };
 }
@@ -737,7 +749,7 @@ async function handleApiRequest(req, res, url) {
 
     if (url.pathname === '/api/account/signup' && req.method === 'POST') {
       const body = await readJsonBody(req);
-      if (body.password !== body.confirmPassword) throw new Error('Passwords must match.');
+      if (body.password !== body.confirmPassword) throw new PublicApiError('PASSWORDS_MUST_MATCH');
       const user = await accountStore.createUser({
         email: body.email,
         displayName: body.displayName,
@@ -780,7 +792,7 @@ async function handleApiRequest(req, res, url) {
       const user = requireAccountForApi(req, res);
       if (!user) return true;
       const body = await readJsonBody(req);
-      if (body.password !== body.confirmPassword) throw new Error('Passwords must match.');
+      if (body.password !== body.confirmPassword) throw new PublicApiError('PASSWORDS_MUST_MATCH');
       await accountStore.changePassword(user.id, body.currentPassword, body.password);
       sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
       return true;
@@ -861,7 +873,7 @@ async function handleApiRequest(req, res, url) {
       const body = await readJsonBody(req);
       const state = body.state;
       const humanPlayer = Array.isArray(state?.players) ? state.players.find((player) => player.kind === 'human') : null;
-      if (!humanPlayer) throw new Error('Single-player game is missing a human player.');
+      if (!humanPlayer) throw new PublicApiError('MISSING_HUMAN_PLAYER');
       const game = accountStore.recordCompletedGame({
         mode: 'single',
         state,
@@ -908,7 +920,7 @@ async function handleApiRequest(req, res, url) {
     if (url.pathname === '/api/admin/users' && req.method === 'POST') {
       if (!requireAdminForApi(req, res)) return true;
       const body = await readJsonBody(req);
-      if (body.password !== body.confirmPassword) throw new Error('Passwords must match.');
+      if (body.password !== body.confirmPassword) throw new PublicApiError('PASSWORDS_MUST_MATCH');
       const role = body.role === 'admin' ? 'admin' : 'player';
       const user = await accountStore.createUser({
         email: body.email,
@@ -924,7 +936,7 @@ async function handleApiRequest(req, res, url) {
     if (adminPasswordMatch && req.method === 'POST') {
       if (!requireAdminForApi(req, res)) return true;
       const body = await readJsonBody(req);
-      if (body.password !== body.confirmPassword) throw new Error('Passwords must match.');
+      if (body.password !== body.confirmPassword) throw new PublicApiError('PASSWORDS_MUST_MATCH');
       await accountStore.setUserPassword(adminPasswordMatch[1], body.password);
       sendJsonResponse(res, 200, { ok: true });
       return true;
@@ -950,7 +962,9 @@ async function handleApiRequest(req, res, url) {
 
     return false;
   } catch (error) {
-    sendApiError(res, 400, error?.message || 'Request failed.');
+    const publicError = publicApiErrorResponse(error);
+    if (publicError.status === 500) console.error('API request failed:', error);
+    sendApiError(res, publicError.status, publicError.message);
     return true;
   }
 }
@@ -1047,7 +1061,7 @@ async function readRequestBody(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 256 * 1024) throw new Error('Request body too large');
+    if (size > 256 * 1024) throw new PublicApiError('REQUEST_TOO_LARGE');
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString('utf8');
@@ -1056,8 +1070,13 @@ async function readRequestBody(req) {
 async function readJsonBody(req) {
   const body = await readRequestBody(req);
   if (!body.trim()) return {};
-  const parsed = JSON.parse(body);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Expected a JSON object.');
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new PublicApiError('INVALID_JSON');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new PublicApiError('EXPECTED_JSON_OBJECT');
   return parsed;
 }
 
@@ -1218,6 +1237,11 @@ const server = http.createServer(async (req, res) => {
 
     await serveStatic(req, res);
   } catch (error) {
+    if (error instanceof PublicApiError) {
+      const publicError = publicApiErrorResponse(error);
+      send(res, publicError.status, publicError.message, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return;
+    }
     console.error(error);
     send(res, 500, 'Internal server error', { 'Content-Type': 'text/plain; charset=utf-8' });
   }
@@ -1259,7 +1283,8 @@ wss.on('connection', (ws, req) => {
 
     if (message.type === 'create-room') {
       const accountUser = ws.accountUser;
-      const code = makeRoomCode();
+      const code = makeRoomCodeForSocket(ws);
+      if (!code) return;
       const playerId = crypto.randomUUID();
       const room = createWaitingRoom({
         code,
@@ -1464,7 +1489,8 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const oldRoom = room;
-      const newCode = makeRoomCode();
+      const newCode = makeRoomCodeForSocket(ws);
+      if (!newCode) return;
       const newRoom = createWaitingRoom({ code: newCode, hostPlayer: player, ws });
       for (const client of oldRoom.clients) {
         if (client === ws) continue;

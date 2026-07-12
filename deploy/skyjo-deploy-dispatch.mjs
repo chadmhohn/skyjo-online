@@ -22,7 +22,8 @@ import {
 } from './release-controller-lib.mjs';
 
 export const DEFAULT_STAGE_ROOT = '/var/tmp/skyjo-deploy';
-export const UPLOAD_LOCK_STALE_MS = 15 * 60 * 1000;
+export const UPLOAD_INPUT_TIMEOUT_MS = 15 * 60 * 1000;
+export const UPLOAD_INPUT_CLEANUP_TIMEOUT_MS = 5 * 1000;
 export const MAX_STAGE_DIRECTORY_ENTRIES = 128;
 export const MAX_PARTIALS_CLEANED_PER_UPLOAD = 32;
 export const MAX_STAGED_RUNS = 32;
@@ -123,120 +124,11 @@ async function fsyncStageParent(stageRoot, { contract, syncDirectory = fsyncDire
   }
 }
 
-function processIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error.code === 'ESRCH') return false;
-    return true;
+async function cleanupAbandonedPartials(stageDirectory, assertAdmissionHeld) {
+  if (typeof assertAdmissionHeld !== 'function') {
+    throw commandError('Deployment admission lock proof is required for partial cleanup.', 70);
   }
-}
-
-async function removeDeadUploadLock(lockDirectory, { now = Date.now(), isProcessAlive = processIsAlive } = {}) {
-  const ownerPath = resolveWithin(lockDirectory, 'owner.json');
-  let ownerText;
-  let owner;
-  let ownerStat;
-  let lockStat;
-  try {
-    lockStat = await fsp.lstat(lockDirectory);
-    if (!lockStat.isDirectory() || lockStat.isSymbolicLink()) return false;
-    ownerStat = await fsp.lstat(ownerPath);
-    if (!ownerStat.isFile() || ownerStat.isSymbolicLink()) return false;
-    ownerText = await fsp.readFile(ownerPath, 'utf8');
-    owner = JSON.parse(ownerText);
-  } catch (error) {
-    if (error?.code === 'ENOENT' && lockStat && now - lockStat.mtimeMs >= UPLOAD_LOCK_STALE_MS) {
-      const entries = await fsp.readdir(lockDirectory).catch(() => null);
-      if (entries?.length === 0) {
-        await fsp.rmdir(lockDirectory);
-        await fsyncDirectory(path.dirname(lockDirectory));
-        return true;
-      }
-    }
-    return false;
-  }
-  if (!Number.isSafeInteger(owner?.pid) || owner.pid < 1 ||
-      typeof owner?.token !== 'string' || !/^[a-f0-9]{32}$/.test(owner.token) ||
-      !Number.isSafeInteger(owner?.createdAt) || now - owner.createdAt < UPLOAD_LOCK_STALE_MS || isProcessAlive(owner.pid)) {
-    return false;
-  }
-  const currentText = await fsp.readFile(ownerPath, 'utf8').catch(() => null);
-  if (currentText !== ownerText) return false;
-  await fsp.unlink(ownerPath);
-  await fsyncDirectory(lockDirectory);
-  await fsp.rmdir(lockDirectory);
-  await fsyncDirectory(path.dirname(lockDirectory));
-  return true;
-}
-
-export async function acquireUploadLock(stageDirectory, options = {}) {
-  const lockDirectory = resolveWithin(stageDirectory, '.upload.lock');
-  const ownerPath = resolveWithin(lockDirectory, 'owner.json');
-  const token = crypto.randomBytes(16).toString('hex');
-  const createdAt = options.now ?? Date.now();
-  const ownerText = `${JSON.stringify({ pid: process.pid, token, createdAt })}\n`;
-  let acquired = false;
-  for (let attempt = 0; attempt < 2 && !acquired; attempt += 1) {
-    try {
-      await fsp.mkdir(lockDirectory, { mode: 0o700 });
-      acquired = true;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const removed = attempt === 0 && await removeDeadUploadLock(lockDirectory, {
-        now: createdAt,
-        isProcessAlive: options.isProcessAlive
-      });
-      if (!removed) throw commandError('Another upload is already active for this deployment run.', 75);
-    }
-  }
-  if (!acquired) throw commandError('Another upload is already active for this deployment run.', 75);
-  try {
-    const handle = await fsp.open(ownerPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
-    try {
-      await handle.writeFile(ownerText, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await fsyncDirectory(lockDirectory);
-  } catch (error) {
-    await fsp.unlink(ownerPath).catch(() => {});
-    await fsp.rmdir(lockDirectory).catch(() => {});
-    await fsyncDirectory(stageDirectory).catch(() => {});
-    throw error;
-  }
-
-  let released = false;
-  return async () => {
-    if (released) return;
-    const lockStat = await fsp.lstat(lockDirectory).catch(() => null);
-    const ownerStat = await fsp.lstat(ownerPath).catch(() => null);
-    if (!lockStat?.isDirectory() || lockStat.isSymbolicLink() || !ownerStat?.isFile() || ownerStat.isSymbolicLink()) {
-      throw new Error('Upload lock became unsafe before release.');
-    }
-    const currentOwner = await fsp.readFile(ownerPath, 'utf8').catch(() => null);
-    if (currentOwner !== ownerText) throw new Error('Upload lock ownership changed unexpectedly.');
-    const releaseErrors = [];
-    const releaseUnlink = options.releaseUnlink || fsp.unlink;
-    const releaseRmdir = options.releaseRmdir || fsp.rmdir;
-    const releaseSyncDirectory = options.releaseSyncDirectory || fsyncDirectory;
-    for (const operation of [
-      () => releaseUnlink(ownerPath),
-      () => releaseSyncDirectory(lockDirectory),
-      () => releaseRmdir(lockDirectory),
-      () => releaseSyncDirectory(stageDirectory)
-    ]) {
-      try { await operation(); }
-      catch (error) { releaseErrors.push(error); }
-    }
-    released = releaseErrors.length === 0;
-    if (releaseErrors.length > 0) throw new AggregateError(releaseErrors, 'Upload lock release did not complete cleanly.');
-  };
-}
-
-async function cleanupAbandonedPartials(stageDirectory) {
+  await assertAdmissionHeld();
   const entries = await fsp.readdir(stageDirectory, { withFileTypes: true });
   if (entries.length > MAX_STAGE_DIRECTORY_ENTRIES) throw new Error('Deployment staging directory contains too many entries.');
   const partialNames = entries
@@ -250,6 +142,7 @@ async function cleanupAbandonedPartials(stageDirectory) {
     const partialPath = resolveWithin(stageDirectory, name);
     const stat = await fsp.lstat(partialPath);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Deployment staging partial is unsafe.');
+    await assertAdmissionHeld();
     await fsp.unlink(partialPath);
   }
   if (partialNames.length > 0) await fsyncDirectory(stageDirectory);
@@ -280,23 +173,77 @@ async function existingArchiveSize(archivePath) {
   return stat.size;
 }
 
-async function receiveExactly(input, expectedBytes, handle) {
+async function closeFailedUploadInput(input, iterator, cleanupTimeoutMs) {
+  try {
+    const destroyResult = input.destroy?.();
+    destroyResult?.catch?.(() => {});
+  } catch {}
+  if (typeof iterator.return !== 'function') return;
+
+  let cleanupTimer;
+  const cleanup = Promise.resolve()
+    .then(() => iterator.return())
+    .catch(() => undefined);
+  const deadline = new Promise((resolve) => {
+    cleanupTimer = setTimeout(resolve, cleanupTimeoutMs);
+  });
+  try {
+    await Promise.race([cleanup, deadline]);
+  } finally {
+    clearTimeout(cleanupTimer);
+    cleanup.catch(() => {});
+  }
+}
+
+async function receiveExactly(
+  input,
+  expectedBytes,
+  handle,
+  timeoutMs = UPLOAD_INPUT_TIMEOUT_MS,
+  cleanupTimeoutMs = UPLOAD_INPUT_CLEANUP_TIMEOUT_MS
+) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > UPLOAD_INPUT_TIMEOUT_MS) {
+    throw commandError('Upload input timeout is invalid.', 70);
+  }
+  if (!Number.isSafeInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1 || cleanupTimeoutMs > UPLOAD_INPUT_CLEANUP_TIMEOUT_MS) {
+    throw commandError('Upload input cleanup timeout is invalid.', 70);
+  }
+  const iterator = input?.[Symbol.asyncIterator]?.();
+  if (!iterator) throw commandError('Upload input is unavailable.', 70);
   let received = 0;
-  for await (const value of input) {
-    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-    received += chunk.length;
-    if (received > expectedBytes || received > MAX_ARCHIVE_BYTES) throw new Error('Upload exceeded declared size.');
-    if (handle) {
-      let offset = 0;
-      while (offset < chunk.length) {
-        const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
-        if (bytesWritten < 1) throw new Error('Upload write made no progress.');
-        offset += bytesWritten;
+  let timeout;
+  let successful = false;
+  const deadline = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(commandError('Upload input timed out.', 75));
+    }, timeoutMs);
+  });
+  try {
+    while (true) {
+      const next = await Promise.race([iterator.next(), deadline]);
+      if (next.done) break;
+      const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
+      received += chunk.length;
+      if (received > expectedBytes || received > MAX_ARCHIVE_BYTES) throw new Error('Upload exceeded declared size.');
+      if (handle) {
+        let offset = 0;
+        while (offset < chunk.length) {
+          const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
+          if (bytesWritten < 1) throw new Error('Upload write made no progress.');
+          offset += bytesWritten;
+        }
       }
     }
+    if (received !== expectedBytes) throw new Error('Upload did not match declared size.');
+    successful = true;
+    return received;
+  } finally {
+    clearTimeout(timeout);
+    if (!successful) {
+      try { await closeFailedUploadInput(input, iterator, cleanupTimeoutMs); }
+      catch {}
+    }
   }
-  if (received !== expectedBytes) throw new Error('Upload did not match declared size.');
-  return received;
 }
 
 async function readAdmissionMarker(stageDirectory, runId, contract) {
@@ -341,7 +288,11 @@ function throwCleanupFailures(failures, message) {
 }
 
 async function removeEmptyCreatedRun(stageRoot, stageDirectory, options) {
+  if (typeof options.assertAdmissionHeld !== 'function') {
+    throw commandError('Deployment admission lock proof is required for run cleanup.', 70);
+  }
   const assertExpectedRun = async () => {
+    await options.assertAdmissionHeld();
     if (!options.expectedIdentity) return;
     const current = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', options.runContract);
     if (!sameFilesystemIdentity(options.expectedIdentity, current)) {
@@ -349,14 +300,12 @@ async function removeEmptyCreatedRun(stageRoot, stageDirectory, options) {
     }
   };
   await assertExpectedRun();
-  const releaseUploadLock = await acquireUploadLock(stageDirectory, options.cleanupUploadLockOptions);
   const failures = [];
   let markerRemoved = false;
   try {
     const assertOnlyCleanupEntries = async () => {
       const entries = await fsp.readdir(stageDirectory);
-      const expected = entries.length === 1 && entries[0] === '.upload.lock' ||
-        entries.length === 2 && entries.includes('.upload.lock') && entries.includes(ADMISSION_MARKER);
+      const expected = entries.length === 0 || entries.length === 1 && entries[0] === ADMISSION_MARKER;
       if (!expected) throw new Error('Admitted run directory is nonempty and remains retryable.');
       return entries;
     };
@@ -377,16 +326,14 @@ async function removeEmptyCreatedRun(stageRoot, stageDirectory, options) {
   } catch (error) {
     failures.push(error);
   }
-  try { await releaseUploadLock(); }
-  catch (error) { failures.push(error); }
 
   if (failures.length === 0) {
     try {
-      await options.afterCleanupUploadLockRelease?.();
       await assertExpectedRun();
       if ((await fsp.readdir(stageDirectory)).length !== 0) {
         throw new Error('Admitted run directory changed during cleanup and remains retryable.');
       }
+      await assertExpectedRun();
       await fsp.rmdir(stageDirectory);
       await fsyncStageParent(stageRoot, options);
       return;
@@ -420,6 +367,7 @@ async function reserveExistingRun(stageRoot, stageDirectory, runId, {
   syncOptions,
   now,
   afterExistingAdmissionRead,
+  assertAdmissionHeld,
   allowTopLevelCleanup = false
 }) {
   const existing = await assertSafeDirectory(stageDirectory, 'Deployment staging directory');
@@ -447,10 +395,15 @@ async function reserveExistingRun(stageRoot, stageDirectory, runId, {
         Object.defineProperty(error, 'requiresAdmissionLock', { value: true, enumerable: false });
         throw error;
       }
+      if (typeof assertAdmissionHeld !== 'function') {
+        throw commandError('Deployment admission lock proof is required for stale cleanup.', 70);
+      }
+      await assertAdmissionHeld();
       const current = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
       if (!sameFilesystemIdentity(stat, current) || (await fsp.readdir(stageDirectory)).length !== 0) {
         throw commandError('Deployment run admission changed before stale cleanup.', 70);
       }
+      await assertAdmissionHeld();
       await fsp.rmdir(stageDirectory);
       await fsyncStageParent(stageRoot, syncOptions);
     }
@@ -482,149 +435,102 @@ async function runWithAdmissionLock(admission, action, message) {
   return result;
 }
 
-async function runWithUploadLock(releaseLock, action) {
-  let result;
-  let primaryError;
-  try { result = await action(); }
-  catch (error) { primaryError = error; }
-  let releaseError;
-  try { await releaseLock(); }
-  catch (error) { releaseError = error; }
-  if (primaryError && releaseError) {
-    throw new AggregateError([primaryError, releaseError], 'Upload operation and per-run lock release both failed.', { cause: primaryError });
-  }
-  if (primaryError) throw primaryError;
-  if (releaseError) throw releaseError;
-  return result;
-}
-
 async function reserveRunDirectory(stageRoot, runId, {
+  admission,
   stageRootContract,
-  admissionStageRootContract,
   runContract,
-  admissionLockPath,
-  admissionLockParentContract,
-  admissionLockContract,
   controllerRunContract,
   stageRootFsync = fsyncDirectory,
   now = Date.now(),
-  admissionLockOptions = {},
   afterAdmissionMkdir,
   afterCleanupDirectoryRead,
-  afterCleanupUploadLockRelease,
-  afterExistingAdmissionRead,
-  cleanupUploadLockOptions
+  afterExistingAdmissionRead
 }) {
+  if (!admission || typeof admission.assertHeld !== 'function') {
+    throw commandError('Deployment admission lock proof is required for run reservation.', 70);
+  }
+  await admission.assertHeld();
   const stageDirectory = resolveWithin(stageRoot, runId);
   const syncOptions = { contract: stageRootContract, syncDirectory: stageRootFsync };
-  const existingOptions = { runContract, controllerRunContract, syncOptions, now, afterExistingAdmissionRead };
+  const existingOptions = {
+    runContract,
+    controllerRunContract,
+    syncOptions,
+    now,
+    afterExistingAdmissionRead,
+    assertAdmissionHeld: admission.assertHeld,
+    allowTopLevelCleanup: true
+  };
   if (await pathExists(stageDirectory)) {
-    try {
-      return await reserveExistingRun(stageRoot, stageDirectory, runId, existingOptions);
-    } catch (error) {
-      if (error?.requiresAdmissionLock !== true) throw error;
-      const admission = await acquireAdmissionLock(stageRoot, {
-        ...admissionLockOptions,
-        stageRootContract: admissionStageRootContract,
-        lockPath: admissionLockPath,
-        lockParentContract: admissionLockParentContract,
-        lockContract: admissionLockContract
-      });
-      return runWithAdmissionLock(
-        admission,
-        () => reserveExistingRun(stageRoot, stageDirectory, runId, { ...existingOptions, allowTopLevelCleanup: true }),
-        'Stale run cleanup and admission-lock release both failed.'
-      );
-    }
+    return reserveExistingRun(stageRoot, stageDirectory, runId, existingOptions);
   }
 
-  const admission = await acquireAdmissionLock(stageRoot, {
-    ...admissionLockOptions,
-    stageRootContract: admissionStageRootContract,
-    lockPath: admissionLockPath,
-    lockParentContract: admissionLockParentContract,
-    lockContract: admissionLockContract
+  const created = await fsp.mkdir(stageDirectory, { mode: 0o700, recursive: false }).then(() => true).catch((error) => {
+    if (error.code === 'EEXIST') return false;
+    throw error;
   });
-  let result;
-  let admissionError;
+  if (!created) return reserveExistingRun(stageRoot, stageDirectory, runId, existingOptions);
+
+  let createdRunIdentity;
   try {
-    const created = await fsp.mkdir(stageDirectory, { mode: 0o700, recursive: false }).then(() => true).catch((error) => {
-      if (error.code === 'EEXIST') return false;
-      throw error;
-    });
-    if (!created) {
-      result = await reserveExistingRun(stageRoot, stageDirectory, runId, { ...existingOptions, allowTopLevelCleanup: true });
+    createdRunIdentity = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+    await afterAdmissionMkdir?.();
+    await admission.assertHeld();
+    const rootStat = await assertSafeStageRoot(stageRoot, stageRootContract);
+    await admission.assertHeld();
+    let admittedCount;
+    if (process.platform === 'win32' && !stageRootContract) {
+      admittedCount = (await fsp.readdir(stageRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).length;
     } else {
-      let createdRunIdentity;
+      admittedCount = admittedDirectoryCountFromLinkCount(rootStat.nlink);
+      if (admittedCount < 1) throw commandError('Deployment staging root lost its candidate directory.', 70);
+    }
+    if (admittedCount > MAX_STAGED_RUNS) {
+      await admission.assertHeld();
+      const currentRun = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+      if (!sameFilesystemIdentity(createdRunIdentity, currentRun)) {
+        throw commandError('Deployment staging directory identity changed before quota cleanup.', 70);
+      }
+      await admission.assertHeld();
+      await fsp.rmdir(stageDirectory);
+      await fsyncStageParent(stageRoot, syncOptions);
+      throw commandError('Deployment staging quota is full.', 75);
+    }
+    await admission.assertHeld();
+    const currentRun = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+    if (!sameFilesystemIdentity(createdRunIdentity, currentRun)) {
+      throw commandError('Deployment staging directory identity changed before admission.', 70);
+    }
+    const markerPath = resolveWithin(stageDirectory, ADMISSION_MARKER);
+    const marker = await fsp.open(markerPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0), 0o400);
+    try {
+      await marker.writeFile(`${runId}\n`, 'utf8');
+      await marker.sync();
+    } finally {
+      await marker.close();
+    }
+    await fsyncDirectory(stageDirectory);
+    await fsyncStageParent(stageRoot, syncOptions);
+    return { stageDirectory, created: true, runIdentity: createdRunIdentity };
+  } catch (error) {
+    const remains = await pathExists(stageDirectory);
+    if (remains) {
       try {
-        createdRunIdentity = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
-        await afterAdmissionMkdir?.();
-        await admission.assertHeld();
-        const rootStat = await assertSafeStageRoot(stageRoot, stageRootContract);
-        await admission.assertHeld();
-        let admittedCount;
-        if (process.platform === 'win32' && !stageRootContract) {
-          admittedCount = (await fsp.readdir(stageRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).length;
-        } else {
-          admittedCount = admittedDirectoryCountFromLinkCount(rootStat.nlink);
-          if (admittedCount < 1) {
-            throw commandError('Deployment staging root lost its candidate directory.', 70);
-          }
-        }
-        if (admittedCount > MAX_STAGED_RUNS) {
-          const currentRun = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
-          if (!sameFilesystemIdentity(createdRunIdentity, currentRun)) {
-            throw commandError('Deployment staging directory identity changed before quota cleanup.', 70);
-          }
-          await fsp.rmdir(stageDirectory);
-          await fsyncStageParent(stageRoot, syncOptions);
-          throw commandError('Deployment staging quota is full.', 75);
-        }
-        await admission.assertHeld();
-        const currentRun = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
-        if (!sameFilesystemIdentity(createdRunIdentity, currentRun)) {
-          throw commandError('Deployment staging directory identity changed before admission.', 70);
-        }
-        const markerPath = resolveWithin(stageDirectory, ADMISSION_MARKER);
-        const marker = await fsp.open(markerPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0), 0o400);
-        try {
-          await marker.writeFile(`${runId}\n`, 'utf8');
-          await marker.sync();
-        } finally {
-          await marker.close();
-        }
-        await fsyncDirectory(stageDirectory);
-        await fsyncStageParent(stageRoot, syncOptions);
-        result = { stageDirectory, created: true, runIdentity: createdRunIdentity };
-      } catch (error) {
-        const remains = await pathExists(stageDirectory);
-        if (remains) {
-          try {
-            if (!createdRunIdentity) throw commandError('Deployment staging directory identity was never established.', 70);
-            await removeEmptyCreatedRun(stageRoot, stageDirectory, {
-              ...syncOptions,
-              expectedIdentity: createdRunIdentity,
-              runId,
-              runContract,
-              afterCleanupDirectoryRead,
-              afterCleanupUploadLockRelease,
-              cleanupUploadLockOptions
-            });
-          } catch (cleanupError) {
-            throw new AggregateError([error, cleanupError], 'Run admission failed and its directory could not be removed safely.', { cause: error });
-          }
-        }
-        throw error;
+        if (!createdRunIdentity) throw commandError('Deployment staging directory identity was never established.', 70);
+        await removeEmptyCreatedRun(stageRoot, stageDirectory, {
+          ...syncOptions,
+          expectedIdentity: createdRunIdentity,
+          runId,
+          runContract,
+          afterCleanupDirectoryRead,
+          assertAdmissionHeld: admission.assertHeld
+        });
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Run admission failed and its directory could not be removed safely.', { cause: error });
       }
     }
-  } catch (error) {
-    admissionError = error;
+    throw error;
   }
-
-  return runWithAdmissionLock(admission, async () => {
-    if (admissionError) throw admissionError;
-    return result;
-  }, 'Run admission and admission-lock release both failed.');
 }
 
 export async function performUpload({
@@ -641,10 +547,9 @@ export async function performUpload({
   admissionLockOptions = {},
   afterAdmissionMkdir,
   afterCleanupDirectoryRead,
-  afterCleanupUploadLockRelease,
   afterExistingAdmissionRead,
-  cleanupUploadLockOptions,
-  uploadLockOptions = {},
+  uploadInputTimeoutMs = UPLOAD_INPUT_TIMEOUT_MS,
+  uploadInputCleanupTimeoutMs = UPLOAD_INPUT_CLEANUP_TIMEOUT_MS,
   controllerRunContract = { uid: 0, gid: 0, modes: [0o700, 0o711] },
   acceptControllerOwnedRun = enforceStageRootContract
 }) {
@@ -675,43 +580,38 @@ export async function performUpload({
   const admissionLockParentContract = productionStageRoot
     ? { uid: 0, gid: 0, mode: 0o755 }
     : admissionStageRootContract;
-  const { stageDirectory, created, controllerOwned, runIdentity } = await reserveRunDirectory(stageRoot, runId, {
-    stageRootContract,
-    admissionStageRootContract,
-    runContract,
-    admissionLockPath,
-    admissionLockParentContract,
-    admissionLockContract,
-    controllerRunContract: acceptControllerOwnedRun ? controllerRunContract : undefined,
-    stageRootFsync,
-    now,
-    admissionLockOptions,
-    afterAdmissionMkdir,
-    afterCleanupDirectoryRead,
-    afterCleanupUploadLockRelease,
-    afterExistingAdmissionRead,
-    cleanupUploadLockOptions
+  const admission = await acquireAdmissionLock(stageRoot, {
+    ...admissionLockOptions,
+    stageRootContract: admissionStageRootContract,
+    lockPath: admissionLockPath,
+    lockParentContract: admissionLockParentContract,
+    lockContract: admissionLockContract
   });
-  if (controllerOwned) {
-    const received = await receiveExactly(input, bytes, null);
-    return {
-      received,
-      idempotent: true,
-      controllerOwned: true,
-      archivePath: resolveWithin(stageDirectory, `skyjo-runtime-${releaseSha}.tar.gz`)
-    };
-  }
-  try {
-    let releaseLock;
-    try {
-      releaseLock = await acquireUploadLock(stageDirectory, uploadLockOptions);
-    } catch (error) {
-      if (!created && error?.code === 'ENOENT') {
-        throw commandError('Deployment run disappeared before upload locking; retry admission.', 75);
-      }
-      throw error;
+  return runWithAdmissionLock(admission, async () => {
+    await admission.assertHeld();
+    const { stageDirectory, created, controllerOwned, runIdentity } = await reserveRunDirectory(stageRoot, runId, {
+      admission,
+      stageRootContract,
+      runContract,
+      controllerRunContract: acceptControllerOwnedRun ? controllerRunContract : undefined,
+      stageRootFsync,
+      now,
+      afterAdmissionMkdir,
+      afterCleanupDirectoryRead,
+      afterExistingAdmissionRead
+    });
+    await admission.assertHeld();
+    if (controllerOwned) {
+      const received = await receiveExactly(input, bytes, null, uploadInputTimeoutMs, uploadInputCleanupTimeoutMs);
+      await admission.assertHeld();
+      return {
+        received,
+        idempotent: true,
+        controllerOwned: true,
+        archivePath: resolveWithin(stageDirectory, `skyjo-runtime-${releaseSha}.tar.gz`)
+      };
     }
-    return await runWithUploadLock(releaseLock, async () => {
+    try {
       const currentRun = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
       if (!runIdentity || !sameFilesystemIdentity(runIdentity, currentRun)) {
         throw commandError('Deployment run identity changed before upload publication.', 70);
@@ -719,13 +619,14 @@ export async function performUpload({
       if (!await readAdmissionMarker(stageDirectory, runId, runContract)) {
         throw commandError('Deployment run admission changed before upload publication.', 75);
       }
-      await cleanupAbandonedPartials(stageDirectory);
+      await cleanupAbandonedPartials(stageDirectory, admission.assertHeld);
       await assertRunArchiveBinding(stageDirectory, releaseSha);
       const archivePath = resolveWithin(stageDirectory, `skyjo-runtime-${releaseSha}.tar.gz`);
       const completedSize = await existingArchiveSize(archivePath);
       if (completedSize !== null) {
         if (completedSize !== bytes) throw new Error('Completed deployment archive conflicts with the declared size.');
-        const received = await receiveExactly(input, bytes, null);
+        const received = await receiveExactly(input, bytes, null, uploadInputTimeoutMs, uploadInputCleanupTimeoutMs);
+        await admission.assertHeld();
         return { received, idempotent: true, archivePath };
       }
 
@@ -733,48 +634,46 @@ export async function performUpload({
       let handle;
       try {
         handle = await fsp.open(partialPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
-        const received = await receiveExactly(input, bytes, handle);
+        const received = await receiveExactly(input, bytes, handle, uploadInputTimeoutMs, uploadInputCleanupTimeoutMs);
         await handle.sync();
         await handle.close();
         handle = null;
+        await admission.assertHeld();
         await fsp.link(partialPath, archivePath);
         await fsyncDirectory(stageDirectory);
+        await admission.assertHeld();
         await fsp.unlink(partialPath);
         await fsyncDirectory(stageDirectory);
+        await admission.assertHeld();
         return { received, idempotent: false, archivePath };
       } catch (error) {
         await handle?.close().catch(() => {});
-        await fsp.unlink(partialPath).catch(() => {});
+        try {
+          await admission.assertHeld();
+          await fsp.unlink(partialPath);
+        } catch {}
         await fsyncDirectory(stageDirectory).catch(() => {});
         throw error;
       }
-    });
-  } catch (error) {
-    if (created) {
-      try {
-        const cleanupAdmission = await acquireAdmissionLock(stageRoot, {
-          ...admissionLockOptions,
-          stageRootContract: admissionStageRootContract,
-          lockPath: admissionLockPath,
-          lockParentContract: admissionLockParentContract,
-          lockContract: admissionLockContract
-        });
-        await runWithAdmissionLock(cleanupAdmission, () => removeEmptyCreatedRun(stageRoot, stageDirectory, {
-          contract: stageRootContract,
-          syncDirectory: stageRootFsync,
-          expectedIdentity: runIdentity,
-          runId,
-          runContract,
-          afterCleanupDirectoryRead,
-          afterCleanupUploadLockRelease,
-          cleanupUploadLockOptions
-        }), 'Upload cleanup and admission-lock release both failed.');
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], 'Upload failed and its admitted run directory could not be removed.', { cause: error });
+    } catch (error) {
+      if (created) {
+        try {
+          await removeEmptyCreatedRun(stageRoot, stageDirectory, {
+            contract: stageRootContract,
+            syncDirectory: stageRootFsync,
+            expectedIdentity: runIdentity,
+            runId,
+            runContract,
+            afterCleanupDirectoryRead,
+            assertAdmissionHeld: admission.assertHeld
+          });
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'Upload failed and its admitted run directory could not be removed.', { cause: error });
+        }
       }
+      throw error;
     }
-    throw error;
-  }
+  }, 'Deployment upload and admission-lock release both failed.');
 }
 
 async function runController(parsed) {
