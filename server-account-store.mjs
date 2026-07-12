@@ -7,6 +7,75 @@ import { DatabaseSync } from 'node:sqlite';
 const scryptAsync = promisify(crypto.scrypt);
 const defaultDbFile = path.join('.data', 'skyjo.sqlite');
 const validRoles = new Set(['admin', 'player']);
+const publicApiErrors = new Map([
+  ['INVALID_EMAIL', Object.freeze({ status: 400, message: 'Enter a valid email address.' })],
+  ['WEAK_PASSWORD', Object.freeze({ status: 400, message: 'Use a password with at least 8 characters.' })],
+  ['INVALID_ROLE', Object.freeze({ status: 400, message: 'Invalid account role.' })],
+  ['ACCOUNT_EXISTS', Object.freeze({ status: 400, message: 'An account already exists for that email.' })],
+  ['ACCOUNT_NOT_FOUND', Object.freeze({ status: 400, message: 'Account not found.' })],
+  ['CURRENT_PASSWORD_MISMATCH', Object.freeze({ status: 400, message: 'Current password did not match.' })],
+  ['LAST_ADMIN', Object.freeze({ status: 400, message: 'Keep at least one active admin.' })],
+  ['INVALID_PUSH_SUBSCRIPTION', Object.freeze({ status: 400, message: 'Push subscription is invalid.' })],
+  ['MISSING_PUSH_KEYS', Object.freeze({ status: 400, message: 'Push subscription is missing keys.' })],
+  ['INCOMPLETE_GAME', Object.freeze({ status: 400, message: 'Only completed games can be recorded.' })],
+  ['INVALID_ROOM_CODE', Object.freeze({ status: 400, message: 'Room code is not valid.' })],
+  ['PASSWORDS_MUST_MATCH', Object.freeze({ status: 400, message: 'Passwords must match.' })],
+  ['MISSING_HUMAN_PLAYER', Object.freeze({ status: 400, message: 'Single-player game is missing a human player.' })],
+  ['REQUEST_TOO_LARGE', Object.freeze({ status: 413, message: 'Request body too large.' })],
+  ['INVALID_JSON', Object.freeze({ status: 400, message: 'Request body must be valid JSON.' })],
+  ['EXPECTED_JSON_OBJECT', Object.freeze({ status: 400, message: 'Expected a JSON object.' })],
+  ['CODE_ALLOCATION_FAILED', Object.freeze({ status: 503, message: 'A secure code could not be created. Try again.' })]
+]);
+const unknownApiError = Object.freeze({ status: 500, message: 'Request failed.' });
+
+export class PublicApiError extends Error {
+  constructor(code) {
+    super(publicApiErrors.get(code)?.message || unknownApiError.message);
+    if (!publicApiErrors.has(code)) throw new TypeError('Unknown public API error code.');
+    this.name = 'PublicApiError';
+    this.code = code;
+  }
+}
+
+export function publicApiErrorResponse(error) {
+  if (!(error instanceof PublicApiError)) return unknownApiError;
+  return publicApiErrors.get(error.code) || unknownApiError;
+}
+
+export function createUniqueRandomCode({
+  alphabet,
+  length,
+  isTaken = () => false,
+  randomInt = (maximum) => crypto.randomInt(maximum),
+  maxAttempts = 128
+}) {
+  if (typeof alphabet !== 'string' || alphabet.length < 2 || new Set(alphabet).size !== alphabet.length) {
+    throw new TypeError('Secure code alphabet must contain unique characters.');
+  }
+  if (!Number.isSafeInteger(length) || length < 1 || length > 128) {
+    throw new TypeError('Secure code length is invalid.');
+  }
+  if (typeof isTaken !== 'function' || typeof randomInt !== 'function') {
+    throw new TypeError('Secure code callbacks are invalid.');
+  }
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 4096) {
+    throw new TypeError('Secure code attempt limit is invalid.');
+  }
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    let code = '';
+    for (let index = 0; index < length; index += 1) {
+      const alphabetIndex = randomInt(alphabet.length);
+      if (!Number.isSafeInteger(alphabetIndex) || alphabetIndex < 0 || alphabetIndex >= alphabet.length) {
+        throw new TypeError('Secure random source returned an invalid index.');
+      }
+      code += alphabet[alphabetIndex];
+    }
+    if (!isTaken(code)) return code;
+  }
+
+  throw new PublicApiError('CODE_ALLOCATION_FAILED');
+}
 
 const baseSchemaSql = `
   CREATE TABLE IF NOT EXISTS users (
@@ -219,12 +288,12 @@ function normalizeDisplayName(name) {
 
 function assertEmail(email) {
   if (!email || email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    throw new Error('Enter a valid email address.');
+    throw new PublicApiError('INVALID_EMAIL');
   }
 }
 
 function assertPassword(password) {
-  if (stringValue(password).length < 8) throw new Error('Use a password with at least 8 characters.');
+  if (stringValue(password).length < 8) throw new PublicApiError('WEAK_PASSWORD');
 }
 
 function hashSessionToken(token) {
@@ -410,7 +479,7 @@ export class AccountStore {
   async createUser({ email, displayName, password, role = 'player' }) {
     const normalizedEmail = normalizeEmail(email);
     assertEmail(normalizedEmail);
-    if (!validRoles.has(role)) throw new Error('Invalid account role.');
+    if (!validRoles.has(role)) throw new PublicApiError('INVALID_ROLE');
     const cleanName = normalizeDisplayName(displayName || normalizedEmail.split('@')[0]);
     const { hash, salt } = await hashPassword(password);
     const timestamp = this.now();
@@ -424,7 +493,7 @@ export class AccountStore {
         )
         .run(id, normalizedEmail, cleanName, hash, salt, role, timestamp, timestamp);
     } catch (error) {
-      if (String(error?.message || '').includes('UNIQUE')) throw new Error('An account already exists for that email.');
+      if (String(error?.message || '').includes('UNIQUE')) throw new PublicApiError('ACCOUNT_EXISTS');
       throw error;
     }
 
@@ -475,15 +544,15 @@ export class AccountStore {
 
   async changePassword(userId, currentPassword, nextPassword) {
     const row = this.getUserRowById(userId);
-    if (!row || row.disabled === 1) throw new Error('Account not found.');
-    if (!(await verifyPassword(currentPassword, row))) throw new Error('Current password did not match.');
+    if (!row || row.disabled === 1) throw new PublicApiError('ACCOUNT_NOT_FOUND');
+    if (!(await verifyPassword(currentPassword, row))) throw new PublicApiError('CURRENT_PASSWORD_MISMATCH');
     await this.setUserPassword(userId, nextPassword);
     this.db.prepare('DELETE FROM account_sessions WHERE user_id = ?').run(userId);
   }
 
   async setUserPassword(userId, nextPassword) {
     const row = this.getUserRowById(userId);
-    if (!row) throw new Error('Account not found.');
+    if (!row) throw new PublicApiError('ACCOUNT_NOT_FOUND');
     const { hash, salt } = await hashPassword(nextPassword);
     this.db
       .prepare('UPDATE users SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?')
@@ -511,14 +580,14 @@ export class AccountStore {
 
   patchUser(userId, patch) {
     const row = this.getUserRowById(userId);
-    if (!row) throw new Error('Account not found.');
+    if (!row) throw new PublicApiError('ACCOUNT_NOT_FOUND');
     const nextName = patch.displayName === undefined ? row.display_name : normalizeDisplayName(patch.displayName);
     const nextRole = patch.role === undefined ? row.role : String(patch.role);
     const nextDisabled = patch.disabled === undefined ? row.disabled : normalizeBool(patch.disabled);
-    if (!validRoles.has(nextRole)) throw new Error('Invalid account role.');
+    if (!validRoles.has(nextRole)) throw new PublicApiError('INVALID_ROLE');
     if ((row.role === 'admin' && nextRole !== 'admin') || (row.role === 'admin' && nextDisabled === 1)) {
       const adminCount = this.db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0").get();
-      if (Number(adminCount?.count || 0) <= 1) throw new Error('Keep at least one active admin.');
+      if (Number(adminCount?.count || 0) <= 1) throw new PublicApiError('LAST_ADMIN');
     }
     this.db
       .prepare('UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ? WHERE id = ?')
@@ -528,12 +597,12 @@ export class AccountStore {
 
   savePushSubscription(userId, subscription, userAgent = '') {
     const row = this.getUserRowById(userId);
-    if (!row || row.disabled === 1) throw new Error('Account not found.');
+    if (!row || row.disabled === 1) throw new PublicApiError('ACCOUNT_NOT_FOUND');
     if (!isRecord(subscription) || typeof subscription.endpoint !== 'string' || !subscription.endpoint.startsWith('https://')) {
-      throw new Error('Push subscription is invalid.');
+      throw new PublicApiError('INVALID_PUSH_SUBSCRIPTION');
     }
     if (!isRecord(subscription.keys) || typeof subscription.keys.p256dh !== 'string' || typeof subscription.keys.auth !== 'string') {
-      throw new Error('Push subscription is missing keys.');
+      throw new PublicApiError('MISSING_PUSH_KEYS');
     }
     const timestamp = this.now();
     this.db
@@ -589,7 +658,7 @@ export class AccountStore {
     finishedByAi = false
   }) {
     if (!isRecord(state) || !Array.isArray(state.players) || state.phase !== 'game-over') {
-      throw new Error('Only completed games can be recorded.');
+      throw new PublicApiError('INCOMPLETE_GAME');
     }
     if (sourceKey) {
       const existing = this.db.prepare('SELECT id FROM games WHERE source_key = ?').get(sourceKey);

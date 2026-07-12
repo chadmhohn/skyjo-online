@@ -588,28 +588,23 @@ export function revealOpeningCard(state: GameState, cardIndex: number): GameStat
   if (state.phase !== 'opening-reveal') return state;
   const player = currentPlayer(state);
   const card = player.grid[cardIndex];
-  const currentCount = state.openingRevealCounts[player.id] ?? openingRevealCount(player);
+  const currentCount = openingRevealCount(player);
   if (!card || card.faceUp || card.removed || currentCount >= 2) return state;
 
   const grid = player.grid.map((item, index) => (index === cardIndex ? { ...item, faceUp: true } : item));
   const nextPlayer = { ...player, grid, roundScore: visibleScore(grid) };
-  const updatedState = updatePlayer(
-    {
-      ...state,
-      openingRevealCounts: {
-        ...state.openingRevealCounts,
-        [player.id]: currentCount + 1
-      }
-    },
-    nextPlayer
-  );
+  const stateWithPlayer = updatePlayer(state, nextPlayer);
+  const updatedState = {
+    ...stateWithPlayer,
+    openingRevealCounts: openingRevealCounts(stateWithPlayer.players)
+  };
   const nextCount = currentCount + 1;
 
   if (nextCount < 2) {
     return withLog(updatedState, `${player.name} revealed an opening card.`);
   }
 
-  const nextPlayerIndex = updatedState.players.findIndex((item) => (updatedState.openingRevealCounts[item.id] ?? 0) < 2);
+  const nextPlayerIndex = updatedState.players.findIndex((item) => openingRevealCount(item) < 2);
   if (nextPlayerIndex >= 0) {
     return withLog(
       {

@@ -154,6 +154,29 @@ describe('deterministic deck and turn engine', () => {
     expect(cancelDiscardSelection(state)).toBe(state);
   });
 
+  it('keeps prototype-like player ids as own count keys without changing object prototypes or scores', () => {
+    const objectPrototypeKeys = Reflect.ownKeys(Object.prototype);
+    let state = createMultiplayerGame(
+      [{ id: '__proto__', name: 'Prototype' }, { id: 'constructor', name: 'Constructor' }],
+      1,
+      null,
+      createSeededRandom(19)
+    );
+
+    expect(Object.getPrototypeOf(state.openingRevealCounts)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(state.openingRevealCounts, '__proto__')?.value).toBe(0);
+    expect(Object.getOwnPropertyDescriptor(state.openingRevealCounts, 'constructor')?.value).toBe(0);
+
+    state = finishOpening(state);
+
+    expect(state.phase).toBe('choose-source');
+    expect(Object.getPrototypeOf(state.openingRevealCounts)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(state.openingRevealCounts, '__proto__')?.value).toBe(2);
+    expect(Object.getOwnPropertyDescriptor(state.openingRevealCounts, 'constructor')?.value).toBe(2);
+    expect(state.players.every((item) => item.roundScore === item.grid.filter((card) => card.faceUp && !card.removed).reduce((total, card) => total + card.value, 0))).toBe(true);
+    expect(Reflect.ownKeys(Object.prototype)).toEqual(objectPrototypeKeys);
+  });
+
   it('supports blind draw placement, discard-and-reveal, and deterministic recycle', () => {
     const opened = finishOpening(
       createMultiplayerGame(
