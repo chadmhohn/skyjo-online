@@ -589,6 +589,54 @@ test('governance readback fails closed on every requested setting and CodeQL thr
     corrupt(value);
     assert.throws(() => assertGovernanceReadbacks(value));
   }
+
+  const immutableUpdate = (value, side = 'actual') => value.additionalRulesets[1][side]
+    .rules.find(({ type }) => type === 'update');
+
+  const omittedCanonicalFalse = makeReadback();
+  delete immutableUpdate(omittedCanonicalFalse).parameters;
+  assert.doesNotThrow(() => assertGovernanceReadbacks(omittedCanonicalFalse));
+
+  const explicitFalse = makeReadback();
+  assert.equal(immutableUpdate(explicitFalse).parameters.update_allows_fetch_and_merge, false);
+  assert.doesNotThrow(() => assertGovernanceReadbacks(explicitFalse));
+
+  const explicitTrue = makeReadback();
+  immutableUpdate(explicitTrue).parameters.update_allows_fetch_and_merge = true;
+  assert.throws(() => assertGovernanceReadbacks(explicitTrue), /Detailed update rule parameters did not match/);
+
+  const omittedExpectedTrue = makeReadback();
+  immutableUpdate(omittedExpectedTrue, 'expected').parameters.update_allows_fetch_and_merge = true;
+  delete immutableUpdate(omittedExpectedTrue).parameters;
+  assert.throws(() => assertGovernanceReadbacks(omittedExpectedTrue), /Detailed update rule parameters did not match/);
+
+  const emptyParameters = makeReadback();
+  immutableUpdate(emptyParameters).parameters = {};
+  assert.throws(() => assertGovernanceReadbacks(emptyParameters), /Detailed update rule parameters did not match/);
+
+  const nullParameters = makeReadback();
+  immutableUpdate(nullParameters).parameters = null;
+  assert.throws(() => assertGovernanceReadbacks(nullParameters), /Detailed update rule parameters did not match/);
+
+  const ownUndefinedParameters = makeReadback();
+  immutableUpdate(ownUndefinedParameters).parameters = undefined;
+  assert.throws(() => assertGovernanceReadbacks(ownUndefinedParameters), /Detailed update rule parameters did not match/);
+
+  const omittedWithExtraExpectedKey = makeReadback();
+  immutableUpdate(omittedWithExtraExpectedKey, 'expected').parameters.unrelated = false;
+  delete immutableUpdate(omittedWithExtraExpectedKey).parameters;
+  assert.throws(() => assertGovernanceReadbacks(omittedWithExtraExpectedKey), /Detailed update rule parameters did not match/);
+
+  const omittedBranchUpdate = makeReadback();
+  omittedBranchUpdate.expectedRuleset.rules.push({
+    type: 'update', parameters: { update_allows_fetch_and_merge: false }
+  });
+  omittedBranchUpdate.ruleset.rules.push({ type: 'update' });
+  assert.throws(() => assertGovernanceReadbacks(omittedBranchUpdate), /Detailed update rule parameters did not match/);
+
+  const omittedOtherParameters = makeReadback();
+  delete omittedOtherParameters.ruleset.rules.find(({ type }) => type === 'pull_request').parameters;
+  assert.throws(() => assertGovernanceReadbacks(omittedOtherParameters), /Detailed pull_request rule parameters did not match/);
 });
 
 test('incident reconciliation rejects malformed active-source markers without mutation', async () => {
