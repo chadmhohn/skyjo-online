@@ -11,6 +11,13 @@ import {
   validateMultiplayerStateUpdate
 } from './server-dist/serverValidation.js';
 import {
+  hasVisibleLiveClient,
+  registerRealtimeServer,
+  sendRealtimeJson,
+  syncPlayerPresence
+} from './server-dist/serverRealtime.js';
+import { createProtocolV1MessageHandler } from './server-dist/serverProtocolV1.js';
+import {
   loadRoomsSnapshotFromDisk,
   resolveRoomsFilePath,
   ROOM_STALE_MS,
@@ -391,7 +398,7 @@ function setPlayerReadyForNextRound(room, playerId, ready) {
 }
 
 function sendJson(ws, payload) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
+  sendRealtimeJson(ws, payload);
 }
 
 function broadcastRoom(room) {
@@ -469,19 +476,6 @@ function createWaitingRoom({ code, hostPlayer, ws }) {
     gameSessionId: null,
     clients: new Set([ws])
   };
-}
-
-function hasVisibleLiveClient(room, playerId, currentWs = null) {
-  for (const client of room.clients) {
-    if (client === currentWs) continue;
-    if (client.roomCode !== room.code || client.playerId !== playerId) continue;
-    if (client.readyState === client.OPEN && client.visible !== false) return true;
-  }
-  return false;
-}
-
-function syncPlayerPresence(room, player) {
-  player.connected = hasVisibleLiveClient(room, player.id);
 }
 
 async function sendPushToUsers(userIds, payload) {
@@ -1249,281 +1243,42 @@ const server = http.createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ noServer: true });
 
-server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url || '/', 'http://localhost');
-  if (url.pathname !== '/rooms' || !hasValidSession(req)) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-    socket.destroy();
-    return;
-  }
-  const accountUser = currentAccountUser(req);
-  if (!accountUser) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-    socket.destroy();
-    return;
-  }
-  req.accountUser = accountUser;
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
-  });
+const handleProtocolV1Message = createProtocolV1MessageHandler({
+  allPlayersReadyForNextRound,
+  appendRoomChatMessage,
+  broadcastRoom,
+  cleanChatText,
+  createInitialRoomState,
+  createNextRoundRoomState,
+  createWaitingRoom,
+  makeRoomCodeForSocket,
+  normalizedReadyIds,
+  notifyAwayPlayersAfterMove,
+  now: Date.now,
+  persistRoomsSoon,
+  publicRoom,
+  randomUuid: crypto.randomUUID,
+  recordCompletedGame: (input) => accountStore.recordCompletedGame(input),
+  roomPlayer,
+  rooms,
+  sendJson,
+  setPlayerReadyForNextRound,
+  syncPlayerPresence,
+  validateMultiplayerStateUpdate,
+  reportCompletedGameError: (error) => console.error('Failed to record multiplayer game:', error)
 });
 
-wss.on('connection', (ws, req) => {
-  ws.accountUser = req.accountUser;
-  ws.visible = true;
-  ws.on('message', (raw) => {
-    let message;
-    try {
-      message = JSON.parse(String(raw));
-    } catch {
-      sendJson(ws, { type: 'error', message: 'Invalid message.' });
-      return;
-    }
-
-    if (message.type === 'create-room') {
-      const accountUser = ws.accountUser;
-      const code = makeRoomCodeForSocket(ws);
-      if (!code) return;
-      const playerId = crypto.randomUUID();
-      const room = createWaitingRoom({
-        code,
-        hostPlayer: { id: playerId, userId: accountUser.id, name: accountUser.displayName },
-        ws
-      });
-      rooms.set(code, room);
-      ws.roomCode = code;
-      ws.playerId = playerId;
-      persistRoomsSoon();
-      sendJson(ws, { type: 'joined', playerId, room: publicRoom(room) });
-      broadcastRoom(room);
-      return;
-    }
-
-    if (message.type === 'join-room') {
-      const code = String(message.code || '').trim().toUpperCase();
-      const room = rooms.get(code);
-      if (!room) {
-        sendJson(ws, { type: 'error', message: 'Room not found.' });
-        return;
-      }
-      const accountUser = ws.accountUser;
-      const requestedPlayerId = typeof message.playerId === 'string' ? message.playerId : '';
-      let player = requestedPlayerId ? room.players.find((item) => item.id === requestedPlayerId) : null;
-      if (player?.userId && player.userId !== accountUser.id) {
-        sendJson(ws, { type: 'error', message: 'That saved room seat belongs to another account.' });
-        return;
-      }
-      if (!player) player = room.players.find((item) => item.userId === accountUser.id) || null;
-      if (room.status !== 'waiting' && !player) {
-        sendJson(ws, { type: 'error', message: 'That game has already started.' });
-        return;
-      }
-      if (!player) {
-        if (room.players.length >= 8) {
-          sendJson(ws, { type: 'error', message: 'Room is full.' });
-          return;
-        }
-        player = { id: crypto.randomUUID(), userId: accountUser.id, name: accountUser.displayName, connected: true, host: false };
-        room.players.push(player);
-      }
-      player.userId = player.userId || accountUser.id;
-      player.name = accountUser.displayName;
-      room.readyForNextRoundPlayerIds = normalizedReadyIds(room);
-      ws.visible = true;
-      ws.roomCode = code;
-      ws.playerId = player.id;
-      room.clients.add(ws);
-      syncPlayerPresence(room, player);
-      room.updatedAt = Date.now();
-      persistRoomsSoon();
-      sendJson(ws, { type: 'joined', playerId: player.id, room: publicRoom(room) });
-      broadcastRoom(room);
-      return;
-    }
-
-    const context = roomPlayer(ws);
-    if (!context) {
-      sendJson(ws, { type: 'error', message: 'Join or create a room first.' });
-      return;
-    }
-    const { room, player } = context;
-
-    if (message.type === 'set-presence') {
-      ws.visible = message.visible !== false;
-      syncPlayerPresence(room, player);
-      room.updatedAt = Date.now();
-      persistRoomsSoon();
-      broadcastRoom(room);
-      return;
-    }
-
-    if (message.type === 'send-chat-message') {
-      const text = cleanChatText(message.text);
-      if (!text) {
-        sendJson(ws, { type: 'error', message: 'Enter a message before sending.' });
-        return;
-      }
-      appendRoomChatMessage(room, player, text);
-      room.updatedAt = Date.now();
-      persistRoomsSoon();
-      broadcastRoom(room);
-      return;
-    }
-
-    if (message.type === 'set-next-round-ready') {
-      if (room.state?.phase !== 'round-over' && room.state?.phase !== 'game-over') {
-        sendJson(ws, { type: 'error', message: 'The round is not ready for confirmation.' });
-        return;
-      }
-      setPlayerReadyForNextRound(room, player.id, message.ready !== false);
-      room.updatedAt = Date.now();
-      persistRoomsSoon();
-      broadcastRoom(room);
-      return;
-    }
-
-    if (message.type === 'start-game') {
-      if (!player.host) {
-        sendJson(ws, { type: 'error', message: 'Only the host can start the game.' });
-        return;
-      }
-      if (room.status === 'waiting') {
-        if (room.players.length < 2) {
-          sendJson(ws, { type: 'error', message: 'Need at least two players.' });
-          return;
-        }
-        room.state = createInitialRoomState(room.players);
-        room.readyForNextRoundPlayerIds = [];
-        room.status = 'playing';
-        room.completedGameId = null;
-        room.gameSessionId = crypto.randomUUID();
-        room.updatedAt = Date.now();
-        persistRoomsSoon();
-        broadcastRoom(room);
-        return;
-      }
-      if (room.state?.phase === 'round-over') {
-        if (!allPlayersReadyForNextRound(room)) {
-          sendJson(ws, { type: 'error', message: 'Everyone must confirm they are ready before the next round starts.' });
-          return;
-        }
-        room.state = createNextRoundRoomState(room.state);
-        room.readyForNextRoundPlayerIds = [];
-        room.status = 'playing';
-        room.updatedAt = Date.now();
-        persistRoomsSoon();
-        broadcastRoom(room);
-        return;
-      }
-      if (room.state?.phase === 'game-over' || room.status === 'finished') {
-        if (room.state && !allPlayersReadyForNextRound(room)) {
-          sendJson(ws, { type: 'error', message: 'Everyone must confirm they are ready before the game restarts.' });
-          return;
-        }
-        room.state = createInitialRoomState(room.players);
-        room.readyForNextRoundPlayerIds = [];
-        room.status = 'playing';
-        room.completedGameId = null;
-        room.gameSessionId = crypto.randomUUID();
-        room.updatedAt = Date.now();
-        persistRoomsSoon();
-        broadcastRoom(room);
-        return;
-      }
-      if (room.players.length < 2) {
-        sendJson(ws, { type: 'error', message: 'Need at least two players.' });
-        return;
-      }
-      sendJson(ws, { type: 'error', message: 'The current game is not ready for a new round.' });
-      return;
-    }
-
-    if (message.type === 'update-state') {
-      if (!message.state || room.status !== 'playing') {
-        sendJson(ws, { type: 'error', message: 'No active game.' });
-        return;
-      }
-      const activePlayerId = room.state?.players?.[room.state.currentPlayerIndex]?.id;
-      if (activePlayerId && activePlayerId !== player.id) {
-        sendJson(ws, { type: 'error', message: 'It is not your turn.' });
-        return;
-      }
-      const validation = validateMultiplayerStateUpdate(room.state, message.state, player.id);
-      if (!validation.ok) {
-        sendJson(ws, { type: 'error', message: validation.message || 'That move is not legal.' });
-        return;
-      }
-      if (message.state.phase === 'game-over' && !room.completedGameId) {
-        try {
-          const playerAccounts = Object.fromEntries(room.players.map((roomPlayer) => [roomPlayer.id, roomPlayer.userId || null]));
-          const game = accountStore.recordCompletedGame({
-            mode: 'multi',
-            state: message.state,
-            roomCode: room.code,
-            createdByUserId: player.userId || null,
-            playerAccounts,
-            sourceKey: `multi:${room.gameSessionId || room.code}`
-          });
-          room.completedGameId = game.id;
-        } catch (error) {
-          console.error('Failed to record multiplayer game:', error);
-          sendJson(ws, { type: 'error', message: 'Could not save the completed game history.' });
-          return;
-        }
-      }
-      room.state = message.state;
-      room.readyForNextRoundPlayerIds =
-        message.state.phase === 'round-over' || message.state.phase === 'game-over' ? [] : normalizedReadyIds(room);
-      room.status = message.state.phase === 'game-over' ? 'finished' : 'playing';
-      room.updatedAt = Date.now();
-      persistRoomsSoon();
-      broadcastRoom(room);
-      notifyAwayPlayersAfterMove(room, player, message.state);
-      return;
-    }
-
-    if (message.type === 'reset-room') {
-      if (!player.host) {
-        sendJson(ws, { type: 'error', message: 'Only the host can reset the room.' });
-        return;
-      }
-      const oldRoom = room;
-      const newCode = makeRoomCodeForSocket(ws);
-      if (!newCode) return;
-      const newRoom = createWaitingRoom({ code: newCode, hostPlayer: player, ws });
-      for (const client of oldRoom.clients) {
-        if (client === ws) continue;
-        sendJson(client, {
-          type: 'room-reset',
-          message: 'The host reset this room. Ask for the new room link to rejoin.'
-        });
-        client.roomCode = null;
-        client.playerId = null;
-      }
-      rooms.delete(oldRoom.code);
-      rooms.set(newCode, newRoom);
-      ws.roomCode = newCode;
-      ws.playerId = player.id;
-      persistRoomsSoon();
-      sendJson(ws, { type: 'joined', playerId: player.id, room: publicRoom(newRoom) });
-      return;
-    }
-  });
-
-  ws.on('close', () => {
-    if (shuttingDown) return;
-    const context = roomPlayer(ws);
-    if (!context) return;
-    const { room, player } = context;
-    room.clients.delete(ws);
-    if (!hasVisibleLiveClient(room, player.id, ws)) {
-      player.connected = false;
-    }
-    room.updatedAt = Date.now();
-    persistRoomsSoon();
-    broadcastRoom(room);
-  });
+registerRealtimeServer({
+  server,
+  webSocketServer: wss,
+  hasValidSession,
+  currentAccountUser,
+  roomPlayer,
+  persistRoomsSoon,
+  broadcastRoom,
+  now: Date.now,
+  isShuttingDown: () => shuttingDown,
+  onProtocolV1Message: handleProtocolV1Message
 });
 
 setInterval(() => {

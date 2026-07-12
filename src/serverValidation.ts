@@ -7,6 +7,7 @@ import {
   replaceCard,
   revealOpeningCard
 } from './game.js';
+import { systemRandom, type RandomSource } from './runtime.js';
 import type { Card, GameState, Player, RoomPlayer } from './types';
 
 type RoomPlayerSeed = Pick<RoomPlayer, 'id' | 'name'>;
@@ -52,18 +53,18 @@ function addCandidate(candidates: GameState[], currentState: GameState, nextStat
   if (!candidates.some((candidate) => deepEqual(candidate, changed))) candidates.push(changed);
 }
 
-export function createInitialRoomState(players: RoomPlayerSeed[]): GameState {
-  return createMultiplayerGame(players.map((player) => ({ id: player.id, name: player.name })));
+export function createInitialRoomState(players: RoomPlayerSeed[], random: RandomSource = systemRandom): GameState {
+  return createMultiplayerGame(players.map((player) => ({ id: player.id, name: player.name })), 1, null, random);
 }
 
-export function createNextRoundRoomState(state: GameState): GameState {
+export function createNextRoundRoomState(state: GameState, random: RandomSource = systemRandom): GameState {
   const players: RoundPlayerSeed[] = state.players.map((player) => ({
     id: player.id,
     name: player.name,
     totalScore: player.totalScore
   }));
   return {
-    ...createMultiplayerGame(players, state.round + 1, state.nextStarterId),
+    ...createMultiplayerGame(players, state.round + 1, state.nextStarterId, random),
     roundHistory: state.roundHistory ?? []
   };
 }

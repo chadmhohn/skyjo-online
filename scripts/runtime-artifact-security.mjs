@@ -54,6 +54,8 @@ export const REQUIRED_ARCHIVE_FILES = Object.freeze([
   'dist/index.html',
   'server-dist/game.js',
   'server-dist/runtime.js',
+  'server-dist/serverProtocolV1.js',
+  'server-dist/serverRealtime.js',
   'server-dist/serverValidation.js',
   'server-dist/types.js',
   RUNTIME_SBOM_NAME,

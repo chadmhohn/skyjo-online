@@ -324,6 +324,8 @@ describe('runtime artifact safety contract', () => {
   test('validates the complete allowlisted runtime and byte-identical release identities', () => {
     const result = validateRuntimeEntries(fixtureEntries(), releaseSha);
     expect(result.releaseIdentity.releaseSha).toBe(releaseSha);
+    expect(result.files.has('server-dist/serverProtocolV1.js')).toBe(true);
+    expect(result.files.has('server-dist/serverRealtime.js')).toBe(true);
     expect(result.files.has('src/game.ts')).toBe(false);
   });
 
@@ -440,6 +442,12 @@ describe('runtime artifact safety contract', () => {
     disallowed.push({ ...disallowed[0], rawPath: 'src/secret.ts' });
     expect(() => validateRuntimeEntries(disallowed, releaseSha)).toThrow('not allowlisted');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server.mjs'), releaseSha)).toThrow('missing required');
+    expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverRealtime.js'), releaseSha)).toThrow(
+      'missing required'
+    );
+    expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverProtocolV1.js'), releaseSha)).toThrow(
+      'missing required'
+    );
     const unequalIdentity = replaceFile(fixtureEntries(), 'dist/release.json', Buffer.from('{}'));
     expect(() => validateRuntimeEntries(unequalIdentity, releaseSha)).toThrow('byte-identical');
     const badChecksum = replaceFile(fixtureEntries(), 'release.json.sha256', Buffer.from(`${'0'.repeat(64)}  release.json\n`));
