@@ -319,6 +319,27 @@ async function readAdmissionMarker(stageDirectory, runId, contract) {
   }
 }
 
+async function createAdmissionMarker(stageDirectory, runId) {
+  const markerPath = resolveWithin(stageDirectory, ADMISSION_MARKER);
+  const marker = await fsp.open(
+    markerPath,
+    fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0),
+    0o400
+  );
+  try {
+    await marker.writeFile(`${runId}\n`, 'utf8');
+    await marker.sync();
+  } finally {
+    await marker.close();
+  }
+  await fsyncDirectory(stageDirectory);
+}
+
+function throwCleanupFailures(failures, message) {
+  if (failures.length === 1) throw failures[0];
+  throw new AggregateError(failures, message, { cause: failures[0] });
+}
+
 async function removeEmptyCreatedRun(stageRoot, stageDirectory, options) {
   const assertExpectedRun = async () => {
     if (!options.expectedIdentity) return;
@@ -328,21 +349,69 @@ async function removeEmptyCreatedRun(stageRoot, stageDirectory, options) {
     }
   };
   await assertExpectedRun();
-  const entries = await fsp.readdir(stageDirectory);
-  if (entries.length > 1 || (entries.length === 1 && entries[0] !== ADMISSION_MARKER)) {
-    throw new Error('Admitted run directory is nonempty and remains retryable.');
+  const releaseUploadLock = await acquireUploadLock(stageDirectory, options.cleanupUploadLockOptions);
+  const failures = [];
+  let markerRemoved = false;
+  try {
+    const assertOnlyCleanupEntries = async () => {
+      const entries = await fsp.readdir(stageDirectory);
+      const expected = entries.length === 1 && entries[0] === '.upload.lock' ||
+        entries.length === 2 && entries.includes('.upload.lock') && entries.includes(ADMISSION_MARKER);
+      if (!expected) throw new Error('Admitted run directory is nonempty and remains retryable.');
+      return entries;
+    };
+    await assertExpectedRun();
+    await assertOnlyCleanupEntries();
+    await options.afterCleanupDirectoryRead?.();
+    await assertExpectedRun();
+    const entries = await assertOnlyCleanupEntries();
+    if (entries.includes(ADMISSION_MARKER)) {
+      if (!await readAdmissionMarker(stageDirectory, options.runId, options.runContract)) {
+        throw commandError('Deployment run admission marker disappeared during cleanup.', 75);
+      }
+      await assertExpectedRun();
+      await fsp.unlink(resolveWithin(stageDirectory, ADMISSION_MARKER));
+      markerRemoved = true;
+      await fsyncDirectory(stageDirectory);
+    }
+  } catch (error) {
+    failures.push(error);
   }
-  await assertExpectedRun();
-  if (entries[0] === ADMISSION_MARKER) {
-    await fsp.unlink(resolveWithin(stageDirectory, ADMISSION_MARKER));
-    await fsyncDirectory(stageDirectory);
+  try { await releaseUploadLock(); }
+  catch (error) { failures.push(error); }
+
+  if (failures.length === 0) {
+    try {
+      await options.afterCleanupUploadLockRelease?.();
+      await assertExpectedRun();
+      if ((await fsp.readdir(stageDirectory)).length !== 0) {
+        throw new Error('Admitted run directory changed during cleanup and remains retryable.');
+      }
+      await fsp.rmdir(stageDirectory);
+      await fsyncStageParent(stageRoot, options);
+      return;
+    } catch (error) {
+      failures.push(error);
+    }
   }
-  await assertExpectedRun();
-  if ((await fsp.readdir(stageDirectory)).length !== 0) {
-    throw new Error('Admitted run directory changed during cleanup and remains retryable.');
+
+  if (markerRemoved) {
+    try {
+      if (await pathExists(stageDirectory)) {
+        await assertExpectedRun();
+        if (!await readAdmissionMarker(stageDirectory, options.runId, options.runContract)) {
+          await createAdmissionMarker(stageDirectory, options.runId);
+        }
+        await assertExpectedRun();
+        if (!await readAdmissionMarker(stageDirectory, options.runId, options.runContract)) {
+          throw commandError('Deployment run admission marker restoration was not durable.', 70);
+        }
+      }
+    } catch (error) {
+      failures.push(error);
+    }
   }
-  await fsp.rmdir(stageDirectory);
-  await fsyncStageParent(stageRoot, options);
+  throwCleanupFailures(failures, 'Admitted run cleanup failed and retryable admission recovery was required.');
 }
 
 async function reserveExistingRun(stageRoot, stageDirectory, runId, {
@@ -350,6 +419,7 @@ async function reserveExistingRun(stageRoot, stageDirectory, runId, {
   controllerRunContract,
   syncOptions,
   now,
+  afterExistingAdmissionRead,
   allowTopLevelCleanup = false
 }) {
   const existing = await assertSafeDirectory(stageDirectory, 'Deployment staging directory');
@@ -365,7 +435,10 @@ async function reserveExistingRun(stageRoot, stageDirectory, runId, {
       (process.platform === 'win32' || (markerStat.mode & 0o7777) === 0o400)) {
     return { stageDirectory, created: false, controllerOwned: true };
   }
-  if (await readAdmissionMarker(stageDirectory, runId, runContract)) return { stageDirectory, created: false };
+  if (await readAdmissionMarker(stageDirectory, runId, runContract)) {
+    await afterExistingAdmissionRead?.();
+    return { stageDirectory, created: false, runIdentity: stat };
+  }
   if (now - stat.mtimeMs >= UNADMITTED_STALE_MS) {
     const entries = await fsp.readdir(stageDirectory);
     if (entries.length === 0) {
@@ -409,6 +482,22 @@ async function runWithAdmissionLock(admission, action, message) {
   return result;
 }
 
+async function runWithUploadLock(releaseLock, action) {
+  let result;
+  let primaryError;
+  try { result = await action(); }
+  catch (error) { primaryError = error; }
+  let releaseError;
+  try { await releaseLock(); }
+  catch (error) { releaseError = error; }
+  if (primaryError && releaseError) {
+    throw new AggregateError([primaryError, releaseError], 'Upload operation and per-run lock release both failed.', { cause: primaryError });
+  }
+  if (primaryError) throw primaryError;
+  if (releaseError) throw releaseError;
+  return result;
+}
+
 async function reserveRunDirectory(stageRoot, runId, {
   stageRootContract,
   admissionStageRootContract,
@@ -420,11 +509,15 @@ async function reserveRunDirectory(stageRoot, runId, {
   stageRootFsync = fsyncDirectory,
   now = Date.now(),
   admissionLockOptions = {},
-  afterAdmissionMkdir
+  afterAdmissionMkdir,
+  afterCleanupDirectoryRead,
+  afterCleanupUploadLockRelease,
+  afterExistingAdmissionRead,
+  cleanupUploadLockOptions
 }) {
   const stageDirectory = resolveWithin(stageRoot, runId);
   const syncOptions = { contract: stageRootContract, syncDirectory: stageRootFsync };
-  const existingOptions = { runContract, controllerRunContract, syncOptions, now };
+  const existingOptions = { runContract, controllerRunContract, syncOptions, now, afterExistingAdmissionRead };
   if (await pathExists(stageDirectory)) {
     try {
       return await reserveExistingRun(stageRoot, stageDirectory, runId, existingOptions);
@@ -511,7 +604,11 @@ async function reserveRunDirectory(stageRoot, runId, {
             await removeEmptyCreatedRun(stageRoot, stageDirectory, {
               ...syncOptions,
               expectedIdentity: createdRunIdentity,
-              runContract
+              runId,
+              runContract,
+              afterCleanupDirectoryRead,
+              afterCleanupUploadLockRelease,
+              cleanupUploadLockOptions
             });
           } catch (cleanupError) {
             throw new AggregateError([error, cleanupError], 'Run admission failed and its directory could not be removed safely.', { cause: error });
@@ -543,6 +640,10 @@ export async function performUpload({
   now = Date.now(),
   admissionLockOptions = {},
   afterAdmissionMkdir,
+  afterCleanupDirectoryRead,
+  afterCleanupUploadLockRelease,
+  afterExistingAdmissionRead,
+  cleanupUploadLockOptions,
   uploadLockOptions = {},
   controllerRunContract = { uid: 0, gid: 0, modes: [0o700, 0o711] },
   acceptControllerOwnedRun = enforceStageRootContract
@@ -585,7 +686,11 @@ export async function performUpload({
     stageRootFsync,
     now,
     admissionLockOptions,
-    afterAdmissionMkdir
+    afterAdmissionMkdir,
+    afterCleanupDirectoryRead,
+    afterCleanupUploadLockRelease,
+    afterExistingAdmissionRead,
+    cleanupUploadLockOptions
   });
   if (controllerOwned) {
     const received = await receiveExactly(input, bytes, null);
@@ -597,8 +702,23 @@ export async function performUpload({
     };
   }
   try {
-    const releaseLock = await acquireUploadLock(stageDirectory, uploadLockOptions);
+    let releaseLock;
     try {
+      releaseLock = await acquireUploadLock(stageDirectory, uploadLockOptions);
+    } catch (error) {
+      if (!created && error?.code === 'ENOENT') {
+        throw commandError('Deployment run disappeared before upload locking; retry admission.', 75);
+      }
+      throw error;
+    }
+    return await runWithUploadLock(releaseLock, async () => {
+      const currentRun = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+      if (!runIdentity || !sameFilesystemIdentity(runIdentity, currentRun)) {
+        throw commandError('Deployment run identity changed before upload publication.', 70);
+      }
+      if (!await readAdmissionMarker(stageDirectory, runId, runContract)) {
+        throw commandError('Deployment run admission changed before upload publication.', 75);
+      }
       await cleanupAbandonedPartials(stageDirectory);
       await assertRunArchiveBinding(stageDirectory, releaseSha);
       const archivePath = resolveWithin(stageDirectory, `skyjo-runtime-${releaseSha}.tar.gz`);
@@ -628,9 +748,7 @@ export async function performUpload({
         await fsyncDirectory(stageDirectory).catch(() => {});
         throw error;
       }
-    } finally {
-      await releaseLock();
-    }
+    });
   } catch (error) {
     if (created) {
       try {
@@ -645,7 +763,11 @@ export async function performUpload({
           contract: stageRootContract,
           syncDirectory: stageRootFsync,
           expectedIdentity: runIdentity,
-          runContract
+          runId,
+          runContract,
+          afterCleanupDirectoryRead,
+          afterCleanupUploadLockRelease,
+          cleanupUploadLockOptions
         }), 'Upload cleanup and admission-lock release both failed.');
       } catch (cleanupError) {
         throw new AggregateError([error, cleanupError], 'Upload failed and its admitted run directory could not be removed.', { cause: error });
