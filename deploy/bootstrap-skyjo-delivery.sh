@@ -28,6 +28,7 @@ bootstrap-safety-lib.sh
 bootstrap-generation-guard-lib.sh
 activation-transaction-lib.sh
 activation-unit-state-lib.sh
+admission-lock.mjs
 adoption-state-lib.sh
 legacy-proof-environment-lib.sh
 legacy-proof-unit-cleanup-lib.sh
@@ -288,6 +289,54 @@ prepare_identities() {
     die 'Runtime identities must have distinct primary group IDs.'
 }
 
+validate_admission_lock_parent() {
+  for directory in / /var /var/lib /var/lib/skyjo-deploy; do
+    [ -d "$directory" ] && [ ! -L "$directory" ] || die "Deployment admission lock trust path is unsafe: $directory"
+    [ "$(/usr/bin/stat -c %u:%g:%a -- "$directory")" = 0:0:755 ] || \
+      die "Deployment admission lock trust path contract is invalid: $directory"
+  done
+}
+
+validate_admission_lock() {
+  lock=/var/lib/skyjo-deploy/.admission.lock
+  validate_admission_lock_parent
+  [ -f "$lock" ] && [ ! -L "$lock" ] || die 'Deployment admission lock is not a regular file.'
+  deploy_gid=$(/usr/bin/id -g skyjo-deploy)
+  [ "$(/usr/bin/stat -c %u:%g:%a:%h:%s -- "$lock")" = "0:$deploy_gid:640:1:0" ] || \
+    die 'Deployment admission lock does not match its immutable file contract.'
+}
+
+ensure_admission_lock() {
+  lock=/var/lib/skyjo-deploy/.admission.lock
+  validate_admission_lock_parent
+  if [ -e "$lock" ] || [ -L "$lock" ]; then
+    [ -f "$lock" ] && [ ! -L "$lock" ] || die 'Existing deployment admission lock is unsafe.'
+    deploy_gid=$(/usr/bin/id -g skyjo-deploy)
+    lock_state=$(/usr/bin/stat -c %u:%g:%a:%h:%s -- "$lock")
+    case "$lock_state" in
+      "0:$deploy_gid:640:1:0") ;;
+      0:0:640:1:0) /usr/bin/chown root:skyjo-deploy "$lock" ;;
+      *) die 'Existing deployment admission lock is neither complete nor a resumable root-owned intermediate.' ;;
+    esac
+  else
+    (umask 0137; set -C; : > "$lock") || die 'Unable to create the deployment admission lock.'
+    [ "$(/usr/bin/stat -c %u:%g:%a:%h:%s -- "$lock")" = 0:0:640:1:0 ] || \
+      die 'New deployment admission lock did not match its root-owned intermediate contract.'
+    /usr/bin/chown root:skyjo-deploy "$lock"
+  fi
+  /usr/bin/chmod 0640 "$lock"
+  /usr/bin/sync -f "$lock"
+  /usr/bin/sync -f /var/lib/skyjo-deploy
+  validate_admission_lock
+}
+
+acquire_admission_lock() {
+  validate_admission_lock
+  exec 7</var/lib/skyjo-deploy/.admission.lock
+  /usr/bin/flock --exclusive --nonblock --conflict-exit-code 75 7 || die 'Another deployment admission is active.'
+  validate_admission_lock
+}
+
 validate_stage_root() {
   filesystem=$(/usr/bin/findmnt --noheadings --output FSTYPE --target /var/tmp/skyjo-deploy | /usr/bin/tr -d '[:space:]')
   [ "$filesystem" = ext4 ] || die 'Deployment staging requires ext4 link-count admission semantics.'
@@ -351,6 +400,8 @@ prepare() {
   [ "$public_key" = "$SCRIPT_DIR/inputs/transport.pub" ] && \
     [ "$canary_authorization_key" = "$SCRIPT_DIR/inputs/canary.pem" ] && \
     [ "$production_authorization_key" = "$SCRIPT_DIR/inputs/production.pem" ] || die 'Prepare key inputs must be the installed immutable snapshots.'
+  exec 8>/run/lock/skyjo-release-controller.lock
+  /usr/bin/flock --exclusive --nonblock --conflict-exit-code 73 8 || die 'Another Skyjo release or adoption transaction holds the host lock.'
   key=$(skyjo_canonical_transport_public_key "$public_key" "$TRANSPORT_KEY_FINGERPRINT") || die 'Deploy transport public-key validation failed.'
 
   install_node
@@ -384,11 +435,13 @@ prepare() {
     skyjo_secure_directory /var/lib/skyjo-online root root 0700
   fi
   skyjo_secure_directory /var/backups/skyjo-online root root 0700
+  skyjo_secure_directory /var/lib/skyjo-deploy root root 0755
+  ensure_admission_lock
+  acquire_admission_lock
   skyjo_secure_directory /var/tmp/skyjo-deploy root skyjo-deploy 1731 true
   validate_stage_root
   skyjo_secure_directory "$REPLAY_ROOT" root root 0700
   skyjo_secure_directory "$AUTH_ROOT" root root 0700
-  skyjo_secure_directory /var/lib/skyjo-deploy root root 0755
   skyjo_secure_directory /var/lib/skyjo-deploy/.ssh root root 0755
 
   skyjo_atomic_install "$canary_authorization_key" "$AUTH_ROOT/canary-2026-07.pem" root root 0600
@@ -396,7 +449,7 @@ prepare() {
   /usr/bin/cmp -s "$canary_authorization_key" "$AUTH_ROOT/canary-2026-07.pem" || die 'Installed canary key differs from its immutable snapshot.'
   /usr/bin/cmp -s "$production_authorization_key" "$AUTH_ROOT/production-2026-07.pem" || die 'Installed production key differs from its immutable snapshot.'
 
-  for file in release-controller.mjs release-controller-lib.mjs state-snapshot-lib.mjs deployment-authorization-lib.mjs skyjo-deploy-dispatch.mjs validate-deployment-public-keys.mjs legacy-runtime-proof.mjs node-runtime-guard-lib.sh bootstrap-generation-guard-lib.sh; do
+  for file in admission-lock.mjs release-controller.mjs release-controller-lib.mjs state-snapshot-lib.mjs deployment-authorization-lib.mjs skyjo-deploy-dispatch.mjs validate-deployment-public-keys.mjs legacy-runtime-proof.mjs node-runtime-guard-lib.sh bootstrap-generation-guard-lib.sh; do
     install_asset "$SCRIPT_DIR/$file" "$LIB_ROOT/$file" 0555
   done
   for file in skyjo-canary-launch skyjo-smoke-launch skyjo-state-proof-launch skyjo-controller-launch; do
@@ -439,6 +492,7 @@ prepare() {
   manifest_source=$(/usr/bin/mktemp "$SHARE_ROOT/.delivery-assets.XXXXXX")
   /usr/bin/rm -f "$manifest_source"
   for asset in \
+    "$LIB_ROOT/admission-lock.mjs" \
     "$LIB_ROOT/release-controller.mjs" \
     "$LIB_ROOT/release-controller-lib.mjs" \
     "$LIB_ROOT/state-snapshot-lib.mjs" \
@@ -499,6 +553,7 @@ adopt_legacy() {
   valid_sha "$sha" || die 'Usage: skyjo-delivery-bootstrap adopt-legacy <40-char-current-sha>'
   exec 8>/run/lock/skyjo-release-controller.lock
   /usr/bin/flock --exclusive --nonblock --conflict-exit-code 73 8 || die 'Another Skyjo release or adoption transaction holds the host lock.'
+  acquire_admission_lock
   target="$APP_ROOT/releases/$sha"
   skyjo_secure_directory /var/backups/skyjo-online/bootstrap root root 0700
   live_unit=/etc/systemd/system/skyjo-online.service
@@ -565,6 +620,7 @@ run_legacy_proof() {
 activate_unit() {
   [ "${SYSTEMD_EXEC_PID:-}" = "$$" ] || \
     die 'activate-production-unit must run as the direct main process of the documented systemd transient service.'
+  acquire_admission_lock
   [ -L "$APP_ROOT/current" ] || die 'A validated current rollback anchor is required before activating the hardened unit.'
   target=$(/usr/bin/readlink -f "$APP_ROOT/current")
   case "$target" in "$APP_ROOT/releases/"*) ;; *) die 'Current link is outside the release store.';; esac

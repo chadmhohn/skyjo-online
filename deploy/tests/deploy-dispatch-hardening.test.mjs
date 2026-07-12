@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
+  ADMISSION_LOCK_NAME,
   ADMISSION_MARKER,
+  acquireAdmissionLock,
   acquireUploadLock,
+  admissionLockLocationForStage,
   admittedDirectoryCountFromLinkCount,
+  DEFAULT_STAGE_ROOT,
   MAX_PARTIALS_CLEANED_PER_UPLOAD,
   MAX_STAGED_RUNS,
   parseCommand,
@@ -17,10 +24,23 @@ import {
 
 const releaseSha = 'a'.repeat(40);
 const runId = '123-1-canary';
+const admissionChild = fileURLToPath(new URL('./fixtures/admission-upload-child.mjs', import.meta.url));
+
+async function prepareStageRoot(root) {
+  if (process.platform !== 'win32') await fs.chmod(root, 0o700);
+  const admissionLock = path.join(root, ADMISSION_LOCK_NAME);
+  await fs.writeFile(admissionLock, '', { mode: 0o640, flag: 'wx' });
+  if (process.platform !== 'win32') {
+    await fs.chmod(admissionLock, 0o640);
+    assert.equal((await fs.lstat(admissionLock)).mode & 0o777, 0o640);
+  }
+  return root;
+}
 
 async function fixture(callback) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-dispatch-'));
   try {
+    await prepareStageRoot(root);
     await callback(root);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -38,11 +58,64 @@ async function admitRun(root, admittedRunId) {
   return stage;
 }
 
+async function stagedRunCount(root) {
+  return (await fs.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).length;
+}
+
+async function acquireTestAdmission(root, options = {}) {
+  const [rootStat, lockStat] = await Promise.all([
+    fs.lstat(root),
+    fs.lstat(path.join(root, ADMISSION_LOCK_NAME))
+  ]);
+  return acquireAdmissionLock(root, {
+    stageRootContract: { uid: rootStat.uid, gid: rootStat.gid, mode: rootStat.mode & 0o7777 },
+    lockPath: path.join(root, ADMISSION_LOCK_NAME),
+    lockParentContract: { uid: rootStat.uid, gid: rootStat.gid, mode: rootStat.mode & 0o7777 },
+    lockContract: { uid: lockStat.uid, gid: lockStat.gid, mode: 0o640 },
+    ...options
+  });
+}
+
+function spawnAdmissionChild(args) {
+  const child = spawn(process.execPath, [admissionChild, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const done = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+  return { child, done };
+}
+
 test('forced-command grammar remains strict', () => {
   assert.deepEqual(parseCommand(`upload ${runId} ${releaseSha} 4`), { command: 'upload', runId, releaseSha, bytes: 4 });
   assert.throws(() => parseCommand(`upload ${runId} ${releaseSha} 0`), /rejected/);
   assert.throws(() => parseCommand(`upload ${runId} ${releaseSha} 4 extra`), /rejected/);
   assert.throws(() => parseCommand(`upload ${runId} ${releaseSha} 4\nrollback`), /rejected/);
+});
+
+test('only the exact Linux production stage selects the external admission lock', () => {
+  assert.deepEqual(admissionLockLocationForStage(DEFAULT_STAGE_ROOT, 'linux'), {
+    production: true,
+    lockPath: '/var/lib/skyjo-deploy/.admission.lock'
+  });
+  assert.deepEqual(admissionLockLocationForStage(`${DEFAULT_STAGE_ROOT}${path.sep}.`, 'linux'), {
+    production: true,
+    lockPath: '/var/lib/skyjo-deploy/.admission.lock'
+  });
+  const custom = path.resolve(os.tmpdir(), 'isolated-stage');
+  assert.deepEqual(admissionLockLocationForStage(custom, 'linux'), {
+    production: false,
+    lockPath: path.join(custom, ADMISSION_LOCK_NAME)
+  });
+  assert.deepEqual(admissionLockLocationForStage(DEFAULT_STAGE_ROOT, 'win32'), {
+    production: false,
+    lockPath: path.join(DEFAULT_STAGE_ROOT, ADMISSION_LOCK_NAME)
+  });
 });
 
 test('privileged commands require the exact nine-token signed authorization grammar', () => {
@@ -327,7 +400,7 @@ test('global staging quota bounds orphaned archives while existing runs remain r
   const existingRun = '1-1-canary';
   const result = await performUpload({ stageRoot: root, runId: existingRun, releaseSha, bytes: 1, input: input('x') });
   assert.equal(await fs.readFile(result.archivePath, 'utf8'), 'x');
-  assert.equal((await fs.readdir(root)).length, MAX_STAGED_RUNS);
+  assert.equal(await stagedRunCount(root), MAX_STAGED_RUNS);
 }));
 
 test('an unadmitted same-run contender cannot bypass a full quota', { skip: process.platform === 'win32' }, async () => fixture(async (root) => {
@@ -338,29 +411,127 @@ test('an unadmitted same-run contender cannot bypass a full quota', { skip: proc
     performUpload({ stageRoot: root, runId: contested, releaseSha, bytes: 1, input: input('b') })
   ]);
   assert.equal(attempts.every((attempt) => attempt.status === 'rejected'), true);
-  assert.equal((await fs.readdir(root)).length, MAX_STAGED_RUNS);
+  assert.equal(await stagedRunCount(root), MAX_STAGED_RUNS);
   await assert.rejects(fs.lstat(path.join(root, contested)), (error) => error.code === 'ENOENT');
 }));
 
-test('64 concurrent distinct admissions converge to at most 32 durable run roots', { skip: process.platform === 'win32' }, async () => fixture(async (root) => {
-  const attempts = await Promise.allSettled(Array.from({ length: 64 }, (_, index) => performUpload({
-    stageRoot: root,
-    runId: `${1000 + index}-1-canary`,
-    releaseSha,
-    bytes: 1,
-    input: input('x')
-  })));
-  const admitted = attempts.filter((attempt) => attempt.status === 'fulfilled');
-  assert.ok(admitted.length > 0 && admitted.length <= MAX_STAGED_RUNS);
-  assert.ok((await fs.readdir(root)).length <= MAX_STAGED_RUNS);
-  const retry = await performUpload({
-    stageRoot: root,
-    runId: path.basename(path.dirname(admitted[0].value.archivePath)),
-    releaseSha,
-    bytes: 1,
-    input: input('x')
-  });
-  assert.equal(retry.idempotent, true);
+test('thirty 64-way bursts always retain at least one and at most 32 durable admissions', {
+  skip: process.platform === 'win32',
+  timeout: 120_000
+}, async () => fixture(async (root) => {
+  for (let round = 0; round < 30; round += 1) {
+    const roundRoot = path.join(root, `round-${round}`);
+    await fs.mkdir(roundRoot, { mode: 0o700 });
+    await prepareStageRoot(roundRoot);
+    const attempts = await Promise.allSettled(Array.from({ length: 64 }, (_, index) => performUpload({
+      stageRoot: roundRoot,
+      runId: `${1000 + index}-1-canary`,
+      releaseSha,
+      bytes: 1,
+      input: input('x')
+    })));
+    const admitted = attempts.filter((attempt) => attempt.status === 'fulfilled');
+    assert.ok(admitted.length > 0 && admitted.length <= MAX_STAGED_RUNS, `round ${round} admitted ${admitted.length}`);
+    assert.ok(await stagedRunCount(roundRoot) <= MAX_STAGED_RUNS);
+    const retry = await performUpload({
+      stageRoot: roundRoot,
+      runId: path.basename(path.dirname(admitted[0].value.archivePath)),
+      releaseSha,
+      bytes: 1,
+      input: input('x')
+    });
+    assert.equal(retry.idempotent, true);
+  }
+}));
+
+test('a 64-process barrier schedule that previously produced zero winners now admits exactly one', {
+  skip: process.platform !== 'linux',
+  timeout: 120_000
+}, async () => fixture(async (root) => {
+  const gateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-admission-barrier-'));
+  const releasePath = path.join(gateRoot, 'release');
+  const settled = new Set();
+  let workers = [];
+  try {
+    workers = Array.from({ length: 64 }, (_, index) => {
+      const readyPath = path.join(gateRoot, `${index}.ready`);
+      const worker = spawnAdmissionChild([root, `${2000 + index}-1-canary`, releaseSha, readyPath, releasePath]);
+      worker.result = worker.done.finally(() => { settled.add(index); });
+      return worker;
+    });
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const ready = new Set((await fs.readdir(gateRoot)).filter((name) => name.endsWith('.ready')).map((name) => Number(name.split('.')[0])));
+      const accounted = new Set([...ready, ...settled]);
+      if (accounted.size === workers.length) break;
+      await delay(10);
+    }
+    const finalReady = new Set((await fs.readdir(gateRoot)).filter((name) => name.endsWith('.ready')).map((name) => Number(name.split('.')[0])));
+    assert.equal(new Set([...finalReady, ...settled]).size, 64, 'all children must reach the barrier or fail nonblocking before release');
+    await fs.writeFile(releasePath, 'release\n', { flag: 'wx', mode: 0o600 });
+    const results = await Promise.all(workers.map((worker) => worker.result));
+    assert.equal(results.filter((result) => result.code === 0).length, 1);
+    assert.equal(results.every((result) => result.code === 0 || result.code === 75), true);
+    for (const result of results.filter((entry) => entry.code === 75)) {
+      assert.deepEqual(JSON.parse(result.stderr), {
+        ok: false,
+        message: 'Another deployment admission is already active.',
+        exitCode: 75
+      });
+    }
+    assert.equal(await stagedRunCount(root), 1);
+  } finally {
+    await fs.writeFile(releasePath, 'release\n', { flag: 'a' }).catch(() => {});
+    await Promise.race([
+      Promise.allSettled(workers.map((worker) => worker.result)),
+      delay(5_000)
+    ]);
+    for (const [index, worker] of workers.entries()) {
+      if (!settled.has(index)) worker.child.kill('SIGKILL');
+    }
+    await Promise.race([
+      Promise.allSettled(workers.map((worker) => worker.done)),
+      delay(5_000)
+    ]);
+    await fs.rm(gateRoot, { recursive: true, force: true });
+  }
+}));
+
+test('SIGKILL releases the inherited admission flock without stale-owner recovery', {
+  skip: process.platform !== 'linux',
+  timeout: 60_000
+}, async () => fixture(async (root) => {
+  const gateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-admission-crash-'));
+  let holder;
+  let holderSettled = false;
+  try {
+    const readyPath = path.join(gateRoot, 'holder.ready');
+    const releasePath = path.join(gateRoot, 'never-release');
+    holder = spawnAdmissionChild([root, '3000-1-canary', releaseSha, readyPath, releasePath]);
+    holder.done.finally(() => { holderSettled = true; });
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      try { await fs.access(readyPath); break; }
+      catch (error) { if (error?.code !== 'ENOENT') throw error; }
+      await delay(10);
+    }
+    await fs.access(readyPath);
+    holder.child.kill('SIGKILL');
+    const killed = await holder.done;
+    assert.equal(killed.signal, 'SIGKILL');
+    const recovered = await performUpload({
+      stageRoot: root,
+      runId: '3001-1-canary',
+      releaseSha,
+      bytes: 1,
+      input: input('x')
+    });
+    assert.equal(await fs.readFile(recovered.archivePath, 'utf8'), 'x');
+  } finally {
+    if (holder && !holderSettled) holder.child.kill('SIGKILL');
+    if (holder) await Promise.race([holder.done.catch(() => {}), delay(5_000)]);
+    await fs.rm(gateRoot, { recursive: true, force: true });
+  }
 }));
 
 test('stale empty unadmitted runs are reclaimed but never treated as admitted', async () => fixture(async (root) => {
@@ -376,4 +547,49 @@ test('stale empty unadmitted runs are reclaimed but never treated as admitted', 
   await assert.rejects(fs.lstat(stale), (error) => error.code === 'ENOENT');
   const retry = await performUpload({ stageRoot: root, runId: staleRun, releaseSha, bytes: 1, input: input('x') });
   assert.equal(retry.idempotent, false);
+}));
+
+test('stale top-level cleanup never bypasses a busy admission lock', { skip: process.platform !== 'linux' }, async () => fixture(async (root) => {
+  const staleRun = '778-1-canary';
+  const stale = path.join(root, staleRun);
+  await fs.mkdir(stale, { mode: 0o700 });
+  const old = new Date(Date.now() - 16 * 60 * 1000);
+  await fs.utimes(stale, old, old);
+  const holder = await acquireTestAdmission(root);
+  await assert.rejects(
+    performUpload({ stageRoot: root, runId: staleRun, releaseSha, bytes: 1, input: input('x') }),
+    (error) => error.exitCode === 75 && /admission is already active/.test(error.message)
+  );
+  assert.equal((await fs.lstat(stale)).isDirectory(), true);
+  await holder.release();
+  await assert.rejects(
+    performUpload({ stageRoot: root, runId: staleRun, releaseSha, bytes: 1, input: input('x') }),
+    /admission is incomplete/i
+  );
+  await assert.rejects(fs.lstat(stale), (error) => error.code === 'ENOENT');
+}));
+
+test('post-upload failure leaves its admitted run retryable when cleanup cannot take the global lock', {
+  skip: process.platform !== 'linux'
+}, async () => fixture(async (root) => {
+  let inputStarted;
+  let releaseInput;
+  const started = new Promise((resolve) => { inputStarted = resolve; });
+  const gate = new Promise((resolve) => { releaseInput = resolve; });
+  async function* shortInput() {
+    inputStarted();
+    await gate;
+    yield Buffer.from('x');
+  }
+  const failed = performUpload({ stageRoot: root, runId: '779-1-canary', releaseSha, bytes: 2, input: shortInput() });
+  await started;
+  const holder = await acquireTestAdmission(root);
+  releaseInput();
+  await assert.rejects(failed, (error) => error instanceof AggregateError &&
+    /did not match declared size/.test(error.errors[0].message) && error.errors[1].exitCode === 75);
+  const stage = path.join(root, '779-1-canary');
+  assert.equal(await fs.readFile(path.join(stage, ADMISSION_MARKER), 'utf8'), '779-1-canary\n');
+  await holder.release();
+  const retry = await performUpload({ stageRoot: root, runId: '779-1-canary', releaseSha, bytes: 1, input: input('x') });
+  assert.equal(await fs.readFile(retry.archivePath, 'utf8'), 'x');
 }));

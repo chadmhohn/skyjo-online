@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { parseArguments } from '../release-controller.mjs';
+import { parseArguments, validateStageRootEntries } from '../release-controller.mjs';
 import {
   authorizeRollback,
   executeActivationTransaction,
@@ -37,6 +37,21 @@ function trustedTestOperations() {
   if (process.platform === 'win32') return {};
   return { trustedUid: process.getuid(), trustedGid: process.getgid() };
 }
+
+function stageEntry(name, type = 'directory') {
+  return {
+    name,
+    isDirectory: () => type === 'directory',
+    isSymbolicLink: () => type === 'symlink'
+  };
+}
+
+test('external admission lock preserves the legacy directories-only stage-root contract', () => {
+  const runs = [stageEntry('1-1-canary'), stageEntry('2-1-production')];
+  assert.equal(validateStageRootEntries({ nlink: 4 }, runs), 2);
+  assert.throws(() => validateStageRootEntries({ nlink: 4 }, [...runs, stageEntry('.admission.lock', 'file')]), /unexpected entry/);
+  assert.throws(() => validateStageRootEntries({ nlink: 5 }, runs), /link-count admission/);
+});
 
 test('deployment identifiers and command lanes are strict', () => {
   assert.equal(validateRunId('123-1-canary'), '123-1-canary');
@@ -160,7 +175,7 @@ test('public rollback authorization is exact and release retention keeps five in
 
 test('operational assets keep the safety contracts explicit', async () => {
   const deploy = path.resolve(import.meta.dirname, '..');
-  const [wrapper, bootstrap, bootstrapWrapper, bootstrapGuard, bootstrapSafety, nodeInstaller, nodeGuard, controllerLauncher, transportKey, service, canary, canarySmoke, productionSmoke, stateProof, legacyProof, stateProofLauncher, legacyProofScript, controller, sudoers] = await Promise.all([
+  const [wrapper, bootstrap, bootstrapWrapper, bootstrapGuard, bootstrapSafety, nodeInstaller, nodeGuard, controllerLauncher, transportKey, service, canary, canarySmoke, productionSmoke, stateProof, legacyProof, stateProofLauncher, legacyProofScript, controller, sudoers, admissionLock, remote] = await Promise.all([
     fs.readFile(path.join(deploy, 'skyjo-release-controller'), 'utf8'),
     fs.readFile(path.join(deploy, 'bootstrap-skyjo-delivery.sh'), 'utf8'),
     fs.readFile(path.join(deploy, 'skyjo-delivery-bootstrap'), 'utf8'),
@@ -179,7 +194,9 @@ test('operational assets keep the safety contracts explicit', async () => {
     fs.readFile(path.join(deploy, 'skyjo-state-proof-launch'), 'utf8'),
     fs.readFile(path.join(deploy, 'legacy-runtime-proof.mjs'), 'utf8'),
     fs.readFile(path.join(deploy, 'release-controller.mjs'), 'utf8'),
-    fs.readFile(path.join(deploy, 'skyjo-deploy.sudoers'), 'utf8')
+    fs.readFile(path.join(deploy, 'skyjo-deploy.sudoers'), 'utf8'),
+    fs.readFile(path.join(deploy, 'admission-lock.mjs'), 'utf8'),
+    fs.readFile(path.join(deploy, 'github-release-remote.sh'), 'utf8')
   ]);
   const legacyUnitCleanup = await fs.readFile(path.join(deploy, 'legacy-proof-unit-cleanup-lib.sh'), 'utf8');
   assert.match(wrapper, /flock --exclusive --nonblock --no-fork/);
@@ -220,12 +237,40 @@ test('operational assets keep the safety contracts explicit', async () => {
   assert.ok(controllerGuard > 0 && controllerExec > controllerGuard,
     'locked shell launcher must validate the pinned runtime before direct Node execution');
   assert.match(controllerLauncher, /sha256sum --check --strict "\$manifest"/);
+  assert.match(controllerLauncher, /\/usr\/local\/lib\/skyjo-online\/admission-lock\.mjs/);
   assert.match(bootstrap, /skyjo_canonical_transport_public_key "\$public_key" "\$TRANSPORT_KEY_FINGERPRINT"/);
   assert.match(transportKey, /LF or CRLF/);
   assert.match(bootstrap, /Legacy rollback snapshot contains a symbolic link/);
   assert.match(bootstrap, /skyjo_secure_directory \/var\/tmp\/skyjo-deploy root skyjo-deploy 1731 true/);
   assert.match(bootstrap, /findmnt --noheadings --output FSTYPE --target \/var\/tmp\/skyjo-deploy/);
+  assert.match(bootstrap, /lock=\/var\/lib\/skyjo-deploy\/\.admission\.lock/);
+  assert.doesNotMatch(bootstrap, /lock=\/var\/tmp\/skyjo-deploy\/\.admission\.lock/);
+  assert.match(bootstrap, /0:0:640:1:0\) \/usr\/bin\/chown root:skyjo-deploy "\$lock"/);
+  assert.match(bootstrap, /\/usr\/bin\/sync -f \/var\/lib\/skyjo-deploy/);
+  const prepareStart = bootstrap.indexOf('prepare()');
+  const prepareHostLock = bootstrap.indexOf('flock --exclusive --nonblock --conflict-exit-code 73 8', prepareStart);
+  const lockRootCreation = bootstrap.indexOf('skyjo_secure_directory /var/lib/skyjo-deploy root root 0755', prepareHostLock);
+  const admissionCreation = bootstrap.indexOf('ensure_admission_lock', lockRootCreation);
+  const admissionAcquisition = bootstrap.indexOf('acquire_admission_lock', admissionCreation);
+  const admissionAssetInstall = bootstrap.indexOf('for file in admission-lock.mjs', admissionAcquisition);
+  assert.ok(prepareHostLock > prepareStart && lockRootCreation > prepareHostLock && admissionCreation > lockRootCreation &&
+    admissionAcquisition > admissionCreation && admissionAssetInstall > admissionAcquisition,
+  'prepare must hold host then external admission lock before publishing new delivery assets');
+  for (const functionName of ['adopt_legacy()', 'activate_unit()']) {
+    const start = bootstrap.indexOf(functionName);
+    assert.ok(start > 0 && bootstrap.indexOf('acquire_admission_lock', start) > start, `${functionName} must acquire the external admission lock`);
+  }
   assert.match(bootstrap, /\.quota-admitted/);
+  assert.match(admissionLock, /ADMISSION_LOCK_PATH = '\/var\/lib\/skyjo-deploy\/\.admission\.lock'/);
+  assert.match(admissionLock, /O_RDONLY \| \(fs\.constants\.O_NOFOLLOW/);
+  assert.match(admissionLock, /stdio: \['ignore', 'ignore', 'ignore', handle\.fd\]/);
+  assert.match(admissionLock, /conflictExitCode/);
+  assert.match(controller, /conflictExitCode: 73/);
+  assert.match(controller, /isAdmissionLockConflictImpl\(error, 73\) \? 73/);
+  assert.doesNotMatch(controller, /error\?\.exitCode === 73 \? 73/);
+  assert.match(controller, /\/usr\/local\/lib\/skyjo-online\/admission-lock\.mjs/);
+  assert.match(remote, /controller_status != 255 && controller_status != 73/);
+  assert.doesNotMatch(remote, /controller_status != (?!255|73)\d+/);
   assert.match(bootstrap, /skyjo_secure_directory "\$AUTH_ROOT" root root 0700/);
   assert.match(bootstrap, /skyjo_atomic_install "\$canary_authorization_key" "\$AUTH_ROOT\/canary-2026-07\.pem"/);
   assert.match(bootstrap, /skyjo_atomic_install "\$production_authorization_key" "\$AUTH_ROOT\/production-2026-07\.pem"/);

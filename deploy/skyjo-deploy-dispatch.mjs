@@ -6,6 +6,13 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  ADMISSION_LOCK_NAME,
+  ADMISSION_LOCK_PATH,
+  acquireAdmissionLock,
+  combineAdmissionLockErrors,
+  sameFilesystemIdentity
+} from './admission-lock.mjs';
 import { parseSignedDeploymentCommand } from './deployment-authorization-lib.mjs';
 import {
   MAX_ARCHIVE_BYTES,
@@ -22,9 +29,19 @@ export const MAX_STAGED_RUNS = 32;
 export const ADMISSION_MARKER = '.quota-admitted';
 export const UNADMITTED_STALE_MS = 15 * 60 * 1000;
 
+export { ADMISSION_LOCK_NAME, acquireAdmissionLock };
+
 export function admittedDirectoryCountFromLinkCount(nlink) {
   if (!Number.isSafeInteger(nlink) || nlink < 2) throw commandError('Deployment staging root does not provide directory link-count admission.', 70);
   return nlink - 2;
+}
+
+export function admissionLockLocationForStage(stageRoot, platform = process.platform) {
+  const production = platform === 'linux' && path.resolve(stageRoot) === path.resolve(DEFAULT_STAGE_ROOT);
+  return {
+    production,
+    lockPath: production ? ADMISSION_LOCK_PATH : path.join(stageRoot, ADMISSION_LOCK_NAME)
+  };
 }
 
 function commandError(message = 'Deployment command rejected.', exitCode = 64) {
@@ -303,89 +320,214 @@ async function readAdmissionMarker(stageDirectory, runId, contract) {
 }
 
 async function removeEmptyCreatedRun(stageRoot, stageDirectory, options) {
+  const assertExpectedRun = async () => {
+    if (!options.expectedIdentity) return;
+    const current = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', options.runContract);
+    if (!sameFilesystemIdentity(options.expectedIdentity, current)) {
+      throw commandError('Deployment staging directory identity changed during cleanup.', 70);
+    }
+  };
+  await assertExpectedRun();
   const entries = await fsp.readdir(stageDirectory);
   if (entries.length > 1 || (entries.length === 1 && entries[0] !== ADMISSION_MARKER)) {
     throw new Error('Admitted run directory is nonempty and remains retryable.');
   }
-  if (entries[0] === ADMISSION_MARKER) await fsp.unlink(resolveWithin(stageDirectory, ADMISSION_MARKER));
+  await assertExpectedRun();
+  if (entries[0] === ADMISSION_MARKER) {
+    await fsp.unlink(resolveWithin(stageDirectory, ADMISSION_MARKER));
+    await fsyncDirectory(stageDirectory);
+  }
+  await assertExpectedRun();
+  if ((await fsp.readdir(stageDirectory)).length !== 0) {
+    throw new Error('Admitted run directory changed during cleanup and remains retryable.');
+  }
   await fsp.rmdir(stageDirectory);
   await fsyncStageParent(stageRoot, options);
 }
 
-async function reserveRunDirectory(stageRoot, runId, {
-  stageRootContract,
+async function reserveExistingRun(stageRoot, stageDirectory, runId, {
   runContract,
   controllerRunContract,
-  stageRootFsync = fsyncDirectory,
-  now = Date.now()
+  syncOptions,
+  now,
+  allowTopLevelCleanup = false
 }) {
-  const stageDirectory = resolveWithin(stageRoot, runId);
-  const created = await fsp.mkdir(stageDirectory, { mode: 0o700, recursive: false }).then(() => true).catch((error) => {
-    if (error.code === 'EEXIST') return false;
-    throw error;
-  });
-  const syncOptions = { contract: stageRootContract, syncDirectory: stageRootFsync };
-  if (!created) {
-    const existing = await assertSafeDirectory(stageDirectory, 'Deployment staging directory');
-    const existingMode = existing.mode & 0o7777;
-    if (controllerRunContract && existing.uid === controllerRunContract.uid && existing.gid === controllerRunContract.gid &&
-        (process.platform === 'win32' || controllerRunContract.modes.includes(existingMode))) {
-      return { stageDirectory, created: false, controllerOwned: true };
-    }
-    const stat = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
-    const markerStat = await fsp.lstat(resolveWithin(stageDirectory, ADMISSION_MARKER)).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
-    if (controllerRunContract && markerStat?.isFile() && !markerStat.isSymbolicLink() &&
-        markerStat.uid === controllerRunContract.uid && markerStat.gid === controllerRunContract.gid &&
-        (process.platform === 'win32' || (markerStat.mode & 0o7777) === 0o400)) {
-      return { stageDirectory, created: false, controllerOwned: true };
-    }
-    if (await readAdmissionMarker(stageDirectory, runId, runContract)) return { stageDirectory, created: false };
-    if (now - stat.mtimeMs >= UNADMITTED_STALE_MS) {
-      const entries = await fsp.readdir(stageDirectory);
-      if (entries.length === 0) {
-        await fsp.rmdir(stageDirectory);
-        await fsyncStageParent(stageRoot, syncOptions);
-      }
-    }
-    throw commandError('Deployment run admission is incomplete; retry later.', 75);
+  const existing = await assertSafeDirectory(stageDirectory, 'Deployment staging directory');
+  const existingMode = existing.mode & 0o7777;
+  if (controllerRunContract && existing.uid === controllerRunContract.uid && existing.gid === controllerRunContract.gid &&
+      (process.platform === 'win32' || controllerRunContract.modes.includes(existingMode))) {
+    return { stageDirectory, created: false, controllerOwned: true };
   }
-
-  try {
-    await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
-    const rootStat = await assertSafeStageRoot(stageRoot, stageRootContract);
-    const admittedCount = process.platform === 'win32' && !stageRootContract
-      ? (await fsp.readdir(stageRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).length
-      : admittedDirectoryCountFromLinkCount(rootStat.nlink);
-    if (admittedCount > MAX_STAGED_RUNS) {
+  const stat = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+  const markerStat = await fsp.lstat(resolveWithin(stageDirectory, ADMISSION_MARKER)).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (controllerRunContract && markerStat?.isFile() && !markerStat.isSymbolicLink() &&
+      markerStat.uid === controllerRunContract.uid && markerStat.gid === controllerRunContract.gid &&
+      (process.platform === 'win32' || (markerStat.mode & 0o7777) === 0o400)) {
+    return { stageDirectory, created: false, controllerOwned: true };
+  }
+  if (await readAdmissionMarker(stageDirectory, runId, runContract)) return { stageDirectory, created: false };
+  if (now - stat.mtimeMs >= UNADMITTED_STALE_MS) {
+    const entries = await fsp.readdir(stageDirectory);
+    if (entries.length === 0) {
+      if (!allowTopLevelCleanup) {
+        const error = commandError('Deployment run admission cleanup requires the global admission lock.', 75);
+        Object.defineProperty(error, 'requiresAdmissionLock', { value: true, enumerable: false });
+        throw error;
+      }
+      const current = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+      if (!sameFilesystemIdentity(stat, current) || (await fsp.readdir(stageDirectory)).length !== 0) {
+        throw commandError('Deployment run admission changed before stale cleanup.', 70);
+      }
       await fsp.rmdir(stageDirectory);
       await fsyncStageParent(stageRoot, syncOptions);
-      throw commandError('Deployment staging quota is full.', 75);
     }
-    const markerPath = resolveWithin(stageDirectory, ADMISSION_MARKER);
-    const marker = await fsp.open(markerPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0), 0o400);
-    try {
-      await marker.writeFile(`${runId}\n`, 'utf8');
-      await marker.sync();
-    } finally {
-      await marker.close();
-    }
-    await fsyncDirectory(stageDirectory);
-    await fsyncStageParent(stageRoot, syncOptions);
-    return { stageDirectory, created: true };
+  }
+  throw commandError('Deployment run admission is incomplete; retry later.', 75);
+}
+
+async function pathExists(candidate) {
+  try {
+    await fsp.lstat(candidate);
+    return true;
   } catch (error) {
-    const remains = await fsp.lstat(stageDirectory).then(() => true).catch((caught) => {
-      if (caught?.code === 'ENOENT') return false;
-      throw caught;
-    });
-    if (remains) {
-      try {
-        await removeEmptyCreatedRun(stageRoot, stageDirectory, syncOptions);
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], 'Run admission failed and its directory could not be removed safely.', { cause: error });
-      }
-    }
+    if (error?.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+async function runWithAdmissionLock(admission, action, message) {
+  let result;
+  let primaryError;
+  try { result = await action(); }
+  catch (error) { primaryError = error; }
+  let releaseError;
+  try { await admission.release(); }
+  catch (error) { releaseError = error; }
+  if (primaryError && releaseError) throw combineAdmissionLockErrors(primaryError, releaseError, message);
+  if (primaryError) throw primaryError;
+  if (releaseError) throw releaseError;
+  return result;
+}
+
+async function reserveRunDirectory(stageRoot, runId, {
+  stageRootContract,
+  admissionStageRootContract,
+  runContract,
+  admissionLockPath,
+  admissionLockParentContract,
+  admissionLockContract,
+  controllerRunContract,
+  stageRootFsync = fsyncDirectory,
+  now = Date.now(),
+  admissionLockOptions = {},
+  afterAdmissionMkdir
+}) {
+  const stageDirectory = resolveWithin(stageRoot, runId);
+  const syncOptions = { contract: stageRootContract, syncDirectory: stageRootFsync };
+  const existingOptions = { runContract, controllerRunContract, syncOptions, now };
+  if (await pathExists(stageDirectory)) {
+    try {
+      return await reserveExistingRun(stageRoot, stageDirectory, runId, existingOptions);
+    } catch (error) {
+      if (error?.requiresAdmissionLock !== true) throw error;
+      const admission = await acquireAdmissionLock(stageRoot, {
+        ...admissionLockOptions,
+        stageRootContract: admissionStageRootContract,
+        lockPath: admissionLockPath,
+        lockParentContract: admissionLockParentContract,
+        lockContract: admissionLockContract
+      });
+      return runWithAdmissionLock(
+        admission,
+        () => reserveExistingRun(stageRoot, stageDirectory, runId, { ...existingOptions, allowTopLevelCleanup: true }),
+        'Stale run cleanup and admission-lock release both failed.'
+      );
+    }
+  }
+
+  const admission = await acquireAdmissionLock(stageRoot, {
+    ...admissionLockOptions,
+    stageRootContract: admissionStageRootContract,
+    lockPath: admissionLockPath,
+    lockParentContract: admissionLockParentContract,
+    lockContract: admissionLockContract
+  });
+  let result;
+  let admissionError;
+  try {
+    const created = await fsp.mkdir(stageDirectory, { mode: 0o700, recursive: false }).then(() => true).catch((error) => {
+      if (error.code === 'EEXIST') return false;
+      throw error;
+    });
+    if (!created) {
+      result = await reserveExistingRun(stageRoot, stageDirectory, runId, { ...existingOptions, allowTopLevelCleanup: true });
+    } else {
+      let createdRunIdentity;
+      try {
+        createdRunIdentity = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+        await afterAdmissionMkdir?.();
+        await admission.assertHeld();
+        const rootStat = await assertSafeStageRoot(stageRoot, stageRootContract);
+        await admission.assertHeld();
+        let admittedCount;
+        if (process.platform === 'win32' && !stageRootContract) {
+          admittedCount = (await fsp.readdir(stageRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory()).length;
+        } else {
+          admittedCount = admittedDirectoryCountFromLinkCount(rootStat.nlink);
+          if (admittedCount < 1) {
+            throw commandError('Deployment staging root lost its candidate directory.', 70);
+          }
+        }
+        if (admittedCount > MAX_STAGED_RUNS) {
+          const currentRun = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+          if (!sameFilesystemIdentity(createdRunIdentity, currentRun)) {
+            throw commandError('Deployment staging directory identity changed before quota cleanup.', 70);
+          }
+          await fsp.rmdir(stageDirectory);
+          await fsyncStageParent(stageRoot, syncOptions);
+          throw commandError('Deployment staging quota is full.', 75);
+        }
+        await admission.assertHeld();
+        const currentRun = await assertSafeDirectory(stageDirectory, 'Deployment staging directory', runContract);
+        if (!sameFilesystemIdentity(createdRunIdentity, currentRun)) {
+          throw commandError('Deployment staging directory identity changed before admission.', 70);
+        }
+        const markerPath = resolveWithin(stageDirectory, ADMISSION_MARKER);
+        const marker = await fsp.open(markerPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0), 0o400);
+        try {
+          await marker.writeFile(`${runId}\n`, 'utf8');
+          await marker.sync();
+        } finally {
+          await marker.close();
+        }
+        await fsyncDirectory(stageDirectory);
+        await fsyncStageParent(stageRoot, syncOptions);
+        result = { stageDirectory, created: true, runIdentity: createdRunIdentity };
+      } catch (error) {
+        const remains = await pathExists(stageDirectory);
+        if (remains) {
+          try {
+            if (!createdRunIdentity) throw commandError('Deployment staging directory identity was never established.', 70);
+            await removeEmptyCreatedRun(stageRoot, stageDirectory, {
+              ...syncOptions,
+              expectedIdentity: createdRunIdentity,
+              runContract
+            });
+          } catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], 'Run admission failed and its directory could not be removed safely.', { cause: error });
+          }
+        }
+        throw error;
+      }
+    }
+  } catch (error) {
+    admissionError = error;
+  }
+
+  return runWithAdmissionLock(admission, async () => {
+    if (admissionError) throw admissionError;
+    return result;
+  }, 'Run admission and admission-lock release both failed.');
 }
 
 export async function performUpload({
@@ -399,26 +541,51 @@ export async function performUpload({
   expectedStageRootGid = process.getgid?.(),
   stageRootFsync = fsyncDirectory,
   now = Date.now(),
+  admissionLockOptions = {},
+  afterAdmissionMkdir,
   uploadLockOptions = {},
   controllerRunContract = { uid: 0, gid: 0, modes: [0o700, 0o711] },
   acceptControllerOwnedRun = enforceStageRootContract
 }) {
   if (!RUN_ID_PATTERN.test(runId || '') || !RELEASE_SHA_PATTERN.test(releaseSha || '') ||
       !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_ARCHIVE_BYTES) throw commandError();
+  const admissionLocation = admissionLockLocationForStage(stageRoot);
+  const productionStageRoot = admissionLocation.production;
+  if (productionStageRoot && !enforceStageRootContract) throw commandError('Production staging requires its exact ownership contract.', 70);
   const stageRootContract = enforceStageRootContract
     ? { uid: expectedStageRootUid, gid: expectedStageRootGid, mode: 0o1731 }
     : undefined;
   if (stageRootContract && (!Number.isSafeInteger(stageRootContract.uid) || !Number.isSafeInteger(stageRootContract.gid))) {
     throw commandError('Deployment staging ownership contract is unavailable.', 70);
   }
-  await assertSafeStageRoot(stageRoot, stageRootContract);
+  const stageRootStat = await assertSafeStageRoot(stageRoot, stageRootContract);
+  const admissionStageRootContract = stageRootContract || {
+    uid: stageRootStat.uid,
+    gid: stageRootStat.gid,
+    mode: stageRootStat.mode & 0o7777
+  };
   const runContract = { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0, mode: 0o700 };
-  const { stageDirectory, created, controllerOwned } = await reserveRunDirectory(stageRoot, runId, {
+  const admissionLockContract = {
+    uid: stageRootContract?.uid ?? runContract.uid,
+    gid: stageRootContract?.gid ?? runContract.gid,
+    mode: 0o640
+  };
+  const admissionLockPath = admissionLocation.lockPath;
+  const admissionLockParentContract = productionStageRoot
+    ? { uid: 0, gid: 0, mode: 0o755 }
+    : admissionStageRootContract;
+  const { stageDirectory, created, controllerOwned, runIdentity } = await reserveRunDirectory(stageRoot, runId, {
     stageRootContract,
+    admissionStageRootContract,
     runContract,
+    admissionLockPath,
+    admissionLockParentContract,
+    admissionLockContract,
     controllerRunContract: acceptControllerOwnedRun ? controllerRunContract : undefined,
     stageRootFsync,
-    now
+    now,
+    admissionLockOptions,
+    afterAdmissionMkdir
   });
   if (controllerOwned) {
     const received = await receiveExactly(input, bytes, null);
@@ -467,10 +634,19 @@ export async function performUpload({
   } catch (error) {
     if (created) {
       try {
-        await removeEmptyCreatedRun(stageRoot, stageDirectory, {
-          contract: stageRootContract,
-          syncDirectory: stageRootFsync
+        const cleanupAdmission = await acquireAdmissionLock(stageRoot, {
+          ...admissionLockOptions,
+          stageRootContract: admissionStageRootContract,
+          lockPath: admissionLockPath,
+          lockParentContract: admissionLockParentContract,
+          lockContract: admissionLockContract
         });
+        await runWithAdmissionLock(cleanupAdmission, () => removeEmptyCreatedRun(stageRoot, stageDirectory, {
+          contract: stageRootContract,
+          syncDirectory: stageRootFsync,
+          expectedIdentity: runIdentity,
+          runContract
+        }), 'Upload cleanup and admission-lock release both failed.');
       } catch (cleanupError) {
         throw new AggregateError([error, cleanupError], 'Upload failed and its admitted run directory could not be removed.', { cause: error });
       }

@@ -22,6 +22,7 @@ manifest=/usr/local/share/skyjo-online/delivery-assets.sha256
 
 for file in \
   /usr/local/lib/skyjo-online/node-runtime-guard-lib.sh \
+  /usr/local/lib/skyjo-online/admission-lock.mjs \
   /usr/local/lib/skyjo-online/release-controller.mjs \
   /usr/local/lib/skyjo-online/release-controller-lib.mjs \
   /usr/local/lib/skyjo-online/state-snapshot-lib.mjs \

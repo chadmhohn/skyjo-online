@@ -7,6 +7,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
+  ADMISSION_LOCK_PATH,
+  acquireAdmissionLock,
+  combineAdmissionLockErrors,
+  isAdmissionLockConflict
+} from './admission-lock.mjs';
+import {
   assertGithubCommitOnMain,
   authorizeRollback,
   cleanupStaleIncomingDirectories,
@@ -1417,6 +1423,16 @@ function assertUnitDirectives(unitPath, unitText, expected) {
   }
 }
 
+export function validateStageRootEntries(stat, entries) {
+  if (entries.some((entry) => !entry.isDirectory() || entry.isSymbolicLink() || !/^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(?:canary|production)$/.test(entry.name))) {
+    throw new Error('Deployment staging root contains an unexpected entry.');
+  }
+  if (!Number.isSafeInteger(stat.nlink) || stat.nlink !== 2 + entries.length || entries.length > 32) {
+    throw new Error('Deployment staging link-count admission is inconsistent.');
+  }
+  return entries.length;
+}
+
 async function assertStageRootContract() {
   const deployGid = Number((await run('/usr/bin/id', ['-g', 'skyjo-deploy'])).trim());
   if (!Number.isSafeInteger(deployGid) || deployGid < 0) throw new Error('Deployment staging group is invalid.');
@@ -1424,12 +1440,7 @@ async function assertStageRootContract() {
   const fileSystem = (await run('/usr/bin/findmnt', ['--noheadings', '--output', 'FSTYPE', '--target', PATHS.stage])).trim();
   if (fileSystem !== 'ext4') throw new Error('Deployment staging requires verified ext4 directory link-count semantics.');
   const entries = await fsp.readdir(PATHS.stage, { withFileTypes: true });
-  if (entries.some((entry) => !entry.isDirectory() || entry.isSymbolicLink() || !/^[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(?:canary|production)$/.test(entry.name))) {
-    throw new Error('Deployment staging root contains an unexpected entry.');
-  }
-  if (!Number.isSafeInteger(stat.nlink) || stat.nlink !== 2 + entries.length || entries.length > 32) {
-    throw new Error('Deployment staging link-count admission is inconsistent.');
-  }
+  validateStageRootEntries(stat, entries);
   await fsyncDirectoryStrict(PATHS.stage);
   return { deployGid, entries: entries.length };
 }
@@ -1530,6 +1541,7 @@ async function selfTest() {
   const root0555 = [
     '/usr/local/sbin/skyjo-release-controller',
     PATHS.bootstrapWrapper,
+    '/usr/local/lib/skyjo-online/admission-lock.mjs',
     '/usr/local/lib/skyjo-online/release-controller.mjs',
     '/usr/local/lib/skyjo-online/release-controller-lib.mjs',
     '/usr/local/lib/skyjo-online/state-snapshot-lib.mjs',
@@ -1577,6 +1589,8 @@ async function selfTest() {
   });
 
   await exactPath('/var/lib/skyjo-deploy', { type: 'directory', uid: 0, gid: 0, mode: 0o755 });
+  const admissionLockStat = await exactPath(ADMISSION_LOCK_PATH, { type: 'file', uid: 0, gid: identities['skyjo-deploy'].gid, mode: 0o640 });
+  if (admissionLockStat.nlink !== 1 || admissionLockStat.size !== 0) throw new Error('Deployment admission lock file is not unique and empty.');
   await exactPath('/var/lib/skyjo-deploy/.ssh', { type: 'directory', uid: 0, gid: 0, mode: 0o755 });
   await exactPath('/var/lib/skyjo-deploy/.ssh/authorized_keys', { type: 'file', uid: 0, gid: 0, mode: 0o644 });
   const authorizedKeys = await readNoFollow('/var/lib/skyjo-deploy/.ssh/authorized_keys');
@@ -1636,47 +1650,71 @@ export async function main(argv = process.argv.slice(2)) {
   if (process.platform !== 'linux' || process.getuid?.() !== 0) throw new Error('Release controller must run as root on Linux.');
   const parsed = parseArguments([...argv]);
   await assertNode24();
-  await assertStageRootContract();
-  await assertEffectiveDeliveryUnits();
-  const result = parsed.command === 'self-test'
-    ? await selfTest()
-    : await executeAuthorizedControllerAction({
-        expectedCommand: parsed.command,
-        signedCommand: parsed.signedCommand,
-        action: async (fields) => {
-          await cleanupStaleIncomingDirectories({
-            appRoot: PATHS.appRoot,
-            releasesRoot: PATHS.releases,
-            activeRunId: fields.runId,
-            activeReleaseSha: fields.releaseSha
-          });
-          const authorized = {
-            command: fields.command,
-            runId: fields.runId,
-            releaseSha: fields.releaseSha,
-            digest: fields.artifactSha256,
-            tag: fields.tag === '-' ? undefined : fields.tag
-          };
-          const actionResult = authorized.command === 'verify'
-            ? await verifyAction(authorized)
-            : authorized.command === 'promote'
-              ? await promoteAction(authorized)
-              : await rollbackAction(authorized);
-          return validateControllerActionResult(fields, actionResult);
-        },
-        reconcileReplay: reconcileCompletedControllerResult,
-        reconcileStarted: reconcileStartedControllerOperation,
-        reconcileCompletion: reconcileCompletedControllerResult,
-        recoverCompletionFailure: recoverUnpersistedControllerResult,
-        allowStartedRecovery: true
-      });
+  const deployGid = Number((await run('/usr/bin/id', ['-g', 'skyjo-deploy'])).trim());
+  if (!Number.isSafeInteger(deployGid) || deployGid < 0) throw new Error('Deployment staging group is invalid.');
+  const admission = await acquireAdmissionLock(PATHS.stage, {
+    stageRootContract: { uid: 0, gid: deployGid, mode: 0o1731 },
+    lockPath: ADMISSION_LOCK_PATH,
+    lockParentContract: { uid: 0, gid: 0, mode: 0o755 },
+    lockContract: { uid: 0, gid: deployGid, mode: 0o640 },
+    conflictExitCode: 73
+  });
+  let result;
+  let primaryError;
+  try {
+    await assertStageRootContract();
+    await assertEffectiveDeliveryUnits();
+    result = parsed.command === 'self-test'
+      ? await selfTest()
+      : await executeAuthorizedControllerAction({
+          expectedCommand: parsed.command,
+          signedCommand: parsed.signedCommand,
+          action: async (fields) => {
+            await cleanupStaleIncomingDirectories({
+              appRoot: PATHS.appRoot,
+              releasesRoot: PATHS.releases,
+              activeRunId: fields.runId,
+              activeReleaseSha: fields.releaseSha
+            });
+            const authorized = {
+              command: fields.command,
+              runId: fields.runId,
+              releaseSha: fields.releaseSha,
+              digest: fields.artifactSha256,
+              tag: fields.tag === '-' ? undefined : fields.tag
+            };
+            const actionResult = authorized.command === 'verify'
+              ? await verifyAction(authorized)
+              : authorized.command === 'promote'
+                ? await promoteAction(authorized)
+                : await rollbackAction(authorized);
+            return validateControllerActionResult(fields, actionResult);
+          },
+          reconcileReplay: reconcileCompletedControllerResult,
+          reconcileStarted: reconcileStartedControllerOperation,
+          reconcileCompletion: reconcileCompletedControllerResult,
+          recoverCompletionFailure: recoverUnpersistedControllerResult,
+          allowStartedRecovery: true
+        });
+  } catch (error) {
+    primaryError = error;
+  }
+  let releaseError;
+  try { await admission.release(); }
+  catch (error) { releaseError = error; }
+  if (primaryError && releaseError) {
+    throw combineAdmissionLockErrors(primaryError, releaseError, 'Release controller failed and its admission lock did not release.');
+  }
+  if (primaryError) throw primaryError;
+  if (releaseError) throw releaseError;
   writeTerminalLine(1, `${JSON.stringify(result)}\n`);
   return result;
 }
 
 export async function invokeDirectController(mainImpl = main, argv = process.argv, {
   setIntervalImpl = setInterval,
-  clearIntervalImpl = clearInterval
+  clearIntervalImpl = clearInterval,
+  isAdmissionLockConflictImpl = isAdmissionLockConflict
 } = {}) {
   let keepAlive;
   try {
@@ -1692,7 +1730,7 @@ export async function invokeDirectController(mainImpl = main, argv = process.arg
         message: error?.message || 'unknown error',
         dataRestored: false
       })}\n`);
-      process.exitCode = status === 'rollback-failed' ? 2 : 1;
+      process.exitCode = isAdmissionLockConflictImpl(error, 73) ? 73 : status === 'rollback-failed' ? 2 : 1;
       return undefined;
     }
   } finally {

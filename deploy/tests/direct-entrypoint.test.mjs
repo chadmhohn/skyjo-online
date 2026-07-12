@@ -30,6 +30,39 @@ test('the controller lifecycle keepalive is explicitly referenced and cleared', 
   assert.deepEqual(calls, ['set', 'ref', 'main', 'clear']);
 });
 
+test('only an admission-lock conflict preserves retryable controller exit 73', async () => {
+  const previousExitCode = process.exitCode;
+  try {
+    const tagged = Object.assign(new Error('tagged admission lock busy'), { exitCode: 73 });
+    const untagged = Object.assign(new Error('unrelated retry-like error'), { exitCode: 73 });
+    const wrongCode = Object.assign(new Error('tagged but wrong code'), { exitCode: 72 });
+    const predicate = (error, code) => error === tagged && error.exitCode === code;
+    async function invoke(error, command, isAdmissionLockConflictImpl) {
+      process.exitCode = undefined;
+      const result = await invokeDirectController(
+        async () => { throw error; },
+        ['node', 'release-controller.mjs', command],
+        {
+          setIntervalImpl: () => ({ ref() {} }),
+          clearIntervalImpl() {},
+          isAdmissionLockConflictImpl
+        }
+      );
+      assert.equal(result, undefined);
+      return process.exitCode;
+    }
+    assert.equal(await invoke(tagged, 'verify', predicate), 73);
+    assert.equal(await invoke(tagged, 'promote', predicate), 73);
+    assert.equal(await invoke(tagged, 'rollback', predicate), 73);
+    assert.equal(await invoke(untagged, 'verify', undefined), 1);
+    assert.equal(await invoke(untagged, 'promote', undefined), 1);
+    assert.equal(await invoke(untagged, 'rollback', undefined), 2);
+    assert.equal(await invoke(wrongCode, 'verify', predicate), 1);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
 test('the direct controller keepalive completes SQLite backup and terminal output', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-direct-controller-'));
   try {

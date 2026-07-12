@@ -22,17 +22,17 @@ The release lane is part of `.github/workflows/ci.yml`, so it cannot race the re
 5. `CI / Release Canary` waits for every required test job and the attestation job, uploads the archive through the forced SSH command, and requests a verify-only canary on `127.0.0.1:4181`.
 6. `CI / Production` exists only for a `push` of `vX.Y.Z`. It promotes the same downloaded artifact, checks the public Cloudflare surface, and requests a code-only rollback if the edge check fails.
 
-Both VPS jobs use `concurrency: { group: skyjo-production, queue: max }`, preserving queued releases instead of cancelling them. The root controller also holds a host `flock`, so GitHub retries and concurrent tags cannot interleave deployment state.
+Both VPS jobs use `concurrency: { group: skyjo-production, queue: max }`, preserving queued releases instead of cancelling them. The root controller first holds the host release `flock`, then the shared admission `flock`, so GitHub retries, uploads, bootstrap work, and controller cleanup cannot interleave top-level stage mutations. Upload conflicts return retryable `75`; controller conflicts return retryable `73`, which the signed-command client handles alongside SSH disconnect `255`.
 
 ## Signed-action protocol cutover
 
 The corrective delivery lineage intentionally returns to the reviewed split contract: a four-token, bounded, nonexecuting upload followed by a separately signed nine-token `verify`, `promote`, or `rollback`. The dispatcher/controller installed from `0cc063e` expects the superseded ten-token size-bound command, so this transition is an ordered bootstrap cutover rather than a normal merge-first rollout:
 
 1. Let the corrective pull request complete every repository CI check. `CI / Release Canary` is intentionally ineligible on pull requests, so the old live dispatcher is not contacted by the new client.
-2. Freeze one reviewed corrective commit and record its exact 40-character SHA. Export that commit without checkout conversion (`git -c core.autocrlf=false -c core.eol=lf archive ...`), verify every deploy shebang asset is LF-only, and stage only those reviewed bytes beneath the root-owned bootstrap source path.
+2. Freeze one reviewed corrective commit and record its exact 40-character SHA. Export that commit without checkout conversion (`git -c core.autocrlf=false -c core.eol=lf archive ...`), verify every deploy shebang asset is LF-only, and stage only those reviewed bytes beneath the root-owned bootstrap source path. Pause/disable queued deployment workflows and prove that no old-protocol upload is active before bootstrap; the old dispatcher predates the shared admission flock.
 3. Before merging, run `bootstrap-skyjo-delivery.sh prepare` from that exact archive and the already pinned public-key inputs. Require the installed controller `self-test` to pass. This atomically replaces the forced dispatcher, controller, client assets, and manifest as one immutable bootstrap generation; do not mix files from the old and new protocols.
 4. Using the release archive/checksum built for the same corrective SHA, run one manual `verify` through `deploy/github-release-remote.sh`. The four-token upload must remain nonexecuting, and the signed nine-token canary action must complete with the exact canonical result. Preserve the command result and self-test output as PR evidence.
-5. Merge only after that manual canary passes, then require the protected `main` run's normal `CI / Release Canary` to pass again. Do not tag or promote during the cutover window. If bootstrap or the manual canary fails, leave production untouched and repair or atomically select the prior verified bootstrap generation before retrying.
+5. Merge only after that manual canary passes, then require the protected `main` run's normal `CI / Release Canary` to pass again. Do not tag or promote during the cutover window. If bootstrap or the manual canary fails, leave production untouched and repair or atomically select the prior verified bootstrap generation before retrying. The persistent lock lives under the deploy home rather than the stage tree, so creating it is harmless to the old controller's directories-only stage validation and selecting an older bootstrap generation remains possible.
 
 This sequence is required only for the `0cc063e` protocol transition. Later changes use the normal merge-then-canary flow unless they deliberately alter the forced-command grammar again.
 
@@ -61,6 +61,7 @@ Do not use `ssh-keyscan` during a workflow. Store the verified host key, not a p
 /srv/skyjo-online/current -> releases/<sha>
 /srv/skyjo-online/previous -> releases/<sha-or-legacy-anchor>
 /var/tmp/skyjo-deploy/<run-id>/        private upload and canary workspace
+/var/lib/skyjo-deploy/.admission.lock  persistent cross-process admission lock
 /var/lib/skyjo-online/                 live SQLite and room JSON state
 /var/backups/skyjo-online/             verified state backups
 /run/skyjo-online-canary/              root-created ephemeral canary environment
@@ -72,7 +73,7 @@ Do not use `ssh-keyscan` during a workflow. Store the verified host key, not a p
 /usr/local/sbin/skyjo-delivery-bootstrap  installed adopt/activate entrypoint
 ```
 
-Release directories are root-owned and read-only to `skyjo`. Live state is owned by `skyjo` and is never placed below a release. Backups are root-only. Upload staging is mode `1731` on ext4 and uses its directory link count as a fail-closed 32-run admission counter. Each mode-`0700` run directory has a same-owner mode-`0400` `.quota-admitted` file containing the exact run ID; bootstrap rejects unknown or legacy stage entries without deleting them. Per-run and global locks prevent publication races. The controller accepts only paths resolved beneath the expected admitted run directory.
+Release directories are root-owned and read-only to `skyjo`. Live state is owned by `skyjo` and is never placed below a release. Backups are root-only. Upload staging is mode `1731` on ext4 and uses its directory link count as a fail-closed 32-run admission counter. Each mode-`0700` run directory has a same-owner mode-`0400` `.quota-admitted` file containing the exact run ID; the stage root remains directories-only for backward compatibility. The persistent admission file is a unique empty `root:skyjo-deploy` mode-`0640` regular file beneath the exact root-owned mode-`0755` deploy home. Dispatcher and controller open it read-only with `O_NOFOLLOW`, validate handle/path inode identity, and have `/usr/bin/flock` lock the inherited descriptor; retaining that descriptor makes the lock cross-process and crash-releasing without PID or stale-owner cleanup. Per-run and admission locks prevent publication races. The controller accepts only paths resolved beneath the expected admitted run directory.
 
 ## One-time preparation
 
