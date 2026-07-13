@@ -14,6 +14,15 @@ async function configureSoloRoster(page: Page, playerCount: number) {
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', String(playerCount));
 }
 
+async function finishHumanOpeningAndMeasureAi(page: Page): Promise<number> {
+  const openingCards = page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true });
+  await openingCards.first().click();
+  const startedAt = Date.now();
+  await openingCards.first().click();
+  await expect(page.getByTestId('shared-game-table')).not.toHaveAttribute('data-phase', 'opening-reveal', { timeout: 5_000 });
+  return Date.now() - startedAt;
+}
+
 test('solo opening is playable and exposes stable table geometry anchors', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 60);
   await page.goto(`${skyjoServer.baseURL}/single-player`);
@@ -28,7 +37,7 @@ test('solo opening is playable and exposes stable table geometry anchors', async
   await expect(tableCenter).toHaveCount(1);
   await expect(localBoard).toHaveCount(1);
 
-  const openingCards = page.getByRole('button', { name: /Reveal opening card/ }).filter({ visible: true });
+  const openingCards = page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true });
   await openingCards.first().click();
   await openingCards.first().click();
 
@@ -39,10 +48,44 @@ test('solo opening is playable and exposes stable table geometry anchors', async
     .toBe(true);
 });
 
+test('a complete solo turn is keyboard operable and restores actionable controls', async ({ page, skyjoServer }) => {
+  test.setTimeout(45_000);
+  await installSeededBrowserRuntime(page, 61);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+
+  const table = page.getByTestId('shared-game-table');
+  const openingCards = page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true });
+  for (let reveal = 0; reveal < 2; reveal += 1) {
+    const nextCard = openingCards.first();
+    await nextCard.focus();
+    await expect(nextCard).toBeFocused();
+    await page.keyboard.press('Enter');
+  }
+  await expect(table).not.toHaveAttribute('data-phase', 'opening-reveal', { timeout: 5_000 });
+
+  const deck = page.getByRole('button', { name: /^Deck/ }).filter({ visible: true });
+  await expect(deck).toBeEnabled({ timeout: 15_000 });
+  await deck.focus();
+  await expect(deck).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
+
+  const replacement = page.getByRole('button', { name: /Replace with the drawn card/ }).filter({ visible: true }).first();
+  await replacement.focus();
+  await expect(replacement).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: /Replace with the drawn card/ }).filter({ visible: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Action guidance' })).toBeFocused();
+
+  await expect(deck).toBeEnabled({ timeout: 15_000 });
+  await expect(table).toHaveAttribute('data-phase', 'choose-source');
+});
+
 test('solo progress survives refresh and a service-worker update without auto-discarding', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 68);
   await page.goto(`${skyjoServer.baseURL}/single-player`);
-  const openingCards = page.getByRole('button', { name: /Reveal opening card/ }).filter({ visible: true });
+  const openingCards = page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true });
   await openingCards.first().click();
 
   await expect
@@ -81,7 +124,7 @@ test('solo progress survives refresh and a service-worker update without auto-di
   await expect(page.getByRole('dialog', { name: 'Continue your solo game?' })).toBeVisible();
   await page.getByRole('button', { name: 'Continue Game' }).click();
   await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Reveal opening card/ }).filter({ visible: true })).toHaveCount(11);
+  await expect(page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true })).toHaveCount(11);
 });
 
 test('repeated responsive captures explicitly start a new durable game', async ({ page, skyjoServer }) => {
@@ -103,6 +146,36 @@ test('repeated responsive captures explicitly start a new durable game', async (
     opponentRosters.push(await page.locator('[data-testid="opponent-rail"] h2').allTextContents());
   }
   expect(opponentRosters[1]).toEqual(opponentRosters[0]);
+});
+
+test('eight-player AI opening completes within normal and reduced-motion budgets', async ({ page, skyjoServer }) => {
+  await installSeededBrowserRuntime(page, 71);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await configureSoloRoster(page, 8);
+
+  const normalDuration = await finishHumanOpeningAndMeasureAi(page);
+  expect(normalDuration).toBeLessThanOrEqual(3_000);
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await configureSoloRoster(page, 8);
+  const motionSample = page.getByRole('button', { name: 'Open game settings' });
+  await motionSample.hover();
+  const reducedStyles = await motionSample.evaluate((element) => {
+    const style = window.getComputedStyle(element);
+    return {
+      animationDuration: style.animationDuration,
+      animationIterationCount: style.animationIterationCount,
+      transform: style.transform,
+      transitionDuration: style.transitionDuration
+    };
+  });
+  expect(reducedStyles.transform).toBe('none');
+  expect(Number.parseFloat(reducedStyles.transitionDuration)).toBeLessThanOrEqual(0.001);
+  expect(Number.parseFloat(reducedStyles.animationDuration)).toBeLessThanOrEqual(0.001);
+  expect(reducedStyles.animationIterationCount).toBe('1');
+  const reducedDuration = await finishHumanOpeningAndMeasureAi(page);
+  expect(reducedDuration).toBeLessThanOrEqual(1_000);
 });
 
 test('centered table geometry is symmetric, contained, and overlap-free for 2, 3, 4, and 8 players', async ({
@@ -127,6 +200,9 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
 
     for (const viewport of viewports) {
       await page.setViewportSize(viewport);
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      );
       const geometry = await page.getByTestId('shared-game-table').evaluate((table) => {
         const rect = (element: Element | null) => {
           if (!element) throw new Error('Missing centered-table geometry anchor.');
@@ -156,6 +232,8 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
           centerDeltaY: Math.abs(centerBandRect.top + centerBandRect.height / 2 - (tableRect.top + tableRect.height / 2)),
           centerBandHeight: centerBandRect.height,
           compactViewportFits: opponentRect.top >= -0.5 && localRect.bottom <= window.innerHeight + 1,
+          localBottom: localRect.bottom,
+          opponentTop: opponentRect.top,
           firstSeatCenterDelta: firstSeat
             ? Math.abs(firstSeat.left + firstSeat.width / 2 - (opponentRect.left + opponentRect.width / 2))
             : 0,
@@ -176,6 +254,7 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
           opponentScrollWidth: (opponentRail as HTMLElement).scrollWidth,
           pageScrollWidth: document.documentElement.scrollWidth,
           seatWidths: seats.map((seat) => seat.width),
+          viewportHeight: window.innerHeight,
           viewportWidth: window.innerWidth
         };
       });
@@ -194,11 +273,20 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
       expect(Math.max(...geometry.seatWidths) - Math.min(...geometry.seatWidths)).toBeLessThanOrEqual(2);
 
       if (viewport.width <= 640) {
-        expect(geometry.centerBandHeight).toBeGreaterThanOrEqual(90);
-        expect(geometry.centerBandHeight).toBeLessThanOrEqual(110);
+        expect(
+          geometry.centerBandHeight,
+          `${playerCount} players at ${viewport.width}x${viewport.height} center band: ${JSON.stringify(geometry)}`
+        ).toBeGreaterThanOrEqual(90);
+        expect(
+          geometry.centerBandHeight,
+          `${playerCount} players at ${viewport.width}x${viewport.height} center band: ${JSON.stringify(geometry)}`
+        ).toBeLessThanOrEqual(110);
       }
       if (viewport.width > 640 && viewport.height <= 900) {
-        expect(geometry.compactViewportFits, `${playerCount} players at ${viewport.width}x${viewport.height}`).toBe(true);
+        expect(
+          geometry.compactViewportFits,
+          `${playerCount} players at ${viewport.width}x${viewport.height}: opponentTop=${geometry.opponentTop}, localBottom=${geometry.localBottom}, viewportHeight=${geometry.viewportHeight}`
+        ).toBe(true);
       }
       if (playerCount === 2) expect(geometry.firstSeatCenterDelta).toBeLessThanOrEqual(2);
       if (playerCount === 3) expect(geometry.opponentOuterGapDelta).toBeLessThanOrEqual(2);

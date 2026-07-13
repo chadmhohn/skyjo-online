@@ -230,7 +230,7 @@ function assertAuthoritativeOutbound(audit: WireAudit): void {
 }
 
 async function clickNextOpeningCard(pages: Page[]): Promise<void> {
-  const enabledSelector = 'button[aria-label^="Reveal opening card"]:visible:not([disabled])';
+  const enabledSelector = 'button[aria-label$="face-down. Reveal this opening card."]:visible:not([disabled])';
   await expect
     .poll(async () => {
       const counts = await Promise.all(pages.map((page) => page.locator(enabledSelector).count()));

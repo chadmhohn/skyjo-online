@@ -247,6 +247,29 @@ describe('GameTableLayout', () => {
     await waitFor(() => expect(screen.getByTestId('turn-announcer')).toHaveTextContent('Waiting for other players.'));
   });
 
+  it('renders one complete phone guidance region outside the geometry anchor, including disabled reasons', () => {
+    act(() => setMediaQueryMatches('(max-width: 640px)', true));
+    const actions = handlers();
+    render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        interactionDisabledReason="Room recovery is still synchronizing."
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(2)}
+      />
+    );
+
+    const guidance = screen.getByRole('region', { name: 'Action guidance' });
+    expect(screen.getAllByRole('region', { name: 'Action guidance' })).toHaveLength(1);
+    expect(guidance).toHaveClass('skyjo-phone-action-guidance');
+    expect(guidance).toHaveTextContent('Choose two face-down cards');
+    expect(guidance).toHaveTextContent('Each player reveals exactly two cards');
+    expect(guidance).toHaveTextContent('Action unavailable: Room recovery is still synchronizing.');
+    expect(screen.getByTestId('shared-game-table')).not.toContainElement(guidance);
+  });
+
   it('auto-scrolls only the contained opponent rail when the active opponent changes', () => {
     const actions = handlers();
     const scrollTo = vi.fn();

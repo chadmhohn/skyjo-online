@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
-import { usePrefersReducedMotion } from './accessibility';
+import { usePhoneLayout, usePrefersReducedMotion } from './accessibility';
 import { knownCardCount } from './gamePresentation';
 import type { Card, GameState, Player } from './types';
 
@@ -578,17 +578,20 @@ interface TableControlsProps {
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
   guidanceRef: RefObject<HTMLDivElement>;
+  showSideGuidance: boolean;
 }
 
 function ActionGuidance({
   status,
-  disabledReason
+  disabledReason,
+  className = ''
 }: {
   status: TurnStatus;
   disabledReason?: string;
+  className?: string;
 }) {
   return (
-    <div className={`skyjo-table-guidance skyjo-action-guidance skyjo-action-guidance-${status.tone}`}>
+    <div className={`skyjo-table-guidance skyjo-action-guidance skyjo-action-guidance-${status.tone} ${className}`}>
       <div className="skyjo-kicker">{status.eyebrow}</div>
       <h3 className="skyjo-serif skyjo-action-guidance-title mt-1 font-bold leading-tight text-[#f5e6c8]">{status.title}</h3>
       <p className="skyjo-action-guidance-instruction mt-2 text-sm font-bold leading-6 text-[#f5e6c8]/72">
@@ -601,6 +604,21 @@ function ActionGuidance({
       ) : null}
     </div>
   );
+}
+
+function actionGuidanceDisabledReason(
+  state: GameState,
+  localTurn: boolean,
+  interactionDisabledReason?: string
+): string {
+  const deckDisabledReason = interactionDisabledReason || sourceDisabledReason(state, localTurn, 'deck');
+  const discardDisabledReason = interactionDisabledReason || sourceDisabledReason(state, localTurn, 'discard');
+  const selectedDiscard = localTurn && state.phase === 'choose-replacement' && state.selectedSource === 'discard';
+  const commonDisabledReason =
+    deckDisabledReason && discardDisabledReason && deckDisabledReason === discardDisabledReason ? deckDisabledReason : '';
+  return selectedDiscard
+    ? ''
+    : commonDisabledReason || (!deckDisabledReason && discardDisabledReason ? discardDisabledReason : '');
 }
 
 function turnAnnouncement(
@@ -683,7 +701,8 @@ function TableControls({
   onCancelDiscard,
   onDraw,
   onSetDrawIntent,
-  guidanceRef
+  guidanceRef,
+  showSideGuidance
 }: TableControlsProps) {
   const topDiscard = state.discardPile[0];
   const activePlayer = state.players[state.currentPlayerIndex];
@@ -691,17 +710,13 @@ function TableControls({
   const status = getTurnStatus(state, localTurn);
   const deckDisabledReason = interactionDisabledReason || sourceDisabledReason(state, localTurn, 'deck');
   const discardDisabledReason = interactionDisabledReason || sourceDisabledReason(state, localTurn, 'discard');
-  const commonDisabledReason =
-    deckDisabledReason && discardDisabledReason && deckDisabledReason === discardDisabledReason ? deckDisabledReason : '';
   const selectedDiscard = localTurn && state.phase === 'choose-replacement' && state.selectedSource === 'discard';
   const hasLocalDrawnDecision = Boolean(state.drawnCard && localTurn);
   const discardButtonDisabled = Boolean(interactionDisabledReason || (discardDisabledReason && !selectedDiscard));
   const discardButtonTitle = selectedDiscard
     ? 'Put the discard card back.'
     : discardDisabledReason || 'Take the top discard card.';
-  const guidanceDisabledReason = selectedDiscard
-    ? ''
-    : commonDisabledReason || (!deckDisabledReason && discardDisabledReason ? discardDisabledReason : '');
+  const guidanceDisabledReason = actionGuidanceDisabledReason(state, localTurn, interactionDisabledReason);
 
   return (
     <section className="skyjo-panel skyjo-table-controls skyjo-table-glow" data-testid="table-center">
@@ -731,7 +746,7 @@ function TableControls({
         ) : null}
       </div>
 
-      <div className="skyjo-table-piles grid grid-cols-2 gap-3" data-testid="table-piles">
+      <div className="skyjo-table-piles grid grid-cols-2" data-testid="table-piles">
         <button
           className="skyjo-button skyjo-pile-button text-center"
           disabled={Boolean(deckDisabledReason)}
@@ -765,13 +780,15 @@ function TableControls({
       </div>
 
       <div
-        aria-label="Action guidance"
+        aria-label={showSideGuidance ? 'Action guidance' : hasLocalDrawnDecision ? 'Drawn card decision' : undefined}
         className="skyjo-table-band-side skyjo-table-band-side-end"
         ref={guidanceRef}
-        role="region"
-        tabIndex={0}
+        role={showSideGuidance || hasLocalDrawnDecision ? 'region' : undefined}
+        tabIndex={showSideGuidance || hasLocalDrawnDecision ? 0 : undefined}
       >
-        <ActionGuidance disabledReason={guidanceDisabledReason} status={status} />
+        {showSideGuidance ? (
+          <ActionGuidance className="skyjo-side-action-guidance" disabledReason={guidanceDisabledReason} status={status} />
+        ) : null}
         {hasLocalDrawnDecision && state.drawnCard ? (
           <div className="skyjo-drawn-decision">
             <div className="flex justify-end">
@@ -837,47 +854,66 @@ export function GameTableLayout({
 }: GameTableLayoutProps) {
   const playerCount = state.players.length;
   const opponentCount = state.players.filter((player) => player.id !== localPlayerId).length;
-  const guidanceRef = useRef<HTMLDivElement | null>(null);
+  const phoneLayout = usePhoneLayout();
+  const sideGuidanceRef = useRef<HTMLDivElement | null>(null);
+  const phoneGuidanceRef = useRef<HTMLDivElement | null>(null);
+  const focusFallbackRef = phoneLayout ? phoneGuidanceRef : sideGuidanceRef;
+  const status = getTurnStatus(state, localTurn);
+  const guidanceDisabledReason = actionGuidanceDisabledReason(state, localTurn, interactionDisabledReason);
 
   return (
-    <section
-      aria-label="Game table"
-      className={`skyjo-game-table-layout skyjo-table-roster-${playerCount}`}
-      data-opponent-count={opponentCount}
-      data-player-count={playerCount}
-      data-testid="shared-game-table"
-    >
-      <PlayerBoardGrid
-        drawIntent={drawIntent}
-        interactionDisabledReason={interactionDisabledReason}
-        localPlayerId={localPlayerId}
-        onCardClick={onCardClick}
-        state={state}
-        variant="opponents"
-      />
-      <div className="skyjo-table-center-band" data-testid="table-center-band">
-        <TableControls
+    <section aria-label="Game table" className="skyjo-game-table-shell">
+      {phoneLayout ? (
+        <div
+          aria-label="Action guidance"
+          className="skyjo-phone-action-guidance"
+          ref={phoneGuidanceRef}
+          role="region"
+          tabIndex={0}
+        >
+          <ActionGuidance disabledReason={guidanceDisabledReason} status={status} />
+        </div>
+      ) : null}
+      <div
+        className={`skyjo-game-table-layout skyjo-table-roster-${playerCount}`}
+        data-opponent-count={opponentCount}
+        data-phase={state.phase}
+        data-player-count={playerCount}
+        data-testid="shared-game-table"
+      >
+        <PlayerBoardGrid
           drawIntent={drawIntent}
-          guidanceRef={guidanceRef}
           interactionDisabledReason={interactionDisabledReason}
           localPlayerId={localPlayerId}
-          localTurn={localTurn}
-          onCancelDiscard={onCancelDiscard}
-          onChooseDiscard={onChooseDiscard}
-          onDraw={onDraw}
-          onSetDrawIntent={onSetDrawIntent}
+          onCardClick={onCardClick}
           state={state}
+          variant="opponents"
+        />
+        <div className="skyjo-table-center-band" data-testid="table-center-band">
+          <TableControls
+            drawIntent={drawIntent}
+            guidanceRef={sideGuidanceRef}
+            interactionDisabledReason={interactionDisabledReason}
+            localPlayerId={localPlayerId}
+            localTurn={localTurn}
+            onCancelDiscard={onCancelDiscard}
+            onChooseDiscard={onChooseDiscard}
+            onDraw={onDraw}
+            onSetDrawIntent={onSetDrawIntent}
+            showSideGuidance={!phoneLayout}
+            state={state}
+          />
+        </div>
+        <PlayerBoardGrid
+          drawIntent={drawIntent}
+          focusFallbackRef={focusFallbackRef}
+          interactionDisabledReason={interactionDisabledReason}
+          localPlayerId={localPlayerId}
+          onCardClick={onCardClick}
+          state={state}
+          variant="local"
         />
       </div>
-      <PlayerBoardGrid
-        drawIntent={drawIntent}
-        focusFallbackRef={guidanceRef}
-        interactionDisabledReason={interactionDisabledReason}
-        localPlayerId={localPlayerId}
-        onCardClick={onCardClick}
-        state={state}
-        variant="local"
-      />
     </section>
   );
 }

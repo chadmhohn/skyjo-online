@@ -1584,9 +1584,34 @@ describe('multiplayer game table', () => {
     expect(nextRound).toBeEnabled();
     await user.click(nextRound);
     const nextRoundCommand = expectCommand(socket, { type: 'start-game' }, 2);
+    const nextRoundOpening = makeState({
+      players: fourPlayers,
+      phase: 'opening-reveal',
+      round: 3,
+      currentPlayerIndex: 0,
+      openingRevealCounts: { p1: 0, p2: 0, p3: 0, p4: 0 }
+    });
     convergeCommand(
       socket,
       nextRoundCommand,
+      makeRoom({
+        state: nextRoundOpening,
+        status: 'playing',
+        readyForNextRoundPlayerIds: [],
+        players: [
+          { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true },
+          { id: 'p2', name: 'Bob', connected: true, host: false },
+          { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
+          { id: 'p4', name: 'Drew', connected: true, host: false }
+        ],
+        revision: 3
+      })
+    );
+    const guidance = screen.getByRole('region', { name: 'Action guidance' });
+    await waitFor(() => expect(guidance).toHaveFocus());
+
+    receiveSnapshot(
+      socket,
       makeRoom({
         state: roundOver,
         status: 'finished',
@@ -1597,9 +1622,10 @@ describe('multiplayer game table', () => {
           { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ],
-        revision: 3
+        revision: 4
       })
     );
+    await user.click(await screen.findByRole('button', { name: /Round scoring.*4\/4 ready.*Open/ }));
     await user.click(screen.getByRole('button', { name: 'Minimize' }));
     const summaryRestore = screen.getByRole('button', { name: /Round scoring.*4\/4 ready.*Open/ });
     expect(summaryRestore).toBeInTheDocument();
@@ -1618,11 +1644,43 @@ describe('multiplayer game table', () => {
           { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ],
-        revision: 4
+        revision: 5
       })
     );
     await user.click(await screen.findByRole('button', { name: /Final totals.*0\/4 ready.*Open/ }));
     expect(screen.getByRole('heading', { name: 'Alice wins the game.' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Restart Game' })).toBeDisabled();
+  });
+
+  it('focuses and scrolls a desktop score disclosure, then restores its chip on Escape or minimize', async () => {
+    const players = [makePlayer('p1', 'Alice'), makePlayer('p2', 'Bob')];
+    const roundOver = makeState({
+      players,
+      phase: 'round-over',
+      round: 2,
+      currentPlayerIndex: 0,
+      openingRevealCounts: { p1: 2, p2: 2 },
+      log: ['Desktop round scored.']
+    });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const { user } = await createJoinedRoom(makeRoom({ state: roundOver, status: 'finished' }));
+
+    let restore = await screen.findByRole('button', { name: /Round scoring.*Open/ });
+    await user.click(restore);
+    let title = screen.getByRole('heading', { name: 'Round complete.' });
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    expect(screen.queryByRole('dialog', { name: 'Round complete.' })).not.toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    restore = await screen.findByRole('button', { name: /Round scoring.*Open/ });
+    await waitFor(() => expect(restore).toHaveFocus());
+
+    await user.click(restore);
+    title = screen.getByRole('heading', { name: 'Round complete.' });
+    await waitFor(() => expect(title).toHaveFocus());
+    await user.click(screen.getByRole('button', { name: 'Minimize' }));
+    restore = await screen.findByRole('button', { name: /Round scoring.*Open/ });
+    await waitFor(() => expect(restore).toHaveFocus());
   });
 });

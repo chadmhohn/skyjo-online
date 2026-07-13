@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,800;9..144,900&family=Manrope:wght@400;500;600;700;800&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -8,6 +6,38 @@ body {
   margin: 0;
   font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #060c0a;
+}
+
+html.skyjo-test-text-scale-200 {
+  font-size: 200%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skyjo-surface *,
+  .skyjo-surface *::before,
+  .skyjo-surface *::after,
+  .skyjo-settings-overlay *,
+  .skyjo-round-summary-overlay * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-delay: 0s !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .skyjo-button:hover:not(:disabled),
+  .skyjo-choice-button:hover:not(:disabled),
+  .skyjo-card-selectable:hover:not(:disabled),
+  .skyjo-card-selectable:active:not(:disabled) {
+    transform: none !important;
+  }
+
+  .skyjo-flipped-pill::after,
+  .skyjo-flipped-pill:hover::after,
+  .skyjo-flipped-pill:focus::after,
+  .skyjo-flipped-pill:focus-visible::after {
+    transform: translate(-50%, 0) !important;
+  }
 }
 
 .skyjo-update-banner {
@@ -469,6 +499,14 @@ body {
     backdrop-filter: blur(14px);
   }
 
+  .skyjo-back-link {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
   .skyjo-round-summary-overlay {
     position: fixed;
     inset: 0;
@@ -490,6 +528,12 @@ body {
     border-color: rgba(245, 230, 200, 0.24);
     background: #050b09;
     box-shadow: 0 24px 70px rgba(0, 0, 0, 0.72);
+  }
+
+  .skyjo-solo-resume-dialog {
+    max-height: calc(100dvh - max(2rem, env(safe-area-inset-top)) - max(2rem, env(safe-area-inset-bottom)));
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .skyjo-score-player-name {
@@ -1046,6 +1090,16 @@ body {
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 24px 70px rgba(0, 0, 0, 0.2);
   }
 
+  .skyjo-game-table-shell {
+    display: grid;
+    min-width: 0;
+    gap: 0.65rem;
+  }
+
+  .skyjo-phone-action-guidance {
+    display: none;
+  }
+
   .skyjo-player-board-grid {
     display: flex;
     width: 100%;
@@ -1178,6 +1232,7 @@ body {
     width: 100%;
     min-width: 0;
     align-self: center;
+    gap: 0.75rem;
   }
 
   .skyjo-pile-button {
@@ -1441,9 +1496,10 @@ body {
 
     .skyjo-game-heading .skyjo-game-title {
       margin-top: 0 !important;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      overflow: visible;
+      overflow-wrap: anywhere;
+      text-overflow: clip;
+      white-space: normal;
       font-size: 1.28rem;
       line-height: 1.14;
     }
@@ -1630,6 +1686,14 @@ body {
       font-size: 1rem;
     }
 
+    .skyjo-local-board .skyjo-player-card-row {
+      grid-template-columns: repeat(4, minmax(44px, 1fr));
+    }
+
+    .skyjo-local-board .skyjo-card {
+      min-width: 44px;
+    }
+
     .skyjo-player-grid .skyjo-card-hidden {
       font-size: 0.38rem;
       letter-spacing: 0.04em;
@@ -1644,9 +1708,9 @@ body {
 
     .skyjo-table-controls {
       grid-template-columns: minmax(0, 1fr) 108px minmax(0, 1fr);
-      gap: 0.25rem;
+      gap: 4px;
       border-radius: 13px;
-      padding: 0.25rem;
+      padding: 4px;
       overflow: hidden;
     }
 
@@ -1703,6 +1767,34 @@ body {
       display: none;
     }
 
+    .skyjo-phone-action-guidance {
+      position: sticky;
+      top: max(0.35rem, env(safe-area-inset-top));
+      z-index: 35;
+      display: block;
+      min-width: 0;
+    }
+
+    .skyjo-phone-action-guidance .skyjo-action-guidance {
+      padding: 0.6rem 0.7rem;
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.32);
+    }
+
+    .skyjo-phone-action-guidance .skyjo-action-guidance-title {
+      font-size: 0.88rem;
+    }
+
+    .skyjo-phone-action-guidance .skyjo-action-guidance-instruction,
+    .skyjo-phone-action-guidance .skyjo-disabled-note {
+      margin-top: 0.25rem;
+      font-size: 0.72rem;
+      line-height: 1.35;
+    }
+
+    .skyjo-side-action-guidance {
+      display: none;
+    }
+
     .skyjo-table-controls .skyjo-kicker {
       font-size: 0.45rem;
       letter-spacing: 0.08em;
@@ -1710,13 +1802,13 @@ body {
 
     .skyjo-table-piles {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.2rem;
+      gap: 4px;
     }
 
     .skyjo-pile-button {
       min-height: 92px;
       height: 92px;
-      padding: 0.2rem;
+      padding: 3px;
     }
 
     .skyjo-table-card {

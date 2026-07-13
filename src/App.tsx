@@ -14,7 +14,7 @@ import {
   startNextRound
 } from './game';
 import { GameTableLayout, type DrawIntent } from './GameTableLayout';
-import { useModalFocus, usePhoneLayout } from './accessibility';
+import { useModalFocus, usePhoneLayout, usePrefersReducedMotion } from './accessibility';
 import { knownCardCount } from './gamePresentation';
 import {
   AccountProvider,
@@ -73,6 +73,7 @@ import {
   type SoloSessionRecord
 } from './soloDurability';
 import type { GameState, MultiplayerRoom, RoomChatMessage } from './types';
+import { advanceSoloAiOpeningSeat, drainSoloAiOpening, soloAiOpeningSeatDelayMs } from './soloAiOpening';
 
 const singlePlayerAiCounts = Array.from(
   { length: singlePlayerAiOpponentRange.max - singlePlayerAiOpponentRange.min + 1 },
@@ -1415,21 +1416,39 @@ interface RoundSummaryProps {
   actionDisabledReason?: string;
   onAction?: () => void;
   onMinimize?: () => void;
+  restoreFocusFallback?: () => HTMLElement | null;
   children?: ReactNode;
 }
 
-function RoundSummary({ state, actionLabel, actionDisabledReason, onAction, onMinimize, children }: RoundSummaryProps) {
+function RoundSummary({
+  state,
+  actionLabel,
+  actionDisabledReason,
+  onAction,
+  onMinimize,
+  restoreFocusFallback,
+  children
+}: RoundSummaryProps) {
   const phoneLayout = usePhoneLayout();
   const dialogRef = useRef<HTMLElement | null>(null);
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   useModalFocus({
-    open: phoneLayout,
+    open: true,
     dialogRef,
     initialFocusRef: titleRef,
     onDismiss: onMinimize,
     closeOnEscape: Boolean(onMinimize),
-    restoreFocusFallback: () => document.querySelector<HTMLElement>('[data-testid="round-summary-restore"]')
+    containFocus: phoneLayout,
+    inertBackground: phoneLayout,
+    lockScroll: phoneLayout,
+    restoreFocusFallback: () =>
+      document.querySelector<HTMLElement>('[data-testid="round-summary-restore"]') ??
+      restoreFocusFallback?.() ??
+      document.querySelector<HTMLElement>('[aria-label="Open game settings"]')
   });
+  useEffect(() => {
+    if (!phoneLayout) titleRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [phoneLayout]);
   const rankedPlayers = [...state.players].sort((a, b) => a.totalScore - b.totalScore || a.roundScore - b.roundScore);
   const leader = rankedPlayers[0];
   const winner = state.winnerId ? state.players.find((player) => player.id === state.winnerId) : null;
@@ -1455,7 +1474,7 @@ function RoundSummary({ state, actionLabel, actionDisabledReason, onAction, onMi
             className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]"
             id="skyjo-round-summary-title"
             ref={titleRef}
-            tabIndex={phoneLayout ? -1 : undefined}
+            tabIndex={-1}
           >
             {headline}
           </h2>
@@ -1543,6 +1562,7 @@ function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameStat
 function SinglePlayer() {
   const { loading: accountLoading, localSoloOwnerId, user } = useAccount();
   const navigate = useNavigate();
+  const prefersReducedMotion = usePrefersReducedMotion();
   const ownerKey = soloOwnerKey(user?.id ?? localSoloOwnerId);
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
@@ -1657,12 +1677,11 @@ function SinglePlayer() {
 
   useEffect(() => {
     if (!durabilityReady || activePlayer.kind !== 'ai' || state.phase === 'round-over' || state.phase === 'game-over') return;
+    const openingReveal = state.phase === 'opening-reveal';
     const timer = window.setTimeout(() => {
       setState((current) => {
         if (current.phase === 'opening-reveal') {
-          const aiPlayer = current.players[current.currentPlayerIndex];
-          const index = aiPlayer.grid.findIndex((card) => !card.faceUp && !card.removed);
-          return revealOpeningCard(current, index);
+          return prefersReducedMotion ? drainSoloAiOpening(current) : advanceSoloAiOpeningSeat(current);
         }
         const move = getBestAiMove(current);
         if (move.action === 'discard') return chooseDiscard(current);
@@ -1670,9 +1689,9 @@ function SinglePlayer() {
         if (move.action === 'replace') return replaceCard(current, move.index || 0);
         return discardDrawnAndReveal(current, move.index || 0);
       });
-    }, 650);
+    }, openingReveal ? (prefersReducedMotion ? 0 : soloAiOpeningSeatDelayMs) : 650);
     return () => window.clearTimeout(timer);
-  }, [activePlayer.kind, durabilityReady, state]);
+  }, [activePlayer.kind, durabilityReady, prefersReducedMotion, state]);
 
   useEffect(() => {
     setRoundSummaryOpen(isScoringPhase);
@@ -1795,7 +1814,7 @@ function SinglePlayer() {
             aria-describedby="solo-resume-description"
             aria-labelledby="solo-resume-title"
             aria-modal="true"
-            className="skyjo-panel w-full p-6"
+            className="skyjo-panel skyjo-solo-resume-dialog w-full p-6"
             ref={resumeDialogRef}
             role="dialog"
           >
@@ -1903,6 +1922,7 @@ function SinglePlayer() {
               actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
               onMinimize={() => setRoundSummaryOpen(false)}
               onAction={() => (state.phase === 'game-over' ? startSelectedGame() : setState(startNextRound(state)))}
+              restoreFocusFallback={() => document.querySelector<HTMLElement>('[aria-label="Action guidance"]')}
               state={state}
             />
           ) : null}
@@ -2926,6 +2946,7 @@ function Lobby() {
                       actionLabel={roomState.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
                       onMinimize={() => setRoundSummaryOpen(false)}
                       onAction={localIsHost ? handleNextRound : undefined}
+                      restoreFocusFallback={() => document.querySelector<HTMLElement>('[aria-label="Action guidance"]')}
                       state={roomState}
                     >
                       <div className="skyjo-ready-panel mt-4">

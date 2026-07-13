@@ -83,6 +83,9 @@ type ModalFocusOptions = {
   triggerRef?: RefObject<HTMLElement | null>;
   onDismiss?: () => void;
   closeOnEscape?: boolean;
+  containFocus?: boolean;
+  inertBackground?: boolean;
+  lockScroll?: boolean;
   restoreFocusFallback?: () => HTMLElement | null;
 };
 
@@ -93,6 +96,9 @@ export function useModalFocus({
   triggerRef,
   onDismiss,
   closeOnEscape = true,
+  containFocus = true,
+  inertBackground = true,
+  lockScroll = true,
   restoreFocusFallback
 }: ModalFocusOptions): void {
   const onDismissRef = useRef(onDismiss);
@@ -110,8 +116,8 @@ export function useModalFocus({
     const token = Symbol('modal-focus');
     activeSessionRef.current = token;
     modalStack.push(token);
-    const restoreInert = setBackgroundInert(overlay);
-    const unlockBody = lockBodyScroll();
+    const restoreInert = inertBackground ? setBackgroundInert(overlay) : () => undefined;
+    const unlockBody = lockScroll ? lockBodyScroll() : () => undefined;
 
     const focusFirst = () => {
       const target = initialFocusRef?.current ?? focusableElements(dialog)[0] ?? dialog;
@@ -125,6 +131,7 @@ export function useModalFocus({
         onDismissRef.current();
         return;
       }
+      if (!containFocus) return;
       if (event.key !== 'Tab') return;
       const focusable = focusableElements(dialog);
       if (focusable.length === 0) {
@@ -150,12 +157,12 @@ export function useModalFocus({
     };
 
     document.addEventListener('keydown', handleKeyDown, true);
-    document.addEventListener('focusin', handleFocusIn, true);
+    if (containFocus) document.addEventListener('focusin', handleFocusIn, true);
     focusFirst();
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown, true);
-      document.removeEventListener('focusin', handleFocusIn, true);
+      if (containFocus) document.removeEventListener('focusin', handleFocusIn, true);
       const stackIndex = modalStack.lastIndexOf(token);
       if (stackIndex >= 0) modalStack.splice(stackIndex, 1);
       if (activeSessionRef.current === token) activeSessionRef.current = null;
@@ -168,7 +175,7 @@ export function useModalFocus({
         target?.focus({ preventScroll: true });
       });
     };
-  }, [closeOnEscape, dialogRef, initialFocusRef, open, triggerRef]);
+  }, [closeOnEscape, containFocus, dialogRef, inertBackground, initialFocusRef, lockScroll, open, triggerRef]);
 }
 
 export function useMediaQuery(query: string): boolean {

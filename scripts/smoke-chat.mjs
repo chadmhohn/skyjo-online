@@ -474,7 +474,11 @@ try {
   assert.equal(publicLoginPage.status, 200);
   assert.match(publicLoginPage.headers.get('cache-control') || '', /no-store/i);
   assert.equal(publicLoginPage.headers.get('referrer-policy'), 'no-referrer');
-  assert.match(publicLoginPage.headers.get('content-security-policy') || '', /default-src 'self'/);
+  const publicLoginCsp = publicLoginPage.headers.get('content-security-policy') || '';
+  assert.match(publicLoginCsp, /default-src 'self'/);
+  assert.match(publicLoginCsp, /style-src 'self'(?: 'nonce-[^']+')?/);
+  assert.match(publicLoginCsp, /font-src 'self'/);
+  assert.doesNotMatch(publicLoginCsp, /fonts\.(?:googleapis|gstatic)\.com/);
   const publicLoginHtml = await publicLoginPage.text();
   for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
     assert.match(publicLoginHtml, new RegExp(marker), `login SSR head includes ${marker}`);
@@ -499,10 +503,19 @@ try {
   assert.equal(authenticatedShell.status, 200);
   assert.match(authenticatedShell.headers.get('cache-control') || '', /no-store/i);
   assert.equal(authenticatedShell.headers.get('referrer-policy'), 'no-referrer');
+  const authenticatedShellCsp = authenticatedShell.headers.get('content-security-policy') || '';
+  assert.match(authenticatedShellCsp, /style-src 'self'; font-src 'self'/);
+  assert.doesNotMatch(authenticatedShellCsp, /fonts\.(?:googleapis|gstatic)\.com/);
   const authenticatedShellHtml = await authenticatedShell.text();
   for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
     assert.match(authenticatedShellHtml, new RegExp(marker), `SPA head includes ${marker}`);
   }
+  const stylesheetPath = authenticatedShellHtml.match(/href="([^"]+\.css)"/)?.[1];
+  assert.ok(stylesheetPath, 'SPA shell references its compiled stylesheet');
+  const compiledStylesheet = await fetch(new URL(stylesheetPath, baseUrl), { headers: { Cookie: cookie } });
+  assert.equal(compiledStylesheet.status, 200, 'compiled stylesheet is available');
+  const compiledCss = await compiledStylesheet.text();
+  assert.doesNotMatch(compiledCss, /@import|fonts\.(?:googleapis|gstatic)\.com/, 'critical CSS has no remote font dependency');
   const cardAudio = await fetch(`${baseUrl}/audio/card-flip.mp3`, { headers: { Cookie: cookie } });
   assert.equal(cardAudio.status, 200, 'card audio assets are served after shared-password login');
   assert.match(cardAudio.headers.get('content-type') || '', /audio\/mpeg/);
