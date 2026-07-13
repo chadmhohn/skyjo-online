@@ -34,7 +34,6 @@ export const REQUIRED_ARCHIVE_ENTRIES = new Set([
   'server-room-invites.mjs',
   'server-room-persistence.mjs',
   'server-state-backup.mjs',
-  'server-test-pwa-diagnostics.mjs',
   'skyjo-runtime.cdx.json',
   'dist/index.html',
   'server-dist/game.js',

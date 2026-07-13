@@ -102,38 +102,19 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   expect(serviceWorkerSource).toContain("addEventListener('push'");
   expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
   expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
-  const originGuardIndex = serviceWorkerSource.indexOf('if (event.origin !== self.location.origin) {');
-  const compatibilityIndex = serviceWorkerSource.indexOf("isActivation && event.origin === '' && event.source === null");
+  const originGuardIndex = serviceWorkerSource.indexOf('if (event.origin !== self.location.origin) return;');
   const activationIndex = serviceWorkerSource.indexOf('if (isActivation) {');
+  const skipWaitingIndex = serviceWorkerSource.indexOf('void self.skipWaiting().catch(() => {});');
+  const graceIndex = serviceWorkerSource.indexOf('setTimeout(resolve, skipWaitingGraceMs)');
   const sourceGuardIndex = serviceWorkerSource.indexOf('if (!event.source) return;');
   const sanitizerIndex = serviceWorkerSource.indexOf("event.data?.type === 'SKYJO_SANITIZE_CACHE'");
   expect(originGuardIndex).toBeGreaterThan(-1);
-  expect(compatibilityIndex).toBeGreaterThan(originGuardIndex);
-  expect(activationIndex).toBeGreaterThan(compatibilityIndex);
+  expect(activationIndex).toBeGreaterThan(originGuardIndex);
+  expect(skipWaitingIndex).toBeGreaterThan(-1);
+  expect(graceIndex).toBeGreaterThan(skipWaitingIndex);
   expect(sourceGuardIndex).toBeGreaterThan(activationIndex);
   expect(sanitizerIndex).toBeGreaterThan(sourceGuardIndex);
-});
-
-test('test-only PWA activation diagnostics acknowledge bounded JSON without caching', async ({ request, skyjoServer }) => {
-  const unavailable = await request.get(`${skyjoServer.baseURL}/__test/pwa-activation-message`);
-  expect(unavailable.status()).toBe(404);
-  expect(unavailable.headers()['cache-control']).toBe('no-store');
-
-  const response = await request.post(`${skyjoServer.baseURL}/__test/pwa-activation-message`, {
-    data: {
-      eventOriginState: 'string',
-      eventOrigin: 'null',
-      source: 'null',
-      sourceType: 'object',
-      sourceUrlOrigin: null,
-      sourceUrlPath: '/lobby?room=must-not-log',
-      portsLength: 0
-    }
-  });
-
-  expect(response.status()).toBe(204);
-  expect(response.headers()['cache-control']).toBe('no-store');
-  expect(await response.body()).toHaveLength(0);
+  expect(serviceWorkerSource).not.toContain('waitUntil(self.skipWaiting())');
 });
 
 test('single-player stats deduplicate one UUID without collapsing an equal-score game', async ({ page, skyjoServer }) => {

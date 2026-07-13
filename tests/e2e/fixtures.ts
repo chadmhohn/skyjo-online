@@ -6,7 +6,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test as base, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { pwaDiagnosticEchoLines } from '../helpers/pwaDiagnosticLog';
 
 type SkyjoServer = {
   accessPassword: string;
@@ -124,7 +123,6 @@ export const test = base.extend<object, WorkerFixtures>({
           await Promise.race([once(child, 'exit'), new Promise((resolve) => setTimeout(resolve, 5_000))]);
         }
         if (child.exitCode === null) child.kill();
-        for (const diagnostic of pwaDiagnosticEchoLines(log)) process.stdout.write(`${diagnostic}\n`);
         await fs.writeFile(logPath, log, 'utf8');
         await fs.rm(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       }

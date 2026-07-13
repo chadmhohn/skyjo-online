@@ -9,14 +9,44 @@ type WorkerMessage = {
 };
 
 type WorkerMessageHandler = (event: WorkerMessage & { waitUntil: (promise: Promise<unknown>) => void }) => void;
+type WorkerSourceKind = 'generated' | 'production';
+type TimerCallback = () => void;
 
 const appOrigin = 'https://skyjo.example';
 const activationType = 'SKYJO_ACTIVATE_UPDATE';
 const sanitizerType = 'SKYJO_SANITIZE_CACHE';
+const workerSourceKinds: WorkerSourceKind[] = ['generated', 'production'];
 
-function loadMessageHandler() {
+function generatedTestWorkerSource(): string {
+  const serverSource = fs.readFileSync('server.mjs', 'utf8');
+  const start = serverSource.indexOf('function testPwaWorkerSource(variant) {');
+  const end = serverSource.indexOf('\n\nfunction makeRoomCode', start);
+  if (start < 0 || end < 0) throw new Error('Generated test worker source builder was not found.');
+  const context: { workerSource?: string } = {};
+  vm.runInNewContext(`${serverSource.slice(start, end)}\nworkerSource = testPwaWorkerSource('B');`, context);
+  if (typeof context.workerSource !== 'string') throw new Error('Generated test worker source was not produced.');
+  return context.workerSource;
+}
+
+function workerSource(kind: WorkerSourceKind): string {
+  return kind === 'generated'
+    ? generatedTestWorkerSource()
+    : fs.readFileSync('src/service-worker.js', 'utf8');
+}
+
+function loadMessageHandler(
+  kind: WorkerSourceKind = 'production',
+  options: {
+    onTimerScheduled?: (delay: number) => void;
+    skipWaiting?: () => Promise<unknown>;
+  } = {}
+) {
   const handlers = new Map<string, (...args: never[]) => unknown>();
-  const skipWaiting = vi.fn(() => Promise.resolve());
+  const skipWaiting = vi.fn(options.skipWaiting || (() => Promise.resolve()));
+  const scheduleTimer = (callback: TimerCallback, delay: number) => {
+    options.onTimerScheduled?.(delay);
+    return setTimeout(callback, delay);
+  };
   const cache = {
     delete: vi.fn(() => Promise.resolve(true)),
     keys: vi.fn(() => Promise.resolve([]))
@@ -27,73 +57,118 @@ function loadMessageHandler() {
   const self = {
     __WB_MANIFEST: [],
     addEventListener: vi.fn((type: string, handler: (...args: never[]) => unknown) => handlers.set(type, handler)),
+    clients: { claim: vi.fn(() => Promise.resolve()) },
     location: { origin: appOrigin },
     skipWaiting
   };
-  const source = fs.readFileSync('src/service-worker.js', 'utf8');
-  vm.runInNewContext(source, { caches, self });
+  vm.runInNewContext(workerSource(kind), { caches, self, setTimeout: scheduleTimer });
   const handler = handlers.get('message') as WorkerMessageHandler | undefined;
   if (!handler) throw new Error('Service worker message handler was not registered.');
   return { cache, caches, handler, skipWaiting };
 }
 
-async function dispatchMessage(handler: WorkerMessageHandler, message: WorkerMessage) {
+function beginDispatch(handler: WorkerMessageHandler, message: WorkerMessage, onWaitUntil?: () => void) {
   const pending: Promise<unknown>[] = [];
-  const waitUntil = vi.fn((promise: Promise<unknown>) => pending.push(Promise.resolve(promise)));
+  const waitUntil = vi.fn((promise: Promise<unknown>) => {
+    onWaitUntil?.();
+    pending.push(Promise.resolve(promise));
+  });
   handler({ ...message, ports: message.ports || [], waitUntil });
+  return { pending, waitUntil };
+}
+
+async function dispatchMessage(handler: WorkerMessageHandler, message: WorkerMessage) {
+  const { pending, waitUntil } = beginDispatch(handler, message);
   await Promise.all(pending);
   return { waitUntil };
 }
 
 describe('service worker message trust boundary', () => {
-  it('allows same-origin activation when WebKit supplies a null source', async () => {
-    const { caches, handler, skipWaiting } = loadMessageHandler();
-    const { waitUntil } = await dispatchMessage(handler, {
-      data: { type: activationType },
-      origin: appOrigin,
-      source: null
-    });
+  it.each(workerSourceKinds)('%s worker uses a caught skip request and an independent 50ms grace', async (kind) => {
+    vi.useFakeTimers();
+    try {
+      for (const outcome of ['pending', 'resolved', 'rejected'] as const) {
+        const order: string[] = [];
+        const skipWaiting = () => {
+          order.push('skip');
+          if (outcome === 'resolved') return Promise.resolve();
+          if (outcome === 'rejected') return Promise.reject(new Error('skip request rejected'));
+          return new Promise<undefined>(() => {});
+        };
+        const loaded = loadMessageHandler(kind, {
+          skipWaiting,
+          onTimerScheduled: (delay) => order.push(`timer:${delay}`)
+        });
+        const { pending, waitUntil } = beginDispatch(loaded.handler, {
+          data: { type: activationType },
+          origin: appOrigin,
+          source: { id: 'same-origin-client' }
+        }, () => order.push('waitUntil'));
+        expect(loaded.skipWaiting).toHaveBeenCalledTimes(1);
+        expect(waitUntil).toHaveBeenCalledTimes(1);
+        expect(pending).toHaveLength(1);
+        expect(order).toEqual(['skip', 'timer:50', 'waitUntil']);
+        expect(loaded.caches.open).not.toHaveBeenCalled();
 
-    expect(skipWaiting).toHaveBeenCalledTimes(1);
-    expect(waitUntil).toHaveBeenCalledTimes(1);
-    expect(caches.open).not.toHaveBeenCalled();
+        let graceSettled = false;
+        void pending[0].then(() => { graceSettled = true; });
+        await Promise.resolve();
+        expect(graceSettled).toBe(false);
+        await vi.advanceTimersByTimeAsync(49);
+        expect(graceSettled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await pending[0];
+        expect(graceSettled).toBe(true);
+        vi.clearAllTimers();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it.each(['https://attacker.example', 'null'])('rejects null-source activation from origin %s', async (origin) => {
-    const { caches, handler, skipWaiting } = loadMessageHandler();
-    const { waitUntil } = await dispatchMessage(handler, {
-      data: { type: activationType },
-      origin,
-      source: null
-    });
+  it.each(workerSourceKinds)('%s worker accepts exact-origin activation with either truthy or null source', async (kind) => {
+    for (const source of [{ id: 'same-origin-client' }, null]) {
+      const { caches, handler, skipWaiting } = loadMessageHandler(kind);
+      const { waitUntil } = await dispatchMessage(handler, {
+        data: { type: activationType },
+        origin: appOrigin,
+        source
+      });
 
-    expect(skipWaiting).not.toHaveBeenCalled();
-    expect(waitUntil).not.toHaveBeenCalled();
-    expect(caches.open).not.toHaveBeenCalled();
+      expect(skipWaiting).toHaveBeenCalledTimes(1);
+      expect(waitUntil).toHaveBeenCalledTimes(1);
+      expect(caches.open).not.toHaveBeenCalled();
+    }
   });
 
-  it('allows only the WebKit empty-origin and null-source activation shape', async () => {
-    const { handler, skipWaiting } = loadMessageHandler();
-    const { waitUntil } = await dispatchMessage(handler, {
-      data: { type: activationType },
-      origin: '',
-      source: null
-    });
+  it.each(workerSourceKinds)('%s worker rejects activation from every non-matching origin', (kind) => {
+    for (const origin of ['', 'null', 'https://attacker.example']) {
+      for (const source of [{ id: 'unexpected-source' }, null]) {
+        const scheduled: number[] = [];
+        const { caches, handler, skipWaiting } = loadMessageHandler(kind, {
+          onTimerScheduled: (delay) => scheduled.push(delay)
+        });
+        const { pending, waitUntil } = beginDispatch(handler, {
+          data: { type: activationType },
+          origin,
+          source
+        });
 
-    expect(skipWaiting).toHaveBeenCalledTimes(1);
-    expect(waitUntil).toHaveBeenCalledTimes(1);
+        expect(skipWaiting).not.toHaveBeenCalled();
+        expect(waitUntil).not.toHaveBeenCalled();
+        expect(pending).toHaveLength(0);
+        expect(scheduled).toHaveLength(0);
+        expect(caches.open).not.toHaveBeenCalled();
+      }
+    }
   });
 
-  it('rejects empty-origin activation when a source is present', async () => {
-    const { handler, skipWaiting } = loadMessageHandler();
-    const { waitUntil } = await dispatchMessage(handler, {
-      data: { type: activationType },
-      origin: '',
-      source: { id: 'unexpected-source' }
-    });
-
-    expect(skipWaiting).not.toHaveBeenCalled();
-    expect(waitUntil).not.toHaveBeenCalled();
+  it.each(workerSourceKinds)('%s worker never couples waitUntil directly to skipWaiting', (kind) => {
+    const source = workerSource(kind);
+    expect(source).toContain('const skipWaitingGraceMs = 50;');
+    expect(source).toContain('void self.skipWaiting().catch(() => {});');
+    expect(source).toContain('setTimeout(resolve, skipWaitingGraceMs)');
+    expect(source).not.toContain('waitUntil(self.skipWaiting())');
   });
 
   it.each([

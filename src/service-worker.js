@@ -1,8 +1,15 @@
-/* global self, caches, clients */
+/* global self, caches, clients, setTimeout */
 
 const precacheEntries = self.__WB_MANIFEST;
 const cachePrefix = 'skyjo-pwa-v2-';
 const legacyCachePrefixes = ['skyjo-online-v', 'skyjo-static-v'];
+const skipWaitingGraceMs = 50;
+
+function requestImmediateActivation(event) {
+  // WebKit may finish this message event before its queued skipWaiting task; the independent 50ms grace keeps one bounded scheduling window.
+  void self.skipWaiting().catch(() => {});
+  event.waitUntil(new Promise((resolve) => setTimeout(resolve, skipWaitingGraceMs)));
+}
 
 function manifestFingerprint(entries) {
   let hash = 2166136261;
@@ -102,13 +109,9 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('message', (event) => {
   const isActivation = event.data?.type === 'SKYJO_ACTIVATE_UPDATE';
-  if (event.origin !== self.location.origin) {
-    // Linux WebKit can omit both fields; origin-scoped ServiceWorker references make this exact shape safe only for skipWaiting.
-    const isWebKitNullSourceActivation = isActivation && event.origin === '' && event.source === null;
-    if (!isWebKitNullSourceActivation) return;
-  }
+  if (event.origin !== self.location.origin) return;
   if (isActivation) {
-    event.waitUntil(self.skipWaiting());
+    requestImmediateActivation(event);
     return;
   }
   if (!event.source) return;
