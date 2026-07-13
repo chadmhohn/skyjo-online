@@ -22,3 +22,22 @@ test('solo table has no serious or critical Axe violations', async ({ page, skyj
   await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
   await expectNoBlockingViolations(page);
 });
+
+test('eight-player centered table has no serious or critical Axe violations', async ({ page, skyjoServer }) => {
+  await installSeededBrowserRuntime(page, 70);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await page.getByRole('button', { name: 'Open game settings' }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('tab', { name: 'Game' }).click();
+  await settings
+    .getByRole('group', { name: 'Choose AI opponent count' })
+    .getByRole('button', { name: '7', exact: true })
+    .click();
+  await page.waitForTimeout(250);
+  await settings.getByRole('button', { name: 'New Game' }).click();
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
+  await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', '8');
+  await expectNoBlockingViolations(page);
+});

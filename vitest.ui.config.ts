@@ -25,8 +25,10 @@ export default defineConfig({
       reporter: ['text', 'json-summary', 'lcov'],
       include: [
         'src/App.tsx',
+        'src/GameTableLayout.tsx',
         'src/account.tsx',
         'src/audio.ts',
+        'src/gamePresentation.ts',
         'src/lazyRoomConnection.ts',
         'src/pwaUpdate.ts',
         'src/push.ts',
@@ -36,8 +38,10 @@ export default defineConfig({
       thresholds: {
         ...uiThresholds,
         'src/App.tsx': uiThresholds,
+        'src/GameTableLayout.tsx': uiThresholds,
         'src/account.tsx': uiThresholds,
         'src/audio.ts': uiThresholds,
+        'src/gamePresentation.ts': uiThresholds,
         'src/lazyRoomConnection.ts': uiThresholds,
         'src/pwaUpdate.ts': uiThresholds,
         'src/push.ts': uiThresholds,

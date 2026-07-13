@@ -1480,7 +1480,7 @@ describe('multiplayer game table', () => {
     expect(browserStorage).not.toContain('997');
   });
 
-  it('renders opponent waits, four-player boards, final-lap states, and completed-round readiness controls', async () => {
+  it('renders one shared four-player table with opponent waits, final-lap states, and completed-round readiness controls', async () => {
     const fourPlayers = [
       makePlayer('p1', 'Alice'),
       makePlayer('p2', 'Bob'),
@@ -1508,11 +1508,15 @@ describe('multiplayer game table', () => {
       })
     );
 
-    expect(screen.getAllByText('Waiting on Bob').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Bob is taking a final turn.').length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId('shared-game-table')).toHaveLength(1);
+    expect(screen.getAllByTestId('table-center')).toHaveLength(1);
+    expect(screen.getByTestId('opponent-rail')).toHaveAttribute('data-entry-count', '3');
+    expect(screen.getByTestId('local-board')).toHaveAttribute('data-entry-count', '1');
+    expect(screen.getByText('Waiting on Bob')).toBeInTheDocument();
+    expect(screen.getByText('Bob is taking a final turn.')).toBeInTheDocument();
     expect(screen.getByText(/Carol away/)).toBeInTheDocument();
-    expect(screen.getAllByTitle('Waiting for Bob.').length).toBeGreaterThan(0);
-    expect(screen.getAllByRole('heading', { name: 'Drew' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByTitle('Waiting for Bob.')).toHaveLength(2);
+    expect(screen.getByRole('heading', { name: 'Drew' })).toBeInTheDocument();
 
     const roundOverPlayers = fourPlayers.map((player, index) => ({
       ...player,
