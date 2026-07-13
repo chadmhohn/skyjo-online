@@ -77,6 +77,9 @@ async function settleResponsiveTable(
           };
         });
         lastSample = current;
+        const compactViewportFits =
+          !expectedCompact ||
+          (current.opponentTop >= 0 && current.localBottom <= viewport.height + 1);
         const responsiveStateMatches =
           current.viewportWidth === viewport.width &&
           current.viewportHeight === viewport.height &&
@@ -86,6 +89,7 @@ async function settleResponsiveTable(
           current.phoneGuidanceVisible === expectedPhone &&
           current.playerCount === String(playerCount) &&
           current.fontStatus === 'loaded' &&
+          compactViewportFits &&
           (expectedCenterBandHeight === null ||
             Math.abs(current.centerBandHeight - expectedCenterBandHeight) <= 0.05);
         const signature = JSON.stringify(current);
@@ -95,7 +99,7 @@ async function settleResponsiveTable(
             : 1
           : 0;
         previousSignature = signature;
-        return { responsiveStateMatches, stableSamples, sample: current };
+        return { compactViewportFits, responsiveStateMatches, stableSamples, sample: current };
       },
       {
         intervals: [25, 50, 100, 250],
@@ -103,7 +107,11 @@ async function settleResponsiveTable(
         timeout: 7_500
       }
     )
-    .toMatchObject({ responsiveStateMatches: true, stableSamples: requiredStableSamples });
+    .toMatchObject({
+      compactViewportFits: true,
+      responsiveStateMatches: true,
+      stableSamples: requiredStableSamples
+    });
 
   if (!lastSample) throw new Error('Responsive table settlement produced no sample.');
   return {
