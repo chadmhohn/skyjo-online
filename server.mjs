@@ -300,7 +300,11 @@ function testPwaWorkerSource(variant) {
 self.addEventListener('install', () => {});
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SKYJO_ACTIVATE_UPDATE') event.waitUntil(self.skipWaiting());
+  if (event.origin !== self.location.origin) return;
+  if (event.data?.type === 'SKYJO_ACTIVATE_UPDATE') {
+    event.waitUntil(self.skipWaiting());
+    return;
+  }
 });\n`;
 }
 
