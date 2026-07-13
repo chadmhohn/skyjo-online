@@ -799,6 +799,44 @@ describe('protocol v2 resilient seat lifecycle commands', () => {
       roomCode: target.code
     })).toBe(false);
   });
+
+  it('auto-readies every AI-controlled seat at round-over in one fenced revision', () => {
+    const thirdId = playerIdAt(3);
+    const players = [
+      player(HOST_ID, 'Host', true),
+      { ...player(GUEST_ID, 'Guest'), controller: 'ai' as const },
+      { ...player(thirdId, 'Third'), controller: 'ai' as const }
+    ];
+    const state = createMultiplayerGame(players, 1, null, () => 0.5);
+    state.phase = 'round-over';
+    const target = room({ players, state, status: 'playing' });
+    const value = harness(target);
+    const handler = createProtocolV2MessageHandler(value.options);
+
+    expect(handler.executeAutomatedAction({
+      commandId: OTHER_COMMAND_ID,
+      expectedRevision: 0,
+      playerId: GUEST_ID,
+      roomCode: target.code
+    })).toBe(true);
+
+    expect(target.readyForNextRoundPlayerIds).toEqual([GUEST_ID, thirdId]);
+    expect(target.revision).toBe(1);
+    expect(target.recentCommandIds).toEqual([expect.objectContaining({
+      commandId: OTHER_COMMAND_ID,
+      playerId: GUEST_ID,
+      revision: 1
+    })]);
+    expect(target.state?.players.every((candidate) => candidate.kind === 'human')).toBe(true);
+    expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toEqual([target]);
+    expect(handler.executeAutomatedAction({
+      commandId: commandIdAt(99),
+      expectedRevision: 0,
+      playerId: thirdId,
+      roomCode: target.code
+    })).toBe(false);
+  });
 });
 
 describe('protocol v2 command ordering and receipts', () => {
