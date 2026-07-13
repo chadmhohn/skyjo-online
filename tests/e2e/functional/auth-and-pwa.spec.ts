@@ -102,12 +102,14 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   expect(serviceWorkerSource).toContain("addEventListener('push'");
   expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
   expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
-  const originGuardIndex = serviceWorkerSource.indexOf('if (event.origin !== self.location.origin) return;');
-  const activationIndex = serviceWorkerSource.indexOf("event.data?.type === 'SKYJO_ACTIVATE_UPDATE'");
+  const originGuardIndex = serviceWorkerSource.indexOf('if (event.origin !== self.location.origin) {');
+  const compatibilityIndex = serviceWorkerSource.indexOf("isActivation && event.origin === '' && event.source === null");
+  const activationIndex = serviceWorkerSource.indexOf('if (isActivation) {');
   const sourceGuardIndex = serviceWorkerSource.indexOf('if (!event.source) return;');
   const sanitizerIndex = serviceWorkerSource.indexOf("event.data?.type === 'SKYJO_SANITIZE_CACHE'");
   expect(originGuardIndex).toBeGreaterThan(-1);
-  expect(activationIndex).toBeGreaterThan(originGuardIndex);
+  expect(compatibilityIndex).toBeGreaterThan(originGuardIndex);
+  expect(activationIndex).toBeGreaterThan(compatibilityIndex);
   expect(sourceGuardIndex).toBeGreaterThan(activationIndex);
   expect(sanitizerIndex).toBeGreaterThan(sourceGuardIndex);
 });

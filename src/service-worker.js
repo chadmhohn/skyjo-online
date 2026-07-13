@@ -101,8 +101,13 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (event.origin !== self.location.origin) return;
-  if (event.data?.type === 'SKYJO_ACTIVATE_UPDATE') {
+  const isActivation = event.data?.type === 'SKYJO_ACTIVATE_UPDATE';
+  if (event.origin !== self.location.origin) {
+    // Linux WebKit can omit both fields; origin-scoped ServiceWorker references make this exact shape safe only for skipWaiting.
+    const isWebKitNullSourceActivation = isActivation && event.origin === '' && event.source === null;
+    if (!isWebKitNullSourceActivation) return;
+  }
+  if (isActivation) {
     event.waitUntil(self.skipWaiting());
     return;
   }
