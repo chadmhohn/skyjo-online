@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { createAccountStore } from '../../server-account-store.mjs';
 import { saveRoomsToDisk } from '../../server-room-persistence.mjs';
-import { writeReleaseIdentity } from '../../server-release.mjs';
+import { CURRENT_PROTOCOL_VERSION, writeReleaseIdentity } from '../../server-release.mjs';
 import {
   governanceRuleset,
   assertDependabotReadbacks,
@@ -930,7 +930,7 @@ async function backupFixture(root) {
     releaseSha,
     buildTimestamp: '2026-07-11T00:00:00.000Z',
     schemaVersion: 2,
-    protocolVersion: 1
+    protocolVersion: CURRENT_PROTOCOL_VERSION
   });
   return {
     SKYJO_DB_FILE: databasePath,

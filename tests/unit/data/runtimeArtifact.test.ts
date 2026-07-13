@@ -18,7 +18,7 @@ import {
   validateRuntimeEntries,
   verifyRuntimeArtifact
 } from '../../../scripts/runtime-artifact-lib.mjs';
-import { sha256 } from '../../../server-release.mjs';
+import { CURRENT_PROTOCOL_VERSION, sha256 } from '../../../server-release.mjs';
 
 const releaseSha = '0123456789abcdef0123456789abcdef01234567';
 const releaseIdentity = {
@@ -26,7 +26,7 @@ const releaseIdentity = {
   releaseSha,
   buildTimestamp: '2026-07-11T12:00:00.000Z',
   schemaVersion: 2,
-  protocolVersion: 1
+  protocolVersion: CURRENT_PROTOCOL_VERSION
 };
 const releaseData = Buffer.from(`${JSON.stringify(releaseIdentity, null, 2)}\n`);
 const releaseChecksum = Buffer.from(`${sha256(releaseData)}  release.json\n`);

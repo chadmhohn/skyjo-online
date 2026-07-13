@@ -54,8 +54,15 @@ function releaseIdentity() {
     releaseSha,
     buildTimestamp: fixedTimestamp,
     schemaVersion: 2,
-    protocolVersion: 1
+    protocolVersion: CURRENT_PROTOCOL_VERSION
   };
+}
+
+async function writeChecksummedReleaseIdentity(directory: string, identity: ReturnType<typeof releaseIdentity>) {
+  const data = `${JSON.stringify(identity, null, 2)}\n`;
+  const checksum = crypto.createHash('sha256').update(data).digest('hex');
+  await fs.writeFile(path.join(directory, 'release.json'), data, 'utf8');
+  await fs.writeFile(path.join(directory, 'release.json.sha256'), `${checksum}  release.json\n`, 'utf8');
 }
 
 async function createDatabase(filePath: string) {
@@ -150,7 +157,7 @@ describe('verified state backups', () => {
         schemaVersion: 2,
         releaseSha,
         buildTimestamp: fixedTimestamp,
-        protocolVersion: 1,
+        protocolVersion: CURRENT_PROTOCOL_VERSION,
         database: { integrityCheck: 'ok', foreignKeyCheck: 'ok', schemaVersion: 2 },
         rooms: { format: 'skyjo-rooms', version: 2, protocolVersion: 1, count: 1 }
       }
@@ -171,6 +178,30 @@ describe('verified state backups', () => {
       expect((await fs.stat(result.backupDirectory)).mode & 0o777).toBe(0o700);
       for (const name of names) expect((await fs.stat(path.join(result.backupDirectory, name))).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it('backs up and restores the v0.1.1 release identity with the protocol-v1 room envelope', async () => {
+    const historicalRelease = { ...releaseIdentity(), protocolVersion: 1 };
+    await writeChecksummedReleaseIdentity(sourceDirectory, historicalRelease);
+
+    const backup = await createBackup('v0.1.1-release-compatibility');
+    expect(backup.metadata).toMatchObject({
+      protocolVersion: 1,
+      rooms: { format: 'skyjo-rooms', version: 2, protocolVersion: 1, count: 1 }
+    });
+    await expect(verifyStateBackup(backup.backupDirectory)).resolves.toMatchObject({
+      metadata: { protocolVersion: 1, rooms: { protocolVersion: 1 } }
+    });
+
+    const restored = await restoreStateBackup(backup.backupDirectory, {
+      destinationDirectory: path.join(tempDirectory, 'v0.1.1-release-restore'),
+      livePaths: []
+    });
+    expect(JSON.parse(await fs.readFile(restored.releasePath, 'utf8'))).toEqual(historicalRelease);
+    expect(JSON.parse(await fs.readFile(restored.roomsPath, 'utf8'))).toMatchObject({
+      version: 2,
+      protocolVersion: 1
+    });
   });
 
   it('supports the strict v2 room envelope and its checksummed release identity', () => {
@@ -380,7 +411,11 @@ describe('verified state backups', () => {
     await expect(createBackup('bad-rooms')).rejects.toThrow(/room state.*validation/i);
 
     await fs.writeFile(roomsPath, `${JSON.stringify(roomState())}\n`, 'utf8');
-    await fs.writeFile(releasePath, `${JSON.stringify({ ...releaseIdentity(), protocolVersion: 2 })}\n`, 'utf8');
+    await fs.writeFile(
+      releasePath,
+      `${JSON.stringify({ ...releaseIdentity(), protocolVersion: CURRENT_PROTOCOL_VERSION })}\n`,
+      'utf8'
+    );
     await expect(createBackup('bad-release-schema')).rejects.toThrow(/checksum/i);
   });
 

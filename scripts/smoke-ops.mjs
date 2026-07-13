@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAccountStore } from '../server-account-store.mjs';
+import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
 import { runDeployedSmoke } from './deployed-smoke-lib.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -104,7 +105,8 @@ try {
     baseUrl: server.baseUrl,
     accessPassword,
     accountEmail: adminEmail,
-    accountPassword: adminPassword
+    accountPassword: adminPassword,
+    expectedProtocolVersion: CURRENT_PROTOCOL_VERSION
   });
   const roomsAfterSocket = await fs.readFile(path.join(healthyDir, 'rooms.json'), 'utf8');
   assert.equal(roomsAfterSocket, initialRooms, 'non-mutating WebSocket proof must not change room state');
@@ -130,7 +132,8 @@ try {
     baseUrl: server.baseUrl,
     accessPassword,
     accountEmail: adminEmail,
-    accountPassword: adminPassword
+    accountPassword: adminPassword,
+    expectedProtocolVersion: CURRENT_PROTOCOL_VERSION
   });
 
   await stopServer(server);

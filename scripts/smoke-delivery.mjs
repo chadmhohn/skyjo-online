@@ -6,6 +6,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
 import { runPublicReleaseSmoke } from './smoke-public-release.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -44,7 +45,7 @@ async function withPublicFixture({ legacy = false } = {}, callback) {
       response.end(JSON.stringify({
         releaseSha: fullSha,
         buildTimestamp: '2026-07-11T00:00:00.000Z',
-        protocolVersion: 1
+        protocolVersion: CURRENT_PROTOCOL_VERSION
       }));
       return;
     }
@@ -67,6 +68,7 @@ async function testPublicSmoke() {
   await withPublicFixture({}, async (baseUrl) => {
     const result = await runPublicReleaseSmoke({ baseUrl, releaseSha: fullSha, timeoutMs: 250, retryMs: 10 });
     assert.equal(result.releaseSha, fullSha);
+    assert.equal(result.protocolVersion, CURRENT_PROTOCOL_VERSION);
     await assert.rejects(
       runPublicReleaseSmoke({ baseUrl, releaseSha: 'b'.repeat(40), timeoutMs: 50, retryMs: 10 }),
       /wrong release/i
