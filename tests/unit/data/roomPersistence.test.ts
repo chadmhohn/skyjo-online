@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
   DEFAULT_ROOMS_FILE,
+  MAX_PERSISTED_RESET_ALIASES,
   ROOMS_FILE_FORMAT,
   ROOMS_FILE_VERSION,
   ROOMS_PROTOCOL_VERSION,
@@ -22,6 +24,8 @@ import {
 import { createPersistenceHealthTracker } from '../../../server-persistence-health.mjs';
 
 const fixedNow = Date.parse('2026-07-11T12:00:00Z');
+const resetActionDigest = createHash('sha256').update(JSON.stringify({ type: 'reset-room' })).digest('hex');
+const resetCommandId = '10000000-0000-4000-8000-000000000001';
 
 function room(updatedAt = fixedNow, code = 'ABCDE') {
   return {
@@ -46,8 +50,36 @@ function room(updatedAt = fixedNow, code = 'ABCDE') {
     updatedAt,
     completedGameId: 'game-1',
     gameSessionId: 'session-1',
+    revision: 0,
+    recentCommandIds: [] as Array<{
+      commandId: string;
+      playerId: string;
+      expectedRevision: number;
+      revision: number;
+      actionDigest: string;
+    }>,
+    resetAliases: [] as Array<{ fromCode: string; commandId: string; playerId: string; expiresAt: number }>,
     clients: new Set([{ readyState: 1 }])
   };
+}
+
+function roomWithResetAlias(updatedAt = fixedNow, code = 'FGHIJ', fromCode = 'ABCDE') {
+  const value = room(updatedAt, code);
+  value.revision = 1;
+  value.recentCommandIds = [{
+    commandId: resetCommandId,
+    playerId: 'host-1',
+    expectedRevision: 0,
+    revision: 1,
+    actionDigest: resetActionDigest
+  }];
+  value.resetAliases = [{
+    fromCode,
+    commandId: resetCommandId,
+    playerId: 'host-1',
+    expiresAt: fixedNow + 60_000
+  }];
+  return value;
 }
 
 describe('room persistence', () => {
@@ -118,6 +150,89 @@ describe('room persistence', () => {
 
     const compatibleRooms = await loadRoomsFromDisk(roomsFile, { now: fixedNow + 1000 });
     expect(compatibleRooms.map((restoredRoom: { code: string }) => restoredRoom.code)).toEqual(['ABCDE']);
+  });
+
+  it('round-trips exact private reset aliases and defaults legacy rooms to an empty lineage', async () => {
+    const value = roomWithResetAlias();
+    await saveRoomsToDisk(new Map([[value.code, value]]), roomsFile);
+    const restored = await loadRoomsFromDisk(roomsFile, { now: fixedNow + 1 });
+    expect(restored[0].resetAliases).toEqual(value.resetAliases);
+    expect(restored[0].recentCommandIds).toEqual(value.recentCommandIds);
+
+    const legacy = serializeRooms(new Map([['ABCDE', room()]]), fixedNow);
+    delete (legacy.rooms[0] as { resetAliases?: unknown }).resetAliases;
+    delete (legacy.rooms[0] as { recentCommandIds?: unknown }).recentCommandIds;
+    delete (legacy.rooms[0] as { revision?: unknown }).revision;
+    legacy.rooms[0].roomVersion = 1;
+    expect(normalizeRoomsDocument(legacy, { now: fixedNow + 1 }).rooms[0]).toMatchObject({
+      revision: 0,
+      recentCommandIds: [],
+      resetAliases: []
+    });
+  });
+
+  it('accepts finite past aliases, enforces bounds, and rejects malformed or unlinked aliases', () => {
+    const valid = serializeRooms(new Map([['FGHIJ', roomWithResetAlias()]]), fixedNow);
+    const past = structuredClone(valid);
+    past.rooms[0].resetAliases[0].expiresAt = fixedNow - 1;
+    expect(normalizeRoomsDocument(past, { now: fixedNow })).toMatchObject({
+      rooms: [{ resetAliases: [{ expiresAt: fixedNow - 1 }] }]
+    });
+
+    const corruptions = [
+      (document: typeof valid) => { document.rooms[0].resetAliases = {} as never; },
+      (document: typeof valid) => {
+        document.rooms[0].resetAliases = Array.from(
+          { length: MAX_PERSISTED_RESET_ALIASES + 1 },
+          () => document.rooms[0].resetAliases[0]
+        );
+      },
+      (document: typeof valid) => { (document.rooms[0].resetAliases[0] as unknown as Record<string, unknown>).extra = true; },
+      (document: typeof valid) => { document.rooms[0].resetAliases[0].fromCode = 'bad'; },
+      (document: typeof valid) => { document.rooms[0].resetAliases[0].fromCode = 'FGHIJ'; },
+      (document: typeof valid) => { document.rooms[0].resetAliases[0].commandId = 'not-a-uuid'; },
+      (document: typeof valid) => { document.rooms[0].resetAliases[0].playerId = 'missing-seat'; },
+      (document: typeof valid) => { document.rooms[0].resetAliases[0].expiresAt = Number.NaN; },
+      (document: typeof valid) => { document.rooms[0].recentCommandIds = []; },
+      (document: typeof valid) => { document.rooms[0].recentCommandIds[0].actionDigest = 'a'.repeat(64); }
+    ];
+    for (const corrupt of corruptions) {
+      const candidate = structuredClone(valid);
+      corrupt(candidate);
+      expect(() => normalizeRoomsDocument(candidate, { now: fixedNow })).toThrow(/reset alias/i);
+    }
+
+    const tooManyAtRuntime = roomWithResetAlias();
+    tooManyAtRuntime.resetAliases = Array.from(
+      { length: MAX_PERSISTED_RESET_ALIASES + 1 },
+      () => tooManyAtRuntime.resetAliases[0]
+    );
+    expect(() => serializeRooms(new Map([[tooManyAtRuntime.code, tooManyAtRuntime]]), fixedNow)).toThrow(
+      /too many reset aliases/i
+    );
+  });
+
+  it('rejects duplicate alias identity and live alias collisions across the room document', () => {
+    const duplicate = serializeRooms(new Map([['FGHIJ', roomWithResetAlias()]]), fixedNow);
+    duplicate.rooms[0].resetAliases.push({ ...duplicate.rooms[0].resetAliases[0] });
+    expect(() => normalizeRoomsDocument(duplicate, { now: fixedNow })).toThrow(/duplicate reset alias/i);
+
+    const duplicateCommand = structuredClone(duplicate);
+    duplicateCommand.rooms[0].resetAliases[1].fromCode = 'ZZZZZ';
+    expect(() => normalizeRoomsDocument(duplicateCommand, { now: fixedNow })).toThrow(/duplicate reset alias commands/i);
+
+    const collisionWithRoom = serializeRooms(new Map([
+      ['ABCDE', room(fixedNow, 'ABCDE')],
+      ['FGHIJ', roomWithResetAlias()]
+    ]), fixedNow);
+    expect(() => normalizeRoomsDocument(collisionWithRoom, { now: fixedNow })).toThrow(/collides with active room code/i);
+
+    const second = roomWithResetAlias(fixedNow, 'KLMNO');
+    const duplicateAcrossRooms = serializeRooms(new Map([
+      ['FGHIJ', roomWithResetAlias()],
+      ['KLMNO', second]
+    ]), fixedNow);
+    expect(() => normalizeRoomsDocument(duplicateAcrossRooms, { now: fixedNow })).toThrow(/duplicate live reset alias/i);
   });
 
   it.each([

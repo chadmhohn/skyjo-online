@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -8,6 +8,7 @@ export const ROOMS_FILE_FORMAT = 'skyjo-rooms';
 export const ROOMS_FILE_VERSION = 2;
 export const ROOMS_PROTOCOL_VERSION = 1;
 export const SUPPORTED_ROOMS_PROTOCOL_VERSIONS = Object.freeze([1]);
+export const MAX_PERSISTED_RESET_ALIASES = 8;
 
 const validStatuses = new Set(['waiting', 'playing', 'finished']);
 const maxPersistedChatMessages = 80;
@@ -16,6 +17,7 @@ const maxPersistedRooms = 10_000;
 const maxRecentCommandReceipts = 128;
 const commandIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const sha256Pattern = /^[a-f0-9]{64}$/;
+const resetRoomActionDigest = createHash('sha256').update(JSON.stringify({ type: 'reset-room' })).digest('hex');
 const unsupportedWindowsDirectorySyncCodes = new Set(['EINVAL', 'ENOTSUP', 'EPERM']);
 
 export class RoomPersistenceFormatError extends Error {
@@ -115,6 +117,34 @@ function normalizeCommandReceipt(value, roomIndex, playerIds, roomRevision) {
   return { commandId, playerId, expectedRevision, revision, actionDigest };
 }
 
+function normalizeResetAlias(value, roomIndex, roomCode, playerIds, receiptsByCommandId) {
+  if (!isRecord(value)) throw formatError(`Room ${roomIndex} contains an invalid reset alias.`);
+  const keys = Object.keys(value).sort();
+  const expectedKeys = ['commandId', 'expiresAt', 'fromCode', 'playerId'].sort();
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw formatError(`Room ${roomIndex} contains an invalid reset alias.`);
+  }
+  const fromCode = stringValue(value.fromCode).trim().toUpperCase();
+  const commandId = stringValue(value.commandId);
+  const playerId = stringValue(value.playerId);
+  const expiresAt = value.expiresAt;
+  const receipt = receiptsByCommandId.get(commandId);
+  if (
+    !/^[A-Z0-9]{5}$/.test(fromCode) ||
+    fromCode === roomCode ||
+    !commandIdPattern.test(commandId) ||
+    !playerIds.has(playerId) ||
+    !Number.isFinite(expiresAt) ||
+    expiresAt < 0 ||
+    !receipt ||
+    receipt.playerId !== playerId ||
+    receipt.actionDigest !== resetRoomActionDigest
+  ) {
+    throw formatError(`Room ${roomIndex} contains a malformed reset alias.`);
+  }
+  return { fromCode, commandId, playerId, expiresAt };
+}
+
 function normalizeChatMessage(value, roomIndex) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} contains an invalid chat message.`);
@@ -206,6 +236,23 @@ function normalizeRoom(value, roomIndex) {
     throw formatError(`Room ${roomIndex} contains duplicate command revisions.`);
   }
 
+  if (value.resetAliases !== undefined && !Array.isArray(value.resetAliases)) {
+    throw formatError(`Room ${roomIndex} reset aliases must be an array.`);
+  }
+  if (Array.isArray(value.resetAliases) && value.resetAliases.length > MAX_PERSISTED_RESET_ALIASES) {
+    throw formatError(`Room ${roomIndex} contains too many reset aliases.`);
+  }
+  const receiptsByCommandId = new Map(recentCommandIds.map((receipt) => [receipt.commandId, receipt]));
+  const resetAliases = Array.isArray(value.resetAliases)
+    ? value.resetAliases.map((alias) => normalizeResetAlias(alias, roomIndex, code, playerIds, receiptsByCommandId))
+    : [];
+  if (new Set(resetAliases.map((alias) => alias.fromCode)).size !== resetAliases.length) {
+    throw formatError(`Room ${roomIndex} contains duplicate reset alias codes.`);
+  }
+  if (new Set(resetAliases.map((alias) => alias.commandId)).size !== resetAliases.length) {
+    throw formatError(`Room ${roomIndex} contains duplicate reset alias commands.`);
+  }
+
   if (value.state !== undefined && value.state !== null && !isRecord(value.state)) {
     throw formatError(`Room ${roomIndex} game state must be an object or null.`);
   }
@@ -233,6 +280,7 @@ function normalizeRoom(value, roomIndex) {
     gameSessionId: stringValue(value.gameSessionId).trim() || null,
     revision,
     recentCommandIds,
+    resetAliases,
     clients: new Set()
   };
 }
@@ -367,6 +415,19 @@ export function normalizeRoomsDocument(value, options = {}) {
     }
     roomCodes.add(room.code);
   }
+  const liveResetAliasCodes = new Set();
+  for (const room of normalizedRooms) {
+    for (const alias of room.resetAliases) {
+      if (alias.expiresAt <= now) continue;
+      if (roomCodes.has(alias.fromCode)) {
+        throw formatError(`Room persistence reset alias collides with active room code ${alias.fromCode}.`);
+      }
+      if (liveResetAliasCodes.has(alias.fromCode)) {
+        throw formatError(`Room persistence contains duplicate live reset alias code ${alias.fromCode}.`);
+      }
+      liveResetAliasCodes.add(alias.fromCode);
+    }
+  }
 
   return {
     ...document,
@@ -380,6 +441,20 @@ export function resolveRoomsFilePath(env = process.env) {
 }
 
 export function serializeRoom(room) {
+  if (Array.isArray(room.resetAliases) && room.resetAliases.length > MAX_PERSISTED_RESET_ALIASES) {
+    throw formatError(`Room ${room.code} contains too many reset aliases.`);
+  }
+  const playerIds = new Set(room.players.map((player) => player.id));
+  const recentCommandIds = Array.isArray(room.recentCommandIds)
+    ? room.recentCommandIds.slice(-maxRecentCommandReceipts).map((receipt) => ({
+        commandId: receipt.commandId,
+        playerId: receipt.playerId,
+        expectedRevision: receipt.expectedRevision,
+        revision: receipt.revision,
+        actionDigest: receipt.actionDigest
+      }))
+    : [];
+  const receiptsByCommandId = new Map(recentCommandIds.map((receipt) => [receipt.commandId, receipt]));
   return {
     roomVersion: 2,
     code: room.code,
@@ -406,14 +481,10 @@ export function serializeRoom(room) {
     completedGameId: room.completedGameId || null,
     gameSessionId: room.gameSessionId || null,
     revision: Number.isSafeInteger(room.revision) && room.revision >= 0 ? room.revision : 0,
-    recentCommandIds: Array.isArray(room.recentCommandIds)
-      ? room.recentCommandIds.slice(-maxRecentCommandReceipts).map((receipt) => ({
-          commandId: receipt.commandId,
-          playerId: receipt.playerId,
-          expectedRevision: receipt.expectedRevision,
-          revision: receipt.revision,
-          actionDigest: receipt.actionDigest
-        }))
+    recentCommandIds,
+    resetAliases: Array.isArray(room.resetAliases)
+      ? room.resetAliases
+          .map((alias) => normalizeResetAlias(alias, room.code, room.code, playerIds, receiptsByCommandId))
       : []
   };
 }

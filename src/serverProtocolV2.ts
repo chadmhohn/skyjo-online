@@ -19,6 +19,16 @@ export interface ProtocolV2Socket extends RealtimeSocket {
   accountUser?: ProtocolV2AccountUser;
 }
 
+export const MAX_RESET_ALIASES = 8;
+export const RESET_ALIAS_TTL_MS = 30 * 60 * 1_000;
+
+export interface ProtocolV2ResetAlias {
+  commandId: string;
+  expiresAt: number;
+  fromCode: string;
+  playerId: string;
+}
+
 export interface ProtocolV2Room {
   chatMessages: RoomChatMessage[];
   clients: Set<RealtimeSocket>;
@@ -29,6 +39,7 @@ export interface ProtocolV2Room {
   players: RoomPlayer[];
   readyForNextRoundPlayerIds: string[];
   recentCommandIds: CommandReceipt[];
+  resetAliases: ProtocolV2ResetAlias[];
   revision: number;
   roomVersion: 2;
   state: GameState | null;
@@ -442,6 +453,22 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       if (!newCode) return;
       const newRoom = createWaitingRoom({ code: newCode, hostPlayer: player, ws });
       newRoom.revision = nextRevision;
+      const inheritedAliases = oldRoom.resetAliases
+        .filter((alias) => alias.expiresAt > timestamp)
+        .slice(-(MAX_RESET_ALIASES - 1));
+      const inheritedCommandIds = new Set(inheritedAliases.map((alias) => alias.commandId));
+      newRoom.recentCommandIds = oldRoom.recentCommandIds.filter((prior) =>
+        inheritedCommandIds.has(prior.commandId)
+      );
+      newRoom.resetAliases = [
+        ...inheritedAliases,
+        {
+          fromCode: oldRoom.code,
+          commandId: command.commandId,
+          playerId: player.id,
+          expiresAt: timestamp + RESET_ALIAS_TTL_MS
+        }
+      ];
       commitReceipt(newRoom, receipt);
       for (const client of oldRoom.clients) {
         if (client === ws) continue;

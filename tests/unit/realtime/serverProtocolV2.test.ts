@@ -7,6 +7,8 @@ import {
 } from '../../../src/protocolV2';
 import {
   createProtocolV2MessageHandler,
+  MAX_RESET_ALIASES,
+  RESET_ALIAS_TTL_MS,
   type ProtocolV2HandlerOptions,
   type ProtocolV2Room,
   type ProtocolV2Socket
@@ -39,7 +41,7 @@ function socket(id = HOST_ID, accountId = `${id}-account`, name = id === HOST_ID
     OPEN: 1,
     readyState: 1,
     accountUser: { id: accountId, displayName: name },
-    roomCode: 'ROOM01',
+    roomCode: 'ROOM1',
     playerId: id,
     visible: true,
     on: vi.fn(),
@@ -55,13 +57,14 @@ function room(overrides: Partial<ProtocolV2Room> = {}): ProtocolV2Room {
   return {
     chatMessages: [],
     clients: new Set(),
-    code: 'ROOM01',
+    code: 'ROOM1',
     completedGameId: null,
     gameSessionId: 'session-1',
     hostId: players[0]?.id || '',
     players,
     readyForNextRoundPlayerIds: [],
     recentCommandIds: [],
+    resetAliases: [],
     revision: 0,
     roomVersion: 2,
     state: null,
@@ -140,7 +143,7 @@ function harness(roomValue = room()) {
       return candidate;
     },
     digestAction: (canonicalAction) => `digest:${canonicalAction}`,
-    makeRoomCodeForSocket: () => 'NEW001',
+    makeRoomCodeForSocket: () => 'NEW01',
     normalizedReadyIds: (candidate) => candidate.readyForNextRoundPlayerIds.filter((id) => candidate.players.some((item) => item.id === id)),
     notifyAwayPlayersAfterMove: () => { calls.notified += 1; },
     now: () => 500,
@@ -196,9 +199,9 @@ describe('protocol v2 room admission', () => {
     expect(lastPayload(value)).toMatchObject({ type: 'error', code: 'invalid-command' });
 
     value.handler(value.socket, { type: 'create-room', protocolVersion: 2, name: 'ignored' });
-    const created = value.rooms.get('NEW001');
+    const created = value.rooms.get('NEW01');
     expect(created?.players).toEqual([expect.objectContaining({ id: NEW_ID, name: 'Host', userId: `${HOST_ID}-account`, host: true })]);
-    expect(value.socket).toMatchObject({ roomCode: 'NEW001', playerId: NEW_ID });
+    expect(value.socket).toMatchObject({ roomCode: 'NEW01', playerId: NEW_ID });
     expect(value.calls.persisted).toBe(1);
     expect(value.calls.snapshots).toHaveLength(1);
   });
@@ -213,10 +216,10 @@ describe('protocol v2 room admission', () => {
 
   it.each([
     [{ type: 'join-room', protocolVersion: 2, code: 'MISS', name: 'x' }, 'room-not-found'],
-    [{ type: 'join-room', protocolVersion: 2, code: 'ROOM01', name: 'x', playerId: HOST_ID, extra: true }, 'invalid-command']
+    [{ type: 'join-room', protocolVersion: 2, code: 'ROOM1', name: 'x', playerId: HOST_ID, extra: true }, 'invalid-command']
   ])('rejects invalid join requests without mutation', (message, code) => {
     const value = harness();
-    if (code === 'room-not-found') value.rooms.delete('ROOM01');
+    if (code === 'room-not-found') value.rooms.delete('ROOM1');
     value.handler(value.socket, message);
     expect(lastPayload(value)).toMatchObject({ type: 'error', code });
     expect(value.calls.persisted).toBe(0);
@@ -225,28 +228,28 @@ describe('protocol v2 room admission', () => {
   it('rejects stolen seats, late spectators, full rooms, and exhausted revisions', () => {
     const stolen = harness();
     const attacker = socket(HOST_ID, 'attacker', 'Attacker').socket;
-    stolen.handler(attacker, { type: 'join-room', protocolVersion: 2, code: 'room01', name: 'ignored', playerId: HOST_ID });
+    stolen.handler(attacker, { type: 'join-room', protocolVersion: 2, code: 'room1', name: 'ignored', playerId: HOST_ID });
     expect(lastPayload(stolen)).toMatchObject({ code: 'seat-forbidden' });
 
     const started = harness(room({ status: 'playing' }));
     const newcomer = socket('', 'new-account', 'New').socket;
-    started.handler(newcomer, { type: 'join-room', protocolVersion: 2, code: 'ROOM01', name: 'ignored' });
+    started.handler(newcomer, { type: 'join-room', protocolVersion: 2, code: 'ROOM1', name: 'ignored' });
     expect(lastPayload(started)).toMatchObject({ code: 'game-started' });
 
     const eight = Array.from({ length: 8 }, (_, index) => player(`p${index}`, `P${index}`, index === 0));
     const full = harness(room({ players: eight, hostId: 'p0' }));
-    full.handler(newcomer, { type: 'join-room', protocolVersion: 2, code: 'ROOM01', name: 'ignored' });
+    full.handler(newcomer, { type: 'join-room', protocolVersion: 2, code: 'ROOM1', name: 'ignored' });
     expect(lastPayload(full)).toMatchObject({ code: 'room-full' });
 
     const exhausted = harness(room({ revision: Number.MAX_SAFE_INTEGER }));
-    exhausted.handler(newcomer, { type: 'join-room', protocolVersion: 2, code: 'ROOM01', name: 'ignored' });
+    exhausted.handler(newcomer, { type: 'join-room', protocolVersion: 2, code: 'ROOM1', name: 'ignored' });
     expect(lastPayload(exhausted)).toMatchObject({ code: 'revision-exhausted' });
   });
 
   it('adds a new seat with exactly one revision and broadcasts it', () => {
     const value = harness();
     const newcomer = socket('', 'new-account', 'New').socket;
-    value.handler(newcomer, { type: 'join-room', protocolVersion: 2, code: ' room01 ', name: 'ignored' });
+    value.handler(newcomer, { type: 'join-room', protocolVersion: 2, code: ' room1 ', name: 'ignored' });
     expect(value.room.revision).toBe(1);
     expect(value.room.players.at(-1)).toMatchObject({ id: NEW_ID, userId: 'new-account', name: 'New', joinedAt: 500, lastSeenAt: 500 });
     expect(value.calls.persisted).toBe(1);
@@ -255,7 +258,7 @@ describe('protocol v2 room admission', () => {
 
   it('reconnects the same healthy seat without incrementing revision', () => {
     const value = harness();
-    value.handler(value.socket, { type: 'join-room', protocolVersion: 2, code: 'room01', name: 'ignored', playerId: HOST_ID });
+    value.handler(value.socket, { type: 'join-room', protocolVersion: 2, code: 'room1', name: 'ignored', playerId: HOST_ID });
     expect(value.room.revision).toBe(0);
     expect(value.room.players[0].lastSeenAt).toBe(500);
     expect(value.calls.persisted).toBe(1);
@@ -265,7 +268,7 @@ describe('protocol v2 room admission', () => {
 
   it('broadcasts reconnects whose public presence or account name changed', () => {
     const value = harness(room({ players: [{ ...player(HOST_ID, 'Old', true), connected: false }, player(GUEST_ID, 'Guest')] }));
-    value.handler(value.socket, { type: 'join-room', protocolVersion: 2, code: 'ROOM01', name: 'ignored', playerId: HOST_ID });
+    value.handler(value.socket, { type: 'join-room', protocolVersion: 2, code: 'ROOM1', name: 'ignored', playerId: HOST_ID });
     expect(value.room.revision).toBe(0);
     expect(value.room.players[0]).toMatchObject({ name: 'Host', connected: true });
     expect(value.calls.broadcasts).toEqual([value.room]);
@@ -472,7 +475,7 @@ describe('protocol v2 gameplay and lifecycle commands', () => {
 
     value.options.makeRoomCodeForSocket = () => null;
     createProtocolV2MessageHandler(value.options)(value.socket, command({ type: 'reset-room' }));
-    expect(value.rooms.has('ROOM01')).toBe(true);
+    expect(value.rooms.has('ROOM1')).toBe(true);
     expect(value.calls.persisted).toBe(0);
   });
 
@@ -481,9 +484,15 @@ describe('protocol v2 gameplay and lifecycle commands', () => {
     const guest = socket(GUEST_ID);
     value.room.clients.add(guest.socket);
     value.handler(value.socket, command({ type: 'reset-room' }));
-    expect(value.rooms.has('ROOM01')).toBe(false);
-    const replacement = value.rooms.get('NEW001');
+    expect(value.rooms.has('ROOM1')).toBe(false);
+    const replacement = value.rooms.get('NEW01');
     expect(replacement).toMatchObject({ revision: 1, hostId: HOST_ID });
+    expect(replacement?.resetAliases).toEqual([{
+      fromCode: 'ROOM1',
+      commandId: COMMAND_ID,
+      playerId: HOST_ID,
+      expiresAt: 500 + RESET_ALIAS_TTL_MS
+    }]);
     expect(guest.socket).toMatchObject({ roomCode: null, playerId: null });
     expect(value.calls.json.map(({ payload }) => payload.type)).toEqual(['error', 'ack']);
     expect(value.calls.snapshots).toEqual([{
@@ -491,5 +500,38 @@ describe('protocol v2 gameplay and lifecycle commands', () => {
       room: replacement,
       options: { type: 'resync', commandId: COMMAND_ID, reason: 'room-reset' }
     }]);
+  });
+
+  it('copies only live reset aliases with their receipts and keeps the lineage bounded', () => {
+    const aliases = Array.from({ length: MAX_RESET_ALIASES }, (_, index) => ({
+      fromCode: `OLD0${index}`,
+      commandId: `20000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      playerId: HOST_ID,
+      expiresAt: index === 0 ? 499 : 900 + index
+    }));
+    const priorReceipts = aliases.map((alias, index) => receipt(
+      { type: 'reset-room' },
+      {
+        commandId: alias.commandId,
+        expectedRevision: index,
+        revision: index + 1
+      }
+    ));
+    const value = harness(room({
+      revision: MAX_RESET_ALIASES,
+      resetAliases: aliases,
+      recentCommandIds: priorReceipts
+    }));
+    value.handler(value.socket, command({ type: 'reset-room' }, MAX_RESET_ALIASES));
+    const replacement = value.rooms.get('NEW01');
+    expect(replacement?.resetAliases).toHaveLength(MAX_RESET_ALIASES);
+    expect(replacement?.resetAliases.map((alias) => alias.fromCode)).toEqual([
+      ...aliases.slice(1).map((alias) => alias.fromCode),
+      'ROOM1'
+    ]);
+    expect(replacement?.recentCommandIds.map((item) => item.commandId)).toEqual([
+      ...priorReceipts.slice(1).map((item) => item.commandId),
+      COMMAND_ID
+    ]);
   });
 });

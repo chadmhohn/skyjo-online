@@ -499,6 +499,7 @@ function createWaitingRoom({ code, hostPlayer, ws }) {
     gameSessionId: null,
     revision: 0,
     recentCommandIds: [],
+    resetAliases: [],
     clients: new Set([ws])
   };
 }
