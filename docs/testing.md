@@ -12,6 +12,7 @@ Skyjo's deterministic gates run on Node 24 from the locked dependency graph.
 - `npm run test:visual` compares the four responsive table baselines on Linux.
 - `npm run check:bundle` enforces 90 KiB JavaScript, 17 KiB CSS, and 115 KiB total initial gzip budgets.
 - `npm run test:lighthouse` runs the built home and solo routes three times each and evaluates each median Lighthouse result.
+- `npm run certify:automated` runs the release-only eight-client browser persona, 20-room realtime load, and three SIGKILL persistence/restart trials. It requires the pinned Linux k6 binary in `SKYJO_K6_BIN` and an exact full-SHA production build.
 
 Run `npm exec -- playwright install chromium webkit` once before local browser tests. CI installs the exact browser revisions from the locked `@playwright/test` package without a floating action or browser cache.
 
@@ -30,3 +31,13 @@ Canonical screenshots use Chromium on `ubuntu-24.04` at `390x844`, `820x1180`, `
 WebKit projects provide engine and responsive-layout coverage; they do not represent PWA installation, push/audio resume, safe areas, or VoiceOver on a physical iPhone. Those remain part of the final device session.
 
 Lighthouse runs three cold, storage-isolated mobile audits of both the home and solo routes. Performance must score at least 90, accessibility and best practices at least 95, LCP at most 2.5 seconds, CLS at most 0.1, and TBT at most 200 milliseconds. Every threshold fails CI rather than warning.
+
+## Release certification
+
+`CI / Load & Recovery` runs for every pull request, protected-main push, and `v*` tag. It is also a dependency of the VPS canary. The scheduled workflow repeats the same certification from protected `main` each night.
+
+The load lane uses k6 v2.0.0's global `k6/websockets` event loop. Twenty `per-vu-iterations` room controllers each own eight distinct authenticated sockets for ten minutes. Each room serializes 600 authoritative chat-marker commands; all eight clients must observe every resulting revision. The runner rejects anything other than exactly 20 rooms, 160 clients, 12,000 commands, and 96,000 observations. It also rejects an error rate at or above 0.1%, propagation p95 above 250ms, any redaction or revision divergence, interrupted iterations, or application RSS at or above 256 MiB.
+
+Recovery certification uses three isolated state directories. Each trial establishes a durable baseline, sends acknowledged commands across different offsets in the 250ms persistence window, kills Node with `SIGKILL`, and inspects only the atomic room snapshot. The newest durable acknowledgement must be no more than 500ms behind the newest acknowledged command. Restart readiness and same-seat resynchronization must each finish within 15 seconds.
+
+The combined artifact is `test-results/certification/automated.json` with an exact SHA-256 sidecar. It contains only bounded release identity, counts, timings, booleans, and digests. Validation rejects credentials, cookies, email addresses, room/player identifiers, filesystem paths, SQL, logs, and raw protocol frames. The JSON is canonically key-sorted before checksumming. Do not hand-edit it.
