@@ -409,6 +409,7 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(socket)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId
@@ -446,6 +447,7 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(socket)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId,
@@ -484,6 +486,7 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(recovered)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId,
@@ -916,7 +919,9 @@ describe('multiplayer lobby', () => {
 
     await user.click(screen.getByRole('button', { name: 'Join' }));
     const socket = openSocket();
-    expect(lastFrame(socket)).toEqual({ type: 'join-room', protocolVersion: 2, code: 'ABC12', name: 'Alice' });
+    expect(lastFrame(socket)).toEqual({
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABC12', name: 'Alice'
+    });
     receive(socket, {
       type: 'error',
       protocolVersion: 2,
@@ -996,6 +1001,7 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(recovered)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId
@@ -1017,7 +1023,9 @@ describe('multiplayer lobby', () => {
 
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
     const first = openSocket();
-    expect(lastFrame(first)).toEqual({ type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    expect(lastFrame(first)).toEqual({
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+    });
     receiveSnapshot(first, makeRoom());
     expect(window.localStorage.getItem('skyjo-player-name')).toBe('Alice');
 
@@ -1033,7 +1041,9 @@ describe('multiplayer lobby', () => {
     act(() => window.dispatchEvent(new Event('focus')));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1000 });
     const resumed = openSocket();
-    expect(lastFrame(resumed)).toEqual({ type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    expect(lastFrame(resumed)).toEqual({
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+    });
     receiveSnapshot(resumed, makeRoom({ updatedAt: 200 }));
     expect(screen.getByText(/Bob online/)).toBeInTheDocument();
     expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
@@ -1092,7 +1102,9 @@ describe('multiplayer lobby', () => {
     await user.click(screen.getByRole('button', { name: 'Retry Saved Seat' }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3), { timeout: 1000 });
     const retried = openSocket();
-    expect(lastFrame(retried)).toEqual({ type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    expect(lastFrame(retried)).toEqual({
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+    });
     receive(retried, {
       type: 'error',
       protocolVersion: 2,
@@ -1189,7 +1201,7 @@ describe('multiplayer lobby', () => {
     const socket = openSocket();
     receiveSnapshot(socket, makeRoom());
     expect(socket.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
       { type: 'set-presence', visible: false }
     ]);
   });
