@@ -35,6 +35,7 @@ export const RUNTIME_ROOT_FILES = Object.freeze([
   'package-lock.json',
   'package.json',
   'server-account-store.mjs',
+  'server-game-state-validation.mjs',
   'server-persistence-health.mjs',
   'server-readiness.mjs',
   'server-release.mjs',

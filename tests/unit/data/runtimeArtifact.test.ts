@@ -258,6 +258,7 @@ describe('runtime artifact safety contract', () => {
   test('allows only compiled output, production dependencies, metadata, and exact runtime scripts', () => {
     expect(isAllowedRuntimePath('./dist/assets/app.js')).toBe(true);
     expect(isAllowedRuntimePath('node_modules/ws/index.js')).toBe(true);
+    expect(isAllowedRuntimePath('server-game-state-validation.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-deployed.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-chat.mjs')).toBe(false);
     expect(isAllowedRuntimePath('src/game.ts')).toBe(false);
@@ -324,6 +325,7 @@ describe('runtime artifact safety contract', () => {
   test('validates the complete allowlisted runtime and byte-identical release identities', () => {
     const result = validateRuntimeEntries(fixtureEntries(), releaseSha);
     expect(result.releaseIdentity.releaseSha).toBe(releaseSha);
+    expect(result.files.has('server-game-state-validation.mjs')).toBe(true);
     expect(result.files.has('server-dist/protocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverProtocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverRealtime.js')).toBe(true);
@@ -443,6 +445,10 @@ describe('runtime artifact safety contract', () => {
     disallowed.push({ ...disallowed[0], rawPath: 'src/secret.ts' });
     expect(() => validateRuntimeEntries(disallowed, releaseSha)).toThrow('not allowlisted');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server.mjs'), releaseSha)).toThrow('missing required');
+    expect(() => validateRuntimeEntries(
+      fixtureEntries().filter((entry) => entry.rawPath !== 'server-game-state-validation.mjs'),
+      releaseSha
+    )).toThrow('missing required');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverRealtime.js'), releaseSha)).toThrow(
       'missing required'
     );

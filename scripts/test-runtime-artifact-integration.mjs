@@ -77,6 +77,10 @@ try {
   ]);
   const archiveLines = (value) => value.replace(/\r/g, '').split('\n').filter(Boolean);
   const controllerContract = validateArchiveListing(archiveLines(namesOutput), archiveLines(verboseOutput));
+  assert.ok(
+    controllerContract.entries.has('server-game-state-validation.mjs'),
+    'The packaged artifact must include the persisted game-state validator imported at production startup.'
+  );
   assert.ok(controllerContract.entries.has('node_modules/minimist/package.json'), 'The real production tree must exercise minimist pruning.');
   assert.equal(
     [...controllerContract.entries].some((entry) => entry.split('/').some(isForbiddenArchivePathSegment)),
