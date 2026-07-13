@@ -1,6 +1,133 @@
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
 import type { Page } from '@playwright/test';
 
+type Viewport = { width: number; height: number };
+
+type SettledResponsiveLayout = {
+  centerBandHeight: number;
+  compactMediaMatches: boolean;
+  phoneGuidanceVisible: boolean;
+  phoneMediaMatches: boolean;
+  viewportHeight: number;
+  viewportWidth: number;
+};
+
+async function settleResponsiveTable(
+  page: Page,
+  viewport: Viewport,
+  playerCount: number
+): Promise<SettledResponsiveLayout> {
+  await page.setViewportSize(viewport);
+  const table = page.getByTestId('shared-game-table');
+  await expect(table).toHaveAttribute('data-player-count', String(playerCount));
+
+  return table.evaluate(
+    (tableElement, target) =>
+      new Promise<SettledResponsiveLayout>((resolve, reject) => {
+        const phoneQuery = window.matchMedia('(max-width: 640px)');
+        const narrowQuery = window.matchMedia('(max-width: 900px)');
+        const compactQuery = window.matchMedia('(min-width: 641px) and (max-height: 900px)');
+        const expectedPhone = target.width <= 640;
+        const expectedNarrow = target.width <= 900;
+        const expectedCompact = target.width >= 641 && target.height <= 900;
+        const expectedCenterBandHeight = expectedPhone
+          ? 100
+          : expectedCompact
+            ? 150
+            : null;
+        const requiredStableFrames = 4;
+        const geometryPrecision = 100;
+        let animationFrame = 0;
+        let lastSample: Record<string, unknown> | null = null;
+        let previousSignature = '';
+        let stableFrames = 0;
+
+        const timeout = window.setTimeout(() => {
+          window.cancelAnimationFrame(animationFrame);
+          reject(
+            new Error(
+              `Responsive table did not settle at ${target.width}x${target.height}: ${JSON.stringify(lastSample)}`
+            )
+          );
+        }, 7_500);
+
+        const rounded = (value: number) => Math.round(value * geometryPrecision) / geometryPrecision;
+        const sample = () => {
+          const centerBand = tableElement.querySelector<HTMLElement>('[data-testid="table-center-band"]');
+          const opponentRail = tableElement.querySelector<HTMLElement>('[data-testid="opponent-rail"]');
+          const localBoard = tableElement.querySelector<HTMLElement>('[data-testid="local-board"]');
+          const tablePiles = tableElement.querySelector<HTMLElement>('[data-testid="table-piles"]');
+          if (!centerBand || !opponentRail || !localBoard || !tablePiles) {
+            throw new Error('Missing responsive table settlement anchor.');
+          }
+          const tableRect = tableElement.getBoundingClientRect();
+          const centerBandRect = centerBand.getBoundingClientRect();
+          const opponentRect = opponentRail.getBoundingClientRect();
+          const localRect = localBoard.getBoundingClientRect();
+          const pilesRect = tablePiles.getBoundingClientRect();
+          return {
+            centerBandHeight: rounded(centerBandRect.height),
+            compactMediaMatches: compactQuery.matches,
+            fontStatus: document.fonts.status,
+            localBottom: rounded(localRect.bottom),
+            narrowMediaMatches: narrowQuery.matches,
+            opponentTop: rounded(opponentRect.top),
+            phoneGuidanceVisible: Boolean(document.querySelector('.skyjo-phone-action-guidance')),
+            phoneMediaMatches: phoneQuery.matches,
+            pilesCenterX: rounded(pilesRect.left + pilesRect.width / 2),
+            playerCount: tableElement.dataset.playerCount,
+            scrollWidth: document.documentElement.scrollWidth,
+            tableHeight: rounded(tableRect.height),
+            tableWidth: rounded(tableRect.width),
+            viewportHeight: window.innerHeight,
+            viewportWidth: window.innerWidth
+          };
+        };
+
+        const frame = () => {
+          try {
+            const current = sample();
+            lastSample = current;
+            const responsiveStateMatches =
+              current.viewportWidth === target.width &&
+              current.viewportHeight === target.height &&
+              current.phoneMediaMatches === expectedPhone &&
+              current.narrowMediaMatches === expectedNarrow &&
+              current.compactMediaMatches === expectedCompact &&
+              current.phoneGuidanceVisible === expectedPhone &&
+              current.playerCount === String(target.playerCount) &&
+              current.fontStatus === 'loaded' &&
+              (expectedCenterBandHeight === null ||
+                Math.abs(current.centerBandHeight - expectedCenterBandHeight) <= 0.05);
+            const signature = JSON.stringify(current);
+            stableFrames = responsiveStateMatches && signature === previousSignature ? stableFrames + 1 : 1;
+            previousSignature = signature;
+
+            if (responsiveStateMatches && stableFrames >= requiredStableFrames) {
+              window.clearTimeout(timeout);
+              resolve({
+                centerBandHeight: current.centerBandHeight,
+                compactMediaMatches: current.compactMediaMatches,
+                phoneGuidanceVisible: current.phoneGuidanceVisible,
+                phoneMediaMatches: current.phoneMediaMatches,
+                viewportHeight: current.viewportHeight,
+                viewportWidth: current.viewportWidth
+              });
+              return;
+            }
+            animationFrame = window.requestAnimationFrame(frame);
+          } catch (error) {
+            window.clearTimeout(timeout);
+            reject(error);
+          }
+        };
+
+        animationFrame = window.requestAnimationFrame(frame);
+      }),
+    { ...viewport, playerCount }
+  );
+}
+
 async function configureSoloRoster(page: Page, playerCount: number) {
   await page.getByRole('button', { name: 'Open game settings' }).click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
@@ -228,10 +355,7 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
     await configureSoloRoster(page, playerCount);
 
     for (const viewport of viewports) {
-      await page.setViewportSize(viewport);
-      await page.evaluate(
-        () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
-      );
+      await settleResponsiveTable(page, viewport, playerCount);
       const geometry = await page.getByTestId('shared-game-table').evaluate((table) => {
         const rect = (element: Element | null) => {
           if (!element) throw new Error('Missing centered-table geometry anchor.');
@@ -324,4 +448,36 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
       }
     }
   }
+});
+
+test.describe('responsive table settlement stress', () => {
+  test.describe.configure({ retries: 0 });
+
+  test('repeated desktop and phone transitions converge for every supported roster', async ({ page, skyjoServer }) => {
+    test.setTimeout(90_000);
+    await installSeededBrowserRuntime(page, 72);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.goto(`${skyjoServer.baseURL}/single-player`);
+    await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+
+    const compactDesktop = { width: 1180, height: 820 };
+    const phone = { width: 390, height: 844 };
+    const transitions = [compactDesktop, phone, compactDesktop, phone, compactDesktop];
+
+    for (const playerCount of [2, 3, 4, 8]) {
+      await configureSoloRoster(page, playerCount);
+      const samples = [];
+      for (const viewport of transitions) {
+        samples.push(await settleResponsiveTable(page, viewport, playerCount));
+      }
+
+      expect(samples.map((sample) => sample.centerBandHeight)).toEqual([150, 100, 150, 100, 150]);
+      expect(samples.map((sample) => sample.phoneMediaMatches)).toEqual([false, true, false, true, false]);
+      expect(samples.map((sample) => sample.compactMediaMatches)).toEqual([true, false, true, false, true]);
+      expect(samples.map((sample) => sample.phoneGuidanceVisible)).toEqual([false, true, false, true, false]);
+      expect(samples.map(({ viewportWidth, viewportHeight }) => [viewportWidth, viewportHeight])).toEqual(
+        transitions.map(({ width, height }) => [width, height])
+      );
+    }
+  });
 });
