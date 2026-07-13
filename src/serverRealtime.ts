@@ -7,8 +7,11 @@ export interface RealtimeSocket {
   playerId?: string | null;
   roomCode?: string | null;
   visible?: boolean;
-  on(event: 'message' | 'close', listener: (...args: unknown[]) => void): unknown;
+  heartbeatAwaitingPong?: boolean;
+  on(event: 'message' | 'close' | 'pong', listener: (...args: unknown[]) => void): unknown;
+  ping(): unknown;
   send(payload: string): unknown;
+  terminate(): unknown;
 }
 
 export interface RealtimePlayer {
@@ -66,10 +69,16 @@ export interface RealtimeServerOptions {
   roomPlayer: (socket: RealtimeSocket) => RealtimeRoomPlayer | null;
   persistRoomsSoon: () => unknown;
   broadcastRoom: (room: RealtimeRoom) => unknown;
+  sendCurrentRoom: (socket: RealtimeSocket, room: RealtimeRoom) => unknown;
   now: () => number;
   isShuttingDown: () => boolean;
   onProtocolV1Message: (socket: RealtimeSocket, message: RealtimeClientMessage) => void;
+  heartbeatIntervalMs?: number;
+  scheduleInterval?: (callback: () => void, intervalMs: number) => unknown;
+  cancelInterval?: (handle: unknown) => void;
 }
+
+export const REALTIME_HEARTBEAT_INTERVAL_MS = 15_000;
 
 export function sendRealtimeJson(socket: RealtimeSocket, payload: unknown): boolean {
   if (socket.readyState !== socket.OPEN) return false;
@@ -119,10 +128,19 @@ export function registerRealtimeServer({
   roomPlayer,
   persistRoomsSoon,
   broadcastRoom,
+  sendCurrentRoom,
   now,
   isShuttingDown,
-  onProtocolV1Message
-}: RealtimeServerOptions): void {
+  onProtocolV1Message,
+  heartbeatIntervalMs = REALTIME_HEARTBEAT_INTERVAL_MS,
+  scheduleInterval = (callback, intervalMs) => setInterval(callback, intervalMs),
+  cancelInterval = (handle) => clearInterval(handle as ReturnType<typeof setInterval>)
+}: RealtimeServerOptions): () => void {
+  if (!Number.isFinite(heartbeatIntervalMs) || heartbeatIntervalMs <= 0) {
+    throw new TypeError('heartbeatIntervalMs must be a positive finite number.');
+  }
+  const liveSockets = new Set<RealtimeSocket>();
+
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url || '/', 'http://localhost');
     if (url.pathname !== '/rooms' || !hasValidSession(request)) {
@@ -143,6 +161,12 @@ export function registerRealtimeServer({
   webSocketServer.on('connection', (socket, request) => {
     socket.accountUser = request.accountUser;
     socket.visible = true;
+    socket.heartbeatAwaitingPong = false;
+    liveSockets.add(socket);
+
+    socket.on('pong', () => {
+      socket.heartbeatAwaitingPong = false;
+    });
 
     socket.on('message', (raw) => {
       const message = parseRealtimeMessage(raw);
@@ -157,11 +181,20 @@ export function registerRealtimeServer({
           sendRealtimeJson(socket, { type: 'error', message: 'Join or create a room first.' });
           return;
         }
+        if ('visible' in message && typeof message.visible !== 'boolean') {
+          sendRealtimeJson(socket, { type: 'error', message: 'Invalid presence.' });
+          return;
+        }
+        const wasConnected = context.player.connected;
         socket.visible = message.visible !== false;
         syncPlayerPresence(context.room, context.player);
-        context.room.updatedAt = now();
-        persistRoomsSoon();
-        broadcastRoom(context.room);
+        if (context.player.connected !== wasConnected) {
+          context.room.updatedAt = now();
+          persistRoomsSoon();
+          broadcastRoom(context.room);
+        } else {
+          sendCurrentRoom(socket, context.room);
+        }
         return;
       }
 
@@ -169,16 +202,54 @@ export function registerRealtimeServer({
     });
 
     socket.on('close', () => {
+      liveSockets.delete(socket);
       if (isShuttingDown()) return;
       const context = roomPlayer(socket);
       if (!context) return;
       context.room.clients.delete(socket);
-      if (!hasVisibleLiveClient(context.room, context.player.id, socket)) {
-        context.player.connected = false;
+      const wasConnected = context.player.connected;
+      syncPlayerPresence(context.room, context.player);
+      if (context.player.connected !== wasConnected) {
+        context.room.updatedAt = now();
+        persistRoomsSoon();
+        broadcastRoom(context.room);
       }
-      context.room.updatedAt = now();
-      persistRoomsSoon();
-      broadcastRoom(context.room);
     });
   });
+
+  const heartbeatTimer = scheduleInterval(() => {
+    for (const socket of liveSockets) {
+      if (socket.readyState !== socket.OPEN) continue;
+      if (socket.heartbeatAwaitingPong) {
+        try {
+          socket.terminate();
+        } catch {
+          // A racing socket stays tracked so the next heartbeat or close can converge it.
+        }
+        continue;
+      }
+      socket.heartbeatAwaitingPong = true;
+      try {
+        socket.ping();
+      } catch {
+        try {
+          socket.terminate();
+        } catch {
+          // A racing socket stays tracked so the next heartbeat or close can converge it.
+        }
+      }
+    }
+  }, heartbeatIntervalMs);
+  if (heartbeatTimer && typeof heartbeatTimer === 'object' && 'unref' in heartbeatTimer) {
+    const unref = (heartbeatTimer as { unref?: () => unknown }).unref;
+    unref?.call(heartbeatTimer);
+  }
+
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    cancelInterval(heartbeatTimer);
+    liveSockets.clear();
+  };
 }

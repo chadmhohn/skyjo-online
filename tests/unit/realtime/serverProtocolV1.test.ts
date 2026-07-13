@@ -18,9 +18,13 @@ class FakeSocket implements ProtocolV1Socket {
 
   on(): void {}
 
+  ping(): void {}
+
   send(payload: string): void {
     this.wire.push(payload);
   }
+
+  terminate(): void {}
 }
 
 function roomPlayer(
@@ -260,6 +264,22 @@ describe('protocol-v1 room command seam', () => {
     });
     expect(joined.socket.playerId).toBe('uuid-1');
     expect(joined.normalizedReadyIds).toHaveBeenCalledWith(room);
+  });
+
+  it('targeted-acknowledges a redundant same-seat join without persistence or peer broadcast', () => {
+    const room = makeRoom({ readyForNextRoundPlayerIds: [] });
+    const harness = createHarness(room);
+    harness.normalizedReadyIds.mockReturnValue([]);
+    harness.syncPlayerPresence.mockImplementation((_room, player) => {
+      player.connected = true;
+    });
+
+    harness.handle(harness.socket, { type: 'join-room', code: 'ABCDE', playerId: 'p1' });
+
+    expect(lastPayload(harness)).toEqual({ type: 'joined', playerId: 'p1', room: { code: 'ABCDE' } });
+    expect(room.updatedAt).toBe(0);
+    expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
+    expect(harness.broadcastRoom).not.toHaveBeenCalled();
   });
 
   it('requires a room context and treats unknown joined commands as a no-op', () => {

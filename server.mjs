@@ -408,6 +408,10 @@ function broadcastRoom(room) {
   }
 }
 
+function sendCurrentRoom(ws, room) {
+  sendJson(ws, { type: 'room', room: publicRoom(room) });
+}
+
 function queueRoomsSave() {
   if (!roomPersistenceLoadAccepted) {
     const error = new Error('Room persistence is unavailable.');
@@ -1268,7 +1272,7 @@ const handleProtocolV1Message = createProtocolV1MessageHandler({
   reportCompletedGameError: (error) => console.error('Failed to record multiplayer game:', error)
 });
 
-registerRealtimeServer({
+const disposeRealtimeServer = registerRealtimeServer({
   server,
   webSocketServer: wss,
   hasValidSession,
@@ -1276,6 +1280,7 @@ registerRealtimeServer({
   roomPlayer,
   persistRoomsSoon,
   broadcastRoom,
+  sendCurrentRoom,
   now: Date.now,
   isShuttingDown: () => shuttingDown,
   onProtocolV1Message: handleProtocolV1Message
@@ -1312,6 +1317,7 @@ async function shutdown(signal) {
     exitCode = 1;
     console.error('Room persistence flush failed during shutdown.');
   }
+  disposeRealtimeServer();
   for (const client of wss.clients) {
     client.close(1001, 'Server shutting down');
   }

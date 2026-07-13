@@ -12,7 +12,7 @@ export default defineConfig({
       provider: 'v8',
       reportsDirectory: './coverage/realtime',
       reporter: ['text', 'json-summary', 'lcov'],
-      include: ['src/serverProtocolV1.ts', 'src/serverRealtime.ts'],
+      include: ['src/roomConnection.ts', 'src/serverProtocolV1.ts', 'src/serverRealtime.ts'],
       thresholds: {
         lines: 90,
         branches: 85,
@@ -25,6 +25,12 @@ export default defineConfig({
           statements: 90
         },
         'src/serverProtocolV1.ts': {
+          lines: 90,
+          branches: 85,
+          functions: 90,
+          statements: 90
+        },
+        'src/roomConnection.ts': {
           lines: 90,
           branches: 85,
           functions: 90,
