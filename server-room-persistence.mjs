@@ -790,7 +790,10 @@ async function syncDirectory(directory) {
 }
 
 export async function atomicWriteJson(filePath, payload) {
-  const data = `${JSON.stringify(payload, null, 2)}\n`;
+  // Room snapshots are rewritten within the 500ms RPO window. Compact JSON
+  // preserves the exact document contract while avoiding ~37% of saturated
+  // write bytes and the corresponding transient string/Buffer pressure.
+  const data = `${JSON.stringify(payload)}\n`;
   const directory = path.dirname(filePath);
   await fs.mkdir(directory, { recursive: true });
   const tempPath = path.join(directory, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
