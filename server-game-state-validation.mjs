@@ -288,13 +288,26 @@ function validatePhysicalCards(players, drawPile, discardPile, drawnCard, scorin
   }
 }
 
-function validateScores(players) {
-  for (const [playerIndex, player] of players.entries()) {
-    const visibleScore = player.grid.reduce(
+function validateScores(state) {
+  const visibleScores = new Map(state.players.map((player) => [
+    player.id,
+    player.grid.reduce(
       (total, card) => total + (card.faceUp && !card.removed ? card.value : 0),
       0
-    );
-    if (player.roundScore !== visibleScore) fail(`Player ${playerIndex} round score does not match the visible grid.`);
+    )
+  ]));
+  const scoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
+  const closerId = scoringPhase ? state.roundHistory.at(-1)?.closerId : null;
+  const closerVisibleScore = closerId ? visibleScores.get(closerId) : undefined;
+  const closerScoreDoubled = closerId !== null &&
+    closerVisibleScore !== undefined &&
+    closerVisibleScore > 0 &&
+    state.players.some((player) => player.id !== closerId && closerVisibleScore >= visibleScores.get(player.id));
+
+  for (const [playerIndex, player] of state.players.entries()) {
+    const visibleScore = visibleScores.get(player.id);
+    const expectedScore = closerScoreDoubled && player.id === closerId ? visibleScore * 2 : visibleScore;
+    if (player.roundScore !== expectedScore) fail(`Player ${playerIndex} round score does not match the visible grid.`);
   }
 }
 
@@ -450,7 +463,7 @@ export function normalizePersistedGameState(value, validationContext) {
     drawnCard,
     normalized.phase === 'round-over' || normalized.phase === 'game-over'
   );
-  validateScores(players);
+  validateScores(normalized);
   validateHistoryCoherence(normalized);
   validatePhaseCoherence(normalized, context);
   return normalized;

@@ -22,6 +22,15 @@ import {
   serializeRooms
 } from '../../../server-room-persistence.mjs';
 import { createPersistenceHealthTracker } from '../../../server-persistence-health.mjs';
+import {
+  createMultiplayerGame,
+  drawBlind,
+  replaceCard,
+  revealOpeningCard
+} from '../../../src/game';
+import { createRoomSnapshot } from '../../../src/protocolV2';
+import { createSeededRandom } from '../../../src/runtime';
+import type { GameState } from '../../../src/types';
 
 const fixedNow = Date.parse('2026-07-11T12:00:00Z');
 const resetActionDigest = createHash('sha256').update(JSON.stringify({ type: 'reset-room' })).digest('hex');
@@ -44,9 +53,9 @@ function room(updatedAt = fixedNow, code = 'ABCDE') {
         createdAt: fixedNow
       }
     ],
-    readyForNextRoundPlayerIds: ['host-1', 'player-2', 'host-1'],
-    state: { phase: 'choose-source' },
-    status: 'playing',
+    readyForNextRoundPlayerIds: [] as string[],
+    state: null as GameState | null,
+    status: 'waiting' as 'waiting' | 'playing' | 'finished',
     updatedAt,
     completedGameId: 'game-1',
     gameSessionId: 'session-1',
@@ -61,6 +70,60 @@ function room(updatedAt = fixedNow, code = 'ABCDE') {
     resetAliases: [] as Array<{ fromCode: string; commandId: string; playerId: string; expiresAt: number }>,
     clients: new Set([{ readyState: 1 }])
   };
+}
+
+function gameRoster() {
+  return [
+    { id: 'host-1', name: 'Ada' },
+    { id: 'player-2', name: 'Grace' }
+  ];
+}
+
+function finishOpening(initial: GameState): GameState {
+  let state = initial;
+  while (state.phase === 'opening-reveal') {
+    const player = state.players[state.currentPlayerIndex];
+    const cardIndex = player.grid.findIndex((card) => !card.faceUp && !card.removed);
+    if (cardIndex < 0) throw new Error('Fixture could not find an opening card.');
+    state = revealOpeningCard(state, cardIndex);
+  }
+  return state;
+}
+
+function activeBlindDrawState(): GameState {
+  const opened = finishOpening(createMultiplayerGame(gameRoster(), 1, null, createSeededRandom(0x51a7e)));
+  const state = drawBlind(opened, createSeededRandom(0xb11d));
+  if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
+    throw new Error('Fixture did not produce an active blind draw.');
+  }
+  return state;
+}
+
+function completedState(gameOver: boolean): GameState {
+  const seed = gameOver ? 1 : 0x600d;
+  const opened = finishOpening(createMultiplayerGame(gameRoster(), 1, null, createSeededRandom(seed)));
+  const activeIndex = opened.currentPlayerIndex;
+  const closerIndex = (activeIndex + 1) % opened.players.length;
+  const blindDraw = drawBlind(opened, createSeededRandom(gameOver ? 0xabc : 0xf1a1));
+  const finalTurn = {
+    ...blindDraw,
+    roundCloserId: blindDraw.players[closerIndex].id,
+    finalTurnPlayerIds: [blindDraw.players[activeIndex].id]
+  };
+  const cardIndex = finalTurn.players[activeIndex].grid.findIndex((card) => !card.removed);
+  const completed = replaceCard(finalTurn, cardIndex);
+  const expectedPhase = gameOver ? 'game-over' : 'round-over';
+  if (completed.phase !== expectedPhase) {
+    throw new Error(`Fixture produced ${completed.phase}, expected ${expectedPhase}.`);
+  }
+  return completed;
+}
+
+function roomWithState(state: GameState, status: 'playing' | 'finished' = 'playing') {
+  const value = room();
+  value.state = state;
+  value.status = status;
+  return value;
 }
 
 function roomWithResetAlias(updatedAt = fixedNow, code = 'FGHIJ', fromCode = 'ABCDE') {
@@ -117,7 +180,7 @@ describe('room persistence', () => {
     }));
     expect(Object.keys(serialized)).toEqual(['format', 'version', 'protocolVersion', 'savedAt', 'rooms']);
     expect(serialized.rooms[0]).not.toHaveProperty('clients');
-    expect(serialized.rooms[0].readyForNextRoundPlayerIds).toEqual(['host-1', 'player-2']);
+    expect(serialized.rooms[0].readyForNextRoundPlayerIds).toEqual([]);
 
     await saveRoomsToDisk(new Map([[value.code, value]]), roomsFile);
     const saved = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
@@ -150,6 +213,62 @@ describe('room persistence', () => {
 
     const compatibleRooms = await loadRoomsFromDisk(roomsFile, { now: fixedNow + 1000 });
     expect(compatibleRooms.map((restoredRoom: { code: string }) => restoredRoom.code)).toEqual(['ABCDE']);
+  });
+
+  it.each([
+    ['active blind draw', () => activeBlindDrawState(), 'playing' as const],
+    ['round over', () => completedState(false), 'playing' as const],
+    ['game over', () => completedState(true), 'finished' as const]
+  ])('round-trips a strict v0.1.1 %s state', async (_label, createState, status) => {
+    const state = createState();
+    const value = roomWithState(state, status);
+    if (state.phase === 'round-over') value.readyForNextRoundPlayerIds = ['host-1'];
+
+    const serialized = serializeRooms(new Map([[value.code, value]]), fixedNow);
+    expect(serialized.rooms[0].state).toEqual(state);
+    expect(serialized.rooms[0].state).not.toBe(state);
+
+    await saveRoomsToDisk(new Map([[value.code, value]]), roomsFile);
+    const restored = await loadRoomsFromDisk(roomsFile, { now: fixedNow + 1 });
+
+    expect(restored[0].state).toEqual(state);
+    expect(restored[0].state).not.toBe(state);
+    expect(restored[0].status).toBe(status);
+    expect(restored[0].readyForNextRoundPlayerIds).toEqual(value.readyForNextRoundPlayerIds);
+  });
+
+  it('preserves historical chat names after a room player is renamed', async () => {
+    const value = room();
+    value.players[0].name = 'Ada Lovelace';
+
+    await saveRoomsToDisk(new Map([[value.code, value]]), roomsFile);
+    const [restored] = await loadRoomsFromDisk(roomsFile, { now: fixedNow + 1 });
+
+    expect(restored.players[0].name).toBe('Ada Lovelace');
+    expect(restored.chatMessages[0]).toMatchObject({ playerId: 'host-1', playerName: 'Ada' });
+  });
+
+  it('restores private state before applying player-specific snapshot redaction', async () => {
+    const state = activeBlindDrawState();
+    const value = roomWithState(state);
+    await saveRoomsToDisk(new Map([[value.code, value]]), roomsFile);
+    const [restored] = await loadRoomsFromDisk(roomsFile, { now: fixedNow + 1 });
+    const activePlayerId = state.players[state.currentPlayerIndex].id;
+    const otherPlayerId = state.players.find((player) => player.id !== activePlayerId)?.id;
+    if (!otherPlayerId || !state.drawnCard) throw new Error('Fixture is missing player-specific hidden state.');
+
+    const activeSnapshot = createRoomSnapshot(restored, activePlayerId);
+    const otherSnapshot = createRoomSnapshot(restored, otherPlayerId);
+
+    expect(activeSnapshot.state?.drawnCard?.value).toBe(state.drawnCard.value);
+    expect(otherSnapshot.state?.drawnCard).toBeNull();
+    expect(otherSnapshot.state?.hasDrawnCard).toBe(true);
+    expect(otherSnapshot.state?.drawPileCount).toBe(state.drawPile.length);
+    expect(JSON.stringify(otherSnapshot)).not.toContain(state.drawnCard.id);
+    expect(JSON.stringify(otherSnapshot)).not.toMatch(/card-\d+--?\d+/);
+    expect(otherSnapshot.state?.players.flatMap((player) => player.grid)
+      .filter((card) => !card.faceUp)
+      .every((card) => card.value === null)).toBe(true);
   });
 
   it('round-trips exact private reset aliases and defaults legacy rooms to an empty lineage', async () => {
@@ -282,6 +401,18 @@ describe('room persistence', () => {
     expect(normalizeRoomsDocument(validStale, { now: fixedNow, staleMs: ROOM_STALE_MS }).rooms).toEqual([]);
   });
 
+  it('preserves exact source bytes when deep persisted game state is rejected', async () => {
+    const value = roomWithState(activeBlindDrawState());
+    const document = serializeRooms(new Map([[value.code, value]]), fixedNow);
+    const state = document.rooms[0].state as GameState;
+    state.players[0].grid[1].id = state.players[0].grid[0].id;
+    const contents = `  ${JSON.stringify(document)}\r\n`;
+    await fs.writeFile(roomsFile, contents, 'utf8');
+
+    await expect(loadRoomsSnapshotFromDisk(roomsFile, { now: fixedNow })).rejects.toThrow(/invalid game state/i);
+    expect(await fs.readFile(roomsFile, 'utf8')).toBe(contents);
+  });
+
   it.each([
     ['invalid JSON', '{"rooms":', 'INVALID_ROOMS_JSON'],
     ['a non-document root', JSON.stringify('rooms'), 'INVALID_ROOMS_FILE'],
@@ -338,9 +469,35 @@ describe('room persistence', () => {
     ['a non-string chat player name', (value: ReturnType<typeof room>) => { value.chatMessages[0].playerName = 42 as never; }],
     ['an invalid chat timestamp', (value: ReturnType<typeof room>) => { value.chatMessages[0].createdAt = 'now' as never; }],
     ['a malformed chat message', (value: ReturnType<typeof room>) => { value.chatMessages[0].text = ''; }],
+    ['an orphan chat author', (value: ReturnType<typeof room>) => { value.chatMessages[0].playerId = 'missing-seat'; }],
     ['non-array ready ids', (value: ReturnType<typeof room>) => { value.readyForNextRoundPlayerIds = {} as never; }],
     ['a non-string ready id', (value: ReturnType<typeof room>) => { value.readyForNextRoundPlayerIds = [42 as never]; }],
+    ['an unknown ready id', (value: ReturnType<typeof room>) => { value.readyForNextRoundPlayerIds = ['missing-seat']; }],
+    ['a noncanonical ready id', (value: ReturnType<typeof room>) => { value.readyForNextRoundPlayerIds = [' host-1']; }],
+    ['duplicate ready ids', (value: ReturnType<typeof room>) => {
+      value.readyForNextRoundPlayerIds = ['host-1', 'host-1'];
+    }],
     ['non-object game state', (value: ReturnType<typeof room>) => { value.state = [] as never; }],
+    ['waiting room with game state', (value: ReturnType<typeof room>) => { value.state = activeBlindDrawState(); }],
+    ['playing room without game state', (value: ReturnType<typeof room>) => { value.status = 'playing'; }],
+    ['playing room with corrupt game state', (value: ReturnType<typeof room>) => {
+      value.status = 'playing';
+      value.state = activeBlindDrawState();
+      value.state.players[0].grid[1].id = value.state.players[0].grid[0].id;
+    }],
+    ['active game with a ready player', (value: ReturnType<typeof room>) => {
+      value.status = 'playing';
+      value.state = activeBlindDrawState();
+      value.readyForNextRoundPlayerIds = ['host-1'];
+    }],
+    ['finished room with round-over state', (value: ReturnType<typeof room>) => {
+      value.status = 'finished';
+      value.state = completedState(false);
+    }],
+    ['playing room with game-over state', (value: ReturnType<typeof room>) => {
+      value.status = 'playing';
+      value.state = completedState(true);
+    }],
     ['a non-numeric update time', (value: ReturnType<typeof room>) => { value.updatedAt = 'now' as never; }],
     ['a non-string completed game id', (value: ReturnType<typeof room>) => { value.completedGameId = 1 as never; }],
     ['a non-string game session id', (value: ReturnType<typeof room>) => { value.gameSessionId = 1 as never; }]
@@ -357,6 +514,41 @@ describe('room persistence', () => {
     await fs.writeFile(roomsFile, JSON.stringify(envelope), 'utf8');
 
     await expect(loadRoomsFromDisk(roomsFile, { now: fixedNow })).rejects.toBeInstanceOf(RoomPersistenceFormatError);
+  });
+
+  it.each([
+    ['duplicate ready ids', (value: ReturnType<typeof room>) => {
+      value.readyForNextRoundPlayerIds = ['host-1', 'host-1'];
+    }],
+    ['an unknown ready id', (value: ReturnType<typeof room>) => {
+      value.readyForNextRoundPlayerIds = ['missing-seat'];
+    }],
+    ['a noncanonical ready id', (value: ReturnType<typeof room>) => {
+      value.readyForNextRoundPlayerIds = ['host-1 '];
+    }],
+    ['an orphan chat author', (value: ReturnType<typeof room>) => {
+      value.chatMessages[0].playerId = 'missing-seat';
+    }],
+    ['waiting state', (value: ReturnType<typeof room>) => {
+      value.state = activeBlindDrawState();
+    }],
+    ['missing playing state', (value: ReturnType<typeof room>) => {
+      value.status = 'playing';
+    }],
+    ['corrupt playing state', (value: ReturnType<typeof room>) => {
+      value.status = 'playing';
+      value.state = activeBlindDrawState();
+      value.state.drawPile[0].faceUp = true;
+    }],
+    ['active readiness', (value: ReturnType<typeof room>) => {
+      value.status = 'playing';
+      value.state = activeBlindDrawState();
+      value.readyForNextRoundPlayerIds = ['host-1'];
+    }]
+  ])('rejects invalid runtime serialization: %s', (_label, corrupt) => {
+    const value = room();
+    corrupt(value);
+    expect(() => serializeRooms(new Map([[value.code, value]]), fixedNow)).toThrow(RoomPersistenceFormatError);
   });
 
   it('validates strict parser metadata before any file access is involved', () => {

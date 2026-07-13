@@ -38,8 +38,8 @@ function roomState() {
         ],
         chatMessages: [],
         readyForNextRoundPlayerIds: [],
-        state: { phase: 'choose-source' },
-        status: 'playing',
+        state: null,
+        status: 'waiting',
         updatedAt: Date.parse(fixedTimestamp),
         completedGameId: null,
         gameSessionId: 'session-1'

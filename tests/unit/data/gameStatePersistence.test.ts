@@ -148,6 +148,33 @@ describe('persisted internal GameState validation', () => {
     }
   });
 
+  it('accepts opening, final-turn, and legitimately doubled closer lifecycle branches', () => {
+    const opening = createMultiplayerGame(roster(), 1, null, createSeededRandom(1));
+    expect(normalizePersistedGameState(opening, contextFor(opening))).toEqual(opening);
+
+    const opened = finishOpening(opening);
+    const activeIndex = opened.currentPlayerIndex;
+    const closerIndex = (activeIndex + 1) % opened.players.length;
+    const blindDraw = drawBlind(opened, createSeededRandom(0xabc));
+    const finalTurn = {
+      ...blindDraw,
+      roundCloserId: blindDraw.players[closerIndex].id,
+      finalTurnPlayerIds: [blindDraw.players[activeIndex].id]
+    };
+    expect(normalizePersistedGameState(finalTurn, contextFor(finalTurn))).toEqual(finalTurn);
+
+    const targetIndex = finalTurn.players[activeIndex].grid.findIndex((card) => !card.removed);
+    const completed = replaceCard(finalTurn, targetIndex);
+    expect(completed.phase).toBe('game-over');
+    const closer = completed.players[closerIndex];
+    const visibleCloserScore = closer.grid.reduce(
+      (total, card) => total + (card.faceUp && !card.removed ? card.value : 0),
+      0
+    );
+    expect(closer.roundScore).toBe(visibleCloserScore * 2);
+    expect(normalizePersistedGameState(completed, contextFor(completed))).toEqual(completed);
+  });
+
   const activeMutations: Array<[string, InvalidMutation]> = [
     ['unknown game-state key', (state) => { state.unexpected = true; }],
     ['missing game-state key', (state) => { delete record(state).log; }],

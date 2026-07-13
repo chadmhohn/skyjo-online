@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {
+  PersistedGameStateValidationError,
+  normalizePersistedGameState
+} from './server-game-state-validation.mjs';
 
 export const DEFAULT_ROOMS_FILE = path.join('.data', 'rooms.json');
 export const ROOM_STALE_MS = 1000 * 60 * 60 * 6;
@@ -145,7 +149,7 @@ function normalizeResetAlias(value, roomIndex, roomCode, playerIds, receiptsByCo
   return { fromCode, commandId, playerId, expiresAt };
 }
 
-function normalizeChatMessage(value, roomIndex) {
+function normalizeChatMessage(value, roomIndex, playersById) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} contains an invalid chat message.`);
   }
@@ -160,6 +164,9 @@ function normalizeChatMessage(value, roomIndex) {
   if (!id || !playerId || !text || !Number.isFinite(createdAt) || createdAt < 0) {
     throw formatError(`Room ${roomIndex} contains a malformed chat message.`);
   }
+  if (!playersById.has(playerId)) {
+    throw formatError(`Room ${roomIndex} contains an invalid chat author.`);
+  }
   return {
     id,
     playerId,
@@ -167,6 +174,52 @@ function normalizeChatMessage(value, roomIndex) {
     text,
     createdAt
   };
+}
+
+function normalizeReadyPlayerIds(value, roomIndex, playerIds) {
+  if (value !== undefined && !Array.isArray(value)) {
+    throw formatError(`Room ${roomIndex} ready player ids must be an array.`);
+  }
+  if (value === undefined) return [];
+  const readyPlayerIds = value.map((id) => {
+    if (typeof id !== 'string') {
+      throw formatError(`Room ${roomIndex} contains an invalid ready player id.`);
+    }
+    const normalizedId = id.trim();
+    if (!normalizedId || normalizedId !== id || !playerIds.has(normalizedId)) {
+      throw formatError(`Room ${roomIndex} contains an unknown ready player id.`);
+    }
+    return normalizedId;
+  });
+  if (new Set(readyPlayerIds).size !== readyPlayerIds.length) {
+    throw formatError(`Room ${roomIndex} contains duplicate ready player ids.`);
+  }
+  return readyPlayerIds;
+}
+
+function normalizeRoomGameState(value, roomIndex, status, players, readyForNextRoundPlayerIds) {
+  if (status === 'waiting') {
+    if (value !== null) {
+      throw formatError(`Room ${roomIndex} waiting state must be null.`);
+    }
+    if (readyForNextRoundPlayerIds.length > 0) {
+      throw formatError(`Room ${roomIndex} waiting room cannot contain ready player ids.`);
+    }
+    return null;
+  }
+  if (value === undefined || value === null) {
+    throw formatError(`Room ${roomIndex} ${status} state is required.`);
+  }
+  try {
+    return normalizePersistedGameState(value, {
+      rosterPlayerIds: players.map((player) => player.id),
+      roomStatus: status,
+      readyForNextRoundPlayerIds
+    });
+  } catch (error) {
+    if (!(error instanceof PersistedGameStateValidationError)) throw error;
+    throw formatError(`Room ${roomIndex} contains invalid game state.`, 'INVALID_ROOMS_FILE', { cause: error });
+  }
 }
 
 function normalizeRoom(value, roomIndex) {
@@ -194,6 +247,7 @@ function normalizeRoom(value, roomIndex) {
 
   const players = value.players.map((player) => normalizePlayer(player, roomIndex, updatedAt));
   const playerIds = new Set(players.map((player) => player.id));
+  const playersById = new Map(players.map((player) => [player.id, player]));
   if (playerIds.size !== players.length) {
     throw formatError(`Room ${roomIndex} contains duplicate player ids.`);
   }
@@ -205,20 +259,16 @@ function normalizeRoom(value, roomIndex) {
     throw formatError(`Room ${roomIndex} chat messages must be an array.`);
   }
   const chatMessages = Array.isArray(value.chatMessages)
-    ? value.chatMessages.map((message) => normalizeChatMessage(message, roomIndex)).slice(-maxPersistedChatMessages)
+    ? value.chatMessages
+        .map((message) => normalizeChatMessage(message, roomIndex, playersById))
+        .slice(-maxPersistedChatMessages)
     : [];
 
-  if (value.readyForNextRoundPlayerIds !== undefined && !Array.isArray(value.readyForNextRoundPlayerIds)) {
-    throw formatError(`Room ${roomIndex} ready player ids must be an array.`);
-  }
-  if (Array.isArray(value.readyForNextRoundPlayerIds) && value.readyForNextRoundPlayerIds.some((id) => typeof id !== 'string')) {
-    throw formatError(`Room ${roomIndex} contains an invalid ready player id.`);
-  }
-  const readyForNextRoundPlayerIds = Array.isArray(value.readyForNextRoundPlayerIds)
-    ? value.readyForNextRoundPlayerIds
-        .map((id) => stringValue(id).trim())
-        .filter((id, index, ids) => playerIds.has(id) && ids.indexOf(id) === index)
-    : [];
+  const readyForNextRoundPlayerIds = normalizeReadyPlayerIds(
+    value.readyForNextRoundPlayerIds,
+    roomIndex,
+    playerIds
+  );
 
   if (value.recentCommandIds !== undefined && !Array.isArray(value.recentCommandIds)) {
     throw formatError(`Room ${roomIndex} command receipts must be an array.`);
@@ -253,9 +303,7 @@ function normalizeRoom(value, roomIndex) {
     throw formatError(`Room ${roomIndex} contains duplicate reset alias commands.`);
   }
 
-  if (value.state !== undefined && value.state !== null && !isRecord(value.state)) {
-    throw formatError(`Room ${roomIndex} game state must be an object or null.`);
-  }
+  const state = normalizeRoomGameState(value.state, roomIndex, status, players, readyForNextRoundPlayerIds);
   if (value.completedGameId !== undefined && value.completedGameId !== null && typeof value.completedGameId !== 'string') {
     throw formatError(`Room ${roomIndex} completed game id must be a string or null.`);
   }
@@ -273,7 +321,7 @@ function normalizeRoom(value, roomIndex) {
     })),
     chatMessages,
     readyForNextRoundPlayerIds,
-    state: isRecord(value.state) ? value.state : null,
+    state,
     status,
     updatedAt,
     completedGameId: stringValue(value.completedGameId).trim() || null,
@@ -444,7 +492,35 @@ export function serializeRoom(room) {
   if (Array.isArray(room.resetAliases) && room.resetAliases.length > MAX_PERSISTED_RESET_ALIASES) {
     throw formatError(`Room ${room.code} contains too many reset aliases.`);
   }
-  const playerIds = new Set(room.players.map((player) => player.id));
+  const serializedPlayers = room.players.map((player) => ({
+    id: player.id,
+    userId: player.userId || undefined,
+    name: player.name,
+    connected: player.connected === true,
+    host: player.host === true,
+    joinedAt: Number.isFinite(player.joinedAt) ? player.joinedAt : room.updatedAt,
+    lastSeenAt: Number.isFinite(player.lastSeenAt) ? player.lastSeenAt : room.updatedAt,
+    controller: player.controller === 'ai' ? 'ai' : 'human'
+  }));
+  const playerIds = new Set(serializedPlayers.map((player) => player.id));
+  const playersById = new Map(serializedPlayers.map((player) => [player.id, player]));
+  const chatMessages = Array.isArray(room.chatMessages)
+    ? room.chatMessages
+        .map((message) => normalizeChatMessage(message, room.code, playersById))
+        .slice(-maxPersistedChatMessages)
+    : [];
+  const readyForNextRoundPlayerIds = normalizeReadyPlayerIds(
+    room.readyForNextRoundPlayerIds,
+    room.code,
+    playerIds
+  );
+  const state = normalizeRoomGameState(
+    room.state,
+    room.code,
+    room.status,
+    serializedPlayers,
+    readyForNextRoundPlayerIds
+  );
   const recentCommandIds = Array.isArray(room.recentCommandIds)
     ? room.recentCommandIds.slice(-maxRecentCommandReceipts).map((receipt) => ({
         commandId: receipt.commandId,
@@ -459,23 +535,10 @@ export function serializeRoom(room) {
     roomVersion: 2,
     code: room.code,
     hostId: room.hostId,
-    players: room.players.map((player) => ({
-      id: player.id,
-      userId: player.userId || undefined,
-      name: player.name,
-      connected: player.connected === true,
-      host: player.host === true,
-      joinedAt: Number.isFinite(player.joinedAt) ? player.joinedAt : room.updatedAt,
-      lastSeenAt: Number.isFinite(player.lastSeenAt) ? player.lastSeenAt : room.updatedAt,
-      controller: player.controller === 'ai' ? 'ai' : 'human'
-    })),
-    chatMessages: Array.isArray(room.chatMessages)
-      ? room.chatMessages.map((message) => normalizeChatMessage(message, room.code)).slice(-maxPersistedChatMessages)
-      : [],
-    readyForNextRoundPlayerIds: Array.isArray(room.readyForNextRoundPlayerIds)
-      ? room.readyForNextRoundPlayerIds.filter((id, index, ids) => ids.indexOf(id) === index)
-      : [],
-    state: room.state ?? null,
+    players: serializedPlayers,
+    chatMessages,
+    readyForNextRoundPlayerIds,
+    state,
     status: room.status,
     updatedAt: room.updatedAt,
     completedGameId: room.completedGameId || null,
