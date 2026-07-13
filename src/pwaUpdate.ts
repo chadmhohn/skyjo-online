@@ -4,15 +4,36 @@ export type PwaUpdateSnapshot = Readonly<{
   reloadRequired: boolean;
 }>;
 
+type ActivationAttempt = {
+  autoReloadEligible: boolean;
+  baselineController: ServiceWorker | null;
+  deadline: number;
+  generation: number;
+  target: ServiceWorker;
+  targetStateChange: (() => void) | null;
+  timeout: number | null;
+  transferUsed: boolean;
+};
+
+type ControllerObservation =
+  | { kind: 'initial' }
+  | { kind: 'external' }
+  | { kind: 'own'; generation: number };
+
+const activationTimeoutMs = 8_000;
 const listeners = new Set<() => void>();
 let snapshot: PwaUpdateSnapshot = Object.freeze({ available: false, activating: false, reloadRequired: false });
 let registration: ServiceWorkerRegistration | null = null;
 let waitingWorker: ServiceWorker | null = null;
-let activationRequested = false;
+let activationAttempt: ActivationAttempt | null = null;
+let activationGeneration = 0;
 let reloadStarted = false;
 let registrationStarted = false;
-let activationWatchdog: number | null = null;
 let controllerKnown = false;
+let knownController: ServiceWorker | null = null;
+let observedController: ServiceWorker | null = null;
+let observedControllerStateChange: (() => void) | null = null;
+let reloadPage = () => window.location.reload();
 
 function publish(next: PwaUpdateSnapshot) {
   if (
@@ -27,7 +48,23 @@ function publish(next: PwaUpdateSnapshot) {
 function rememberWaiting(worker: ServiceWorker | null) {
   if (!worker || worker.state === 'redundant') return;
   waitingWorker = worker;
-  publish({ available: true, activating: activationRequested, reloadRequired: snapshot.reloadRequired });
+  publish({ available: true, activating: Boolean(activationAttempt), reloadRequired: snapshot.reloadRequired });
+}
+
+function clearActivationAttempt() {
+  const attempt = activationAttempt;
+  if (!attempt) return;
+  if (attempt.timeout !== null) window.clearTimeout(attempt.timeout);
+  if (attempt.targetStateChange) attempt.target.removeEventListener('statechange', attempt.targetStateChange);
+  activationAttempt = null;
+}
+
+function clearControllerObservation() {
+  if (observedController && observedControllerStateChange) {
+    observedController.removeEventListener('statechange', observedControllerStateChange);
+  }
+  observedController = null;
+  observedControllerStateChange = null;
 }
 
 function observeInstalling(worker: ServiceWorker | null) {
@@ -35,17 +72,13 @@ function observeInstalling(worker: ServiceWorker | null) {
   const inspect = () => {
     if (worker.state === 'installed' && navigator.serviceWorker.controller) rememberWaiting(worker);
     if (worker.state === 'redundant' && waitingWorker === worker) {
-      const shouldTransferActivation = activationRequested;
-      if (activationWatchdog !== null) window.clearTimeout(activationWatchdog);
-      activationWatchdog = null;
-      activationRequested = false;
+      if (activationAttempt?.target === worker) return;
       waitingWorker = null;
       if (snapshot.reloadRequired) return;
       const replacement = registration?.waiting || null;
       if (replacement && replacement.state !== 'redundant') {
         rememberWaiting(replacement);
         observeInstalling(replacement);
-        if (shouldTransferActivation) activatePwaUpdate();
       }
       else publish({ available: false, activating: false, reloadRequired: false });
     }
@@ -67,7 +100,143 @@ function observeRegistration(nextRegistration: ServiceWorkerRegistration) {
 function reloadOnce() {
   if (reloadStarted) return;
   reloadStarted = true;
-  window.location.reload();
+  reloadPage();
+}
+
+function publishReloadRequired() {
+  waitingWorker = null;
+  publish({ available: true, activating: false, reloadRequired: true });
+}
+
+function settleOwnController(worker: ServiceWorker, generation: number) {
+  const attempt = activationAttempt;
+  if (
+    !attempt ||
+    attempt.generation !== generation ||
+    attempt.target !== worker ||
+    attempt.baselineController === worker ||
+    navigator.serviceWorker.controller !== worker ||
+    worker.state !== 'activated'
+  ) return;
+  const shouldReload = (
+    attempt.autoReloadEligible &&
+    Date.now() <= attempt.deadline &&
+    !snapshot.reloadRequired &&
+    !isPwaUpdateDeferredPath(window.location.pathname)
+  );
+  clearActivationAttempt();
+  waitingWorker = null;
+  if (shouldReload) reloadOnce();
+  else publishReloadRequired();
+}
+
+function observeControllerTerminal(worker: ServiceWorker, observation: ControllerObservation) {
+  clearControllerObservation();
+  if (worker.state === 'redundant') return;
+  observedController = worker;
+  const inspect = () => {
+    if (
+      observedController !== worker ||
+      navigator.serviceWorker.controller !== worker ||
+      worker.state !== 'activated'
+    ) return;
+    clearControllerObservation();
+    if (observation.kind === 'initial' || reloadStarted) return;
+    if (observation.kind === 'own') {
+      settleOwnController(worker, observation.generation);
+      return;
+    }
+    clearActivationAttempt();
+    publishReloadRequired();
+  };
+  observedControllerStateChange = inspect;
+  worker.addEventListener('statechange', inspect);
+  inspect();
+}
+
+function postActivation(attempt: ActivationAttempt): boolean {
+  if (activationAttempt !== attempt) return false;
+  try {
+    attempt.target.postMessage({ type: 'SKYJO_ACTIVATE_UPDATE' });
+    return true;
+  } catch {
+    const replacement = registration?.waiting || null;
+    clearActivationAttempt();
+    waitingWorker = replacement?.state === 'installed' ? replacement : null;
+    publish({ available: Boolean(waitingWorker), activating: false, reloadRequired: snapshot.reloadRequired });
+    return false;
+  }
+}
+
+function transferActivationAttempt(attempt: ActivationAttempt) {
+  if (activationAttempt !== attempt) return;
+  const replacement = registration?.waiting || null;
+  const retryableReplacement = (
+    replacement &&
+    replacement !== attempt.target &&
+    replacement.state === 'installed'
+  ) ? replacement : null;
+  if (attempt.transferUsed || Date.now() >= attempt.deadline) {
+    clearActivationAttempt();
+    waitingWorker = retryableReplacement;
+    publish({
+      available: Boolean(retryableReplacement) || snapshot.reloadRequired,
+      activating: false,
+      reloadRequired: snapshot.reloadRequired
+    });
+    return;
+  }
+  if (!retryableReplacement) {
+    clearActivationAttempt();
+    waitingWorker = null;
+    if (!snapshot.reloadRequired) publish({ available: false, activating: false, reloadRequired: false });
+    return;
+  }
+  attempt.transferUsed = true;
+  if (attempt.targetStateChange) attempt.target.removeEventListener('statechange', attempt.targetStateChange);
+  attempt.target = retryableReplacement;
+  attempt.targetStateChange = null;
+  waitingWorker = retryableReplacement;
+  observeInstalling(retryableReplacement);
+  observeActivationTarget(attempt);
+  postActivation(attempt);
+}
+
+function observeActivationTarget(attempt: ActivationAttempt) {
+  const target = attempt.target;
+  const inspect = () => {
+    if (activationAttempt !== attempt || attempt.target !== target) return;
+    if (target.state === 'redundant') {
+      transferActivationAttempt(attempt);
+      return;
+    }
+    if (target.state === 'activated' && navigator.serviceWorker.controller === target) {
+      observeControllerTerminal(target, { kind: 'own', generation: attempt.generation });
+    }
+  };
+  attempt.targetStateChange = inspect;
+  target.addEventListener('statechange', inspect);
+  inspect();
+}
+
+function handleActivationDeadline(generation: number) {
+  const attempt = activationAttempt;
+  if (!attempt || attempt.generation !== generation) return;
+  const target = attempt.target;
+  const passiveController = (
+    navigator.serviceWorker.controller === target &&
+    target.state !== 'redundant'
+  ) ? target : null;
+  const liveWaiting = registration?.waiting || null;
+  const retryableWaiting = liveWaiting?.state === 'installed' ? liveWaiting : null;
+  clearActivationAttempt();
+  waitingWorker = retryableWaiting;
+  publish({
+    available: Boolean(retryableWaiting),
+    activating: false,
+    reloadRequired: false
+  });
+  if (passiveController) observeControllerTerminal(passiveController, { kind: 'external' });
 }
 
 export function getPwaUpdateSnapshot(): PwaUpdateSnapshot {
@@ -79,24 +248,32 @@ export function subscribeToPwaUpdates(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-export function registerPwaUpdates(): void {
+export function registerPwaUpdates(reload: () => void = () => window.location.reload()): void {
   if (registrationStarted || !('serviceWorker' in navigator)) return;
   registrationStarted = true;
-  controllerKnown = Boolean(navigator.serviceWorker.controller);
+  reloadPage = reload;
+  knownController = navigator.serviceWorker.controller;
+  controllerKnown = Boolean(knownController);
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (activationWatchdog !== null) window.clearTimeout(activationWatchdog);
-    activationWatchdog = null;
-    waitingWorker = null;
-    if (!controllerKnown && !activationRequested) {
-      controllerKnown = true;
-      return;
-    }
+    if (reloadStarted) return;
+    const controller = navigator.serviceWorker.controller;
+    if (!controller) return;
+    if (controllerKnown && controller === knownController) return;
+    const initialControl = !controllerKnown;
+    knownController = controller;
     controllerKnown = true;
-    if (activationRequested) {
-      reloadOnce();
+    if (initialControl && !activationAttempt) {
+      observeControllerTerminal(controller, { kind: 'initial' });
       return;
     }
-    publish({ available: true, activating: false, reloadRequired: true });
+    const attempt = activationAttempt;
+    if (attempt && controller === attempt.target && controller !== attempt.baselineController) {
+      observeControllerTerminal(controller, { kind: 'own', generation: attempt.generation });
+      return;
+    }
+    if (attempt && controller === attempt.baselineController) return;
+    if (attempt) attempt.autoReloadEligible = false;
+    observeControllerTerminal(controller, { kind: 'external' });
   });
   window.addEventListener('load', () => {
     void navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' })
@@ -107,6 +284,7 @@ export function registerPwaUpdates(): void {
 
 export function activatePwaUpdate(): boolean {
   if (snapshot.reloadRequired) {
+    if (isPwaUpdateDeferredPath(window.location.pathname)) return false;
     reloadOnce();
     return true;
   }
@@ -116,32 +294,30 @@ export function activatePwaUpdate(): boolean {
     : waitingWorker?.state === 'installed'
       ? waitingWorker
       : null;
-  if (!worker || activationRequested) {
+  if (!worker || activationAttempt) {
     if (!worker) {
       waitingWorker = null;
       publish({ available: false, activating: false, reloadRequired: false });
     }
     return false;
   }
-  activationRequested = true;
+  const generation = ++activationGeneration;
+  const attempt: ActivationAttempt = {
+    autoReloadEligible: true,
+    baselineController: navigator.serviceWorker.controller,
+    deadline: Date.now() + activationTimeoutMs,
+    generation,
+    target: worker,
+    targetStateChange: null,
+    timeout: null,
+    transferUsed: false
+  };
+  activationAttempt = attempt;
   waitingWorker = worker;
   publish({ available: true, activating: true, reloadRequired: false });
-  try {
-    worker.postMessage({ type: 'SKYJO_ACTIVATE_UPDATE' });
-  } catch {
-    activationRequested = false;
-    waitingWorker = null;
-    publish({ available: Boolean(registration?.waiting), activating: false, reloadRequired: false });
-    return false;
-  }
-  activationWatchdog = window.setTimeout(() => {
-    if (!activationRequested || reloadStarted) return;
-    activationRequested = false;
-    const replacement = registration?.waiting || null;
-    waitingWorker = replacement?.state === 'installed' ? replacement : null;
-    publish({ available: Boolean(waitingWorker), activating: false, reloadRequired: false });
-  }, 8_000);
-  return true;
+  observeActivationTarget(attempt);
+  attempt.timeout = window.setTimeout(() => handleActivationDeadline(generation), activationTimeoutMs);
+  return postActivation(attempt);
 }
 
 export function isPwaUpdateDeferredPath(pathname: string): boolean {
