@@ -967,6 +967,15 @@ async function handleApiRequest(req, res, url) {
       const user = requireAccountForApi(req, res);
       if (!user) return true;
       const body = await readJsonBody(req);
+      if (
+        typeof body.expectedAccountUserId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          body.expectedAccountUserId
+        )
+      ) {
+        throw new PublicApiError('STATS_CLIENT_UPGRADE_REQUIRED');
+      }
+      if (body.expectedAccountUserId !== user.id) throw new PublicApiError('ACCOUNT_SESSION_CHANGED');
       const state = body.state;
       const humanPlayer = Array.isArray(state?.players) ? state.players.find((player) => player.kind === 'human') : null;
       if (!humanPlayer) throw new PublicApiError('MISSING_HUMAN_PLAYER');
@@ -975,7 +984,8 @@ async function handleApiRequest(req, res, url) {
         state,
         createdByUserId: user.id,
         playerAccounts: { [humanPlayer.id]: user.id },
-        sourceKey: singlePlayerSourceKey(user, body)
+        sourceKey: singlePlayerSourceKey(user, body),
+        completedAt: body.completedAt
       });
       sendJsonResponse(res, 201, { game });
       return true;

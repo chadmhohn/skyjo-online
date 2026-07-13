@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   account: {
     loading: false,
     user: null as AccountUser | null,
+    localSoloOwnerId: null as string | null,
     error: '',
     clearError: vi.fn(),
     refresh: vi.fn(async () => undefined),
@@ -144,6 +145,7 @@ describe('application routes and solo controls', () => {
   beforeEach(() => {
     mocks.account.loading = false;
     mocks.account.user = null;
+    mocks.account.localSoloOwnerId = null;
     mocks.account.error = '';
     mocks.audioSettings.ambience = false;
     mocks.audioSettings.ambienceVolume = 0.34;
@@ -416,7 +418,7 @@ describe('application routes and solo controls', () => {
   it('closes settings with Escape and backdrop interaction', async () => {
     const actor = userEvent.setup();
     renderRoute('/single-player');
-    await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
+    await actor.click(await screen.findByRole('button', { name: 'Open game settings' }));
     await actor.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument();
 

@@ -52,6 +52,17 @@ import {
   type GameCommand,
   type PublicRoomSnapshot
 } from './protocolV2';
+import {
+  createSoloGameId,
+  createStatsOutboxCoordinator,
+  deleteSoloSession,
+  enqueueCompletedGame,
+  loadSoloSession,
+  saveSoloSession,
+  soloOwnerKey,
+  type SoloPersistenceWarning,
+  type SoloSessionRecord
+} from './soloDurability';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from './types';
 
 const rows = [0, 1, 2];
@@ -76,6 +87,26 @@ type TurnStatus = {
   description: string;
   tone: TurnStatusTone;
 };
+type SoloStatsCoordinator = ReturnType<typeof createStatsOutboxCoordinator>;
+type SoloStatsFlushResult = Awaited<ReturnType<SoloStatsCoordinator['flush']>>;
+
+function beginSoloStatsFlush(
+  coordinator: SoloStatsCoordinator,
+  onResult: (result: SoloStatsFlushResult) => void,
+  onFailure: () => void
+): void {
+  void Promise.resolve()
+    .then(() => coordinator.flush(true))
+    .then(onResult)
+    .catch(onFailure);
+}
+
+function statsSyncUnavailableWarning(): SoloPersistenceWarning {
+  return {
+    kind: 'unavailable',
+    message: 'Saved game stats are unavailable in this browser session. Your game can continue safely.'
+  };
+}
 
 const responsiveBoardGridClass = 'grid gap-4';
 const opponentBoardGridClass = 'skyjo-opponent-stack grid gap-4 xl:grid-cols-2';
@@ -2138,13 +2169,28 @@ function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameStat
 }
 
 function SinglePlayer() {
-  const { user } = useAccount();
+  const { loading: accountLoading, localSoloOwnerId, user } = useAccount();
+  const ownerKey = soloOwnerKey(user?.id ?? localSoloOwnerId);
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
+  const [activeGameId, setActiveGameId] = useState(createSoloGameId);
+  const [hydratedOwnerKey, setHydratedOwnerKey] = useState('');
+  const [resumeSession, setResumeSession] = useState<SoloSessionRecord | null>(null);
+  const [persistenceWarning, setPersistenceWarning] = useState<SoloPersistenceWarning | null>(null);
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
   const [statsSaveStatus, setStatsSaveStatus] = useState('');
-  const savedSingleGameKeyRef = useRef('');
+  const completedQueueKeyRef = useRef('');
+  const statsCoordinatorRef = useRef<ReturnType<typeof createStatsOutboxCoordinator> | null>(null);
+  if (!statsCoordinatorRef.current) {
+    statsCoordinatorRef.current = createStatsOutboxCoordinator((record, signal) => {
+      const expectedAccountUserId = record.ownerKey.startsWith('account:') ? record.ownerKey.slice('account:'.length) : '';
+      return saveSinglePlayerGame(record.state, record.gameId, signal, {
+        completedAt: record.createdAt,
+        expectedAccountUserId
+      });
+    });
+  }
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
   const localPlayers = state.players.filter((player) => player.kind === 'human');
@@ -2156,8 +2202,75 @@ function SinglePlayer() {
   const aiOpponentSummary = `${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
   const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
   const summaryModalOpen = isScoringPhase && roundSummaryOpen;
+  const durabilityReady = !accountLoading && hydratedOwnerKey === ownerKey && !resumeSession;
 
   useGameAudio(state);
+
+  useEffect(() => {
+    if (accountLoading) return;
+    let cancelled = false;
+    setHydratedOwnerKey('');
+    setResumeSession(null);
+    setStatsSaveStatus('');
+    setPersistenceWarning(null);
+    completedQueueKeyRef.current = '';
+
+    loadSoloSession(ownerKey).then((result) => {
+      if (cancelled) return;
+      setPersistenceWarning(result.warning);
+      if (result.session) {
+        setResumeSession(result.session);
+        return;
+      }
+      const count = singlePlayerAiOpponentRange.min;
+      setAiOpponentCount(count);
+      setActiveGameId(createSoloGameId());
+      setState(startFreshGame({ aiOpponentCount: count }));
+      setHydratedOwnerKey(ownerKey);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accountLoading, ownerKey]);
+
+  useEffect(() => {
+    const coordinator = statsCoordinatorRef.current;
+    if (!coordinator) return;
+    let cancelled = false;
+    coordinator.setOwner(user ? ownerKey : null);
+
+    const flush = () => {
+      beginSoloStatsFlush(
+        coordinator,
+        (result) => {
+          if (cancelled || result.aborted) return;
+          if (result.delivered > 0) setStatsSaveStatus('Queued game stats were saved.');
+          else if (result.pending > 0) setStatsSaveStatus('Game stats are safely queued and will retry when online.');
+        },
+        () => {
+          if (cancelled) return;
+          setPersistenceWarning(statsSyncUnavailableWarning());
+          setStatsSaveStatus('Game stats sync is unavailable. Play can continue and Skyjo will retry later.');
+        }
+      );
+    };
+
+    if (user) flush();
+    window.addEventListener('online', flush);
+    window.addEventListener('focus', flush);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('online', flush);
+      window.removeEventListener('focus', flush);
+      coordinator.setOwner(null);
+    };
+  }, [ownerKey, user]);
+
+  useEffect(() => {
+    const coordinator = statsCoordinatorRef.current;
+    return () => coordinator?.dispose();
+  }, []);
 
   useEffect(() => {
     if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
@@ -2166,7 +2279,7 @@ function SinglePlayer() {
   }, [state.drawnCard, state.phase, state.selectedSource]);
 
   useEffect(() => {
-    if (activePlayer.kind !== 'ai' || state.phase === 'round-over' || state.phase === 'game-over') return;
+    if (!durabilityReady || activePlayer.kind !== 'ai' || state.phase === 'round-over' || state.phase === 'game-over') return;
     const timer = window.setTimeout(() => {
       setState((current) => {
         if (current.phase === 'opening-reveal') {
@@ -2182,29 +2295,65 @@ function SinglePlayer() {
       });
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [activePlayer.kind, state]);
+  }, [activePlayer.kind, durabilityReady, state]);
 
   useEffect(() => {
     setRoundSummaryOpen(isScoringPhase);
   }, [isScoringPhase, state.round]);
 
   useEffect(() => {
+    if (!durabilityReady) return;
+    let cancelled = false;
     if (state.phase !== 'game-over') {
-      savedSingleGameKeyRef.current = '';
-      setStatsSaveStatus('');
-      return;
-    }
-    if (!user) return;
-    const key = `${state.round}:${state.winnerId}:${state.players.map((player) => `${player.id}:${player.totalScore}`).join('|')}`;
-    if (savedSingleGameKeyRef.current === key) return;
-    savedSingleGameKeyRef.current = key;
-    saveSinglePlayerGame(state, key)
-      .then(() => setStatsSaveStatus('Game saved to your stats.'))
-      .catch((error) => {
-        savedSingleGameKeyRef.current = '';
-        setStatsSaveStatus(error instanceof Error ? error.message : 'Could not save stats.');
+      void saveSoloSession(ownerKey, activeGameId, state, aiOpponentCount).then((warning) => {
+        if (!cancelled && warning) setPersistenceWarning(warning);
       });
-  }, [state, user]);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const completionKey = `${ownerKey}:${activeGameId}`;
+    if (completedQueueKeyRef.current === completionKey) return;
+    completedQueueKeyRef.current = completionKey;
+    void enqueueCompletedGame(ownerKey, activeGameId, state).then(async (warning) => {
+      if (!warning) await deleteSoloSession(ownerKey, activeGameId).catch(() => undefined);
+      if (cancelled) return;
+      if (warning) {
+        setPersistenceWarning(warning);
+        setStatsSaveStatus('Stats could not be queued on this device. Your completed game remains playable.');
+        return;
+      }
+      if (!user) {
+        setStatsSaveStatus(
+          localSoloOwnerId
+            ? 'Game stats are queued for your last confirmed account and will sync after sign-in is restored.'
+            : 'This guest game stays on this device and will not be added to an account.'
+        );
+        return;
+      }
+      setStatsSaveStatus('Game stats are safely queued.');
+      const coordinator = statsCoordinatorRef.current;
+      if (!coordinator) return;
+      beginSoloStatsFlush(
+        coordinator,
+        (result) => {
+          if (cancelled || result.aborted) return;
+          setStatsSaveStatus(
+            result.pending === 0 ? 'Game saved to your stats.' : 'Game stats are safely queued and will retry when online.'
+          );
+        },
+        () => {
+          if (cancelled) return;
+          setPersistenceWarning(statsSyncUnavailableWarning());
+          setStatsSaveStatus('Game stats sync is unavailable. Play can continue and Skyjo will retry later.');
+        }
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeGameId, aiOpponentCount, durabilityReady, localSoloOwnerId, ownerKey, state, user]);
 
   function handleCard(index: number) {
     if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
@@ -2232,7 +2381,74 @@ function SinglePlayer() {
   }
 
   function startSelectedGame() {
+    void deleteSoloSession(ownerKey, activeGameId).catch(() => undefined);
+    setActiveGameId(createSoloGameId());
     setState(startFreshGame({ aiOpponentCount }));
+    setStatsSaveStatus('');
+    completedQueueKeyRef.current = '';
+  }
+
+  function continueSavedGame() {
+    if (!resumeSession) return;
+    setAiOpponentCount(resumeSession.aiOpponentCount);
+    setActiveGameId(resumeSession.gameId);
+    setState(resumeSession.state);
+    setResumeSession(null);
+    setHydratedOwnerKey(ownerKey);
+    completedQueueKeyRef.current = '';
+  }
+
+  function discardSavedGame() {
+    if (resumeSession) void deleteSoloSession(ownerKey, resumeSession.gameId).catch(() => undefined);
+    const count = resumeSession?.aiOpponentCount ?? singlePlayerAiOpponentRange.min;
+    setAiOpponentCount(count);
+    setActiveGameId(createSoloGameId());
+    setState(startFreshGame({ aiOpponentCount: count }));
+    setResumeSession(null);
+    setHydratedOwnerKey(ownerKey);
+    setStatsSaveStatus('');
+    completedQueueKeyRef.current = '';
+  }
+
+  if (resumeSession) {
+    return (
+      <main className="skyjo-surface px-4 py-8" data-testid="solo-resume-choice">
+        <section className="skyjo-shell mx-auto flex min-h-[70vh] max-w-2xl items-center">
+          <div aria-labelledby="solo-resume-title" aria-modal="true" className="skyjo-panel w-full p-6" role="dialog">
+            <p className="skyjo-kicker">Saved game found</p>
+            <h1 className="skyjo-serif mt-2 text-3xl font-black text-[#f5e6c8]" id="solo-resume-title">
+              Continue your solo game?
+            </h1>
+            <p className="mt-3 leading-7 text-[#f5e6c8]/68">
+              Round {resumeSession.state.round} with {resumeSession.aiOpponentCount} AI opponent
+              {resumeSession.aiOpponentCount === 1 ? '' : 's'}, saved {formatDate(resumeSession.updatedAt)}.
+            </p>
+            {persistenceWarning ? <p className="mt-3 text-sm font-bold text-[#f5e6c8]/70">{persistenceWarning.message}</p> : null}
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button className="skyjo-button skyjo-button-primary px-4 py-3" onClick={continueSavedGame} type="button">
+                Continue Game
+              </button>
+              <button className="skyjo-button px-4 py-3" onClick={discardSavedGame} type="button">
+                New Game
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!durabilityReady) {
+    return (
+      <main className="skyjo-surface px-4 py-8" data-testid="solo-storage-loading">
+        <section className="skyjo-shell mx-auto flex min-h-[70vh] max-w-2xl items-center">
+          <div className="skyjo-panel w-full p-6" role="status">
+            <p className="skyjo-kicker">Single Player</p>
+            <h1 className="skyjo-serif mt-2 text-3xl font-black text-[#f5e6c8]">Checking for a saved game…</h1>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -2262,6 +2478,11 @@ function SinglePlayer() {
               <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Single Player</h1>
               <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
               {statsSaveStatus ? <p className="mt-2 text-sm font-bold text-[#f5e6c8]/62">{statsSaveStatus}</p> : null}
+              {persistenceWarning ? (
+                <p className="mt-2 text-sm font-bold text-[#f5e6c8]/72" role="status">
+                  {persistenceWarning.message}
+                </p>
+              ) : null}
             </div>
             <div className="skyjo-header-controls flex w-auto items-start justify-end">
               <div className="skyjo-header-actions flex items-start justify-end gap-2">
@@ -2347,7 +2568,7 @@ function SinglePlayer() {
             <RoundSummary
               actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
               onMinimize={() => setRoundSummaryOpen(false)}
-              onAction={() => setState(state.phase === 'game-over' ? startFreshGame({ aiOpponentCount }) : startNextRound(state))}
+              onAction={() => (state.phase === 'game-over' ? startSelectedGame() : setState(startNextRound(state)))}
               state={state}
             />
           ) : null}
@@ -2466,6 +2687,8 @@ function absoluteShareUrl(path: string) {
 
 function Lobby() {
   const { loading: accountLoading, user: accountUser } = useAccount();
+  const accountUserId = accountUser?.id ?? '';
+  const accountDisplayName = accountUser?.displayName ?? '';
   const location = useLocation();
   const initialLobbyRef = useRef<InitialLobbySession | null>(null);
   if (!initialLobbyRef.current) initialLobbyRef.current = getInitialLobbySession();
@@ -2593,13 +2816,13 @@ function Lobby() {
   }, [roomCode]);
 
   useEffect(() => {
-    if (!accountUser) return;
-    setName(accountUser.displayName);
-    window.localStorage.setItem('skyjo-player-name', accountUser.displayName);
-  }, [accountUser]);
+    if (!accountUserId) return;
+    setName(accountDisplayName);
+    window.localStorage.setItem('skyjo-player-name', accountDisplayName);
+  }, [accountDisplayName, accountUserId]);
 
   useEffect(() => {
-    if (!accountUser) return;
+    if (!accountUserId) return;
     const controller = createRoomConnection({
       url: roomSocketUrl(),
       createSocket: (url) => new WebSocket(url) as unknown as RoomConnectionSocket,
@@ -2614,7 +2837,7 @@ function Lobby() {
       controller.recover({
         action: 'join-room',
         code: roomCodeRef.current,
-        name: accountUser.displayName,
+        name: accountDisplayName,
         playerId: playerIdRef.current,
         ...(recoveryHint
           ? {
@@ -2630,7 +2853,7 @@ function Lobby() {
       if (connectionControllerRef.current === controller) connectionControllerRef.current = null;
       controller.dispose();
     };
-  }, [accountUser]);
+  }, [accountDisplayName, accountUserId]);
 
   useEffect(() => {
     playerIdRef.current = playerId;

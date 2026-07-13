@@ -203,6 +203,14 @@ describe('account store defensive and fallback behavior', () => {
     expect(store.getStatsSummary(admin).admin).toMatchObject({ users: 1, games: 2 });
   });
 
+  it('rejects poison solo completion timestamps while leaving multiplayer time server-authoritative', () => {
+    const state = completedState([{ id: 'solo', name: 'Solo', kind: 'human', totalScore: 0, roundScore: 0 }]);
+    for (const completedAt of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '123', null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => store.recordCompletedGame({ mode: 'single', state, completedAt })).toThrow(/completion time is invalid/i);
+    }
+    expect(store.recordCompletedGame({ mode: 'multi', state, completedAt: Number.NaN }).completedAt).toBe(fixedNow);
+  });
+
   it('resolves the local fallback database path for relative room state', () => {
     expect(resolveAccountDatabasePath({ SKYJO_ROOMS_FILE: path.join('relative', 'rooms.json') })).toBe(
       path.resolve('.data', 'skyjo.sqlite')

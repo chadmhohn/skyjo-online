@@ -564,11 +564,35 @@ try {
     clientGameKey: 'guest-solo'
   });
   assert.equal(guestSoloSave.response.status, 401, 'guest single-player games are not saved');
+  const soloCompletedAt = Date.now() - 1_000;
+  const legacySoloSave = await accountRequest(baseUrl, hostAccount.cookie, '/api/stats/single-player', {
+    state: completedSoloState(),
+    clientGameKey: 'legacy-solo',
+    completedAt: soloCompletedAt
+  });
+  assert.equal(legacySoloSave.response.status, 426, 'legacy stats clients must upgrade before delivery');
+  const malformedSoloOwner = await accountRequest(baseUrl, hostAccount.cookie, '/api/stats/single-player', {
+    state: completedSoloState(),
+    clientGameKey: 'malformed-owner-solo',
+    completedAt: soloCompletedAt,
+    expectedAccountUserId: 'not-a-uuid'
+  });
+  assert.equal(malformedSoloOwner.response.status, 426, 'malformed expected account ids require an upgrade');
+  const changedSoloOwner = await accountRequest(baseUrl, hostAccount.cookie, '/api/stats/single-player', {
+    state: completedSoloState(),
+    clientGameKey: 'changed-owner-solo',
+    completedAt: soloCompletedAt,
+    expectedAccountUserId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  });
+  assert.equal(changedSoloOwner.response.status, 409, 'stats delivery refuses a changed authenticated account');
   const soloSave = await accountRequest(baseUrl, hostAccount.cookie, '/api/stats/single-player', {
     state: completedSoloState(),
-    clientGameKey: 'host-solo'
+    clientGameKey: 'host-solo',
+    completedAt: soloCompletedAt,
+    expectedAccountUserId: hostAccount.user.id
   });
   assert.equal(soloSave.response.status, 201, 'logged-in single-player games are saved');
+  assert.equal(soloSave.payload.game.completedAt, soloCompletedAt, 'single-player completion time survives queued delivery');
   const invalidInternalState = completedSoloState();
   invalidInternalState.players[0] = {
     ...invalidInternalState.players[0],
@@ -577,7 +601,9 @@ try {
   };
   const internalFailure = await accountRequest(baseUrl, hostAccount.cookie, '/api/stats/single-player', {
     state: invalidInternalState,
-    clientGameKey: 'internal-error-smoke'
+    clientGameKey: 'internal-error-smoke',
+    completedAt: soloCompletedAt,
+    expectedAccountUserId: hostAccount.user.id
   });
   assert.equal(internalFailure.response.status, 500, 'unknown persistence failures stay server errors');
   assert.deepEqual(internalFailure.payload, { error: 'Request failed.' }, 'unknown exception details are not disclosed');

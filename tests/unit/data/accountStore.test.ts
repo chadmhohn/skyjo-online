@@ -148,4 +148,64 @@ describe('account and stats persistence', () => {
     expect(store!.getVisiblePlayerStats(ada, grace.id)?.user.id).toBe(grace.id);
     expect(store!.getVisiblePlayerStats(outsider, grace.id)).toBeNull();
   });
+
+  it('preserves client completion time for solo games, clamps future values, and keeps the first idempotent timestamp', async () => {
+    const ada = await store!.createUser({ email: 'ada@example.com', displayName: 'Ada', password: 'ada-secret-123' });
+    const state = completedState();
+    const playerAccounts = { 'player-1': ada.id };
+    const past = fixedNow - 60_000;
+    const first = store!.recordCompletedGame({
+      mode: 'single',
+      state,
+      createdByUserId: ada.id,
+      playerAccounts,
+      sourceKey: 'single:ada:stable',
+      completedAt: past
+    });
+    currentTime += 10_000;
+    const duplicate = store!.recordCompletedGame({
+      mode: 'single',
+      state,
+      createdByUserId: ada.id,
+      playerAccounts,
+      sourceKey: 'single:ada:stable',
+      completedAt: fixedNow - 120_000
+    });
+    expect(duplicate.id).toBe(first.id);
+    expect(duplicate.completedAt).toBe(past);
+
+    const future = store!.recordCompletedGame({
+      mode: 'single',
+      state,
+      createdByUserId: ada.id,
+      playerAccounts,
+      sourceKey: 'single:ada:future',
+      completedAt: currentTime + 60_000
+    });
+    expect(future.completedAt).toBe(currentTime);
+
+    const multiplayer = store!.recordCompletedGame({
+      mode: 'multi',
+      state,
+      createdByUserId: ada.id,
+      playerAccounts,
+      sourceKey: 'multi:ignores-client-time',
+      completedAt: past
+    });
+    expect(multiplayer.completedAt).toBe(currentTime);
+  });
+
+  it('orders games with equal completion times by stable insertion order', async () => {
+    const ada = await store!.createUser({ email: 'ada@example.com', displayName: 'Ada', password: 'ada-secret-123' });
+    const input = {
+      mode: 'single',
+      state: completedState(),
+      createdByUserId: ada.id,
+      playerAccounts: { 'player-1': ada.id },
+      completedAt: fixedNow
+    };
+    const first = store!.recordCompletedGame({ ...input, sourceKey: 'single:ada:first' });
+    const second = store!.recordCompletedGame({ ...input, sourceKey: 'single:ada:second' });
+    expect(store!.listVisibleGames(ada).map((game: { id: string }) => game.id)).toEqual([second.id, first.id]);
+  });
 });
