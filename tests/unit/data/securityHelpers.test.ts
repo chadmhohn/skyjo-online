@@ -69,4 +69,19 @@ describe('server security helpers', () => {
     expect(JSON.stringify(unknown)).not.toContain(internalMessage);
     expect(() => new PublicApiError('__proto__')).toThrow(/unknown public API error code/i);
   });
+
+  it('publishes sanitized stats upgrade, account-change, and completion-time errors', () => {
+    expect(publicApiErrorResponse(new PublicApiError('STATS_CLIENT_UPGRADE_REQUIRED'))).toEqual({
+      status: 426,
+      message: 'Update Skyjo before syncing saved game stats.'
+    });
+    expect(publicApiErrorResponse(new PublicApiError('ACCOUNT_SESSION_CHANGED'))).toEqual({
+      status: 409,
+      message: 'Account changed. Sign in again before syncing this game.'
+    });
+    expect(publicApiErrorResponse(new PublicApiError('INVALID_COMPLETED_AT'))).toEqual({
+      status: 400,
+      message: 'Game completion time is invalid.'
+    });
+  });
 });

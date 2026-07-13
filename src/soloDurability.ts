@@ -1,4 +1,4 @@
-import type { GameState } from './types';
+import type { Card, GameState, Player } from './types';
 
 export const soloDatabaseName = 'skyjo-pwa';
 export const soloDatabaseVersion = 1;
@@ -8,6 +8,13 @@ export const statsOutboxStoreName = 'statsOutbox';
 const recordSchemaVersion = 1;
 const maxDeliveryBatchSize = 4;
 const maxRetryDelayMs = 5 * 60 * 1000;
+const soloWinningScore = 100;
+const canonicalSoloDeckValues = [
+  ...Array<number>(5).fill(-2),
+  ...Array<number>(10).fill(-1),
+  ...Array<number>(15).fill(0),
+  ...Array.from({ length: 12 }, (_, index) => Array<number>(10).fill(index + 1)).flat()
+] as const;
 
 export type SoloOwnerKey = `account:${string}` | 'guest';
 export type SoloPersistenceWarningKind = 'quota' | 'recovered' | 'unavailable';
@@ -75,7 +82,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isValidTimestamp(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 8.64e15;
+  return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -110,10 +117,15 @@ function openDatabase(): Promise<IDBDatabase> {
     }
 
     let request: IDBOpenDBRequest;
+    let openFailed = false;
+    const rejectOpen = (error: unknown) => {
+      openFailed = true;
+      reject(error);
+    };
     try {
       request = indexedDB.open(soloDatabaseName, soloDatabaseVersion);
     } catch (error) {
-      reject(error);
+      rejectOpen(error);
       return;
     }
 
@@ -132,14 +144,18 @@ function openDatabase(): Promise<IDBDatabase> {
     });
     request.addEventListener('success', () => {
       const database = request.result;
+      if (openFailed) {
+        database.close();
+        return;
+      }
       database.addEventListener('versionchange', () => {
         database.close();
         databasePromise = null;
       });
       resolve(database);
     });
-    request.addEventListener('blocked', () => reject(new Error('IndexedDB upgrade was blocked.')), { once: true });
-    request.addEventListener('error', () => reject(request.error || new Error('IndexedDB could not be opened.')), {
+    request.addEventListener('blocked', () => rejectOpen(new Error('IndexedDB upgrade was blocked.')), { once: true });
+    request.addEventListener('error', () => rejectOpen(request.error || new Error('IndexedDB could not be opened.')), {
       once: true
     });
   }).catch((error) => {
@@ -172,33 +188,39 @@ async function withStore<T>(
   }
 }
 
-function isCard(value: unknown): boolean {
+function canonicalCardIndex(card: Pick<Card, 'id' | 'value'>): number | null {
+  const match = /^card-(0|[1-9]\d*)-(-?\d+)$/.exec(card.id);
+  if (!match) return null;
+  const index = Number(match[1]);
+  if (!Number.isSafeInteger(index) || index < 0 || index >= canonicalSoloDeckValues.length) return null;
+  return Number(match[2]) === card.value && canonicalSoloDeckValues[index] === card.value ? index : null;
+}
+
+function isCard(value: unknown): value is Card {
   return (
     isRecord(value) &&
     typeof value.id === 'string' &&
-    typeof value.value === 'number' &&
-    Number.isFinite(value.value) &&
+    Number.isSafeInteger(value.value) &&
     typeof value.faceUp === 'boolean' &&
-    typeof value.removed === 'boolean'
+    typeof value.removed === 'boolean' &&
+    canonicalCardIndex(value as unknown as Card) !== null
   );
 }
 
-function isRoundScore(value: unknown): boolean {
+function isRoundScore(value: unknown): value is GameState['roundHistory'][number]['scores'][number] {
   return (
     isRecord(value) &&
     typeof value.playerId === 'string' &&
     typeof value.name === 'string' &&
-    typeof value.roundScore === 'number' &&
-    Number.isFinite(value.roundScore) &&
-    typeof value.totalScore === 'number' &&
-    Number.isFinite(value.totalScore)
+    Number.isSafeInteger(value.roundScore) &&
+    Number.isSafeInteger(value.totalScore)
   );
 }
 
-function isRoundHistoryEntry(value: unknown): boolean {
+function isRoundHistoryEntry(value: unknown): value is GameState['roundHistory'][number] {
   return (
     isRecord(value) &&
-    Number.isInteger(value.round) &&
+    Number.isSafeInteger(value.round) &&
     Number(value.round) >= 1 &&
     typeof value.closerId === 'string' &&
     Array.isArray(value.scores) &&
@@ -206,28 +228,206 @@ function isRoundHistoryEntry(value: unknown): boolean {
   );
 }
 
+function visibleGridScore(player: Player): number {
+  return player.grid.reduce((total, card) => total + (card.faceUp && !card.removed ? card.value : 0), 0);
+}
+
+function finalGridScore(player: Player): number {
+  return player.grid.reduce((total, card) => total + (card.removed ? 0 : card.value), 0);
+}
+
+function hasCanonicalPhysicalDeck(state: GameState): boolean {
+  if (state.discardPile.length === 0) return false;
+  if (state.drawPile.some((card) => card.faceUp || card.removed)) return false;
+  if (state.discardPile.some((card) => !card.faceUp || card.removed)) return false;
+  if (state.drawnCard && (!state.drawnCard.faceUp || state.drawnCard.removed)) return false;
+
+  const activeCards = [
+    ...state.drawPile,
+    ...state.discardPile,
+    ...(state.drawnCard ? [state.drawnCard] : []),
+    ...state.players.flatMap((player) => player.grid.filter((card) => !card.removed))
+  ];
+  const terminal = state.phase === 'round-over' || state.phase === 'game-over';
+  if (!terminal && activeCards.length !== canonicalSoloDeckValues.length) return false;
+
+  const activeIndexes = new Set<number>();
+  for (const card of activeCards) {
+    const index = canonicalCardIndex(card);
+    if (index === null || activeIndexes.has(index)) return false;
+    activeIndexes.add(index);
+  }
+
+  const coveredIndexes = new Set(activeIndexes);
+  for (const card of state.players.flatMap((player) => player.grid.filter((item) => item.removed))) {
+    const index = canonicalCardIndex(card);
+    if (!card.faceUp || index === null) return false;
+    coveredIndexes.add(index);
+  }
+  return coveredIndexes.size === canonicalSoloDeckValues.length;
+}
+
+function hasCoherentRemovedColumns(state: GameState): boolean {
+  for (const player of state.players) {
+    for (let column = 0; column < 4; column += 1) {
+      const cards = [player.grid[column], player.grid[column + 4], player.grid[column + 8]];
+      const removedCards = cards.filter((card) => card.removed);
+      if (removedCards.length === 0) {
+        if (cards.every((card) => card.faceUp && card.value === cards[0].value)) return false;
+        continue;
+      }
+      if (
+        state.phase === 'opening-reveal' ||
+        removedCards.length !== 3 ||
+        new Set(removedCards.map((card) => card.id)).size !== 3 ||
+        removedCards.some((card) => !card.faceUp || card.value !== removedCards[0].value)
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function hasCoherentKnownCards(state: GameState): boolean {
+  if (state.phase === 'opening-reveal') return true;
+  if (state.players.some((player) => player.grid.filter((card) => card.faceUp || card.removed).length < 2)) {
+    return false;
+  }
+  if (state.phase === 'round-over' || state.phase === 'game-over' || state.roundCloserId !== null) return true;
+  return !state.players.some((player) => player.grid.every((card) => card.faceUp || card.removed));
+}
+
+function hasCoherentOpeningCounts(state: GameState): boolean {
+  const keys = Object.keys(state.openingRevealCounts);
+  if (keys.length !== state.players.length) return false;
+  for (const player of state.players) {
+    if (!Object.prototype.hasOwnProperty.call(state.openingRevealCounts, player.id)) return false;
+    const recorded = state.openingRevealCounts[player.id];
+    if (!Number.isSafeInteger(recorded) || recorded < 0 || recorded > 2) return false;
+    const visible = player.grid.filter((card) => card.faceUp && !card.removed).length;
+    if (state.phase === 'opening-reveal' ? recorded !== visible : recorded !== 2) return false;
+  }
+  if (state.phase !== 'opening-reveal') return true;
+  const firstIncompletePlayer = state.players.findIndex(
+    (player) => player.grid.filter((card) => card.faceUp && !card.removed).length < 2
+  );
+  return firstIncompletePlayer >= 0 && state.currentPlayerIndex === firstIncompletePlayer;
+}
+
+function hasCoherentRoundHistory(state: GameState, playersById: Map<string, Player>): boolean {
+  const terminal = state.phase === 'round-over' || state.phase === 'game-over';
+  const expectedEntries = terminal ? state.round : state.round - 1;
+  if (state.roundHistory.length !== expectedEntries) return false;
+
+  const totals = new Map(state.players.map((player) => [player.id, 0]));
+  for (const [index, entry] of state.roundHistory.entries()) {
+    if (entry.round !== index + 1 || !playersById.has(entry.closerId) || entry.scores.length !== state.players.length) {
+      return false;
+    }
+    const scoreIds = new Set<string>();
+    for (const score of entry.scores) {
+      const player = playersById.get(score.playerId);
+      if (!player || scoreIds.has(score.playerId) || score.name !== player.name) return false;
+      if (score.totalScore !== (totals.get(score.playerId) || 0) + score.roundScore) return false;
+      scoreIds.add(score.playerId);
+      totals.set(score.playerId, score.totalScore);
+    }
+    if (scoreIds.size !== state.players.length) return false;
+  }
+
+  for (const player of state.players) {
+    if (player.totalScore !== (totals.get(player.id) || 0)) return false;
+    if (!terminal && player.roundScore !== visibleGridScore(player)) return false;
+  }
+  if (!terminal) return true;
+  const latestScores = new Map(state.roundHistory[state.roundHistory.length - 1].scores.map((score) => [score.playerId, score]));
+  return state.players.every((player) => latestScores.get(player.id)?.roundScore === player.roundScore);
+}
+
+function hasCoherentTerminalState(state: GameState): boolean {
+  if (state.phase !== 'round-over' && state.phase !== 'game-over') return true;
+  if (state.players.some((player) => player.grid.some((card) => !card.removed && !card.faceUp))) {
+    return false;
+  }
+  const closerId = state.nextStarterId;
+  if (!closerId) return false;
+  if (state.roundHistory[state.roundHistory.length - 1]?.closerId !== closerId) return false;
+  const closer = state.players.find((player) => player.id === closerId);
+  if (!closer) return false;
+  const rawScores = new Map(state.players.map((player) => [player.id, finalGridScore(player)]));
+  const closerRawScore = rawScores.get(closer.id) || 0;
+  const lowestOtherScore = Math.min(...state.players.filter((player) => player.id !== closer.id).map((player) => rawScores.get(player.id) || 0));
+  const expectedCloserScore = closerRawScore >= lowestOtherScore && closerRawScore > 0 ? closerRawScore * 2 : closerRawScore;
+  for (const player of state.players) {
+    const expectedScore = player.id === closer.id ? expectedCloserScore : rawScores.get(player.id);
+    if (player.roundScore !== expectedScore) return false;
+  }
+
+  const thresholdReached = state.players.some((player) => player.totalScore >= soloWinningScore);
+  if (state.phase === 'round-over') return !thresholdReached && state.winnerId === null;
+  if (!thresholdReached || !state.winnerId) return false;
+  const lowestTotal = Math.min(...state.players.map((player) => player.totalScore));
+  const expectedWinner = state.players.find((player) => player.totalScore === lowestTotal);
+  return state.winnerId === expectedWinner?.id;
+}
+
+function hasCoherentPhase(state: GameState): boolean {
+  const noSelection = state.selectedSource === null && state.drawnCard === null;
+  const noFinalTurn = state.roundCloserId === null && state.finalTurnPlayerIds.length === 0;
+  if (state.phase === 'opening-reveal') {
+    const expectedStarter = state.round === 1 ? null : state.roundHistory[state.roundHistory.length - 1]?.closerId || null;
+    return noSelection && noFinalTurn && state.winnerId === null && state.nextStarterId === expectedStarter;
+  }
+  if (state.phase === 'round-over') {
+    return noSelection && noFinalTurn && state.winnerId === null && state.nextStarterId !== null;
+  }
+  if (state.phase === 'game-over') {
+    return noSelection && noFinalTurn && state.winnerId !== null && state.nextStarterId !== null;
+  }
+  if (state.winnerId !== null || state.nextStarterId !== null) return false;
+  if (state.phase === 'choose-source' && !noSelection) return false;
+  if (
+    state.phase === 'choose-replacement' &&
+    !(
+      (state.selectedSource === 'draw' && state.drawnCard !== null) ||
+      (state.selectedSource === 'discard' && state.drawnCard === null)
+    )
+  ) {
+    return false;
+  }
+  if (state.roundCloserId === null) return state.finalTurnPlayerIds.length === 0;
+  const closerIndex = state.players.findIndex((player) => player.id === state.roundCloserId);
+  const closer = state.players[closerIndex];
+  if (!closer || closer.grid.some((card) => !card.faceUp && !card.removed)) return false;
+
+  const fullFinalTurnOrder = Array.from({ length: state.players.length - 1 }, (_, offset) => {
+    return state.players[(closerIndex + offset + 1) % state.players.length].id;
+  });
+  const remainingStart = fullFinalTurnOrder.indexOf(state.players[state.currentPlayerIndex].id);
+  if (remainingStart < 0) return false;
+  const expectedRemaining = fullFinalTurnOrder.slice(remainingStart);
+  return (
+    state.finalTurnPlayerIds.length === expectedRemaining.length &&
+    state.finalTurnPlayerIds.every((playerId, index) => playerId === expectedRemaining[index])
+  );
+}
+
 export function isCompatibleSoloGameState(value: unknown): value is GameState {
   if (!isRecord(value) || !Array.isArray(value.players) || value.players.length < 2 || value.players.length > 8) return false;
   if (!Array.isArray(value.drawPile) || !value.drawPile.every(isCard)) return false;
   if (!Array.isArray(value.discardPile) || !value.discardPile.every(isCard)) return false;
-  if (!Number.isInteger(value.currentPlayerIndex) || Number(value.currentPlayerIndex) < 0 || Number(value.currentPlayerIndex) >= value.players.length) return false;
+  if (!Number.isSafeInteger(value.currentPlayerIndex) || Number(value.currentPlayerIndex) < 0 || Number(value.currentPlayerIndex) >= value.players.length) return false;
   if (!['opening-reveal', 'choose-source', 'choose-replacement', 'round-over', 'game-over'].includes(String(value.phase))) return false;
   if (value.selectedSource !== null && value.selectedSource !== 'draw' && value.selectedSource !== 'discard') return false;
   if (value.drawnCard !== null && !isCard(value.drawnCard)) return false;
-  if (!Number.isInteger(value.round) || Number(value.round) < 1) return false;
-  if (!Array.isArray(value.log) || !value.log.every((entry) => typeof entry === 'string')) return false;
+  if (!Number.isSafeInteger(value.round) || Number(value.round) < 1) return false;
+  if (!Array.isArray(value.log) || value.log.length > 8 || !value.log.every((entry) => typeof entry === 'string')) return false;
   if (value.winnerId !== null && typeof value.winnerId !== 'string') return false;
   if (value.nextStarterId !== null && typeof value.nextStarterId !== 'string') return false;
   if (value.roundCloserId !== null && typeof value.roundCloserId !== 'string') return false;
   if (!Array.isArray(value.finalTurnPlayerIds) || !value.finalTurnPlayerIds.every((id) => typeof id === 'string')) return false;
-  if (
-    !isRecord(value.openingRevealCounts) ||
-    !Object.values(value.openingRevealCounts).every(
-      (count) => Number.isInteger(count) && Number(count) >= 0 && Number(count) <= 12
-    ) ||
-    !Array.isArray(value.roundHistory) ||
-    !value.roundHistory.every(isRoundHistoryEntry)
-  ) {
+  if (!isRecord(value.openingRevealCounts) || !Array.isArray(value.roundHistory) || !value.roundHistory.every(isRoundHistoryEntry)) {
     return false;
   }
 
@@ -237,15 +437,15 @@ export function isCompatibleSoloGameState(value: unknown): value is GameState {
     if (
       !isRecord(player) ||
       typeof player.id !== 'string' ||
+      !player.id ||
       typeof player.name !== 'string' ||
+      !player.name ||
       (player.kind !== 'human' && player.kind !== 'ai') ||
       !Array.isArray(player.grid) ||
       player.grid.length !== 12 ||
       !player.grid.every(isCard) ||
-      typeof player.totalScore !== 'number' ||
-      !Number.isFinite(player.totalScore) ||
-      typeof player.roundScore !== 'number' ||
-      !Number.isFinite(player.roundScore)
+      !Number.isSafeInteger(player.totalScore) ||
+      !Number.isSafeInteger(player.roundScore)
     ) {
       return false;
     }
@@ -257,7 +457,29 @@ export function isCompatibleSoloGameState(value: unknown): value is GameState {
   if (value.winnerId !== null && !playerIds.has(value.winnerId as string)) return false;
   if (value.nextStarterId !== null && !playerIds.has(value.nextStarterId as string)) return false;
   if (value.roundCloserId !== null && !playerIds.has(value.roundCloserId as string)) return false;
-  return value.finalTurnPlayerIds.every((id) => playerIds.has(id));
+  if (!value.finalTurnPlayerIds.every((id) => playerIds.has(id))) return false;
+
+  const state = value as unknown as GameState;
+  const playersById = new Map(state.players.map((player) => [player.id, player]));
+  return (
+    hasCanonicalPhysicalDeck(state) &&
+    hasCoherentRemovedColumns(state) &&
+    hasCoherentOpeningCounts(state) &&
+    hasCoherentKnownCards(state) &&
+    hasCoherentRoundHistory(state, playersById) &&
+    hasCoherentPhase(state) &&
+    hasCoherentTerminalState(state)
+  );
+}
+
+function hasExpectedAiOpponentCount(state: GameState, aiOpponentCount: unknown): aiOpponentCount is number {
+  return (
+    Number.isSafeInteger(aiOpponentCount) &&
+    Number(aiOpponentCount) >= 1 &&
+    Number(aiOpponentCount) <= 7 &&
+    Number(aiOpponentCount) === state.players.length - 1 &&
+    Number(aiOpponentCount) === state.players.filter((player) => player.kind === 'ai').length
+  );
 }
 
 function isSoloSessionRecord(value: unknown): value is SoloSessionRecord {
@@ -266,11 +488,9 @@ function isSoloSessionRecord(value: unknown): value is SoloSessionRecord {
     value.schemaVersion === recordSchemaVersion &&
     isOwnerKey(value.ownerKey) &&
     isUuid(value.gameId) &&
-    Number.isInteger(value.aiOpponentCount) &&
-    Number(value.aiOpponentCount) >= 1 &&
-    Number(value.aiOpponentCount) <= 7 &&
     isValidTimestamp(value.updatedAt) &&
-    isCompatibleSoloGameState(value.state)
+    isCompatibleSoloGameState(value.state) &&
+    hasExpectedAiOpponentCount(value.state, value.aiOpponentCount)
   );
 }
 
@@ -334,34 +554,55 @@ export function createSoloGameId(): string {
   return crypto.randomUUID();
 }
 
+function recoveredSessionWarning(): SoloPersistenceWarning {
+  return {
+    kind: 'recovered',
+    message: 'A saved game was damaged or created by an incompatible version. The newest usable game was recovered safely.'
+  };
+}
+
+function discardedSessionWarning(): SoloPersistenceWarning {
+  return {
+    kind: 'recovered',
+    message: 'A saved game was damaged or created by an incompatible version, so it was removed safely.'
+  };
+}
+
+async function deleteStatsOutboxForOwner(ownerKey: SoloOwnerKey): Promise<void> {
+  await withStore(statsOutboxStoreName, 'readwrite', async (store) => {
+    const keys = (await requestResult(store.index('byOwner').getAllKeys(ownerKey))) as IDBValidKey[];
+    for (const key of keys) store.delete(key);
+  });
+}
+
 export async function loadSoloSession(ownerKey: SoloOwnerKey): Promise<SoloSessionLoadResult> {
   try {
-    const records = await withStore(soloSessionStoreName, 'readonly', async (store) => {
+    if (ownerKey === 'guest') await deleteStatsOutboxForOwner(ownerKey).catch(() => undefined);
+    return await withStore(soloSessionStoreName, 'readwrite', async (store) => {
       const index = store.index('byOwner');
       const valueRequest = index.getAll(ownerKey);
       const keyRequest = index.getAllKeys(ownerKey);
       const [values, keys] = await Promise.all([requestResult(valueRequest), requestResult(keyRequest)]);
-      return (values as unknown[]).map((value, index) => ({ value, primaryKey: keys[index] })).sort((left, right) => {
-        const leftTime = isRecord(left.value) && typeof left.value.updatedAt === 'number' ? left.value.updatedAt : 0;
-        const rightTime = isRecord(right.value) && typeof right.value.updatedAt === 'number' ? right.value.updatedAt : 0;
-        return rightTime - leftTime;
-      });
-    });
-    if (records.length === 0) return { session: null, warning: null };
+      const records = (values as unknown[])
+        .map((value, index) => ({ value, primaryKey: keys[index] }))
+        .sort((left, right) => {
+          const leftTime = isRecord(left.value) && typeof left.value.updatedAt === 'number' ? left.value.updatedAt : 0;
+          const rightTime = isRecord(right.value) && typeof right.value.updatedAt === 'number' ? right.value.updatedAt : 0;
+          if (rightTime !== leftTime) return rightTime - leftTime;
+          return JSON.stringify(right.primaryKey).localeCompare(JSON.stringify(left.primaryKey));
+        });
+      if (records.length === 0) return { session: null, warning: null };
 
-    const { value: candidate, primaryKey } = records[0];
-    if (isSoloSessionRecord(candidate) && candidate.ownerKey === ownerKey && candidate.state.phase !== 'game-over') {
-      return { session: candidate, warning: null };
-    }
-
-    await deleteSoloSessionKey(primaryKey).catch(() => undefined);
-    return {
-      session: null,
-      warning: {
-        kind: 'recovered',
-        message: 'A saved game was damaged or created by an incompatible version. A new game was started safely.'
+      let recovered = false;
+      for (const { value: candidate, primaryKey } of records) {
+        if (isSoloSessionRecord(candidate) && candidate.ownerKey === ownerKey && candidate.state.phase !== 'game-over') {
+          return { session: candidate, warning: recovered ? recoveredSessionWarning() : null };
+        }
+        recovered = true;
+        await requestResult(store.delete(primaryKey));
       }
-    };
+      return { session: null, warning: discardedSessionWarning() };
+    });
   } catch (error) {
     return { session: null, warning: persistenceWarning(error) };
   }
@@ -381,7 +622,9 @@ export async function saveSoloSession(
   now = Date.now
 ): Promise<SoloPersistenceWarning | null> {
   try {
-    if (!isUuid(gameId) || !isCompatibleSoloGameState(state)) throw new Error('Invalid solo session.');
+    if (!isUuid(gameId) || !isCompatibleSoloGameState(state) || !hasExpectedAiOpponentCount(state, aiOpponentCount)) {
+      throw new Error('Invalid solo session.');
+    }
     const updatedAt = now();
     await withStore(soloSessionStoreName, 'readwrite', async (store) => {
       const existing = (await requestResult(store.index('byOwner').getAllKeys(ownerKey))) as IDBValidKey[];
@@ -420,12 +663,23 @@ export async function enqueueCompletedGame(
       throw new Error('Only completed solo games can be queued.');
     }
     await withStore(statsOutboxStoreName, 'readwrite', async (store) => {
+      if (ownerKey === 'guest') {
+        const guestKeys = (await requestResult(store.index('byOwner').getAllKeys(ownerKey))) as IDBValidKey[];
+        for (const key of guestKeys) await requestResult(store.delete(key));
+      }
       const key = [ownerKey, gameId];
       const existing = await requestResult(store.get(key));
-      if (existing) return;
+      if (
+        isStatsOutboxRecord(existing) &&
+        existing.ownerKey === ownerKey &&
+        existing.gameId === gameId &&
+        existing.state.phase === 'game-over'
+      ) {
+        return;
+      }
       const timestamp = now();
       await requestResult(
-        store.add({
+        store.put({
           ownerKey,
           gameId,
           schemaVersion: recordSchemaVersion,
@@ -445,24 +699,20 @@ export async function enqueueCompletedGame(
 }
 
 export async function listStatsOutbox(ownerKey: SoloOwnerKey): Promise<StatsOutboxRecord[]> {
-  const records = await withStore(statsOutboxStoreName, 'readonly', async (store) => {
+  const validRecords = await withStore(statsOutboxStoreName, 'readwrite', async (store) => {
     const index = store.index('byOwner');
     const valueRequest = index.getAll(ownerKey);
     const keyRequest = index.getAllKeys(ownerKey);
     const [values, keys] = await Promise.all([requestResult(valueRequest), requestResult(keyRequest)]);
-    return (values as unknown[]).map((value, index) => ({ value, primaryKey: keys[index] }));
-  });
-  const validRecords: StatsOutboxRecord[] = [];
-  for (const { value: record, primaryKey } of records) {
-    if (isStatsOutboxRecord(record) && record.ownerKey === ownerKey) {
-      validRecords.push(record);
-      continue;
+    const records = (values as unknown[]).map((value, index) => ({ value, primaryKey: keys[index] }));
+    const valid: StatsOutboxRecord[] = [];
+    for (const { value: record, primaryKey } of records) {
+      if (isStatsOutboxRecord(record) && record.ownerKey === ownerKey) valid.push(record);
+      else await requestResult(store.delete(primaryKey));
     }
-    await withStore(statsOutboxStoreName, 'readwrite', async (store) => {
-      await requestResult(store.delete(primaryKey));
-    }).catch(() => undefined);
-  }
-  return validRecords.sort((left, right) => left.createdAt - right.createdAt);
+    return valid;
+  });
+  return validRecords.sort((left, right) => left.createdAt - right.createdAt || left.gameId.localeCompare(right.gameId));
 }
 
 export async function flushStatsOutbox({
@@ -478,9 +728,13 @@ export async function flushStatsOutbox({
   if (aborted(signal, isOwnerCurrent)) return { attempted: 0, delivered: 0, pending: 0, aborted: true };
 
   const timestamp = now();
-  const records = (await listStatsOutbox(ownerKey))
-    .filter((record) => force || record.nextAttemptAt <= timestamp)
-    .slice(0, Math.max(1, Math.min(batchSize, maxDeliveryBatchSize)));
+  const queuedRecords = await listStatsOutbox(ownerKey);
+  const records: StatsOutboxRecord[] = [];
+  const deliveryLimit = Math.max(1, Math.min(batchSize, maxDeliveryBatchSize));
+  for (const record of queuedRecords) {
+    if (records.length >= deliveryLimit || (!force && record.nextAttemptAt > timestamp)) break;
+    records.push(record);
+  }
   let attempted = 0;
   let delivered = 0;
 
@@ -499,7 +753,7 @@ export async function flushStatsOutbox({
       });
       delivered += 1;
     } catch (error) {
-      if (aborted(signal, isOwnerCurrent) || (error instanceof DOMException && error.name === 'AbortError')) {
+      if (aborted(signal, isOwnerCurrent)) {
         return { attempted, delivered, pending: (await listStatsOutbox(ownerKey)).length, aborted: true };
       }
       const attempts = record.attempts + 1;
@@ -514,6 +768,7 @@ export async function flushStatsOutbox({
           } satisfies StatsOutboxRecord)
         );
       });
+      break;
     }
   }
 
@@ -556,15 +811,27 @@ export function createStatsOutboxCoordinator(deliver: StatsDelivery): StatsOutbo
     return result;
   }
 
+  function startFlush(): Promise<StatsFlushResult> {
+    const tracked = runFlush().then(
+      (result) => {
+        if (inFlight === tracked) inFlight = null;
+        return queued && ownerKey ? startFlush() : result;
+      },
+      (error: unknown) => {
+        if (inFlight === tracked) inFlight = null;
+        if (queued && ownerKey) void startFlush().catch(() => undefined);
+        throw error;
+      }
+    );
+    inFlight = tracked;
+    return tracked;
+  }
+
   function flush(force = false): Promise<StatsFlushResult> {
     if (!ownerKey) return Promise.resolve({ attempted: 0, delivered: 0, pending: 0, aborted: false });
     queued = true;
     queuedForce ||= force;
-    if (!inFlight) {
-      inFlight = runFlush().finally(() => {
-        inFlight = null;
-      });
-    }
+    if (!inFlight) return startFlush();
     return inFlight;
   }
 

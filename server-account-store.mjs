@@ -21,6 +21,9 @@ const publicApiErrors = new Map([
   ['INVALID_ROOM_CODE', Object.freeze({ status: 400, message: 'Room code is not valid.' })],
   ['PASSWORDS_MUST_MATCH', Object.freeze({ status: 400, message: 'Passwords must match.' })],
   ['MISSING_HUMAN_PLAYER', Object.freeze({ status: 400, message: 'Single-player game is missing a human player.' })],
+  ['ACCOUNT_SESSION_CHANGED', Object.freeze({ status: 409, message: 'Account changed. Sign in again before syncing this game.' })],
+  ['STATS_CLIENT_UPGRADE_REQUIRED', Object.freeze({ status: 426, message: 'Update Skyjo before syncing saved game stats.' })],
+  ['INVALID_COMPLETED_AT', Object.freeze({ status: 400, message: 'Game completion time is invalid.' })],
   ['REQUEST_TOO_LARGE', Object.freeze({ status: 413, message: 'Request body too large.' })],
   ['INVALID_JSON', Object.freeze({ status: 400, message: 'Request body must be valid JSON.' })],
   ['EXPECTED_JSON_OBJECT', Object.freeze({ status: 400, message: 'Expected a JSON object.' })],
@@ -655,7 +658,8 @@ export class AccountStore {
     createdByUserId = null,
     playerAccounts = {},
     sourceKey = null,
-    finishedByAi = false
+    finishedByAi = false,
+    completedAt: requestedCompletedAt
   }) {
     if (!isRecord(state) || !Array.isArray(state.players) || state.phase !== 'game-over') {
       throw new PublicApiError('INCOMPLETE_GAME');
@@ -666,7 +670,14 @@ export class AccountStore {
     }
 
     const gameId = crypto.randomUUID();
-    const completedAt = this.now();
+    const receivedAt = this.now();
+    let completedAt = receivedAt;
+    if (mode === 'single' && requestedCompletedAt !== undefined) {
+      if (!Number.isSafeInteger(requestedCompletedAt) || requestedCompletedAt <= 0) {
+        throw new PublicApiError('INVALID_COMPLETED_AT');
+      }
+      completedAt = Math.min(requestedCompletedAt, receivedAt);
+    }
     const rankedPlayers = [...state.players].sort((left, right) => left.totalScore - right.totalScore || left.roundScore - right.roundScore);
     const winner = state.winnerId ? state.players.find((player) => player.id === state.winnerId) : rankedPlayers[0];
     const winnerUserId = winner ? playerAccounts[winner.id] || null : null;
@@ -795,7 +806,7 @@ export class AccountStore {
   }
 
   getGameRowsForUser(user) {
-    if (user.role === 'admin') return this.db.prepare('SELECT * FROM games ORDER BY completed_at DESC').all();
+    if (user.role === 'admin') return this.db.prepare('SELECT * FROM games ORDER BY completed_at DESC, rowid DESC').all();
     return this.db
       .prepare(
         `SELECT games.*
@@ -803,7 +814,7 @@ export class AccountStore {
          JOIN game_participants ON game_participants.game_id = games.id
          WHERE game_participants.user_id = ?
          GROUP BY games.id
-         ORDER BY games.completed_at DESC`
+         ORDER BY games.completed_at DESC, games.rowid DESC`
       )
       .all(user.id);
   }

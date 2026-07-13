@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { GameState } from './types';
 
@@ -73,6 +73,7 @@ export interface StatsSummary {
 type AccountContextValue = {
   loading: boolean;
   user: AccountUser | null;
+  localSoloOwnerId: string | null;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -84,6 +85,46 @@ type AccountContextValue = {
 };
 
 const AccountContext = createContext<AccountContextValue | null>(null);
+export const lastConfirmedSoloOwnerStorageKey = 'skyjo:last-confirmed-solo-owner';
+
+function validLocalSoloOwnerId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function readLocalSoloOwnerId(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const value = window.localStorage.getItem(lastConfirmedSoloOwnerStorageKey);
+    return validLocalSoloOwnerId(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalSoloOwnerId(userId: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (userId) window.localStorage.setItem(lastConfirmedSoloOwnerStorageKey, userId);
+    else window.localStorage.removeItem(lastConfirmedSoloOwnerStorageKey);
+  } catch {
+    // Local identity hints are optional and never authorize a request.
+  }
+}
+
+function sameAccountUser(left: AccountUser | null, right: AccountUser | null): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return (
+    left.id === right.id &&
+    left.email === right.email &&
+    left.displayName === right.displayName &&
+    left.role === right.role &&
+    left.disabled === right.disabled &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt &&
+    left.lastLoginAt === right.lastLoginAt
+  );
+}
 
 async function apiJson<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
@@ -100,24 +141,52 @@ async function apiJson<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export function AccountProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AccountUser | null>(null);
+  const [localSoloOwnerId, setLocalSoloOwnerId] = useState(readLocalSoloOwnerId);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  async function refresh() {
+  const applyConfirmedUser = useCallback((nextUser: AccountUser | null) => {
+    setUser((currentUser) => (sameAccountUser(currentUser, nextUser) ? currentUser : nextUser));
+    const nextOwnerId = validLocalSoloOwnerId(nextUser?.id) ? nextUser.id : null;
+    setLocalSoloOwnerId(nextOwnerId);
+    writeLocalSoloOwnerId(nextOwnerId);
+  }, []);
+
+  const refresh = useCallback(async () => {
     const payload = await apiJson<{ user: AccountUser | null }>('/api/account/me');
-    setUser(payload.user ?? null);
-  }
+    applyConfirmedUser(payload.user ?? null);
+  }, [applyConfirmedUser]);
 
   useEffect(() => {
     refresh()
       .catch((requestError) => setError(requestError instanceof Error ? requestError.message : 'Could not load account.'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [refresh]);
+
+  useEffect(() => {
+    const syncLiveAccount = () => {
+      void refresh().catch(() => undefined);
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== lastConfirmedSoloOwnerStorageKey) return;
+      setLocalSoloOwnerId(validLocalSoloOwnerId(event.newValue) ? event.newValue : null);
+      syncLiveAccount();
+    };
+    window.addEventListener('focus', syncLiveAccount);
+    window.addEventListener('online', syncLiveAccount);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('focus', syncLiveAccount);
+      window.removeEventListener('online', syncLiveAccount);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [refresh]);
 
   const value = useMemo<AccountContextValue>(
     () => ({
       loading,
       user,
+      localSoloOwnerId,
       error,
       clearError: () => setError(''),
       refresh,
@@ -127,7 +196,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
           method: 'POST',
           body: JSON.stringify({ email, password })
         });
-        setUser(payload.user);
+        applyConfirmedUser(payload.user);
       },
       async signup(email, displayName, password, confirmPassword) {
         setError('');
@@ -135,12 +204,15 @@ export function AccountProvider({ children }: { children: ReactNode }) {
           method: 'POST',
           body: JSON.stringify({ email, displayName, password, confirmPassword })
         });
-        setUser(payload.user);
+        applyConfirmedUser(payload.user);
       },
       async logout() {
         setError('');
-        await apiJson<{ ok: boolean }>('/api/account/logout', { method: 'POST' });
-        setUser(null);
+        try {
+          await apiJson<{ ok: boolean }>('/api/account/logout', { method: 'POST' });
+        } finally {
+          applyConfirmedUser(null);
+        }
       },
       async changePassword(currentPassword, password, confirmPassword) {
         setError('');
@@ -148,7 +220,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
           method: 'POST',
           body: JSON.stringify({ currentPassword, password, confirmPassword })
         });
-        setUser(null);
+        applyConfirmedUser(null);
       },
       async updateProfile(displayName) {
         setError('');
@@ -156,10 +228,10 @@ export function AccountProvider({ children }: { children: ReactNode }) {
           method: 'PATCH',
           body: JSON.stringify({ displayName })
         });
-        setUser(payload.user);
+        applyConfirmedUser(payload.user);
       }
     }),
-    [error, loading, user]
+    [applyConfirmedUser, error, loading, localSoloOwnerId, refresh, user]
   );
 
   return <AccountContext.Provider value={value}>{children}</AccountContext.Provider>;
@@ -171,10 +243,15 @@ export function useAccount() {
   return value;
 }
 
-export async function saveSinglePlayerGame(state: GameState, clientGameKey: string, signal?: AbortSignal) {
+export async function saveSinglePlayerGame(
+  state: GameState,
+  clientGameKey: string,
+  signal: AbortSignal | undefined,
+  options: { completedAt?: number; expectedAccountUserId: string }
+) {
   return apiJson<{ game: StatsGame }>('/api/stats/single-player', {
     method: 'POST',
-    body: JSON.stringify({ state, clientGameKey }),
+    body: JSON.stringify({ state, clientGameKey, ...options }),
     signal
   });
 }

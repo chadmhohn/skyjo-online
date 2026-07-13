@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { vi } from 'vitest';
 import {
@@ -11,6 +12,7 @@ import {
   fetchStatsGame,
   fetchStatsGames,
   fetchStatsSummary,
+  lastConfirmedSoloOwnerStorageKey,
   saveSinglePlayerGame,
   setAdminUserPassword,
   updateAdminUser,
@@ -20,7 +22,7 @@ import type { AccountUser } from '../../../src/account';
 import type { GameState } from '../../../src/types';
 
 const user: AccountUser = {
-  id: 'user-1',
+  id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   email: 'player@example.test',
   displayName: 'Player One',
   role: 'player',
@@ -45,11 +47,12 @@ function ContextHarness() {
     <div>
       <output>{account.loading ? 'loading' : account.user?.displayName || 'guest'}</output>
       <output>{account.error || 'no-error'}</output>
-      <button onClick={() => void account.login('login@example.test', 'secret')}>login</button>
-      <button onClick={() => void account.signup('new@example.test', 'New Player', 'secret', 'secret')}>signup</button>
-      <button onClick={() => void account.updateProfile('Renamed')}>profile</button>
-      <button onClick={() => void account.changePassword('old', 'new', 'new')}>password</button>
-      <button onClick={() => void account.logout()}>logout</button>
+      <output data-testid="solo-owner">{account.localSoloOwnerId || 'no-owner'}</output>
+      <button onClick={() => void account.login('login@example.test', 'secret').catch(() => undefined)}>login</button>
+      <button onClick={() => void account.signup('new@example.test', 'New Player', 'secret', 'secret').catch(() => undefined)}>signup</button>
+      <button onClick={() => void account.updateProfile('Renamed').catch(() => undefined)}>profile</button>
+      <button onClick={() => void account.changePassword('old', 'new', 'new').catch(() => undefined)}>password</button>
+      <button onClick={() => void account.logout().catch(() => undefined)}>logout</button>
       <button onClick={() => account.clearError()}>clear</button>
       <button onClick={() => void account.refresh()}>refresh</button>
     </div>
@@ -60,17 +63,36 @@ function Wrapper({ children }: { children: ReactNode }) {
   return <AccountProvider>{children}</AccountProvider>;
 }
 
+function IdentityHarness() {
+  const account = useAccount();
+  const previousUser = useRef(account.user);
+  const [identityChanges, setIdentityChanges] = useState(0);
+  useEffect(() => {
+    if (previousUser.current === account.user) return;
+    previousUser.current = account.user;
+    setIdentityChanges((count) => count + 1);
+  }, [account.user]);
+  return (
+    <div>
+      <output data-testid="identity-name">{account.user?.displayName || 'guest'}</output>
+      <output data-testid="identity-changes">{identityChanges}</output>
+    </div>
+  );
+}
+
 describe('account API and provider', () => {
   let calls: FetchCall[];
+  let currentMeUser: AccountUser | null;
 
   beforeEach(() => {
     calls = [];
+    currentMeUser = null;
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const path = String(input);
         calls.push({ path, init });
-        if (path === '/api/account/me') return jsonResponse({ user: null });
+        if (path === '/api/account/me') return jsonResponse({ user: currentMeUser });
         if (path === '/api/account/logout' || path === '/api/account/password') return jsonResponse({ ok: true });
         if (path.includes('/password')) return jsonResponse({ ok: true });
         if (path === '/api/rooms/invite') return jsonResponse({ roomCode: 'ABCDE', path: '/invite/token', expiresAt: 99 });
@@ -98,14 +120,18 @@ describe('account API and provider', () => {
     await screen.findByText('guest');
     await actor.click(screen.getByRole('button', { name: 'login' }));
     await screen.findByText('Player One');
+    expect(screen.getByTestId('solo-owner')).toHaveTextContent(user.id);
+    expect(window.localStorage.getItem(lastConfirmedSoloOwnerStorageKey)).toBe(user.id);
     await actor.click(screen.getByRole('button', { name: 'profile' }));
     await screen.findByText('Renamed');
     await actor.click(screen.getByRole('button', { name: 'password' }));
     await screen.findByText('guest');
+    expect(screen.getByTestId('solo-owner')).toHaveTextContent('no-owner');
     await actor.click(screen.getByRole('button', { name: 'signup' }));
     await screen.findByText('New Player');
     await actor.click(screen.getByRole('button', { name: 'logout' }));
     await screen.findByText('guest');
+    expect(window.localStorage.getItem(lastConfirmedSoloOwnerStorageKey)).toBeNull();
     await actor.click(screen.getByRole('button', { name: 'refresh' }));
 
     expect(calls.map(({ path }) => path)).toEqual(
@@ -133,6 +159,66 @@ describe('account API and provider', () => {
     expect(screen.getByText('no-error')).toBeInTheDocument();
   });
 
+  it('preserves the last confirmed local solo partition while account refresh is offline', async () => {
+    window.localStorage.setItem(lastConfirmedSoloOwnerStorageKey, user.id);
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError('offline'));
+    render(<ContextHarness />, { wrapper: Wrapper });
+    await screen.findByText('offline');
+    expect(screen.getByTestId('solo-owner')).toHaveTextContent(user.id);
+    expect(screen.getByText('guest')).toBeInTheDocument();
+  });
+
+  it('refreshes live account state on focus, online, and owner-hint storage changes', async () => {
+    render(<ContextHarness />, { wrapper: Wrapper });
+    await screen.findByText('guest');
+
+    currentMeUser = user;
+    window.dispatchEvent(new Event('focus'));
+    await screen.findByText('Player One');
+    expect(screen.getByTestId('solo-owner')).toHaveTextContent(user.id);
+
+    currentMeUser = null;
+    window.dispatchEvent(new Event('online'));
+    await screen.findByText('guest');
+    expect(screen.getByTestId('solo-owner')).toHaveTextContent('no-owner');
+
+    currentMeUser = user;
+    window.dispatchEvent(
+      new StorageEvent('storage', { key: lastConfirmedSoloOwnerStorageKey, newValue: user.id, storageArea: localStorage })
+    );
+    await screen.findByText('Player One');
+    expect(calls.filter(({ path }) => path === '/api/account/me')).toHaveLength(4);
+  });
+
+  it('preserves account object identity across unchanged focus refreshes', async () => {
+    currentMeUser = user;
+    render(<IdentityHarness />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByTestId('identity-changes')).toHaveTextContent('1'));
+
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(calls.filter(({ path }) => path === '/api/account/me')).toHaveLength(2));
+    expect(screen.getByTestId('identity-changes')).toHaveTextContent('1');
+
+    currentMeUser = { ...user, displayName: 'Updated Player', updatedAt: user.updatedAt + 1 };
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(screen.getByTestId('identity-name')).toHaveTextContent('Updated Player'));
+    expect(screen.getByTestId('identity-changes')).toHaveTextContent('2');
+  });
+
+  it('clears local identity state on explicit logout even when the network request fails', async () => {
+    currentMeUser = user;
+    const actor = userEvent.setup();
+    render(<ContextHarness />, { wrapper: Wrapper });
+    await screen.findByText('Player One');
+    expect(window.localStorage.getItem(lastConfirmedSoloOwnerStorageKey)).toBe(user.id);
+
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError('offline'));
+    await actor.click(screen.getByRole('button', { name: 'logout' }));
+    await waitFor(() => expect(screen.getByTestId('solo-owner')).toHaveTextContent('no-owner'));
+    expect(screen.getByText('guest')).toBeInTheDocument();
+    expect(window.localStorage.getItem(lastConfirmedSoloOwnerStorageKey)).toBeNull();
+  });
+
   it('uses the generic error when a failed response is not JSON', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(new Response('not-json', { status: 500 }));
     render(<ContextHarness />, { wrapper: Wrapper });
@@ -141,7 +227,11 @@ describe('account API and provider', () => {
 
   it('covers the typed account, stats, invite, and admin helpers', async () => {
     const state = { players: [] } as unknown as GameState;
-    await saveSinglePlayerGame(state, 'stable-key');
+    const controller = new AbortController();
+    await saveSinglePlayerGame(state, 'stable-key', controller.signal, {
+      completedAt: 123,
+      expectedAccountUserId: user.id
+    });
     await createRoomInvite('abcde');
     await fetchStatsSummary();
     await fetchStatsGames();
@@ -170,6 +260,12 @@ describe('account API and provider', () => {
       '/api/admin/users/user%2F1',
       '/api/admin/users/user%2F1/password'
     ]);
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ state, clientGameKey: 'stable-key' });
+    expect(calls[0].init?.signal).toBe(controller.signal);
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+      state,
+      clientGameKey: 'stable-key',
+      completedAt: 123,
+      expectedAccountUserId: user.id
+    });
   });
 });

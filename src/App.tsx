@@ -87,6 +87,26 @@ type TurnStatus = {
   description: string;
   tone: TurnStatusTone;
 };
+type SoloStatsCoordinator = ReturnType<typeof createStatsOutboxCoordinator>;
+type SoloStatsFlushResult = Awaited<ReturnType<SoloStatsCoordinator['flush']>>;
+
+function beginSoloStatsFlush(
+  coordinator: SoloStatsCoordinator,
+  onResult: (result: SoloStatsFlushResult) => void,
+  onFailure: () => void
+): void {
+  void Promise.resolve()
+    .then(() => coordinator.flush(true))
+    .then(onResult)
+    .catch(onFailure);
+}
+
+function statsSyncUnavailableWarning(): SoloPersistenceWarning {
+  return {
+    kind: 'unavailable',
+    message: 'Saved game stats are unavailable in this browser session. Your game can continue safely.'
+  };
+}
 
 const responsiveBoardGridClass = 'grid gap-4';
 const opponentBoardGridClass = 'skyjo-opponent-stack grid gap-4 xl:grid-cols-2';
@@ -2149,8 +2169,8 @@ function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameStat
 }
 
 function SinglePlayer() {
-  const { loading: accountLoading, user } = useAccount();
-  const ownerKey = soloOwnerKey(user?.id);
+  const { loading: accountLoading, localSoloOwnerId, user } = useAccount();
+  const ownerKey = soloOwnerKey(user?.id ?? localSoloOwnerId);
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
   const [activeGameId, setActiveGameId] = useState(createSoloGameId);
@@ -2163,9 +2183,13 @@ function SinglePlayer() {
   const completedQueueKeyRef = useRef('');
   const statsCoordinatorRef = useRef<ReturnType<typeof createStatsOutboxCoordinator> | null>(null);
   if (!statsCoordinatorRef.current) {
-    statsCoordinatorRef.current = createStatsOutboxCoordinator((record, signal) =>
-      saveSinglePlayerGame(record.state, record.gameId, signal)
-    );
+    statsCoordinatorRef.current = createStatsOutboxCoordinator((record, signal) => {
+      const expectedAccountUserId = record.ownerKey.startsWith('account:') ? record.ownerKey.slice('account:'.length) : '';
+      return saveSinglePlayerGame(record.state, record.gameId, signal, {
+        completedAt: record.createdAt,
+        expectedAccountUserId
+      });
+    });
   }
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
@@ -2217,11 +2241,19 @@ function SinglePlayer() {
     coordinator.setOwner(user ? ownerKey : null);
 
     const flush = () => {
-      void coordinator.flush(true).then((result) => {
-        if (cancelled || result.aborted) return;
-        if (result.delivered > 0) setStatsSaveStatus('Queued game stats were saved.');
-        else if (result.pending > 0) setStatsSaveStatus('Game stats are safely queued and will retry when online.');
-      });
+      beginSoloStatsFlush(
+        coordinator,
+        (result) => {
+          if (cancelled || result.aborted) return;
+          if (result.delivered > 0) setStatsSaveStatus('Queued game stats were saved.');
+          else if (result.pending > 0) setStatsSaveStatus('Game stats are safely queued and will retry when online.');
+        },
+        () => {
+          if (cancelled) return;
+          setPersistenceWarning(statsSyncUnavailableWarning());
+          setStatsSaveStatus('Game stats sync is unavailable. Play can continue and Skyjo will retry later.');
+        }
+      );
     };
 
     if (user) flush();
@@ -2293,21 +2325,35 @@ function SinglePlayer() {
         return;
       }
       if (!user) {
-        setStatsSaveStatus('This guest game stays on this device and will not be added to an account.');
+        setStatsSaveStatus(
+          localSoloOwnerId
+            ? 'Game stats are queued for your last confirmed account and will sync after sign-in is restored.'
+            : 'This guest game stays on this device and will not be added to an account.'
+        );
         return;
       }
       setStatsSaveStatus('Game stats are safely queued.');
-      void statsCoordinatorRef.current?.flush(true).then((result) => {
-        if (cancelled || result.aborted) return;
-        setStatsSaveStatus(
-          result.pending === 0 ? 'Game saved to your stats.' : 'Game stats are safely queued and will retry when online.'
-        );
-      });
+      const coordinator = statsCoordinatorRef.current;
+      if (!coordinator) return;
+      beginSoloStatsFlush(
+        coordinator,
+        (result) => {
+          if (cancelled || result.aborted) return;
+          setStatsSaveStatus(
+            result.pending === 0 ? 'Game saved to your stats.' : 'Game stats are safely queued and will retry when online.'
+          );
+        },
+        () => {
+          if (cancelled) return;
+          setPersistenceWarning(statsSyncUnavailableWarning());
+          setStatsSaveStatus('Game stats sync is unavailable. Play can continue and Skyjo will retry later.');
+        }
+      );
     });
     return () => {
       cancelled = true;
     };
-  }, [activeGameId, aiOpponentCount, durabilityReady, ownerKey, state, user]);
+  }, [activeGameId, aiOpponentCount, durabilityReady, localSoloOwnerId, ownerKey, state, user]);
 
   function handleCard(index: number) {
     if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
@@ -2641,6 +2687,8 @@ function absoluteShareUrl(path: string) {
 
 function Lobby() {
   const { loading: accountLoading, user: accountUser } = useAccount();
+  const accountUserId = accountUser?.id ?? '';
+  const accountDisplayName = accountUser?.displayName ?? '';
   const location = useLocation();
   const initialLobbyRef = useRef<InitialLobbySession | null>(null);
   if (!initialLobbyRef.current) initialLobbyRef.current = getInitialLobbySession();
@@ -2768,13 +2816,13 @@ function Lobby() {
   }, [roomCode]);
 
   useEffect(() => {
-    if (!accountUser) return;
-    setName(accountUser.displayName);
-    window.localStorage.setItem('skyjo-player-name', accountUser.displayName);
-  }, [accountUser]);
+    if (!accountUserId) return;
+    setName(accountDisplayName);
+    window.localStorage.setItem('skyjo-player-name', accountDisplayName);
+  }, [accountDisplayName, accountUserId]);
 
   useEffect(() => {
-    if (!accountUser) return;
+    if (!accountUserId) return;
     const controller = createRoomConnection({
       url: roomSocketUrl(),
       createSocket: (url) => new WebSocket(url) as unknown as RoomConnectionSocket,
@@ -2789,7 +2837,7 @@ function Lobby() {
       controller.recover({
         action: 'join-room',
         code: roomCodeRef.current,
-        name: accountUser.displayName,
+        name: accountDisplayName,
         playerId: playerIdRef.current,
         ...(recoveryHint
           ? {
@@ -2805,7 +2853,7 @@ function Lobby() {
       if (connectionControllerRef.current === controller) connectionControllerRef.current = null;
       controller.dispose();
     };
-  }, [accountUser]);
+  }, [accountDisplayName, accountUserId]);
 
   useEffect(() => {
     playerIdRef.current = playerId;
