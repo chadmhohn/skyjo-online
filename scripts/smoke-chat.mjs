@@ -478,7 +478,11 @@ try {
   assert.match(publicLoginCsp, /default-src 'self'/);
   assert.match(publicLoginCsp, /style-src 'self'(?: 'nonce-[^']+')?/);
   assert.match(publicLoginCsp, /font-src 'self'/);
-  assert.doesNotMatch(publicLoginCsp, /fonts\.(?:googleapis|gstatic)\.com/);
+  assert.equal(
+    publicLoginCsp.includes('fonts.googleapis.com') || publicLoginCsp.includes('fonts.gstatic.com'),
+    false,
+    'login CSP permits no remote Google font origins'
+  );
   const publicLoginHtml = await publicLoginPage.text();
   for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
     assert.match(publicLoginHtml, new RegExp(marker), `login SSR head includes ${marker}`);
@@ -505,7 +509,11 @@ try {
   assert.equal(authenticatedShell.headers.get('referrer-policy'), 'no-referrer');
   const authenticatedShellCsp = authenticatedShell.headers.get('content-security-policy') || '';
   assert.match(authenticatedShellCsp, /style-src 'self'; font-src 'self'/);
-  assert.doesNotMatch(authenticatedShellCsp, /fonts\.(?:googleapis|gstatic)\.com/);
+  assert.equal(
+    authenticatedShellCsp.includes('fonts.googleapis.com') || authenticatedShellCsp.includes('fonts.gstatic.com'),
+    false,
+    'SPA CSP permits no remote Google font origins'
+  );
   const authenticatedShellHtml = await authenticatedShell.text();
   for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
     assert.match(authenticatedShellHtml, new RegExp(marker), `SPA head includes ${marker}`);
@@ -515,7 +523,13 @@ try {
   const compiledStylesheet = await fetch(new URL(stylesheetPath, baseUrl), { headers: { Cookie: cookie } });
   assert.equal(compiledStylesheet.status, 200, 'compiled stylesheet is available');
   const compiledCss = await compiledStylesheet.text();
-  assert.doesNotMatch(compiledCss, /@import|fonts\.(?:googleapis|gstatic)\.com/, 'critical CSS has no remote font dependency');
+  assert.equal(
+    compiledCss.includes('@import') ||
+      compiledCss.includes('fonts.googleapis.com') ||
+      compiledCss.includes('fonts.gstatic.com'),
+    false,
+    'critical CSS has no remote font dependency'
+  );
   const cardAudio = await fetch(`${baseUrl}/audio/card-flip.mp3`, { headers: { Cookie: cookie } });
   assert.equal(cardAudio.status, 200, 'card audio assets are served after shared-password login');
   assert.match(cardAudio.headers.get('content-type') || '', /audio\/mpeg/);
