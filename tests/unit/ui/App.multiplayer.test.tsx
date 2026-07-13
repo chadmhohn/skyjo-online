@@ -1231,7 +1231,7 @@ describe('multiplayer lobby', () => {
     expect(screen.getAllByRole('button', { name: 'Put the discard card back.' })[0]).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Reset Room' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: /Replace with the discard card/ })).not.toBeInTheDocument();
-    expect(screen.getAllByRole('gridcell', { name: /row 1, column 1, face-down\. Not currently actionable/ })[0]).toBeInTheDocument();
+    expect(screen.getAllByRole('gridcell', { name: /row 1, column 1, SKYJO face-down\. Not currently actionable/ })[0]).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Table Chat/ }));
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
@@ -1310,7 +1310,7 @@ describe('multiplayer game table', () => {
     const { socket, user } = await createJoinedRoom(makeRoom({ state: openingState, status: 'playing' }));
 
     expect(screen.getAllByText('Choose two face-down cards').length).toBeGreaterThan(0);
-    await user.click(screen.getAllByRole('button', { name: /row 1, column 1, face-down\. Reveal this opening card/ })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 1, SKYJO face-down\. Reveal this opening card/ })[0]);
     const openingCommand = expectCommand(socket, { type: 'reveal-opening-card', cardIndex: 0 }, 0);
     const openingAfterReveal = makeState({
       players: [
@@ -1369,7 +1369,7 @@ describe('multiplayer game table', () => {
     expect(screen.getAllByText('Drawn card waiting').length).toBeGreaterThan(0);
     await user.click(screen.getAllByRole('button', { name: /Discard \+ reveal/ })[0]);
     expect(screen.getAllByText('Discard mode: select a highlighted hidden card.').length).toBeGreaterThan(0);
-    await user.click(screen.getAllByRole('button', { name: /row 1, column 3, face-down\. Reveal after discarding the drawn card/ })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 3, SKYJO face-down\. Reveal after discarding the drawn card/ })[0]);
     const discardRevealCommand = expectCommand(socket, { type: 'discard-and-reveal', cardIndex: 2 }, 5);
     convergeCommand(
       socket,

@@ -39,7 +39,7 @@ function cardLabel(card: Card) {
 
 function visibleCardState(card: Card): string {
   if (card.removed) return 'cleared';
-  if (!card.faceUp) return 'face-down';
+  if (!card.faceUp) return 'SKYJO face-down';
   return `face-up ${card.value < 0 ? `minus ${Math.abs(card.value)}` : card.value}`;
 }
 
@@ -584,16 +584,19 @@ interface TableControlsProps {
 function ActionGuidance({
   status,
   disabledReason,
-  className = ''
+  className = '',
+  headingLevel = 3
 }: {
   status: TurnStatus;
   disabledReason?: string;
   className?: string;
+  headingLevel?: 2 | 3;
 }) {
+  const Heading = headingLevel === 2 ? 'h2' : 'h3';
   return (
     <div className={`skyjo-table-guidance skyjo-action-guidance skyjo-action-guidance-${status.tone} ${className}`}>
       <div className="skyjo-kicker">{status.eyebrow}</div>
-      <h3 className="skyjo-serif skyjo-action-guidance-title mt-1 font-bold leading-tight text-[#f5e6c8]">{status.title}</h3>
+      <Heading className="skyjo-serif skyjo-action-guidance-title mt-1 font-bold leading-tight text-[#f5e6c8]">{status.title}</Heading>
       <p className="skyjo-action-guidance-instruction mt-2 text-sm font-bold leading-6 text-[#f5e6c8]/72">
         {status.description}
       </p>
@@ -871,7 +874,7 @@ export function GameTableLayout({
           role="region"
           tabIndex={0}
         >
-          <ActionGuidance disabledReason={guidanceDisabledReason} status={status} />
+          <ActionGuidance disabledReason={guidanceDisabledReason} headingLevel={2} status={status} />
         </div>
       ) : null}
       <div

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { GameTableLayout, type DrawIntent } from '../../../src/GameTableLayout';
 import { revealOpeningCard } from '../../../src/game';
@@ -95,8 +95,14 @@ describe('GameTableLayout', () => {
     expect(table.querySelectorAll('[role="gridcell"]')).toHaveLength(playerCount * 12);
     expect(opponentRail.querySelectorAll('button')).toHaveLength(0);
     expect(localBoard.querySelectorAll('button')).toHaveLength(12);
-    expect(opponentRail.querySelector('[role="gridcell"]')).toHaveAccessibleName(/Opponent 1, row 1, column 1, face-down/);
+    expect(opponentRail.querySelector('[role="gridcell"]')).toHaveAccessibleName(/Opponent 1, row 1, column 1, SKYJO face-down/);
     expect(opponentRail.querySelector('[role="gridcell"]')).not.toHaveAccessibleName(/minus 2/);
+    expect(
+      within(screen.getByRole('region', { name: 'Action guidance' })).getByRole('heading', {
+        level: 3,
+        name: 'Choose two face-down cards'
+      })
+    ).toBeInTheDocument();
   });
 
   it('routes local card and centered pile decisions through the supplied callbacks', async () => {
@@ -113,7 +119,7 @@ describe('GameTableLayout', () => {
       />
     );
 
-    await user.click(screen.getByRole('button', { name: /You, row 1, column 1, face-down\. Reveal this opening card/ }));
+    await user.click(screen.getByRole('button', { name: /You, row 1, column 1, SKYJO face-down\. Reveal this opening card/ }));
     expect(actions.onCardClick).toHaveBeenCalledWith(0);
 
     const chooseSource = stateFor(2, {
@@ -265,6 +271,7 @@ describe('GameTableLayout', () => {
     expect(screen.getAllByRole('region', { name: 'Action guidance' })).toHaveLength(1);
     expect(guidance).toHaveClass('skyjo-phone-action-guidance');
     expect(guidance).toHaveTextContent('Choose two face-down cards');
+    expect(within(guidance).getByRole('heading', { level: 2, name: 'Choose two face-down cards' })).toBeInTheDocument();
     expect(guidance).toHaveTextContent('Each player reveals exactly two cards');
     expect(guidance).toHaveTextContent('Action unavailable: Room recovery is still synchronizing.');
     expect(screen.getByTestId('shared-game-table')).not.toContainElement(guidance);
