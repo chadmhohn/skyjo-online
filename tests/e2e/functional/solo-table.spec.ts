@@ -12,6 +12,18 @@ type SettledResponsiveLayout = {
   viewportWidth: number;
 };
 
+type ResponsiveLayoutSample = SettledResponsiveLayout & {
+  fontStatus: string;
+  localBottom: number;
+  narrowMediaMatches: boolean;
+  opponentTop: number;
+  pilesCenterX: number;
+  playerCount?: string;
+  scrollWidth: number;
+  tableHeight: number;
+  tableWidth: number;
+};
+
 async function settleResponsiveTable(
   page: Page,
   viewport: Viewport,
@@ -20,39 +32,19 @@ async function settleResponsiveTable(
   await page.setViewportSize(viewport);
   const table = page.getByTestId('shared-game-table');
   await expect(table).toHaveAttribute('data-player-count', String(playerCount));
+  const expectedPhone = viewport.width <= 640;
+  const expectedNarrow = viewport.width <= 900;
+  const expectedCompact = viewport.width >= 641 && viewport.height <= 900;
+  const expectedCenterBandHeight = expectedPhone ? 100 : expectedCompact ? 150 : null;
+  const requiredStableSamples = 4;
+  let lastSample: ResponsiveLayoutSample | undefined;
+  let previousSignature = '';
+  let stableSamples = 0;
 
-  return table.evaluate(
-    (tableElement, target) =>
-      new Promise<SettledResponsiveLayout>((resolve, reject) => {
-        const phoneQuery = window.matchMedia('(max-width: 640px)');
-        const narrowQuery = window.matchMedia('(max-width: 900px)');
-        const compactQuery = window.matchMedia('(min-width: 641px) and (max-height: 900px)');
-        const expectedPhone = target.width <= 640;
-        const expectedNarrow = target.width <= 900;
-        const expectedCompact = target.width >= 641 && target.height <= 900;
-        const expectedCenterBandHeight = expectedPhone
-          ? 100
-          : expectedCompact
-            ? 150
-            : null;
-        const requiredStableFrames = 4;
-        const geometryPrecision = 100;
-        let animationFrame = 0;
-        let lastSample: Record<string, unknown> | null = null;
-        let previousSignature = '';
-        let stableFrames = 0;
-
-        const timeout = window.setTimeout(() => {
-          window.cancelAnimationFrame(animationFrame);
-          reject(
-            new Error(
-              `Responsive table did not settle at ${target.width}x${target.height}: ${JSON.stringify(lastSample)}`
-            )
-          );
-        }, 7_500);
-
-        const rounded = (value: number) => Math.round(value * geometryPrecision) / geometryPrecision;
-        const sample = () => {
+  await expect
+    .poll(
+      async () => {
+        const current = await table.evaluate((tableElement): ResponsiveLayoutSample => {
           const centerBand = tableElement.querySelector<HTMLElement>('[data-testid="table-center-band"]');
           const opponentRail = tableElement.querySelector<HTMLElement>('[data-testid="opponent-rail"]');
           const localBoard = tableElement.querySelector<HTMLElement>('[data-testid="local-board"]');
@@ -60,6 +52,7 @@ async function settleResponsiveTable(
           if (!centerBand || !opponentRail || !localBoard || !tablePiles) {
             throw new Error('Missing responsive table settlement anchor.');
           }
+          const rounded = (value: number) => Math.round(value * 100) / 100;
           const tableRect = tableElement.getBoundingClientRect();
           const centerBandRect = centerBand.getBoundingClientRect();
           const opponentRect = opponentRail.getBoundingClientRect();
@@ -67,13 +60,13 @@ async function settleResponsiveTable(
           const pilesRect = tablePiles.getBoundingClientRect();
           return {
             centerBandHeight: rounded(centerBandRect.height),
-            compactMediaMatches: compactQuery.matches,
+            compactMediaMatches: window.matchMedia('(min-width: 641px) and (max-height: 900px)').matches,
             fontStatus: document.fonts.status,
             localBottom: rounded(localRect.bottom),
-            narrowMediaMatches: narrowQuery.matches,
+            narrowMediaMatches: window.matchMedia('(max-width: 900px)').matches,
             opponentTop: rounded(opponentRect.top),
             phoneGuidanceVisible: Boolean(document.querySelector('.skyjo-phone-action-guidance')),
-            phoneMediaMatches: phoneQuery.matches,
+            phoneMediaMatches: window.matchMedia('(max-width: 640px)').matches,
             pilesCenterX: rounded(pilesRect.left + pilesRect.width / 2),
             playerCount: tableElement.dataset.playerCount,
             scrollWidth: document.documentElement.scrollWidth,
@@ -82,50 +75,45 @@ async function settleResponsiveTable(
             viewportHeight: window.innerHeight,
             viewportWidth: window.innerWidth
           };
-        };
+        });
+        lastSample = current;
+        const responsiveStateMatches =
+          current.viewportWidth === viewport.width &&
+          current.viewportHeight === viewport.height &&
+          current.phoneMediaMatches === expectedPhone &&
+          current.narrowMediaMatches === expectedNarrow &&
+          current.compactMediaMatches === expectedCompact &&
+          current.phoneGuidanceVisible === expectedPhone &&
+          current.playerCount === String(playerCount) &&
+          current.fontStatus === 'loaded' &&
+          (expectedCenterBandHeight === null ||
+            Math.abs(current.centerBandHeight - expectedCenterBandHeight) <= 0.05);
+        const signature = JSON.stringify(current);
+        stableSamples = responsiveStateMatches
+          ? signature === previousSignature
+            ? Math.min(stableSamples + 1, requiredStableSamples)
+            : 1
+          : 0;
+        previousSignature = signature;
+        return { responsiveStateMatches, stableSamples, sample: current };
+      },
+      {
+        intervals: [25, 50, 100, 250],
+        message: `responsive table should settle at ${viewport.width}x${viewport.height}`,
+        timeout: 7_500
+      }
+    )
+    .toMatchObject({ responsiveStateMatches: true, stableSamples: requiredStableSamples });
 
-        const frame = () => {
-          try {
-            const current = sample();
-            lastSample = current;
-            const responsiveStateMatches =
-              current.viewportWidth === target.width &&
-              current.viewportHeight === target.height &&
-              current.phoneMediaMatches === expectedPhone &&
-              current.narrowMediaMatches === expectedNarrow &&
-              current.compactMediaMatches === expectedCompact &&
-              current.phoneGuidanceVisible === expectedPhone &&
-              current.playerCount === String(target.playerCount) &&
-              current.fontStatus === 'loaded' &&
-              (expectedCenterBandHeight === null ||
-                Math.abs(current.centerBandHeight - expectedCenterBandHeight) <= 0.05);
-            const signature = JSON.stringify(current);
-            stableFrames = responsiveStateMatches && signature === previousSignature ? stableFrames + 1 : 1;
-            previousSignature = signature;
-
-            if (responsiveStateMatches && stableFrames >= requiredStableFrames) {
-              window.clearTimeout(timeout);
-              resolve({
-                centerBandHeight: current.centerBandHeight,
-                compactMediaMatches: current.compactMediaMatches,
-                phoneGuidanceVisible: current.phoneGuidanceVisible,
-                phoneMediaMatches: current.phoneMediaMatches,
-                viewportHeight: current.viewportHeight,
-                viewportWidth: current.viewportWidth
-              });
-              return;
-            }
-            animationFrame = window.requestAnimationFrame(frame);
-          } catch (error) {
-            window.clearTimeout(timeout);
-            reject(error);
-          }
-        };
-
-        animationFrame = window.requestAnimationFrame(frame);
-      }),
-    { ...viewport, playerCount }
-  );
+  if (!lastSample) throw new Error('Responsive table settlement produced no sample.');
+  return {
+    centerBandHeight: lastSample.centerBandHeight,
+    compactMediaMatches: lastSample.compactMediaMatches,
+    phoneGuidanceVisible: lastSample.phoneGuidanceVisible,
+    phoneMediaMatches: lastSample.phoneMediaMatches,
+    viewportHeight: lastSample.viewportHeight,
+    viewportWidth: lastSample.viewportWidth
+  };
 }
 
 async function configureSoloRoster(page: Page, playerCount: number) {
