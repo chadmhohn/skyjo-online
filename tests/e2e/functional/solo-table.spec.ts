@@ -17,10 +17,39 @@ async function configureSoloRoster(page: Page, playerCount: number) {
 async function finishHumanOpeningAndMeasureAi(page: Page): Promise<number> {
   const openingCards = page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true });
   await openingCards.first().click();
-  const startedAt = Date.now();
+
+  await openingCards.first().evaluate((button) => {
+    const table = document.querySelector<HTMLElement>('[data-testid="shared-game-table"]');
+    if (!table) throw new Error('Missing shared game table timing anchor.');
+    const timing = { startedAt: 0, completedAt: 0 };
+    const runtime = window as typeof window & { __skyjoOpeningTiming?: typeof timing };
+    runtime.__skyjoOpeningTiming = timing;
+    const observer = new MutationObserver(() => {
+      if (timing.startedAt > 0 && table.dataset.phase !== 'opening-reveal') {
+        timing.completedAt = performance.now();
+        observer.disconnect();
+      }
+    });
+    observer.observe(table, { attributeFilter: ['data-phase'], attributes: true });
+    button.addEventListener(
+      'click',
+      () => {
+        timing.startedAt = performance.now();
+      },
+      { capture: true, once: true }
+    );
+  });
   await openingCards.first().click();
   await expect(page.getByTestId('shared-game-table')).not.toHaveAttribute('data-phase', 'opening-reveal', { timeout: 5_000 });
-  return Date.now() - startedAt;
+  return page.evaluate(() => {
+    const timing = (
+      window as typeof window & { __skyjoOpeningTiming?: { startedAt: number; completedAt: number } }
+    ).__skyjoOpeningTiming;
+    if (!timing || timing.startedAt <= 0 || timing.completedAt < timing.startedAt) {
+      throw new Error('Opening cadence timing markers were not recorded.');
+    }
+    return timing.completedAt - timing.startedAt;
+  });
 }
 
 test('solo opening is playable and exposes stable table geometry anchors', async ({ page, skyjoServer }) => {
