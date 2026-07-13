@@ -37,6 +37,35 @@ function fixedOriginUrl(baseUrl, pathname) {
   return target;
 }
 
+function parseCspDirectives(value) {
+  const directives = new Map();
+  for (const segment of value.split(';')) {
+    const [name, ...tokens] = segment.trim().split(/\s+/).filter(Boolean);
+    if (!name) continue;
+    assert.equal(directives.has(name), false, `CSP directive ${name} appears only once`);
+    directives.set(name, tokens);
+  }
+  return directives;
+}
+
+function assertLocalStyleAndFontPolicy(value, { label, nonce }) {
+  const directives = parseCspDirectives(value);
+  assert.deepEqual(directives.get('font-src'), ["'self'"], `${label} font-src stays self-only`);
+
+  const styleSources = directives.get('style-src') || [];
+  assert.equal(styleSources[0], "'self'", `${label} style-src starts with self`);
+  if (nonce) {
+    assert.equal(styleSources.length, 2, `${label} style-src permits only self and one nonce`);
+    assert.match(
+      styleSources[1],
+      /^'nonce-[A-Za-z0-9+/]+={0,2}'$/,
+      `${label} style-src uses one anchored base64 nonce`
+    );
+  } else {
+    assert.deepEqual(styleSources, ["'self'"], `${label} style-src stays self-only`);
+  }
+}
+
 async function waitForHealth(url) {
   const deadline = Date.now() + 8000;
   let lastError;
@@ -474,7 +503,9 @@ try {
   assert.equal(publicLoginPage.status, 200);
   assert.match(publicLoginPage.headers.get('cache-control') || '', /no-store/i);
   assert.equal(publicLoginPage.headers.get('referrer-policy'), 'no-referrer');
-  assert.match(publicLoginPage.headers.get('content-security-policy') || '', /default-src 'self'/);
+  const publicLoginCsp = publicLoginPage.headers.get('content-security-policy') || '';
+  assert.match(publicLoginCsp, /default-src 'self'/);
+  assertLocalStyleAndFontPolicy(publicLoginCsp, { label: 'login CSP', nonce: true });
   const publicLoginHtml = await publicLoginPage.text();
   for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
     assert.match(publicLoginHtml, new RegExp(marker), `login SSR head includes ${marker}`);
@@ -499,10 +530,19 @@ try {
   assert.equal(authenticatedShell.status, 200);
   assert.match(authenticatedShell.headers.get('cache-control') || '', /no-store/i);
   assert.equal(authenticatedShell.headers.get('referrer-policy'), 'no-referrer');
+  const authenticatedShellCsp = authenticatedShell.headers.get('content-security-policy') || '';
+  assertLocalStyleAndFontPolicy(authenticatedShellCsp, { label: 'SPA CSP', nonce: false });
   const authenticatedShellHtml = await authenticatedShell.text();
   for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
     assert.match(authenticatedShellHtml, new RegExp(marker), `SPA head includes ${marker}`);
   }
+  const stylesheetPath = authenticatedShellHtml.match(/href="([^"]+\.css)"/)?.[1];
+  assert.ok(stylesheetPath, 'SPA shell references its compiled stylesheet');
+  const compiledStylesheet = await fetch(new URL(stylesheetPath, baseUrl), { headers: { Cookie: cookie } });
+  assert.equal(compiledStylesheet.status, 200, 'compiled stylesheet is available');
+  const compiledCss = await compiledStylesheet.text();
+  assert.equal(compiledCss.includes('@import'), false, 'critical CSS has no imported stylesheets');
+  assert.equal(compiledCss.includes('url('), false, 'critical CSS has no external resource references');
   const cardAudio = await fetch(`${baseUrl}/audio/card-flip.mp3`, { headers: { Cookie: cookie } });
   assert.equal(cardAudio.status, 200, 'card audio assets are served after shared-password login');
   assert.match(cardAudio.headers.get('content-type') || '', /audio\/mpeg/);

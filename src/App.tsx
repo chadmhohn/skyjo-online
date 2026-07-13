@@ -14,6 +14,7 @@ import {
   startNextRound
 } from './game';
 import { GameTableLayout, type DrawIntent } from './GameTableLayout';
+import { useModalFocus, usePhoneLayout, usePrefersReducedMotion } from './accessibility';
 import { knownCardCount } from './gamePresentation';
 import {
   AccountProvider,
@@ -72,6 +73,7 @@ import {
   type SoloSessionRecord
 } from './soloDurability';
 import type { GameState, MultiplayerRoom, RoomChatMessage } from './types';
+import { advanceSoloAiOpeningSeat, drainSoloAiOpening, soloAiOpeningSeatDelayMs } from './soloAiOpening';
 
 const singlePlayerAiCounts = Array.from(
   { length: singlePlayerAiOpponentRange.max - singlePlayerAiOpponentRange.min + 1 },
@@ -1025,6 +1027,8 @@ function GameSettingsButton({
   const [isOpen, setIsOpen] = useState(false);
   const [activePanel, setActivePanel] = useState<GameSettingsPanel>('audio');
   const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const hasAiSettings = typeof aiOpponentCount === 'number' && Boolean(aiOpponentSummary && onAiOpponentCountChange && onNewGame);
   const hasMoveLog = Boolean(state);
   const settingsPanels = useMemo(
@@ -1037,31 +1041,31 @@ function GameSettingsButton({
     [hasAiSettings, hasMoveLog]
   );
 
-  useEffect(() => {
-    if (!isOpen) return undefined;
-
-    const previousOverflow = document.body.style.overflow;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setIsOpen(false);
-      }
-    };
-
-    document.body.style.overflow = 'hidden';
-    window.addEventListener('keydown', handleKeyDown);
-    window.setTimeout(() => dialogRef.current?.focus({ preventScroll: true }), 0);
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [isOpen]);
+  useModalFocus({
+    open: isOpen,
+    dialogRef,
+    initialFocusRef: closeButtonRef,
+    triggerRef,
+    onDismiss: () => setIsOpen(false)
+  });
 
   useEffect(() => {
     if (!isOpen) return;
     if (!settingsPanels.some((panel) => panel.key === activePanel)) setActivePanel('audio');
   }, [activePanel, isOpen, settingsPanels]);
+
+  function handleSettingsTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex = index;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % settingsPanels.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + settingsPanels.length) % settingsPanels.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = settingsPanels.length - 1;
+    else return;
+    event.preventDefault();
+    const nextPanel = settingsPanels[nextIndex];
+    setActivePanel(nextPanel.key);
+    document.getElementById(`skyjo-settings-tab-${nextPanel.key}`)?.focus({ preventScroll: true });
+  }
 
   return (
     <>
@@ -1071,6 +1075,7 @@ function GameSettingsButton({
         aria-label="Open game settings"
         className="skyjo-button skyjo-icon-button"
         onClick={() => setIsOpen(true)}
+        ref={triggerRef}
         title="Game settings"
         type="button"
       >
@@ -1081,6 +1086,7 @@ function GameSettingsButton({
         ? createPortal(
             <div
               className="skyjo-settings-overlay fixed inset-0 flex items-end justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:items-center sm:px-5"
+              data-modal-overlay
               onMouseDown={(event) => {
                 if (event.target === event.currentTarget) setIsOpen(false);
               }}
@@ -1108,6 +1114,7 @@ function GameSettingsButton({
                     aria-label="Close game settings"
                     className="skyjo-button skyjo-icon-button shrink-0"
                     onClick={() => setIsOpen(false)}
+                    ref={closeButtonRef}
                     type="button"
                   >
                     <CloseIcon />
@@ -1115,8 +1122,8 @@ function GameSettingsButton({
                 </div>
 
                 <div className="skyjo-settings-body overflow-y-auto p-4 sm:p-5">
-                  <div className={`skyjo-settings-tabs skyjo-settings-tabs-${settingsPanels.length}`} role="tablist" aria-label="Settings sections">
-                    {settingsPanels.map((panel) => (
+                  <div aria-label="Settings sections" aria-orientation="horizontal" className={`skyjo-settings-tabs skyjo-settings-tabs-${settingsPanels.length}`} role="tablist">
+                    {settingsPanels.map((panel, index) => (
                       <button
                         aria-controls={`skyjo-settings-panel-${panel.key}`}
                         aria-selected={activePanel === panel.key}
@@ -1124,7 +1131,9 @@ function GameSettingsButton({
                         id={`skyjo-settings-tab-${panel.key}`}
                         key={panel.key}
                         onClick={() => setActivePanel(panel.key)}
+                        onKeyDown={(event) => handleSettingsTabKeyDown(event, index)}
                         role="tab"
+                        tabIndex={activePanel === panel.key ? 0 : -1}
                         type="button"
                       >
                         {panel.label}
@@ -1164,7 +1173,7 @@ function GameSettingsButton({
                           {singlePlayerAiCounts.map((count) => (
                             <button
                               aria-pressed={count === aiOpponentCount}
-                              className={`skyjo-button h-9 min-w-0 px-0 text-sm tabular-nums ${count === aiOpponentCount ? 'skyjo-button-primary' : ''}`}
+                              className={`skyjo-button min-w-0 px-0 text-sm tabular-nums ${count === aiOpponentCount ? 'skyjo-button-primary' : ''}`}
                               key={count}
                               onClick={() => onAiOpponentCountChange?.(count)}
                               type="button"
@@ -1330,9 +1339,13 @@ function RoomChat({
       {isOpen ? (
         <div className="skyjo-chat-body mt-3 grid gap-3">
           <div
+            aria-atomic="false"
+            aria-label="Table chat messages"
             aria-live="polite"
+            aria-relevant="additions"
             className="skyjo-chat-messages max-h-64 space-y-2 overflow-y-auto rounded-xl border border-[#f5e6c8]/10 bg-black/10 p-2"
             ref={messagesRef}
+            role="log"
           >
             {messages.length > 0 ? (
               messages.map((message) => {
@@ -1403,10 +1416,39 @@ interface RoundSummaryProps {
   actionDisabledReason?: string;
   onAction?: () => void;
   onMinimize?: () => void;
+  restoreFocusFallback?: () => HTMLElement | null;
   children?: ReactNode;
 }
 
-function RoundSummary({ state, actionLabel, actionDisabledReason, onAction, onMinimize, children }: RoundSummaryProps) {
+function RoundSummary({
+  state,
+  actionLabel,
+  actionDisabledReason,
+  onAction,
+  onMinimize,
+  restoreFocusFallback,
+  children
+}: RoundSummaryProps) {
+  const phoneLayout = usePhoneLayout();
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const titleRef = useRef<HTMLHeadingElement | null>(null);
+  useModalFocus({
+    open: true,
+    dialogRef,
+    initialFocusRef: titleRef,
+    onDismiss: onMinimize,
+    closeOnEscape: Boolean(onMinimize),
+    containFocus: phoneLayout,
+    inertBackground: phoneLayout,
+    lockScroll: phoneLayout,
+    restoreFocusFallback: () =>
+      document.querySelector<HTMLElement>('[data-testid="round-summary-restore"]') ??
+      restoreFocusFallback?.() ??
+      document.querySelector<HTMLElement>('[aria-label="Open game settings"]')
+  });
+  useEffect(() => {
+    if (!phoneLayout) titleRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [phoneLayout]);
   const rankedPlayers = [...state.players].sort((a, b) => a.totalScore - b.totalScore || a.roundScore - b.roundScore);
   const leader = rankedPlayers[0];
   const winner = state.winnerId ? state.players.find((player) => player.id === state.winnerId) : null;
@@ -1417,12 +1459,25 @@ function RoundSummary({ state, actionLabel, actionDisabledReason, onAction, onMi
       : `${leader.name} leads at ${leader.totalScore} total.`;
   const latestScoringNote = state.log[0];
 
-  return (
-    <section className="skyjo-panel skyjo-score-panel skyjo-round-summary-panel">
+  const summary = (
+    <section
+      aria-labelledby="skyjo-round-summary-title"
+      aria-modal={phoneLayout ? true : undefined}
+      className="skyjo-panel skyjo-score-panel skyjo-round-summary-panel"
+      ref={dialogRef}
+      role={phoneLayout ? 'dialog' : undefined}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="skyjo-kicker">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</div>
-          <h2 className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]">{headline}</h2>
+          <h2
+            className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]"
+            id="skyjo-round-summary-title"
+            ref={titleRef}
+            tabIndex={-1}
+          >
+            {headline}
+          </h2>
           <p className="mt-2 text-sm font-bold text-[#f5e6c8]/78">{outcome}</p>
           {latestScoringNote ? <p className="mt-1 text-xs leading-5 text-[#f5e6c8]/58">{latestScoringNote}</p> : null}
         </div>
@@ -1441,7 +1496,7 @@ function RoundSummary({ state, actionLabel, actionDisabledReason, onAction, onMi
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="skyjo-score-rank">#{index + 1}</span>
-                  <span className="truncate font-extrabold text-[#f5e6c8]">{player.name}</span>
+                  <span className="skyjo-score-player-name font-extrabold text-[#f5e6c8]">{player.name}</span>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-right tabular-nums">
@@ -1479,11 +1534,19 @@ function RoundSummary({ state, actionLabel, actionDisabledReason, onAction, onMi
       ) : null}
     </section>
   );
+  return phoneLayout
+    ? createPortal(
+        <div className="skyjo-round-summary-overlay" data-modal-overlay>
+          {summary}
+        </div>,
+        document.body
+      )
+    : summary;
 }
 
 function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameState; meta?: string; onRestore: () => void }) {
   return (
-    <button className="skyjo-round-summary-chip" onClick={onRestore} type="button">
+    <button className="skyjo-round-summary-chip" data-testid="round-summary-restore" onClick={onRestore} type="button">
       <span className="min-w-0">
         <span className="skyjo-kicker block">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</span>
         <span className="block truncate text-sm font-black text-[#f5e6c8]">{meta || 'Review scores'}</span>
@@ -1498,6 +1561,8 @@ function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameStat
 
 function SinglePlayer() {
   const { loading: accountLoading, localSoloOwnerId, user } = useAccount();
+  const navigate = useNavigate();
+  const prefersReducedMotion = usePrefersReducedMotion();
   const ownerKey = soloOwnerKey(user?.id ?? localSoloOwnerId);
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
@@ -1509,6 +1574,8 @@ function SinglePlayer() {
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
   const [statsSaveStatus, setStatsSaveStatus] = useState('');
   const completedQueueKeyRef = useRef('');
+  const resumeDialogRef = useRef<HTMLDivElement | null>(null);
+  const continueGameRef = useRef<HTMLButtonElement | null>(null);
   const statsCoordinatorRef = useRef<ReturnType<typeof createStatsOutboxCoordinator> | null>(null);
   if (!statsCoordinatorRef.current) {
     statsCoordinatorRef.current = createStatsOutboxCoordinator((record, signal) => {
@@ -1526,6 +1593,13 @@ function SinglePlayer() {
   const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
   const summaryModalOpen = isScoringPhase && roundSummaryOpen;
   const durabilityReady = !accountLoading && hydratedOwnerKey === ownerKey && !resumeSession;
+
+  useModalFocus({
+    open: Boolean(resumeSession),
+    dialogRef: resumeDialogRef,
+    initialFocusRef: continueGameRef,
+    onDismiss: () => navigate('/')
+  });
 
   useGameAudio(state);
 
@@ -1603,12 +1677,11 @@ function SinglePlayer() {
 
   useEffect(() => {
     if (!durabilityReady || activePlayer.kind !== 'ai' || state.phase === 'round-over' || state.phase === 'game-over') return;
+    const openingReveal = state.phase === 'opening-reveal';
     const timer = window.setTimeout(() => {
       setState((current) => {
         if (current.phase === 'opening-reveal') {
-          const aiPlayer = current.players[current.currentPlayerIndex];
-          const index = aiPlayer.grid.findIndex((card) => !card.faceUp && !card.removed);
-          return revealOpeningCard(current, index);
+          return prefersReducedMotion ? drainSoloAiOpening(current) : advanceSoloAiOpeningSeat(current);
         }
         const move = getBestAiMove(current);
         if (move.action === 'discard') return chooseDiscard(current);
@@ -1616,9 +1689,9 @@ function SinglePlayer() {
         if (move.action === 'replace') return replaceCard(current, move.index || 0);
         return discardDrawnAndReveal(current, move.index || 0);
       });
-    }, 650);
+    }, openingReveal ? (prefersReducedMotion ? 0 : soloAiOpeningSeatDelayMs) : 650);
     return () => window.clearTimeout(timer);
-  }, [activePlayer.kind, durabilityReady, state]);
+  }, [activePlayer.kind, durabilityReady, prefersReducedMotion, state]);
 
   useEffect(() => {
     setRoundSummaryOpen(isScoringPhase);
@@ -1735,20 +1808,32 @@ function SinglePlayer() {
 
   if (resumeSession) {
     return (
-      <main className="skyjo-surface px-4 py-8" data-testid="solo-resume-choice">
+      <main className="skyjo-surface px-4 py-8" data-modal-overlay data-testid="solo-resume-choice">
         <section className="skyjo-shell mx-auto flex min-h-[70vh] max-w-2xl items-center">
-          <div aria-labelledby="solo-resume-title" aria-modal="true" className="skyjo-panel w-full p-6" role="dialog">
+          <div
+            aria-describedby="solo-resume-description"
+            aria-labelledby="solo-resume-title"
+            aria-modal="true"
+            className="skyjo-panel skyjo-solo-resume-dialog w-full p-6"
+            ref={resumeDialogRef}
+            role="dialog"
+          >
             <p className="skyjo-kicker">Saved game found</p>
             <h1 className="skyjo-serif mt-2 text-3xl font-black text-[#f5e6c8]" id="solo-resume-title">
               Continue your solo game?
             </h1>
-            <p className="mt-3 leading-7 text-[#f5e6c8]/68">
+            <p className="mt-3 leading-7 text-[#f5e6c8]/68" id="solo-resume-description">
               Round {resumeSession.state.round} with {resumeSession.aiOpponentCount} AI opponent
               {resumeSession.aiOpponentCount === 1 ? '' : 's'}, saved {formatDate(resumeSession.updatedAt)}.
             </p>
             {persistenceWarning ? <p className="mt-3 text-sm font-bold text-[#f5e6c8]/70">{persistenceWarning.message}</p> : null}
             <div className="mt-5 flex flex-wrap gap-2">
-              <button className="skyjo-button skyjo-button-primary px-4 py-3" onClick={continueSavedGame} type="button">
+              <button
+                className="skyjo-button skyjo-button-primary px-4 py-3"
+                onClick={continueSavedGame}
+                ref={continueGameRef}
+                type="button"
+              >
                 Continue Game
               </button>
               <button className="skyjo-button px-4 py-3" onClick={discardSavedGame} type="button">
@@ -1837,6 +1922,7 @@ function SinglePlayer() {
               actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
               onMinimize={() => setRoundSummaryOpen(false)}
               onAction={() => (state.phase === 'game-over' ? startSelectedGame() : setState(startNextRound(state)))}
+              restoreFocusFallback={() => document.querySelector<HTMLElement>('[aria-label="Action guidance"]')}
               state={state}
             />
           ) : null}
@@ -2860,6 +2946,7 @@ function Lobby() {
                       actionLabel={roomState.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
                       onMinimize={() => setRoundSummaryOpen(false)}
                       onAction={localIsHost ? handleNextRound : undefined}
+                      restoreFocusFallback={() => document.querySelector<HTMLElement>('[aria-label="Action guidance"]')}
                       state={roomState}
                     >
                       <div className="skyjo-ready-panel mt-4">

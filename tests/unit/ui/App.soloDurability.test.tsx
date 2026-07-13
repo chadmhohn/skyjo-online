@@ -113,6 +113,19 @@ describe('solo durability integration', () => {
     await waitFor(async () => expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId));
   });
 
+  it('leaves a saved-game choice with Escape without deleting the session', async () => {
+    await saveSoloSession('guest', savedGameId, activeState(), 2);
+    const actor = userEvent.setup();
+    renderSolo();
+
+    const continueButton = await screen.findByRole('button', { name: 'Continue Game' });
+    await waitFor(() => expect(continueButton).toHaveFocus());
+    await actor.keyboard('{Escape}');
+
+    expect(await screen.findByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
+    expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId);
+  });
+
   it('discards a saved game only when New Game is chosen', async () => {
     await saveSoloSession('guest', savedGameId, activeState(), 2);
     const actor = userEvent.setup();

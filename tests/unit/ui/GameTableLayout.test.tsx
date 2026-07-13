@@ -1,7 +1,10 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { GameTableLayout, type DrawIntent } from '../../../src/GameTableLayout';
+import { revealOpeningCard } from '../../../src/game';
 import type { Card, GameState, Player } from '../../../src/types';
+import { setMediaQueryMatches } from '../../setup/dom';
 
 function card(playerId: string, index: number, faceUp = false): Card {
   return {
@@ -86,6 +89,20 @@ describe('GameTableLayout', () => {
     expect(opponentRail.querySelectorAll('[data-player-role="opponent"]')).toHaveLength(playerCount - 1);
     expect(localBoard.querySelectorAll('[data-player-role="local"]')).toHaveLength(1);
     expect(table.querySelectorAll('[data-player-id]')).toHaveLength(playerCount);
+    expect(opponentRail.querySelectorAll('[role="grid"]')).toHaveLength(playerCount - 1);
+    expect(localBoard.querySelectorAll('[role="grid"]')).toHaveLength(1);
+    expect(table.querySelectorAll('[role="row"]')).toHaveLength(playerCount * 3);
+    expect(table.querySelectorAll('[role="gridcell"]')).toHaveLength(playerCount * 12);
+    expect(opponentRail.querySelectorAll('button')).toHaveLength(0);
+    expect(localBoard.querySelectorAll('button')).toHaveLength(12);
+    expect(opponentRail.querySelector('[role="gridcell"]')).toHaveAccessibleName(/Opponent 1, row 1, column 1, SKYJO face-down/);
+    expect(opponentRail.querySelector('[role="gridcell"]')).not.toHaveAccessibleName(/minus 2/);
+    expect(
+      within(screen.getByRole('region', { name: 'Action guidance' })).getByRole('heading', {
+        level: 3,
+        name: 'Choose two face-down cards'
+      })
+    ).toBeInTheDocument();
   });
 
   it('routes local card and centered pile decisions through the supplied callbacks', async () => {
@@ -102,7 +119,7 @@ describe('GameTableLayout', () => {
       />
     );
 
-    await user.click(screen.getByRole('button', { name: 'Reveal opening card 1.' }));
+    await user.click(screen.getByRole('button', { name: /You, row 1, column 1, SKYJO face-down\. Reveal this opening card/ }));
     expect(actions.onCardClick).toHaveBeenCalledWith(0);
 
     const chooseSource = stateFor(2, {
@@ -153,6 +170,113 @@ describe('GameTableLayout', () => {
     expect(actions.onSetDrawIntent).toHaveBeenCalledWith('discard');
   });
 
+  it('keeps one actionable card in the tab order and moves it with grid arrow keys', async () => {
+    const user = userEvent.setup();
+    const actions = handlers();
+    render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(2)}
+      />
+    );
+
+    const cards = screen.getAllByRole('button', { name: /Reveal this opening card/ });
+    expect(cards[0]).toHaveAttribute('tabindex', '0');
+    expect(cards[1]).toHaveAttribute('tabindex', '-1');
+    cards[0].focus();
+    await user.keyboard('{ArrowRight}');
+    expect(cards[1]).toHaveFocus();
+    expect(cards[0]).toHaveAttribute('tabindex', '-1');
+    expect(cards[1]).toHaveAttribute('tabindex', '0');
+  });
+
+  it('recovers focus to the next opening card and then to stable action guidance', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(1);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+
+    function StatefulTable() {
+      const [state, setState] = useState(() => stateFor(2));
+      return (
+        <GameTableLayout
+          {...handlers()}
+          drawIntent="place"
+          localPlayerId="p1"
+          localTurn={state.currentPlayerIndex === 0}
+          onCardClick={(index) => setState((current) => revealOpeningCard(current, index))}
+          state={state}
+        />
+      );
+    }
+
+    render(<StatefulTable />);
+    const first = screen.getAllByRole('button', { name: /Reveal this opening card/ })[0];
+    await user.click(first);
+    const next = screen.getAllByRole('button', { name: /Reveal this opening card/ })[0];
+    await waitFor(() => expect(next).toHaveFocus());
+    await user.click(next);
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Action guidance' })).toHaveFocus());
+    expect(screen.queryAllByRole('button', { name: /Reveal this opening card/ })).toHaveLength(0);
+  });
+
+  it('uses one atomic turn announcer and deduplicates changing waiting players', async () => {
+    const actions = handlers();
+    const { rerender } = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn={false}
+        state={stateFor(3, { currentPlayerIndex: 1 })}
+      />
+    );
+    await waitFor(() => expect(screen.getByTestId('turn-announcer')).toHaveTextContent('Waiting for other players.'));
+    expect(screen.getAllByTestId('turn-announcer')).toHaveLength(1);
+    expect(screen.getByTestId('turn-announcer')).toHaveTextContent('Waiting for other players.');
+    expect(screen.getByTestId('shared-game-table').querySelectorAll('[aria-live]')).toHaveLength(1);
+
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn={false}
+        state={stateFor(3, { currentPlayerIndex: 2, log: ['Opponent changed'] })}
+      />
+    );
+    await waitFor(() => expect(screen.getByTestId('turn-announcer')).toHaveTextContent('Waiting for other players.'));
+  });
+
+  it('renders one complete phone guidance region outside the geometry anchor, including disabled reasons', () => {
+    act(() => setMediaQueryMatches('(max-width: 640px)', true));
+    const actions = handlers();
+    render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        interactionDisabledReason="Room recovery is still synchronizing."
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(2)}
+      />
+    );
+
+    const guidance = screen.getByRole('region', { name: 'Action guidance' });
+    expect(screen.getAllByRole('region', { name: 'Action guidance' })).toHaveLength(1);
+    expect(guidance).toHaveClass('skyjo-phone-action-guidance');
+    expect(guidance).toHaveTextContent('Choose two face-down cards');
+    expect(within(guidance).getByRole('heading', { level: 2, name: 'Choose two face-down cards' })).toBeInTheDocument();
+    expect(guidance).toHaveTextContent('Each player reveals exactly two cards');
+    expect(guidance).toHaveTextContent('Action unavailable: Room recovery is still synchronizing.');
+    expect(screen.getByTestId('shared-game-table')).not.toContainElement(guidance);
+  });
+
   it('auto-scrolls only the contained opponent rail when the active opponent changes', () => {
     const actions = handlers();
     const scrollTo = vi.fn();
@@ -182,5 +306,33 @@ describe('GameTableLayout', () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
     fireEvent.pointerDown(screen.getByTestId('opponent-rail'));
     expect(screen.getByTestId('opponent-rail')).toHaveAttribute('data-scroll-contained', 'true');
+  });
+
+  it('switches contained opponent scrolling to auto when reduced motion changes live', () => {
+    const actions = handlers();
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrollTo
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(1);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn={false}
+        state={stateFor(4, { currentPlayerIndex: 2 })}
+      />
+    );
+
+    expect(scrollTo).toHaveBeenCalledWith({ left: 0, behavior: 'smooth' });
+    scrollTo.mockClear();
+    act(() => setMediaQueryMatches('(prefers-reduced-motion: reduce)', true));
+    expect(scrollTo).toHaveBeenCalledWith({ left: 0, behavior: 'auto' });
   });
 });

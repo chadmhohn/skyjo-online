@@ -18,6 +18,7 @@ import {
   type PublicRoomSnapshot
 } from '../../../src/protocolV2';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from '../../../src/types';
+import { setMediaQueryMatches } from '../../setup/dom';
 
 type SocketEventName = 'open' | 'message' | 'error' | 'close';
 type SocketListener = (event: Event | MessageEvent<string>) => void;
@@ -700,6 +701,9 @@ describe('multiplayer lobby', () => {
     expect(await screen.findByText('Link copied')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Table Chat/ }));
+    const chatLog = screen.getByRole('log', { name: 'Table chat messages' });
+    expect(chatLog).toHaveAttribute('aria-atomic', 'false');
+    expect(chatLog).toHaveAttribute('aria-relevant', 'additions');
     const messageInput = screen.getByRole('textbox', { name: 'Message' });
     const sendButton = screen.getByRole('button', { name: 'Send' });
     expect(sendButton).toBeDisabled();
@@ -1226,7 +1230,8 @@ describe('multiplayer lobby', () => {
     expect(screen.getByText('ABCDE')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Put the discard card back.' })[0]).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Reset Room' })).toBeDisabled();
-    expect(screen.getAllByRole('button', { name: /Replace card 1 with the discard card/ })[0]).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /Replace with the discard card/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('gridcell', { name: /row 1, column 1, SKYJO face-down\. Not currently actionable/ })[0]).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Table Chat/ }));
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
@@ -1305,7 +1310,7 @@ describe('multiplayer game table', () => {
     const { socket, user } = await createJoinedRoom(makeRoom({ state: openingState, status: 'playing' }));
 
     expect(screen.getAllByText('Choose two face-down cards').length).toBeGreaterThan(0);
-    await user.click(screen.getAllByRole('button', { name: 'Reveal opening card 1.' })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 1, SKYJO face-down\. Reveal this opening card/ })[0]);
     const openingCommand = expectCommand(socket, { type: 'reveal-opening-card', cardIndex: 0 }, 0);
     const openingAfterReveal = makeState({
       players: [
@@ -1364,7 +1369,7 @@ describe('multiplayer game table', () => {
     expect(screen.getAllByText('Drawn card waiting').length).toBeGreaterThan(0);
     await user.click(screen.getAllByRole('button', { name: /Discard \+ reveal/ })[0]);
     expect(screen.getAllByText('Discard mode: select a highlighted hidden card.').length).toBeGreaterThan(0);
-    await user.click(screen.getAllByRole('button', { name: 'Reveal hidden card 3 after discarding the drawn card.' })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 3, SKYJO face-down\. Reveal after discarding the drawn card/ })[0]);
     const discardRevealCommand = expectCommand(socket, { type: 'discard-and-reveal', cardIndex: 2 }, 5);
     convergeCommand(
       socket,
@@ -1374,7 +1379,7 @@ describe('multiplayer game table', () => {
 
     receiveSnapshot(socket, makeRoom({ state: drawnState, status: 'playing', revision: 7 }));
     await user.click(screen.getAllByRole('button', { name: /Place drawn card/ })[0]);
-    await user.click(screen.getAllByRole('button', { name: 'Replace card 1 with the drawn card.' })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 1, .*Replace with the drawn card/ })[0]);
     expectCommand(socket, { type: 'replace-card', cardIndex: 0 }, 7);
 
     expect(socket.sent.some((frame) => (frame as { type?: string }).type === 'update-state')).toBe(false);
@@ -1481,6 +1486,7 @@ describe('multiplayer game table', () => {
   });
 
   it('renders one shared four-player table with opponent waits, final-lap states, and completed-round readiness controls', async () => {
+    setMediaQueryMatches('(max-width: 640px)', true);
     const fourPlayers = [
       makePlayer('p1', 'Alice'),
       makePlayer('p2', 'Bob'),
@@ -1550,7 +1556,8 @@ describe('multiplayer game table', () => {
     );
 
     await user.click(await screen.findByRole('button', { name: /Round scoring.*2\/4 ready.*Open/ }));
-    expect(screen.getByRole('heading', { name: 'Round complete.' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Round complete.' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Round complete.' })).toHaveFocus();
     expect(screen.getByText('Round two scored.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next Round' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: "I'm Ready" }));
@@ -1577,9 +1584,34 @@ describe('multiplayer game table', () => {
     expect(nextRound).toBeEnabled();
     await user.click(nextRound);
     const nextRoundCommand = expectCommand(socket, { type: 'start-game' }, 2);
+    const nextRoundOpening = makeState({
+      players: fourPlayers,
+      phase: 'opening-reveal',
+      round: 3,
+      currentPlayerIndex: 0,
+      openingRevealCounts: { p1: 0, p2: 0, p3: 0, p4: 0 }
+    });
     convergeCommand(
       socket,
       nextRoundCommand,
+      makeRoom({
+        state: nextRoundOpening,
+        status: 'playing',
+        readyForNextRoundPlayerIds: [],
+        players: [
+          { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true },
+          { id: 'p2', name: 'Bob', connected: true, host: false },
+          { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
+          { id: 'p4', name: 'Drew', connected: true, host: false }
+        ],
+        revision: 3
+      })
+    );
+    const guidance = screen.getByRole('region', { name: 'Action guidance' });
+    await waitFor(() => expect(guidance).toHaveFocus());
+
+    receiveSnapshot(
+      socket,
       makeRoom({
         state: roundOver,
         status: 'finished',
@@ -1590,11 +1622,14 @@ describe('multiplayer game table', () => {
           { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ],
-        revision: 3
+        revision: 4
       })
     );
+    await user.click(await screen.findByRole('button', { name: /Round scoring.*4\/4 ready.*Open/ }));
     await user.click(screen.getByRole('button', { name: 'Minimize' }));
-    expect(screen.getByRole('button', { name: /Round scoring.*4\/4 ready.*Open/ })).toBeInTheDocument();
+    const summaryRestore = screen.getByRole('button', { name: /Round scoring.*4\/4 ready.*Open/ });
+    expect(summaryRestore).toBeInTheDocument();
+    await waitFor(() => expect(summaryRestore).toHaveFocus());
 
     const gameOver = { ...roundOver, phase: 'game-over' as const, winnerId: 'p1' };
     receiveSnapshot(
@@ -1609,11 +1644,43 @@ describe('multiplayer game table', () => {
           { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ],
-        revision: 4
+        revision: 5
       })
     );
     await user.click(await screen.findByRole('button', { name: /Final totals.*0\/4 ready.*Open/ }));
     expect(screen.getByRole('heading', { name: 'Alice wins the game.' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Restart Game' })).toBeDisabled();
+  });
+
+  it('focuses and scrolls a desktop score disclosure, then restores its chip on Escape or minimize', async () => {
+    const players = [makePlayer('p1', 'Alice'), makePlayer('p2', 'Bob')];
+    const roundOver = makeState({
+      players,
+      phase: 'round-over',
+      round: 2,
+      currentPlayerIndex: 0,
+      openingRevealCounts: { p1: 2, p2: 2 },
+      log: ['Desktop round scored.']
+    });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const { user } = await createJoinedRoom(makeRoom({ state: roundOver, status: 'finished' }));
+
+    let restore = await screen.findByRole('button', { name: /Round scoring.*Open/ });
+    await user.click(restore);
+    let title = screen.getByRole('heading', { name: 'Round complete.' });
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    expect(screen.queryByRole('dialog', { name: 'Round complete.' })).not.toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    restore = await screen.findByRole('button', { name: /Round scoring.*Open/ });
+    await waitFor(() => expect(restore).toHaveFocus());
+
+    await user.click(restore);
+    title = screen.getByRole('heading', { name: 'Round complete.' });
+    await waitFor(() => expect(title).toHaveFocus());
+    await user.click(screen.getByRole('button', { name: 'Minimize' }));
+    restore = await screen.findByRole('button', { name: /Round scoring.*Open/ });
+    await waitFor(() => expect(restore).toHaveFocus());
   });
 });

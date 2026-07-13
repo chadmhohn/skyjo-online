@@ -15,7 +15,7 @@ export default defineConfig({
       provider: 'v8',
       reportsDirectory: './coverage/domain',
       reporter: ['text', 'json-summary', 'lcov'],
-      include: ['src/game.ts', 'src/runtime.ts', 'src/serverValidation.ts'],
+      include: ['src/game.ts', 'src/runtime.ts', 'src/serverValidation.ts', 'src/soloAiOpening.ts'],
       thresholds: {
         perFile: true,
         lines: 90,

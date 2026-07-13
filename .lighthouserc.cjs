@@ -2,10 +2,12 @@ module.exports = {
   ci: {
     collect: {
       staticDistDir: './dist',
+      isSinglePageApplication: true,
       numberOfRuns: 3,
-      url: ['http://localhost/'],
+      url: ['http://localhost/', 'http://localhost/single-player'],
       settings: {
         chromeFlags: '--headless --no-sandbox --disable-dev-shm-usage',
+        clearStorageTypes: ['all'],
         formFactor: 'mobile',
         screenEmulation: {
           mobile: true,
@@ -20,12 +22,12 @@ module.exports = {
     assert: {
       aggregationMethod: 'median-run',
       assertions: {
-        'categories:performance': ['warn', { minScore: 0.9 }],
+        'categories:performance': ['error', { minScore: 0.9 }],
         'categories:accessibility': ['error', { minScore: 0.95 }],
         'categories:best-practices': ['error', { minScore: 0.95 }],
-        'largest-contentful-paint': ['warn', { maxNumericValue: 2500 }],
-        'cumulative-layout-shift': ['warn', { maxNumericValue: 0.1 }],
-        'total-blocking-time': ['warn', { maxNumericValue: 200 }]
+        'largest-contentful-paint': ['error', { maxNumericValue: 2500 }],
+        'cumulative-layout-shift': ['error', { maxNumericValue: 0.1 }],
+        'total-blocking-time': ['error', { maxNumericValue: 200 }]
       }
     },
     upload: {

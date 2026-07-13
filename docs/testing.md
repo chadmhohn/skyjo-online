@@ -11,7 +11,7 @@ Skyjo's deterministic gates run on Node 24 from the locked dependency graph.
 - `npm run test:a11y` rejects serious or critical Axe violations in Chromium and phone WebKit.
 - `npm run test:visual` compares the four responsive table baselines on Linux.
 - `npm run check:bundle` enforces 90 KiB JavaScript, 17 KiB CSS, and 115 KiB total initial gzip budgets.
-- `npm run test:lighthouse` runs the built homepage three times and evaluates the median Lighthouse result.
+- `npm run test:lighthouse` runs the built home and solo routes three times each and evaluates each median Lighthouse result.
 
 Run `npm exec -- playwright install chromium webkit` once before local browser tests. CI installs the exact browser revisions from the locked `@playwright/test` package without a floating action or browser cache.
 
@@ -29,4 +29,4 @@ Canonical screenshots use Chromium on `ubuntu-24.04` at `390x844`, `820x1180`, `
 
 WebKit projects provide engine and responsive-layout coverage; they do not represent PWA installation, push/audio resume, safe areas, or VoiceOver on a physical iPhone. Those remain part of the final device session.
 
-Lighthouse records the final 90/95/95 and Core Web Vitals targets as warnings until the dedicated interaction-performance issue completes. Accessibility and best-practices category floors, Axe, and bundle budgets already fail CI. The performance issue must promote the Lighthouse performance, LCP, CLS, and TBT assertions from `warn` to `error` before `v0.2.0` certification.
+Lighthouse runs three cold, storage-isolated mobile audits of both the home and solo routes. Performance must score at least 90, accessibility and best practices at least 95, LCP at most 2.5 seconds, CLS at most 0.1, and TBT at most 200 milliseconds. Every threshold fails CI rather than warning.

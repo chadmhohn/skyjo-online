@@ -321,8 +321,8 @@ describe('application routes and solo controls', () => {
     const actor = userEvent.setup();
     renderRoute('/single-player');
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /Reveal opening card/ }).length).toBeGreaterThan(0);
-    await actor.click(screen.getAllByRole('button', { name: /Reveal opening card 1/ })[0]);
+    expect(screen.getAllByRole('button', { name: /Reveal this opening card/ }).length).toBeGreaterThan(0);
+    await actor.click(screen.getAllByRole('button', { name: /row 1, column 1, SKYJO face-down\. Reveal this opening card/ })[0]);
     expect(mocks.playAudioCue).toHaveBeenCalledWith('flip');
 
     await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
@@ -418,14 +418,28 @@ describe('application routes and solo controls', () => {
   it('closes settings with Escape and backdrop interaction', async () => {
     const actor = userEvent.setup();
     renderRoute('/single-player');
-    await actor.click(await screen.findByRole('button', { name: 'Open game settings' }));
+    const trigger = await screen.findByRole('button', { name: 'Open game settings' });
+    await actor.click(trigger);
+    expect(screen.getByRole('button', { name: 'Close game settings' })).toHaveFocus();
+    expect(trigger.closest('[inert]')).not.toBeNull();
+    const audioTab = screen.getByRole('tab', { name: 'Audio' });
+    audioTab.focus();
+    await actor.keyboard('{ArrowRight}');
+    expect(screen.getByRole('tab', { name: 'Game' })).toHaveFocus();
+    expect(screen.getByRole('tab', { name: 'Game' })).toHaveAttribute('aria-selected', 'true');
+    await actor.keyboard('{End}');
+    expect(screen.getByRole('tab', { name: 'Log' })).toHaveFocus();
+    expect(screen.getAllByRole('tab').filter((tab) => tab.tabIndex === 0)).toHaveLength(1);
     await actor.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(trigger.closest('[inert]')).toBeNull();
 
-    await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
+    await actor.click(trigger);
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
     const overlay = dialog.parentElement!;
     await actor.pointer({ keys: '[MouseLeft]', target: overlay });
     expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });
