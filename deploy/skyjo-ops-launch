@@ -3,9 +3,109 @@ set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
+safe_readiness_directory() (
+  safe_directory=$1
+  trusted_uid=$2
+  trusted_gid=$3
+  [ -d "$safe_directory" ] && [ ! -L "$safe_directory" ] || exit 1
+  [ "$(/usr/bin/stat -c %u:%g "$safe_directory")" = "$trusted_uid:$trusted_gid" ] || exit 1
+  safe_permissions=$(/usr/bin/stat -c %A "$safe_directory")
+  case "$safe_permissions" in ?????w*|????????w*) exit 1 ;; esac
+)
+
+safe_readiness_file() (
+  safe_file=$1
+  trusted_uid=$2
+  trusted_gid=$3
+  [ -f "$safe_file" ] && [ ! -L "$safe_file" ] || exit 1
+  [ "$(/usr/bin/stat -c %u:%g:%h "$safe_file")" = "$trusted_uid:$trusted_gid:1" ] || exit 1
+  safe_permissions=$(/usr/bin/stat -c %A "$safe_file")
+  case "$safe_permissions" in ?????w*|????????w*) exit 1 ;; esac
+)
+
+resolve_readiness_release() (
+  current_link=$1
+  release_root=$2
+  trusted_uid=$3
+  trusted_gid=$4
+  safe_readiness_directory "$release_root" "$trusted_uid" "$trusted_gid" || exit 1
+  [ -L "$current_link" ] || exit 1
+  [ "$(/usr/bin/stat -c %u:%g:%h "$current_link")" = "$trusted_uid:$trusted_gid:1" ] || exit 1
+  release_target=$(/usr/bin/readlink "$current_link") || exit 1
+  case "$release_target" in "$release_root"/*) ;; *) exit 1 ;; esac
+  [ "$(/usr/bin/dirname "$release_target")" = "$release_root" ] || exit 1
+  release_sha=${release_target##*/}
+  printf '%s' "$release_sha" | /usr/bin/grep -Eq '^[a-f0-9]{40}$' || exit 1
+  canonical_release=$(/usr/bin/readlink -f "$current_link") || exit 1
+  [ "$canonical_release" = "$release_target" ] || exit 1
+  safe_readiness_directory "$canonical_release" "$trusted_uid" "$trusted_gid" || exit 1
+  printf '%s\n' "$canonical_release"
+)
+
+readiness_current_matches() (
+  current_link=$1
+  expected_identity=$2
+  expected_release=$3
+  [ -L "$current_link" ] || exit 1
+  [ "$(/usr/bin/stat -c %d:%i:%u:%g:%h "$current_link")" = "$expected_identity" ] || exit 1
+  [ "$(/usr/bin/readlink "$current_link")" = "$expected_release" ] || exit 1
+  [ "$(/usr/bin/readlink -f "$current_link")" = "$expected_release" ] || exit 1
+)
+
+run_readiness() {
+  [ "$#" -eq 9 ] || exit 64
+  expected_uid=$1
+  expected_gid=$2
+  expected_groups=$3
+  trusted_uid=$4
+  trusted_gid=$5
+  node=$6
+  current=$7
+  release_root=$8
+  output=$9
+
+  [ "$(/usr/bin/id -u)" = "$expected_uid" ] && [ "$(/usr/bin/id -g)" = "$expected_gid" ] && \
+    [ "$(/usr/bin/id -Gn)" = "$expected_groups" ] || exit 77
+  current_identity=$(/usr/bin/stat -c %d:%i:%u:%g:%h "$current") || exit 65
+  release=$(resolve_readiness_release "$current" "$release_root" "$trusted_uid" "$trusted_gid") || exit 65
+  scripts="$release/scripts"
+  script="$scripts/monitor-readiness.mjs"
+  library="$scripts/readiness-monitor-lib.mjs"
+  safe_readiness_directory "$scripts" "$trusted_uid" "$trusted_gid" || exit 66
+  safe_readiness_file "$node" "$trusted_uid" "$trusted_gid" || exit 66
+  [ -x "$node" ] || exit 66
+  safe_readiness_file "$script" "$trusted_uid" "$trusted_gid" || exit 66
+  safe_readiness_file "$library" "$trusted_uid" "$trusted_gid" || exit 66
+  readiness_current_matches "$current" "$current_identity" "$release" || exit 65
+
+  unset NODE_OPTIONS NODE_PATH
+  exec "$node" "$script" \
+    --monitor local \
+    --base-url http://127.0.0.1:4180 \
+    --attempts 1 \
+    --timeout-ms 10000 \
+    --output "$output" \
+    --fail-unhealthy
+}
+
 action=${1:-}
 [ "$#" -eq 1 ] || exit 64
-case "$action" in daily|monthly) ;; *) exit 64 ;; esac
+case "$action" in
+readiness)
+  monitor_uid=$(/usr/bin/id -u skyjo-monitor) || exit 77
+  monitor_gid=$(/usr/bin/id -g skyjo-monitor) || exit 77
+  [ "$(/usr/bin/id -Gn skyjo-monitor)" = skyjo-monitor ] || exit 77
+  run_readiness \
+    "$monitor_uid" "$monitor_gid" skyjo-monitor \
+    0 0 \
+    /opt/skyjo-online/node/bin/node \
+    /srv/skyjo-online/current \
+    /srv/skyjo-online/releases \
+    /var/lib/skyjo-monitor/local-readiness.json
+  ;;
+daily|monthly) ;;
+*) exit 64 ;;
+esac
 [ "$(/usr/bin/id -u)" -eq 0 ] || exit 77
 
 # This exact inode is shared with release promotion and recreated at boot by tmpfiles.
