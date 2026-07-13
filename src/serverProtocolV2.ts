@@ -10,14 +10,16 @@ import {
 import {
   canTakeOverWithAi,
   connectedWaitingPlayerIds,
+  DEFAULT_ROOM_LIFECYCLE_POLICY,
   hostFlags,
   oldestConnectedHuman,
   removePlayerReferences,
   shouldAutoReady,
-  shouldRunAiAction
+  shouldRunAiAction,
+  type RoomLifecyclePolicy
 } from './serverRoomLifecycle.js';
 import type { RandomSource } from './runtime.js';
-import { detachRealtimeSocket, type RealtimeClientMessage, type RealtimeSocket } from './serverRealtime';
+import { detachRealtimeSocket, type RealtimeClientMessage, type RealtimeSocket } from './serverRealtime.js';
 import type { GameState, RoomChatMessage, RoomPlayer } from './types';
 
 export interface ProtocolV2AccountUser {
@@ -120,6 +122,7 @@ export interface ProtocolV2HandlerOptions {
   }) => ProtocolV2Room;
   digestAction: (canonicalAction: string) => string;
   makeRoomCodeForSocket: (socket: ProtocolV2Socket) => string | null;
+  lifecyclePolicy?: RoomLifecyclePolicy;
   normalizedReadyIds: (room: ProtocolV2Room) => string[];
   notifyAwayPlayersAfterMove: (room: ProtocolV2Room, player: RoomPlayer, state: GameState) => unknown;
   now: () => number;
@@ -224,6 +227,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     createWaitingRoom,
     digestAction,
     makeRoomCodeForSocket,
+    lifecyclePolicy = DEFAULT_ROOM_LIFECYCLE_POLICY,
     normalizedReadyIds,
     notifyAwayPlayersAfterMove,
     now,
@@ -722,7 +726,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       }
       const targetPlayerId = command.action.playerId;
       const target = room.players.find((candidate) => candidate.id === targetPlayerId);
-      if (!target || !canTakeOverWithAi(room, target, timestamp)) {
+      if (!target || !canTakeOverWithAi(room, target, timestamp, lifecyclePolicy)) {
         commandError(sendJson, ws, 'That seat is not eligible for AI takeover yet.', command.commandId, 'takeover-unavailable');
         return;
       }
@@ -882,7 +886,9 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     };
 
     if (shouldAutoReady(room, player)) {
-      setPlayerReadyForNextRound(room, player.id, true);
+      for (const aiPlayer of room.players.filter((candidate) => candidate.controller === 'ai')) {
+        setPlayerReadyForNextRound(room, aiPlayer.id, true);
+      }
       room.revision = receipt.revision;
       room.updatedAt = timestamp;
       commitReceipt(room, receipt, timestamp);

@@ -334,7 +334,8 @@ describe('room persistence', () => {
         state: terminalState,
         roomCode: active.code,
         playerAccounts: {},
-        sourceKey: 'multi:crash-session'
+        sourceKey: 'multi:crash-session',
+        finishedByAi: true
       });
       expect(store.db.prepare('SELECT COUNT(*) AS count FROM games').get().count).toBe(1);
 
@@ -351,6 +352,7 @@ describe('room persistence', () => {
       expect(reconciled).toBe(1);
       expect(restored).toMatchObject({
         completedGameId: game.id,
+        finishedByAi: true,
         gameSessionId: 'crash-session',
         readyForNextRoundPlayerIds: [],
         revision: 13,
@@ -368,6 +370,7 @@ describe('room persistence', () => {
       const afterRestart = await loadRoomsSnapshotFromDisk(roomsFile, { now: fixedNow + 101 });
       expect(afterRestart.rooms[0]).toMatchObject({
         completedGameId: game.id,
+        finishedByAi: true,
         revision: 13,
         status: 'finished'
       });

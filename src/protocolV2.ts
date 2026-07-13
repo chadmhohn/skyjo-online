@@ -9,7 +9,9 @@ import {
 } from './game.js';
 import {
   aiTakeoverDeadline,
-  hostTransferDeadline
+  DEFAULT_ROOM_LIFECYCLE_POLICY,
+  hostTransferDeadline,
+  type RoomLifecyclePolicy
 } from './serverRoomLifecycle.js';
 import type { RandomSource } from './runtime.js';
 import type {
@@ -436,7 +438,8 @@ interface SnapshotRoomSource extends Omit<
 export function createRoomSnapshot(
   room: SnapshotRoomSource,
   viewerPlayerId: string,
-  serverNow = room.updatedAt
+  serverNow = room.updatedAt,
+  lifecyclePolicy: RoomLifecyclePolicy = DEFAULT_ROOM_LIFECYCLE_POLICY
 ): PublicRoomSnapshot {
   return {
     code: room.code,
@@ -452,7 +455,7 @@ export function createRoomSnapshot(
       disconnectedAt: player.connected || !Number.isFinite(player.disconnectedAt)
         ? null
         : Number(player.disconnectedAt),
-      aiTakeoverAt: aiTakeoverDeadline(room, player)
+      aiTakeoverAt: aiTakeoverDeadline(room, player, lifecyclePolicy)
     })),
     chatMessages: room.chatMessages.slice(-PUBLIC_SNAPSHOT_LIMITS.chatMessages).map((message) => ({
       id: message.id,
@@ -467,7 +470,7 @@ export function createRoomSnapshot(
     updatedAt: room.updatedAt,
     completedGameId: room.completedGameId,
     finishedByAi: room.finishedByAi === true,
-    hostTransferAt: hostTransferDeadline(room),
+    hostTransferAt: hostTransferDeadline(room, lifecyclePolicy),
     revision: room.revision,
     serverNow
   };

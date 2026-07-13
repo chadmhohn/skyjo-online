@@ -3,12 +3,14 @@ import {
   aiTakeoverDeadline,
   canTakeOverWithAi,
   connectedWaitingPlayerIds,
+  createRoomLifecycleScheduler,
   dueHostTransfer,
   hostFlags,
   hostTransferDeadline,
   oldestConnectedHuman,
   playerDisconnectedAt,
   presenceFields,
+  reclaimAiSeat,
   removePlayerReferences,
   shouldAutoReady,
   shouldRunAiAction,
@@ -113,5 +115,86 @@ describe('server room lifecycle', () => {
     expect(shouldAutoReady(value, aiSeat)).toBe(true);
     value.readyForNextRoundPlayerIds.push(aiSeat.id);
     expect(shouldAutoReady(value, aiSeat)).toBe(false);
+    const reclaimed = reclaimAiSeat(value, aiSeat.id);
+    expect(reclaimed?.players.find((candidate) => candidate.id === aiSeat.id)).toMatchObject({ controller: 'human' });
+    expect(reclaimed?.readyForNextRoundPlayerIds).toEqual(['guest']);
+    expect(reclaimAiSeat(value, 'guest')).toBeNull();
+  });
+
+  it('runs host transfers and revision-fenced AI work from an injectable clock', () => {
+    let now = 1_000;
+    const value = { ...room('playing'), code: 'ROOM1', revision: 4 };
+    value.players[0] = player('host', { connected: false, disconnectedAt: now });
+    const transfers: unknown[] = [];
+    const aiActions: unknown[] = [];
+    let intervalCallback: (() => void) | null = null;
+    const interval = { unref: vi.fn() };
+    const cancelInterval = vi.fn();
+    const scheduler = createRoomLifecycleScheduler({
+      aiActionDelayMs: 650,
+      cancelInterval,
+      executeAiAction: (fence) => {
+        aiActions.push(fence);
+        return true;
+      },
+      now: () => now,
+      randomUuid: () => '10000000-0000-4000-8000-000000000099',
+      rooms: () => [value],
+      scheduleInterval: (callback, delay) => {
+        expect(delay).toBe(250);
+        intervalCallback = callback;
+        return interval;
+      },
+      transferHost: (fence) => {
+        transfers.push(fence);
+        value.hostId = fence.toPlayerId;
+        value.players = hostFlags(value.players, fence.toPlayerId);
+        value.revision += 1;
+        return true;
+      }
+    });
+    expect(interval.unref).toHaveBeenCalledOnce();
+    now += ACTIVE_PLAYER_GRACE_MS - 1;
+    scheduler.runNow();
+    expect(transfers).toEqual([]);
+    now += 1;
+    expect(intervalCallback).not.toBeNull();
+    (intervalCallback as unknown as () => void)();
+    expect(transfers).toEqual([expect.objectContaining({
+      expectedRevision: 4,
+      fromPlayerId: 'host',
+      roomCode: 'ROOM1',
+      toPlayerId: 'guest'
+    })]);
+
+    const aiSeat = value.players.find((candidate) => candidate.id === 'host')!;
+    aiSeat.controller = 'ai';
+    scheduler.runNow();
+    now += 649;
+    scheduler.runNow();
+    expect(aiActions).toEqual([]);
+    now += 1;
+    scheduler.runNow();
+    expect(aiActions).toEqual([expect.objectContaining({
+      controller: 'ai',
+      expectedRevision: 5,
+      playerId: 'host',
+      roomCode: 'ROOM1'
+    })]);
+    scheduler.dispose();
+    scheduler.dispose();
+    expect(cancelInterval).toHaveBeenCalledOnce();
+  });
+
+  it('rejects invalid scheduler timing configuration', () => {
+    const base = {
+      executeAiAction: () => false,
+      now: () => 0,
+      randomUuid: () => 'id',
+      rooms: () => [],
+      transferHost: () => false
+    };
+    expect(() => createRoomLifecycleScheduler({ ...base, aiActionDelayMs: -1 })).toThrow(/aiActionDelayMs/i);
+    expect(() => createRoomLifecycleScheduler({ ...base, tickIntervalMs: 0 })).toThrow(/tickIntervalMs/i);
   });
 });

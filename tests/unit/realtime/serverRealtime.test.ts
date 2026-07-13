@@ -144,6 +144,7 @@ function createHarness() {
   const sendCurrentRoom = vi.fn();
   const now = vi.fn(() => 1_234);
   const onProtocolV1Message = vi.fn<(socket: RealtimeSocket, message: RealtimeClientMessage) => void>();
+  const onPlayerVisible = vi.fn(() => false);
   let heartbeatCallback: (() => void) | null = null;
   const heartbeatHandle = { unref: vi.fn() };
   const scheduleInterval = vi.fn((callback: () => void) => {
@@ -164,6 +165,7 @@ function createHarness() {
     now,
     isShuttingDown: () => shuttingDown,
     onProtocolMessage: onProtocolV1Message,
+    onPlayerVisible,
     scheduleInterval,
     cancelInterval
   });
@@ -179,6 +181,7 @@ function createHarness() {
     sendCurrentRoom,
     now,
     onProtocolV1Message,
+    onPlayerVisible,
     scheduleInterval,
     cancelInterval,
     heartbeatHandle,
@@ -285,7 +288,7 @@ describe('serverRealtime transport seam', () => {
 
     expect(request.accountUser).toEqual({ id: 'account-1' });
     expect(socket.accountUser).toBe(request.accountUser);
-    expect(socket.visible).toBe(true);
+    expect(socket.visible).toBe(false);
     expect(harness.webSocketServer.upgrades).toEqual([{ request, socket: networkSocket, head: 'head' }]);
 
     socket.emit('message', '{"type":"join-room","code":"ABCDE"}');
@@ -383,7 +386,7 @@ describe('serverRealtime transport seam', () => {
     expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
       { type: 'error', protocolVersion: 2, code: 'invalid-presence', message: 'Invalid presence.' }
     ]);
-    expect(socket.visible).toBe(true);
+    expect(socket.visible).toBe(false);
     expect(context.player.connected).toBe(true);
     expect(context.room.updatedAt).toBe(0);
     expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
@@ -404,6 +407,25 @@ describe('serverRealtime transport seam', () => {
     expect(harness.persistRoomsSoon).toHaveBeenCalledOnce();
     expect(harness.broadcastRoom).toHaveBeenCalledWith(context.room);
     expect(harness.sendCurrentRoom).not.toHaveBeenCalled();
+  });
+
+  it('runs visible-only lifecycle reclaim and publishes its revision-neutral presence envelope once', () => {
+    const harness = createHarness();
+    harness.onPlayerVisible.mockReturnValue(true);
+    const { socket } = harness.connect();
+    const context = roomContext(socket);
+    harness.contexts.set(socket, context);
+
+    socket.emit('message', '{"type":"set-presence","visible":true}');
+
+    expect(harness.onPlayerVisible).toHaveBeenCalledWith(context.room, context.player, 1_234);
+    expect(harness.persistRoomsSoon).toHaveBeenCalledOnce();
+    expect(harness.broadcastRoom).toHaveBeenCalledWith(context.room);
+    expect(harness.sendCurrentRoom).not.toHaveBeenCalled();
+
+    harness.onPlayerVisible.mockClear();
+    socket.emit('message', '{"type":"set-presence","visible":false}');
+    expect(harness.onPlayerVisible).not.toHaveBeenCalled();
   });
 
   it('keeps a seat connected when a sibling socket remains and disconnects the final socket', () => {

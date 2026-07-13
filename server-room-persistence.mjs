@@ -633,7 +633,9 @@ export function reconcileCompletedRoomJournals(rooms, findJournalBySourceKey) {
     plan.room.status = 'finished';
     plan.room.completedGameId = plan.gameId;
     plan.room.finishedByAi = plan.finishedByAi;
-    plan.room.readyForNextRoundPlayerIds = [];
+    plan.room.readyForNextRoundPlayerIds = plan.room.players
+      .filter((player) => player.controller === 'ai')
+      .map((player) => player.id);
     plan.room.updatedAt = Math.max(plan.room.updatedAt, plan.completedAt);
   }
   return recoveryPlans.length;

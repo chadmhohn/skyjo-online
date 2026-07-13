@@ -80,6 +80,7 @@ export interface RealtimeServerOptions {
   now: () => number;
   isShuttingDown: () => boolean;
   onProtocolMessage: (socket: RealtimeSocket, message: RealtimeClientMessage) => void;
+  onPlayerVisible?: (room: RealtimeRoom, player: RealtimePlayer, timestamp: number) => boolean;
   heartbeatIntervalMs?: number;
   scheduleInterval?: (callback: () => void, intervalMs: number) => unknown;
   cancelInterval?: (handle: unknown) => void;
@@ -201,6 +202,7 @@ export function registerRealtimeServer({
   now,
   isShuttingDown,
   onProtocolMessage,
+  onPlayerVisible = () => false,
   heartbeatIntervalMs = REALTIME_HEARTBEAT_INTERVAL_MS,
   scheduleInterval = (callback, intervalMs) => setInterval(callback, intervalMs),
   cancelInterval = (handle) => clearInterval(handle as ReturnType<typeof setInterval>)
@@ -229,7 +231,9 @@ export function registerRealtimeServer({
 
   webSocketServer.on('connection', (socket, request) => {
     socket.accountUser = request.accountUser;
-    socket.visible = true;
+    // Presence is established explicitly after the first authoritative snapshot.
+    // This prevents a hidden reconnect from resetting grace timers or reclaiming AI.
+    socket.visible = false;
     socket.heartbeatAwaitingPong = false;
     liveSockets.add(socket);
 
@@ -261,9 +265,13 @@ export function registerRealtimeServer({
         }
         const wasConnected = context.player.connected;
         socket.visible = message.visible !== false;
-        syncPlayerPresence(context.room, context.player, now());
-        if (context.player.connected !== wasConnected) {
-          context.room.updatedAt = now();
+        const timestamp = now();
+        syncPlayerPresence(context.room, context.player, timestamp);
+        const lifecycleChanged = message.visible === true && context.player.connected
+          ? onPlayerVisible(context.room, context.player, timestamp)
+          : false;
+        if (context.player.connected !== wasConnected || lifecycleChanged) {
+          context.room.updatedAt = timestamp;
           persistRoomsSoon();
           broadcastRoom(context.room);
         } else {

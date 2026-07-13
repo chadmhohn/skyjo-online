@@ -27,6 +27,7 @@ import {
   type ProtocolV2Socket
 } from '../../../src/serverProtocolV2';
 import { sendRealtimeJson, type RealtimeClientMessage } from '../../../src/serverRealtime';
+import { ACTIVE_PLAYER_GRACE_MS } from '../../../src/serverRoomLifecycle';
 import type { RoomPlayer } from '../../../src/types';
 
 const HOST_ID = '00000000-0000-4000-8000-000000000001';
@@ -734,6 +735,46 @@ describe('protocol v2 resilient seat lifecycle commands', () => {
     empty.handler(fresh.socket, { type: 'create-room', protocolVersion: 2, name: 'Host' });
     expect(empty.calls.json.at(-1)?.payload).toMatchObject({ code: 'already-in-room' });
   });
+
+  it('takes over only after grace and commits a complete AI turn in one fenced revision', () => {
+    const players = [player(HOST_ID, 'Host', true), player(GUEST_ID, 'Guest')];
+    const state = createMultiplayerGame(players, 1, null, () => 0.5);
+    state.phase = 'choose-source';
+    state.currentPlayerIndex = 1;
+    state.openingRevealCounts = { [HOST_ID]: 2, [GUEST_ID]: 2 };
+    const target = room({ state, status: 'playing', players });
+    target.players[1].connected = false;
+    target.players[1].disconnectedAt = 1_000;
+    const value = harness(target);
+    let timestamp = 1_000 + ACTIVE_PLAYER_GRACE_MS - 1;
+    value.options.now = () => timestamp;
+    const handler = createProtocolV2MessageHandler(value.options);
+
+    handler(value.socket, command({ type: 'takeover-player-with-ai', playerId: GUEST_ID }));
+    expect(lastPayload(value)).toMatchObject({ code: 'takeover-unavailable' });
+    expect(target.revision).toBe(0);
+
+    timestamp += 1;
+    handler(value.socket, command({ type: 'takeover-player-with-ai', playerId: GUEST_ID }));
+    expect(target.players[1]).toMatchObject({ id: GUEST_ID, controller: 'ai', connected: false });
+    expect(target.revision).toBe(1);
+    expect(handler.executeAutomatedAction({
+      commandId: OTHER_COMMAND_ID,
+      expectedRevision: 1,
+      playerId: GUEST_ID,
+      roomCode: target.code
+    })).toBe(true);
+    expect(target.revision).toBe(2);
+    expect(target.state).toMatchObject({ selectedSource: null, drawnCard: null });
+    expect(target.state?.players.find((candidate) => candidate.id === GUEST_ID)?.kind).toBe('human');
+    expect(value.calls.broadcasts).toEqual([target, target]);
+    expect(handler.executeAutomatedAction({
+      commandId: commandIdAt(99),
+      expectedRevision: 1,
+      playerId: GUEST_ID,
+      roomCode: target.code
+    })).toBe(false);
+  });
 });
 
 describe('protocol v2 command ordering and receipts', () => {
@@ -1008,6 +1049,28 @@ describe('protocol v2 completed-game atomicity', () => {
     expect(value.calls.broadcasts).toHaveLength(1);
     expect(value.calls.notified).toBe(1);
     expect(finalSnapshots).toHaveLength(playerCount);
+  });
+
+  it('attributes terminal history to AI only while an AI controller still owns a seat', () => {
+    const aiOwned = harness(completionRoom(2));
+    aiOwned.room.players[1].controller = 'ai';
+    createProtocolV2MessageHandler(aiOwned.options)(
+      aiOwned.socket,
+      command({ type: 'replace-card', cardIndex: 0 }, 7, COMMAND_ID)
+    );
+    expect(aiOwned.calls.completed[0]?.finishedByAi).toBe(true);
+    expect(aiOwned.room.finishedByAi).toBe(true);
+    expect(aiOwned.room.readyForNextRoundPlayerIds).toEqual([GUEST_ID]);
+    expect(aiOwned.room.state?.players.every((candidate) => candidate.kind === 'human')).toBe(true);
+
+    const reclaimed = harness(completionRoom(2));
+    reclaimed.room.players[1].controller = 'human';
+    createProtocolV2MessageHandler(reclaimed.options)(
+      reclaimed.socket,
+      command({ type: 'replace-card', cardIndex: 0 }, 7, OTHER_COMMAND_ID)
+    );
+    expect(reclaimed.calls.completed[0]?.finishedByAi).toBe(false);
+    expect(reclaimed.room.finishedByAi).toBe(false);
   });
 
   it('uses the trusted semantic match flag when journal object keys are reordered', () => {
