@@ -1005,9 +1005,13 @@ describe('room connection controller', () => {
     expect(socket.sent.filter((frame) => frame.type === 'set-presence')).toEqual([
       { type: 'set-presence', visible: false }
     ]);
-    harness.setNow(1_300);
+    harness.setNow(1_100);
     harness.controller.setVisible(true);
     expect(socket.sent.at(-1)).toEqual({ type: 'set-presence', visible: true });
+    expect(socket.sent.filter((frame) => frame.type === 'set-presence')).toEqual([
+      { type: 'set-presence', visible: false },
+      { type: 'set-presence', visible: true }
+    ]);
   });
 
   it('retains hidden intent across a disconnect and reapplies it after the reconnect snapshot', () => {

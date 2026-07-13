@@ -501,6 +501,7 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
   let disposed = false;
   let desiredVisible = true;
   let generation = 0;
+  let lastPresenceVisible: boolean | null = null;
   let presenceSentGeneration = -1;
   let lastResumeAt = Number.NEGATIVE_INFINITY;
   let online = dependencies.isOnline();
@@ -859,7 +860,8 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
         if (presenceSentGeneration !== socketGeneration) {
           if (send({ type: 'set-presence', visible: desiredVisible })) {
             presenceSentGeneration = socketGeneration;
-            lastResumeAt = dependencies.clock();
+            lastPresenceVisible = desiredVisible;
+            if (desiredVisible) lastResumeAt = dependencies.clock();
           }
         }
         replayPendingCommand(socket, socketGeneration);
@@ -976,9 +978,16 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
     const socket = currentSocket;
     if (socket?.readyState === socketOpen) {
       const timestamp = dependencies.clock();
-      if (timestamp - lastResumeAt < resumeCoalesceMs) return;
-      lastResumeAt = timestamp;
-      if (send({ type: 'set-presence', visible: true })) presenceSentGeneration = generation;
+      if (
+        presenceSentGeneration === generation &&
+        lastPresenceVisible === true &&
+        timestamp - lastResumeAt < resumeCoalesceMs
+      ) return;
+      if (send({ type: 'set-presence', visible: true })) {
+        presenceSentGeneration = generation;
+        lastPresenceVisible = true;
+        lastResumeAt = timestamp;
+      }
       return;
     }
     if (socket?.readyState === socketConnecting) return;
@@ -993,7 +1002,10 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
       resume();
       return;
     }
-    if (send({ type: 'set-presence', visible: false })) presenceSentGeneration = generation;
+    if (send({ type: 'set-presence', visible: false })) {
+      presenceSentGeneration = generation;
+      lastPresenceVisible = false;
+    }
   }
 
   function setOnline(nextOnline: boolean): void {
