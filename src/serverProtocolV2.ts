@@ -29,6 +29,13 @@ export interface ProtocolV2ResetAlias {
   playerId: string;
 }
 
+export interface ProtocolV2ResetAliasIndexEntry {
+  alias: ProtocolV2ResetAlias;
+  targetCode: string;
+}
+
+export type ProtocolV2ResetAliasIndex = Map<string, ProtocolV2ResetAliasIndexEntry[]>;
+
 export interface ProtocolV2Room {
   chatMessages: RoomChatMessage[];
   clients: Set<RealtimeSocket>;
@@ -85,6 +92,7 @@ export interface ProtocolV2HandlerOptions {
   reportCompletedGameError: (error: unknown) => unknown;
   roomPlayer: (socket: ProtocolV2Socket) => ProtocolV2RoomPlayer | null;
   rooms: Map<string, ProtocolV2Room>;
+  resetAliasIndex?: ProtocolV2ResetAliasIndex;
   sendJson: (socket: ProtocolV2Socket, payload: unknown) => unknown;
   sendRoomSnapshot: (
     socket: ProtocolV2Socket,
@@ -128,6 +136,33 @@ function isGameplayAction(action: GameCommand): boolean {
   ].includes(action.type);
 }
 
+export function rebuildResetAliasIndex(
+  index: ProtocolV2ResetAliasIndex,
+  rooms: Map<string, ProtocolV2Room>
+): ProtocolV2ResetAliasIndex {
+  index.clear();
+  for (const room of rooms.values()) {
+    for (const alias of room.resetAliases) {
+      const entries = index.get(alias.fromCode) || [];
+      entries.push({ alias, targetCode: room.code });
+      index.set(alias.fromCode, entries);
+    }
+  }
+  return index;
+}
+
+export function createResetAliasIndex(rooms: Map<string, ProtocolV2Room>): ProtocolV2ResetAliasIndex {
+  return rebuildResetAliasIndex(new Map(), rooms);
+}
+
+export function isResetAliasCodeReserved(
+  index: ProtocolV2ResetAliasIndex,
+  code: string,
+  timestamp: number
+): boolean {
+  return (index.get(code) || []).some(({ alias }) => alias.expiresAt > timestamp);
+}
+
 export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions) {
   const {
     allPlayersReadyForNextRound,
@@ -149,6 +184,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     reportCompletedGameError,
     roomPlayer,
     rooms,
+    resetAliasIndex = createResetAliasIndex(rooms),
     sendJson,
     sendRoomSnapshot,
     setPlayerReadyForNextRound,
@@ -189,14 +225,23 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         return;
       }
       const isCreate = message.type === 'create-room';
+      const hasPlayerId = typeof message.playerId === 'string';
+      const hasRecoveryCommandId = typeof message.recoveryCommandId === 'string';
       const validKeys = isCreate
         ? hasExactKeys(message, ['type', 'protocolVersion', 'name'])
         : hasExactKeys(
             message,
-            typeof message.playerId === 'string'
-              ? ['type', 'protocolVersion', 'code', 'name', 'playerId']
+            hasPlayerId
+              ? [
+                  'type',
+                  'protocolVersion',
+                  'code',
+                  'name',
+                  'playerId',
+                  ...(hasRecoveryCommandId ? ['recoveryCommandId'] : [])
+                ]
               : ['type', 'protocolVersion', 'code', 'name']
-          );
+          ) && (!hasRecoveryCommandId || hasPlayerId);
       if (!validKeys) {
         commandError(sendJson, ws, 'Invalid room request.');
         return;
@@ -221,12 +266,54 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       }
 
       const code = String(message.code || '').trim().toUpperCase();
-      const room = rooms.get(code);
+      const requestedPlayerId = typeof message.playerId === 'string' ? message.playerId : '';
+      const recoveryCommandId = typeof message.recoveryCommandId === 'string' ? message.recoveryCommandId : '';
+      let room = recoveryCommandId ? null : rooms.get(code) || null;
+      let resetRecoveryReceipt: CommandReceipt | null = null;
+      const aliasEntries = resetAliasIndex.get(code) || [];
+      if (recoveryCommandId || (!room && aliasEntries.length > 0)) {
+        const resetDigest = digestAction(JSON.stringify({ type: 'reset-room' }));
+        const matches = aliasEntries.flatMap(({ alias, targetCode }) => {
+          if (
+            alias.expiresAt <= now() ||
+            alias.commandId !== recoveryCommandId ||
+            alias.playerId !== requestedPlayerId
+          ) return [];
+          const target = rooms.get(targetCode);
+          const targetPlayer = target?.players.find((item) => item.id === alias.playerId);
+          const targetReceipt = target?.recentCommandIds.find((item) => item.commandId === alias.commandId);
+          if (
+            !target ||
+            !targetPlayer ||
+            targetPlayer.userId !== accountUser.id ||
+            !targetReceipt ||
+            targetReceipt.playerId !== alias.playerId ||
+            targetReceipt.actionDigest !== resetDigest ||
+            !Number.isSafeInteger(targetReceipt.expectedRevision) ||
+            !Number.isSafeInteger(targetReceipt.revision) ||
+            targetReceipt.revision !== targetReceipt.expectedRevision + 1 ||
+            targetReceipt.revision > target.revision
+          ) return [];
+          return [{ room: target, receipt: targetReceipt }];
+        });
+        if (matches.length === 1) {
+          room = matches[0].room;
+          resetRecoveryReceipt = matches[0].receipt;
+        } else {
+          commandError(sendJson, ws, 'That saved room is no longer available.', undefined, 'stale-room');
+          return;
+        }
+      }
       if (!room) {
-        commandError(sendJson, ws, 'Room not found.', undefined, 'room-not-found');
+        commandError(
+          sendJson,
+          ws,
+          requestedPlayerId || recoveryCommandId ? 'That saved room is no longer available.' : 'Room not found.',
+          undefined,
+          requestedPlayerId || recoveryCommandId ? 'stale-room' : 'room-not-found'
+        );
         return;
       }
-      const requestedPlayerId = typeof message.playerId === 'string' ? message.playerId : '';
       let player = requestedPlayerId ? room.players.find((item) => item.id === requestedPlayerId) : null;
       if (player?.userId && player.userId !== accountUser.id) {
         commandError(sendJson, ws, 'That saved room seat belongs to another account.', undefined, 'seat-forbidden');
@@ -270,14 +357,24 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       player.controller = player.controller || 'human';
       room.readyForNextRoundPlayerIds = normalizedReadyIds(room);
       ws.visible = true;
-      ws.roomCode = code;
+      ws.roomCode = room.code;
       ws.playerId = player.id;
       room.clients.add(ws);
       syncPlayerPresence(room, player);
       if (createdPlayer) {
         room.revision += 1;
       }
-      if (createdPlayer || publicConnectionChanged || publicNameChanged) {
+      if (resetRecoveryReceipt) {
+        room.updatedAt = timestamp;
+        persistRoomsSoon();
+        sendRoomSnapshot(ws, room, {
+          type: 'resync',
+          commandId: resetRecoveryReceipt.commandId,
+          reason: 'room-reset'
+        });
+        acknowledge(ws, resetRecoveryReceipt);
+        if (publicConnectionChanged || publicNameChanged) broadcastRoom(room);
+      } else if (createdPlayer || publicConnectionChanged || publicNameChanged) {
         room.updatedAt = timestamp;
         persistRoomsSoon();
         broadcastRoom(room);
@@ -483,6 +580,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       }
       rooms.delete(oldRoom.code);
       rooms.set(newCode, newRoom);
+      rebuildResetAliasIndex(resetAliasIndex, rooms);
       ws.roomCode = newCode;
       ws.playerId = player.id;
       persistRoomsSoon();

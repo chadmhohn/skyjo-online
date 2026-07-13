@@ -16,7 +16,11 @@ import {
   sendRealtimeJson,
   syncPlayerPresence
 } from './server-dist/serverRealtime.js';
-import { createProtocolV2MessageHandler } from './server-dist/serverProtocolV2.js';
+import {
+  createProtocolV2MessageHandler,
+  createResetAliasIndex,
+  isResetAliasCodeReserved
+} from './server-dist/serverProtocolV2.js';
 import {
   createRoomSnapshot,
   MULTIPLAYER_PROTOCOL_VERSION
@@ -238,7 +242,7 @@ function makeRoomCode(randomInt = crypto.randomInt) {
   return createUniqueRandomCode({
     alphabet: inviteCodeAlphabet,
     length: roomCodeLength,
-    isTaken: (code) => rooms.has(code),
+    isTaken: (code) => rooms.has(code) || isResetAliasCodeReserved(resetAliasIndex, code, Date.now()),
     randomInt,
     maxAttempts: secureCodeMaxAttempts
   });
@@ -1155,6 +1159,8 @@ try {
   console.error('Persisted room state was rejected; room writes are disabled to protect the source file.');
 }
 
+const resetAliasIndex = createResetAliasIndex(rooms);
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -1288,6 +1294,7 @@ const handleProtocolV2Message = createProtocolV2MessageHandler({
   recordCompletedGame: (input) => accountStore.recordCompletedGame(input),
   roomPlayer,
   rooms,
+  resetAliasIndex,
   sendJson,
   sendRoomSnapshot,
   setPlayerReadyForNextRound,

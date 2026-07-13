@@ -145,7 +145,11 @@ function publicRoom(room: MultiplayerRoom, viewerPlayerId = 'p1'): PublicRoomSna
     {
       code: room.code,
       hostId: room.hostId,
-      players: room.players.map(({ userId: _userId, ...player }) => player),
+      players: room.players.map((player) => {
+        const publicPlayer = { ...player };
+        delete publicPlayer.userId;
+        return publicPlayer;
+      }),
       chatMessages: room.chatMessages,
       readyForNextRoundPlayerIds: room.readyForNextRoundPlayerIds,
       state: room.state,

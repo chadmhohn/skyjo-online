@@ -7,14 +7,17 @@ import {
 } from '../../../src/protocolV2';
 import {
   createProtocolV2MessageHandler,
+  createResetAliasIndex,
+  isResetAliasCodeReserved,
   MAX_RESET_ALIASES,
+  rebuildResetAliasIndex,
   RESET_ALIAS_TTL_MS,
   type ProtocolV2HandlerOptions,
   type ProtocolV2Room,
   type ProtocolV2Socket
 } from '../../../src/serverProtocolV2';
 import { sendRealtimeJson } from '../../../src/serverRealtime';
-import type { GameState, RoomPlayer } from '../../../src/types';
+import type { RoomPlayer } from '../../../src/types';
 
 const HOST_ID = '00000000-0000-4000-8000-000000000001';
 const GUEST_ID = '00000000-0000-4000-8000-000000000002';
@@ -103,6 +106,24 @@ function receipt(action: GameCommand, overrides: Partial<CommandReceipt> = {}): 
   };
 }
 
+function resetRecoveryTarget(overrides: Partial<ProtocolV2Room> = {}): ProtocolV2Room {
+  const resetReceipt = receipt({ type: 'reset-room' });
+  return room({
+    code: 'NEW01',
+    hostId: HOST_ID,
+    players: [{ ...player(HOST_ID, 'Host', true), connected: false }],
+    revision: 1,
+    recentCommandIds: [resetReceipt],
+    resetAliases: [{
+      fromCode: 'OLD01',
+      commandId: resetReceipt.commandId,
+      playerId: HOST_ID,
+      expiresAt: 900
+    }],
+    ...overrides
+  });
+}
+
 function harness(roomValue = room()) {
   const host = socket();
   const rooms = new Map<string, ProtocolV2Room>([[roomValue.code, roomValue]]);
@@ -110,7 +131,7 @@ function harness(roomValue = room()) {
   const calls = {
     broadcasts: [] as ProtocolV2Room[],
     snapshots: [] as Array<{ socket: ProtocolV2Socket; room: ProtocolV2Room; options?: unknown }>,
-    json: [] as Array<{ socket: ProtocolV2Socket; payload: any }>,
+    json: [] as Array<{ socket: ProtocolV2Socket; payload: Record<string, unknown> }>,
     persisted: 0,
     notified: 0,
     completed: [] as unknown[],
@@ -164,7 +185,7 @@ function harness(roomValue = room()) {
       return candidate && member ? { room: candidate, player: member } : null;
     },
     rooms,
-    sendJson: (ws, payload) => calls.json.push({ socket: ws, payload }),
+    sendJson: (ws, payload) => calls.json.push({ socket: ws, payload: payload as Record<string, unknown> }),
     sendRoomSnapshot: (ws, candidate, snapshotOptions) => calls.snapshots.push({ socket: ws, room: candidate, options: snapshotOptions }),
     setPlayerReadyForNextRound: (candidate, playerId, ready) => {
       candidate.readyForNextRoundPlayerIds = ready
@@ -179,8 +200,8 @@ function harness(roomValue = room()) {
   return { ...host, room: roomValue, rooms, calls, options, handler };
 }
 
-function lastPayload(value: ReturnType<typeof harness>): any {
-  return value.calls.json.at(-1)?.payload;
+function lastPayload(value: ReturnType<typeof harness>): Record<string, unknown> {
+  return value.calls.json.at(-1)?.payload || {};
 }
 
 describe('protocol v2 room admission', () => {
@@ -273,6 +294,156 @@ describe('protocol v2 room admission', () => {
     expect(value.room.players[0]).toMatchObject({ name: 'Host', connected: true });
     expect(value.calls.broadcasts).toEqual([value.room]);
   });
+
+  it('rebuilds the persisted alias index and reserves only live lineage codes', () => {
+    const target = resetRecoveryTarget();
+    const rooms = new Map([[target.code, target]]);
+    const index = createResetAliasIndex(rooms);
+    expect(index.get('OLD01')).toEqual([{ alias: target.resetAliases[0], targetCode: 'NEW01' }]);
+    expect(isResetAliasCodeReserved(index, 'OLD01', 500)).toBe(true);
+    expect(isResetAliasCodeReserved(index, 'OLD01', 900)).toBe(false);
+    target.resetAliases.push({
+      fromCode: 'OLDER',
+      commandId: OTHER_COMMAND_ID,
+      playerId: HOST_ID,
+      expiresAt: 901
+    });
+    rebuildResetAliasIndex(index, rooms);
+    expect(index.has('OLDER')).toBe(true);
+  });
+
+  it('recovers a reset host after restart without changing revision, then resyncs before receipt ack', () => {
+    const target = resetRecoveryTarget();
+    const value = harness(target);
+    target.clients.clear();
+    const order: string[] = [];
+    value.options.resetAliasIndex = createResetAliasIndex(value.rooms);
+    value.options.sendRoomSnapshot = (_socket, _room, snapshotOptions) => order.push(`resync:${snapshotOptions?.commandId}`);
+    value.options.sendJson = (_socket, payload) => {
+      const frame = payload as Record<string, unknown>;
+      order.push(`${String(frame.type)}:${String(frame.commandId || frame.code)}`);
+    };
+    const handler = createProtocolV2MessageHandler(value.options);
+    handler(value.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'OLD01',
+      name: 'ignored',
+      playerId: HOST_ID,
+      recoveryCommandId: COMMAND_ID
+    });
+    expect(order).toEqual([`resync:${COMMAND_ID}`, `ack:${COMMAND_ID}`]);
+    expect(value.socket).toMatchObject({ roomCode: 'NEW01', playerId: HOST_ID });
+    expect(target).toMatchObject({ revision: 1, updatedAt: 500 });
+    expect(value.calls.persisted).toBe(1);
+  });
+
+  it('never lets a recovery hint fall through to a recycled direct room code', () => {
+    const target = resetRecoveryTarget({
+      resetAliases: [{ fromCode: 'OLD01', commandId: COMMAND_ID, playerId: HOST_ID, expiresAt: 499 }]
+    });
+    const recycled = room({ code: 'OLD01' });
+    const value = harness(target);
+    value.rooms.set(recycled.code, recycled);
+    value.options.resetAliasIndex = createResetAliasIndex(value.rooms);
+    createProtocolV2MessageHandler(value.options)(value.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'OLD01',
+      name: 'ignored',
+      playerId: HOST_ID,
+      recoveryCommandId: COMMAND_ID
+    });
+    expect(lastPayload(value)).toMatchObject({ code: 'stale-room' });
+    expect(value.socket.roomCode).not.toBe('OLD01');
+    expect(recycled.clients.size).toBe(0);
+  });
+
+  it.each([
+    ['manual old invite', {}, {}],
+    ['saved seat without hint', { playerId: HOST_ID }, {}],
+    ['wrong account', { playerId: HOST_ID, recoveryCommandId: COMMAND_ID }, { accountId: 'attacker' }],
+    ['wrong seat', { playerId: GUEST_ID, recoveryCommandId: COMMAND_ID }, {}],
+    ['wrong command id', { playerId: HOST_ID, recoveryCommandId: OTHER_COMMAND_ID }, {}],
+    ['expired alias', { playerId: HOST_ID, recoveryCommandId: COMMAND_ID }, { expiresAt: 499 }],
+    ['missing receipt', { playerId: HOST_ID, recoveryCommandId: COMMAND_ID }, { recentCommandIds: [] }],
+    [
+      'non-reset receipt',
+      { playerId: HOST_ID, recoveryCommandId: COMMAND_ID },
+      { recentCommandIds: [receipt({ type: 'start-game' })] }
+    ]
+  ])('returns one target-free stale-room error for reset recovery mismatch: %s', (_name, joinFields, setup) => {
+    const config = setup as {
+      accountId?: string;
+      expiresAt?: number;
+      recentCommandIds?: CommandReceipt[];
+    };
+    const target = resetRecoveryTarget({
+      ...(config.expiresAt === undefined
+        ? {}
+        : { resetAliases: [{ fromCode: 'OLD01', commandId: COMMAND_ID, playerId: HOST_ID, expiresAt: config.expiresAt }] }),
+      ...(config.recentCommandIds === undefined ? {} : { recentCommandIds: config.recentCommandIds })
+    });
+    const value = harness(target);
+    value.socket.accountUser = {
+      id: config.accountId || `${HOST_ID}-account`,
+      displayName: 'Host'
+    };
+    value.options.resetAliasIndex = createResetAliasIndex(value.rooms);
+    const handler = createProtocolV2MessageHandler(value.options);
+    handler(value.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'OLD01',
+      name: 'ignored',
+      ...joinFields
+    });
+    expect(value.calls.json).toHaveLength(1);
+    expect(lastPayload(value)).toMatchObject({ type: 'error', code: 'stale-room' });
+    expect(JSON.stringify(lastPayload(value))).not.toContain('NEW01');
+    expect(value.calls.snapshots).toHaveLength(0);
+    expect(target.revision).toBe(1);
+  });
+
+  it('fails closed when an indexed reset target disappears or recovery becomes ambiguous', () => {
+    for (const mutate of [
+      (value: ReturnType<typeof harness>, index: ReturnType<typeof createResetAliasIndex>) => {
+        void index;
+        return value.rooms.delete('NEW01');
+      },
+      (_value: ReturnType<typeof harness>, index: ReturnType<typeof createResetAliasIndex>) => {
+        index.get('OLD01')?.push({ ...index.get('OLD01')![0] });
+      }
+    ]) {
+      const target = resetRecoveryTarget();
+      const value = harness(target);
+      const index = createResetAliasIndex(value.rooms);
+      mutate(value, index);
+      value.options.resetAliasIndex = index;
+      createProtocolV2MessageHandler(value.options)(value.socket, {
+        type: 'join-room',
+        protocolVersion: 2,
+        code: 'OLD01',
+        name: 'ignored',
+        playerId: HOST_ID,
+        recoveryCommandId: COMMAND_ID
+      });
+      expect(lastPayload(value)).toMatchObject({ code: 'stale-room' });
+      expect(JSON.stringify(lastPayload(value))).not.toContain('NEW01');
+    }
+  });
+
+  it('allows recoveryCommandId only alongside an exact saved player seat', () => {
+    const value = harness(resetRecoveryTarget());
+    value.handler(value.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'OLD01',
+      name: 'ignored',
+      recoveryCommandId: COMMAND_ID
+    });
+    expect(lastPayload(value)).toMatchObject({ code: 'invalid-command' });
+  });
 });
 
 describe('protocol v2 command ordering and receipts', () => {
@@ -291,7 +462,7 @@ describe('protocol v2 command ordering and receipts', () => {
     const value = harness(room({ revision: 8, recentCommandIds: [receipt(action)] }));
     const order: string[] = [];
     value.options.sendRoomSnapshot = () => order.push('snapshot');
-    value.options.sendJson = (_ws, payload: any) => order.push(payload.type);
+    value.options.sendJson = (_ws, payload) => order.push(String((payload as Record<string, unknown>).type));
     createProtocolV2MessageHandler(value.options)(value.socket, command(action, 0));
     expect(order).toEqual(['snapshot', 'ack']);
     expect(value.room.revision).toBe(8);
@@ -332,7 +503,7 @@ describe('protocol v2 command ordering and receipts', () => {
     const order: string[] = [];
     value.options.persistRoomsSoon = () => order.push('persist');
     value.options.broadcastRoom = () => order.push('broadcast');
-    value.options.sendJson = (_ws, payload: any) => order.push(payload.type);
+    value.options.sendJson = (_ws, payload) => order.push(String((payload as Record<string, unknown>).type));
     createProtocolV2MessageHandler(value.options)(value.socket, command({ type: 'send-chat-message', text: ' hello ' }));
     expect(value.room).toMatchObject({ revision: 1, updatedAt: 500 });
     expect(value.room.chatMessages).toEqual([expect.objectContaining({ text: 'hello', playerId: HOST_ID })]);
