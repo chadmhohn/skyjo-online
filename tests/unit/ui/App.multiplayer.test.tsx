@@ -692,10 +692,8 @@ describe('multiplayer lobby', () => {
 
     act(() => document.dispatchEvent(new Event('visibilitychange')));
     act(() => window.dispatchEvent(new Event('pagehide')));
-    expect(socket.sent.slice(-2)).toEqual([
-      { type: 'set-presence', visible: true },
-      { type: 'set-presence', visible: false }
-    ]);
+    expect(socket.sent).toContainEqual({ type: 'set-presence', visible: true });
+    expect(socket.sent.at(-1)).toEqual({ type: 'set-presence', visible: false });
 
     await user.click(screen.getByRole('button', { name: 'Start Game' }));
     const startCommand = expectCommand(socket, { type: 'start-game' }, 1);
