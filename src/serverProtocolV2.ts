@@ -459,7 +459,11 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       ws.roomCode = newCode;
       ws.playerId = player.id;
       persistRoomsSoon();
-      sendRoomSnapshot(ws, newRoom);
+      sendRoomSnapshot(ws, newRoom, {
+        type: 'resync',
+        commandId: command.commandId,
+        reason: 'room-reset'
+      });
       acknowledge(ws, receipt);
       return;
     } else {

@@ -301,16 +301,33 @@ export function isMultiplayerRoomSnapshot(
 function isAuthoritativeSnapshot(
   frame: RoomConnectionFrame,
   currentSession: RoomConnectionSession | null,
-  synchronizedOnCurrentSocket: boolean
+  synchronizedOnCurrentSocket: boolean,
+  pendingCommand: PendingCommandState | null
 ): boolean {
-  const expectedCode = currentSession?.action === 'join-room' ? currentSession.code : null;
   if (frame.type !== 'snapshot' && frame.type !== 'resync') return false;
   if (frame.protocolVersion !== MULTIPLAYER_PROTOCOL_VERSION) return false;
   if (typeof frame.playerId !== 'string' || !frame.playerId) return false;
   if (!Number.isSafeInteger(frame.revision) || Number(frame.revision) < 0) return false;
-  if (!isMultiplayerRoomSnapshot(frame.room, expectedCode)) return false;
-  if (!frame.room.players.some((player) => player.id === frame.playerId)) return false;
   const establishedPlayerId = currentSession?.action === 'join-room' ? currentSession.playerId : undefined;
+  const pendingAction = isRecord(pendingCommand?.frame.action) ? pendingCommand.frame.action : null;
+  const resetTransition =
+    frame.type === 'resync' &&
+    frame.reason === 'room-reset' &&
+    typeof frame.commandId === 'string' &&
+    pendingCommand !== null &&
+    pendingAction?.type === 'reset-room' &&
+    frame.commandId === pendingCommand.commandId &&
+    Number(frame.revision) === pendingCommand.expectedRevision + 1 &&
+    Boolean(establishedPlayerId) &&
+    frame.playerId === establishedPlayerId;
+  const expectedCode = currentSession?.action === 'join-room' && !resetTransition ? currentSession.code : null;
+  if (!isMultiplayerRoomSnapshot(frame.room, expectedCode)) return false;
+  if (
+    resetTransition &&
+    currentSession?.action === 'join-room' &&
+    frame.room.code === currentSession.code
+  ) return false;
+  if (!frame.room.players.some((player) => player.id === frame.playerId)) return false;
   if (establishedPlayerId && frame.playerId !== establishedPlayerId) return false;
   if (frame.revision !== frame.room.revision) return false;
   if (frame.room.state) {
@@ -599,8 +616,15 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
       }
 
       const snapshotFrame = frame.type === 'snapshot' || frame.type === 'resync';
+      const pendingAction = isRecord(pendingCommand?.frame.action) ? pendingCommand.frame.action : null;
+      const resetTransitionFrame =
+        frame.type === 'resync' &&
+        frame.reason === 'room-reset' &&
+        pendingCommand !== null &&
+        pendingAction?.type === 'reset-room' &&
+        frame.commandId === pendingCommand.commandId;
       if (
-        (snapshotFrame && !isAuthoritativeSnapshot(frame, session, synchronizedOnCurrentSocket)) ||
+        (snapshotFrame && !isAuthoritativeSnapshot(frame, session, synchronizedOnCurrentSocket, pendingCommand)) ||
         (!snapshotFrame && !isAuxiliaryServerFrame(frame))
       ) {
         handleMalformedServerFrame(socket);
@@ -625,7 +649,12 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
           pendingCommand.sentGeneration = -1;
         }
         transition('connected');
-        if (frame.type === 'resync' && pendingCommand && frame.commandId === pendingCommand.commandId) {
+        if (
+          frame.type === 'resync' &&
+          pendingCommand &&
+          frame.commandId === pendingCommand.commandId &&
+          !resetTransitionFrame
+        ) {
           setPendingCommand(null);
           options.onError?.('The room changed before that action was accepted. Review the synchronized table and try again.');
         } else {

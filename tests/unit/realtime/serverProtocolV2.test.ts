@@ -476,7 +476,7 @@ describe('protocol v2 gameplay and lifecycle commands', () => {
     expect(value.calls.persisted).toBe(0);
   });
 
-  it('currently emits the server-side reset snapshot and ack while detaching guests', () => {
+  it('emits an authenticated reset resync before ack while detaching guests', () => {
     const value = harness();
     const guest = socket(GUEST_ID);
     value.room.clients.add(guest.socket);
@@ -486,6 +486,10 @@ describe('protocol v2 gameplay and lifecycle commands', () => {
     expect(replacement).toMatchObject({ revision: 1, hostId: HOST_ID });
     expect(guest.socket).toMatchObject({ roomCode: null, playerId: null });
     expect(value.calls.json.map(({ payload }) => payload.type)).toEqual(['error', 'ack']);
-    expect(value.calls.snapshots).toEqual([{ socket: value.socket, room: replacement, options: undefined }]);
+    expect(value.calls.snapshots).toEqual([{
+      socket: value.socket,
+      room: replacement,
+      options: { type: 'resync', commandId: COMMAND_ID, reason: 'room-reset' }
+    }]);
   });
 });

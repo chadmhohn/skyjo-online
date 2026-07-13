@@ -2608,7 +2608,11 @@ function Lobby() {
       window.localStorage.setItem('skyjo-room-code', joinedRoom.code);
       setJoinCode(joinedRoom.code);
       setRoom(joinedRoom);
-      setError(message.type === 'resync' ? 'The room changed before that action was accepted. Review the table and try again.' : '');
+      setError(
+        message.type === 'resync' && message.reason !== 'room-reset'
+          ? 'The room changed before that action was accepted. Review the table and try again.'
+          : ''
+      );
       return;
     }
     if (message.type === 'ack') return;
