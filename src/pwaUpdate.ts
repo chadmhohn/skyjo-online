@@ -118,6 +118,11 @@ function settleOwnController(worker: ServiceWorker, generation: number) {
     navigator.serviceWorker.controller !== worker ||
     worker.state !== 'activated'
   ) return;
+  const replacement = registration?.waiting || null;
+  if (replacement && replacement !== worker && replacement.state === 'installed') {
+    transferActivationAttempt(attempt);
+    return;
+  }
   const shouldReload = (
     attempt.autoReloadEligible &&
     Date.now() <= attempt.deadline &&

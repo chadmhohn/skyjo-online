@@ -275,6 +275,109 @@ describe('PWA update coordination', () => {
     }
   });
 
+  it('drains one distinct installed waiter before reloading after the first target activates', async () => {
+    const registration = new FakeRegistration();
+    const first = new FakeWorker('installed');
+    registration.waiting = first;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+
+    expect(module.activatePwaUpdate()).toBe(true);
+    expect(first.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+    first.transition('activating');
+    const replacement = new FakeWorker('installed');
+    registration.waiting = replacement;
+    container.controller = first;
+    container.dispatchEvent(new Event('controllerchange'));
+    first.transition('activated');
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(replacement.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+    expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+    replacement.transition('activating');
+    registration.waiting = null;
+    container.controller = replacement;
+    container.dispatchEvent(new Event('controllerchange'));
+    replacement.transition('activated');
+    replacement.dispatchEvent(new Event('statechange'));
+    container.dispatchEvent(new Event('controllerchange'));
+
+    expect(first.messages).toHaveLength(1);
+    expect(replacement.messages).toHaveLength(1);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps activated-target transfer at one and leaves a second replacement actionable', async () => {
+    const registration = new FakeRegistration();
+    const first = new FakeWorker('installed');
+    registration.waiting = first;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+
+    expect(module.activatePwaUpdate()).toBe(true);
+    first.transition('activating');
+    const replacement = new FakeWorker('installed');
+    registration.waiting = replacement;
+    container.controller = first;
+    container.dispatchEvent(new Event('controllerchange'));
+    first.transition('activated');
+    expect(replacement.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+
+    replacement.transition('activating');
+    const secondReplacement = new FakeWorker('installed');
+    registration.waiting = secondReplacement;
+    container.controller = replacement;
+    container.dispatchEvent(new Event('controllerchange'));
+    replacement.transition('activated');
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(secondReplacement.messages).toEqual([]);
+    expect(module.getPwaUpdateSnapshot()).toEqual({
+      available: true,
+      activating: false,
+      reloadRequired: false
+    });
+    expect(module.activatePwaUpdate()).toBe(true);
+    expect(secondReplacement.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+    expect(first.messages).toHaveLength(1);
+    expect(replacement.messages).toHaveLength(1);
+  });
+
+  it('leaves an activated-target replacement actionable at the exact original deadline', async () => {
+    const registration = new FakeRegistration();
+    const first = new FakeWorker('installed');
+    registration.waiting = first;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+    vi.useFakeTimers();
+    try {
+      expect(module.activatePwaUpdate()).toBe(true);
+      first.transition('activating');
+      const replacement = new FakeWorker('installed');
+      registration.waiting = replacement;
+      container.controller = first;
+      container.dispatchEvent(new Event('controllerchange'));
+      vi.setSystemTime(Date.now() + 8_000);
+      first.transition('activated');
+
+      expect(reload).not.toHaveBeenCalled();
+      expect(replacement.messages).toEqual([]);
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: true,
+        activating: false,
+        reloadRequired: false
+      });
+      expect(module.activatePwaUpdate()).toBe(true);
+      expect(replacement.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('observes a worker that was already installing before the updatefound listener was attached', async () => {
     const registration = new FakeRegistration();
     const installing = new FakeWorker('installing');
