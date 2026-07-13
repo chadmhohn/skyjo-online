@@ -599,7 +599,7 @@ const temporaryUnitFragments = Object.freeze({
   'skyjo-online-smoke': '/etc/systemd/system/skyjo-online-smoke@.service',
   'skyjo-online-legacy-proof': '/etc/systemd/system/skyjo-online-legacy-proof@.service'
 });
-const temporaryUnitNamePattern = /^(?:(skyjo-online-(?:canary|canary-smoke|state-proof))@[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-canary|(skyjo-online-(?:smoke|legacy-proof))@[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-production)\.service$/;
+const temporaryUnitNamePattern = /^(?:(skyjo-online-(?:canary|canary-smoke|state-proof))@[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(?:canary|production)|(skyjo-online-(?:smoke|legacy-proof))@[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-production)\.service$/;
 
 function temporaryUnitContract(unit) {
   const match = typeof unit === 'string' ? unit.match(temporaryUnitNamePattern) : null;
