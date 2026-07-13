@@ -81,13 +81,26 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   const payload = await manifest.json();
   expect(payload).toMatchObject({
     name: expect.any(String),
-    display: 'standalone'
+    display: 'standalone',
+    id: '/',
+    scope: '/',
+    start_url: '/'
   });
   expect(payload.icons.length).toBeGreaterThanOrEqual(2);
 
+  const appleIcon = await request.get(`${skyjoServer.baseURL}/skyjo-icon-v2-180.png`);
+  expect(appleIcon.ok()).toBe(true);
+  expect(appleIcon.headers()['content-type']).toMatch(/^image\/png\b/);
+  const iconBytes = await appleIcon.body();
+  expect(iconBytes.subarray(1, 4).toString('ascii')).toBe('PNG');
+  expect(iconBytes.readUInt32BE(16)).toBe(180);
+  expect(iconBytes.readUInt32BE(20)).toBe(180);
+
   const serviceWorker = await request.get(`${skyjoServer.baseURL}/sw.js`);
   expect(serviceWorker.ok()).toBe(true);
-  expect(await serviceWorker.text()).toContain("addEventListener('push'");
+  const serviceWorkerSource = await serviceWorker.text();
+  expect(serviceWorkerSource).toContain("addEventListener('push'");
+  expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
 });
 
 test('single-player stats deduplicate one UUID without collapsing an equal-score game', async ({ page, skyjoServer }) => {

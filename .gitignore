@@ -12,3 +12,6 @@ coverage/
 playwright-report/
 test-results/
 release/
+tsconfig*.tsbuildinfo
+vite.config.js
+vite.config.d.ts

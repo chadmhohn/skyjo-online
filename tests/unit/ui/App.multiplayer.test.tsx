@@ -10,6 +10,7 @@ import {
   type ResetRecoveryHint
 } from '../../../src/resetRecovery';
 import type { AccountUser } from '../../../src/account';
+import * as lazyRoomConnection from '../../../src/lazyRoomConnection';
 import {
   createRoomSnapshot,
   type ClientCommand,
@@ -255,7 +256,12 @@ async function renderLobby(user: AccountUser | null = accountUser, path = '/lobb
   window.history.replaceState({}, '', path);
   const fetchMock = installFetch(user);
   render(<App />);
-  if (user) await screen.findByRole('heading', { name: 'Multiplayer Lobby' });
+  if (user) {
+    await screen.findByRole('heading', { name: 'Multiplayer Lobby' });
+    await waitFor(() =>
+      expect(screen.getByTestId('connection-status')).not.toHaveAttribute('data-connection-state', 'connecting')
+    );
+  }
   return fetchMock;
 }
 
@@ -368,6 +374,36 @@ afterEach(() => {
 });
 
 describe('multiplayer lobby', () => {
+  it('fails closed when the route-scoped room connection chunk cannot load', async () => {
+    vi.spyOn(lazyRoomConnection, 'loadRoomConnection').mockRejectedValueOnce(new Error('private chunk detail'));
+    await renderLobby();
+
+    await waitFor(() => expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'error'));
+    expect(screen.getByText('Could not initialize the room connection. Reload and try again.')).toBeInTheDocument();
+    expect(screen.queryByText('private chunk detail')).not.toBeInTheDocument();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('does not create a late room controller after the lobby unmounts during chunk loading', async () => {
+    const roomConnection = await import('../../../src/roomConnection');
+    let resolveChunk: ((module: typeof roomConnection) => void) | undefined;
+    vi.spyOn(lazyRoomConnection, 'loadRoomConnection').mockReturnValueOnce(
+      new Promise<typeof roomConnection>((resolve) => {
+        resolveChunk = resolve;
+      })
+    );
+    window.history.replaceState({}, '', '/lobby');
+    installFetch();
+    const rendered = render(<App />);
+    await screen.findByRole('heading', { name: 'Multiplayer Lobby' });
+
+    rendered.unmount();
+    resolveChunk?.(roomConnection);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
   it('serializes and parses only the exact bounded reset recovery hint contract', () => {
     const serialized = serializeResetRecoveryHint(validResetRecoveryHint);
     expect(serialized).toBe(

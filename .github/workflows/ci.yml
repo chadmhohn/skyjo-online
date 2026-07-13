@@ -118,6 +118,7 @@ jobs:
           node scripts/smoke-backup.mjs
           npm run smoke:delivery
           node scripts/smoke-chat.mjs
+          npm run smoke:invite-restart
 
       - name: Upload shared production build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
@@ -187,6 +188,8 @@ jobs:
         run: npm ci
       - name: Run isolated data tests
         run: npm run test:unit:data
+      - name: Prove immutable v0.1.1 rollback compatibility
+        run: npm run test:compat:v011
       - name: Upload data coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0

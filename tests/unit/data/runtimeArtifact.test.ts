@@ -259,6 +259,8 @@ describe('runtime artifact safety contract', () => {
     expect(isAllowedRuntimePath('./dist/assets/app.js')).toBe(true);
     expect(isAllowedRuntimePath('node_modules/ws/index.js')).toBe(true);
     expect(isAllowedRuntimePath('server-game-state-validation.mjs')).toBe(true);
+    expect(isAllowedRuntimePath('server-invite-codes.mjs')).toBe(true);
+    expect(isAllowedRuntimePath('server-room-invites.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-deployed.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-chat.mjs')).toBe(false);
     expect(isAllowedRuntimePath('src/game.ts')).toBe(false);
@@ -326,6 +328,8 @@ describe('runtime artifact safety contract', () => {
     const result = validateRuntimeEntries(fixtureEntries(), releaseSha);
     expect(result.releaseIdentity.releaseSha).toBe(releaseSha);
     expect(result.files.has('server-game-state-validation.mjs')).toBe(true);
+    expect(result.files.has('server-invite-codes.mjs')).toBe(true);
+    expect(result.files.has('server-room-invites.mjs')).toBe(true);
     expect(result.files.has('server-dist/protocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverProtocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverRealtime.js')).toBe(true);
@@ -447,6 +451,14 @@ describe('runtime artifact safety contract', () => {
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server.mjs'), releaseSha)).toThrow('missing required');
     expect(() => validateRuntimeEntries(
       fixtureEntries().filter((entry) => entry.rawPath !== 'server-game-state-validation.mjs'),
+      releaseSha
+    )).toThrow('missing required');
+    expect(() => validateRuntimeEntries(
+      fixtureEntries().filter((entry) => entry.rawPath !== 'server-invite-codes.mjs'),
+      releaseSha
+    )).toThrow('missing required');
+    expect(() => validateRuntimeEntries(
+      fixtureEntries().filter((entry) => entry.rawPath !== 'server-room-invites.mjs'),
       releaseSha
     )).toThrow('missing required');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverRealtime.js'), releaseSha)).toThrow(

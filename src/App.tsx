@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -33,12 +33,18 @@ import {
 import { playAudioCue, playAudioTestCue, primeAudio, useAudioSettings, useGameAudio, type AudioSettings } from './audio';
 import { disablePushNotifications, enablePushNotifications, loadPushNotificationStatus, type PushUiStatus } from './push';
 import {
-  createRoomConnection,
-  type RoomConnectionController,
-  type RoomConnectionFrame,
-  type RoomConnectionSocket,
-  type RoomConnectionState
+  activatePwaUpdate,
+  getPwaUpdateSnapshot,
+  isPwaUpdateDeferredPath,
+  subscribeToPwaUpdates
+} from './pwaUpdate';
+import type {
+  RoomConnectionController,
+  RoomConnectionFrame,
+  RoomConnectionSocket,
+  RoomConnectionState
 } from './roomConnection';
+import { loadRoomConnection } from './lazyRoomConnection';
 import {
   parseResetRecoveryHint,
   RESET_RECOVERY_STORAGE_KEY,
@@ -2823,35 +2829,47 @@ function Lobby() {
 
   useEffect(() => {
     if (!accountUserId) return;
-    const controller = createRoomConnection({
-      url: roomSocketUrl(),
-      createSocket: (url) => new WebSocket(url) as unknown as RoomConnectionSocket,
-      onFrame: (frame) => frameHandlerRef.current(frame),
-      onStateChange: (state) => setConnection(state),
-      onPendingCommandChange: setCommandPending,
-      onError: (message) => setError(message)
-    });
-    connectionControllerRef.current = controller;
-    if (roomCodeRef.current && playerIdRef.current) {
-      const recoveryHint = resetRecoveryHintRef.current;
-      controller.recover({
-        action: 'join-room',
-        code: roomCodeRef.current,
-        name: accountDisplayName,
-        playerId: playerIdRef.current,
-        ...(recoveryHint
-          ? {
-              recoveryCommandId: recoveryHint.commandId,
-              recoveryExpectedRevision: recoveryHint.expectedRevision
-            }
-          : {})
+    let disposed = false;
+    let controller: RoomConnectionController | null = null;
+    setConnection('connecting');
+    void loadRoomConnection().then(({ createRoomConnection }) => {
+      if (disposed) return;
+      controller = createRoomConnection({
+        url: roomSocketUrl(),
+        createSocket: (url) => new WebSocket(url) as unknown as RoomConnectionSocket,
+        onFrame: (frame) => frameHandlerRef.current(frame),
+        onStateChange: (state) => setConnection(state),
+        onPendingCommandChange: setCommandPending,
+        onError: (message) => setError(message)
       });
-    }
-    controller.setOnline(navigator.onLine !== false);
-    controller.setVisible(document.visibilityState === 'visible');
+      connectionControllerRef.current = controller;
+      if (roomCodeRef.current && playerIdRef.current) {
+        const recoveryHint = resetRecoveryHintRef.current;
+        controller.recover({
+          action: 'join-room',
+          code: roomCodeRef.current,
+          name: accountDisplayName,
+          playerId: playerIdRef.current,
+          ...(recoveryHint
+            ? {
+                recoveryCommandId: recoveryHint.commandId,
+                recoveryExpectedRevision: recoveryHint.expectedRevision
+              }
+            : {})
+        });
+      }
+      controller.setOnline(navigator.onLine !== false);
+      controller.setVisible(document.visibilityState === 'visible');
+      setConnection(controller.getState());
+    }).catch(() => {
+      if (disposed) return;
+      setConnection('error');
+      setError('Could not initialize the room connection. Reload and try again.');
+    });
     return () => {
-      if (connectionControllerRef.current === controller) connectionControllerRef.current = null;
-      controller.dispose();
+      disposed = true;
+      if (controller && connectionControllerRef.current === controller) connectionControllerRef.current = null;
+      controller?.dispose();
     };
   }, [accountDisplayName, accountUserId]);
 
@@ -3709,6 +3727,7 @@ function App() {
   return (
     <Router>
       <AccountProvider>
+        <PwaUpdateBanner />
         <Routes>
           <Route element={<Home />} path="/" />
           <Route element={<AccountPage />} path="/account" />
@@ -3721,6 +3740,33 @@ function App() {
         </Routes>
       </AccountProvider>
     </Router>
+  );
+}
+
+function PwaUpdateBanner() {
+  const location = useLocation();
+  const update = useSyncExternalStore(subscribeToPwaUpdates, getPwaUpdateSnapshot, getPwaUpdateSnapshot);
+  if (!update.available) return null;
+  const deferred = isPwaUpdateDeferredPath(location.pathname);
+  return (
+    <aside aria-live="polite" className="skyjo-update-banner" data-testid="pwa-update-banner">
+      <div>
+        <strong>Skyjo update ready</strong>
+        <span>{deferred ? ' It will wait until you leave this game.' : update.reloadRequired ? ' Reload once to use it.' : ' Apply it when you are ready.'}</span>
+      </div>
+      {deferred ? (
+        <span className="skyjo-update-deferred">Game protected</span>
+      ) : (
+        <button
+          className="skyjo-button skyjo-button-primary"
+          disabled={update.activating}
+          onClick={() => activatePwaUpdate()}
+          type="button"
+        >
+          {update.activating ? 'Updating...' : update.reloadRequired ? 'Reload now' : 'Update now'}
+        </button>
+      )}
+    </aside>
   );
 }
 

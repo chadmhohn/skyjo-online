@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && npm run build:server && vite build",
+    "build": "tsc && npm run build:server && vite build && node scripts/create-offline-shell.mjs && node scripts/build-service-worker.mjs",
     "postbuild": "node scripts/write-release-json.mjs",
     "build:server": "node scripts/clean-server-dist.mjs && tsc -p tsconfig.server.json",
     "check:bundle": "node scripts/check-bundle-budget.mjs",
@@ -25,6 +25,7 @@
     "smoke:backup": "node scripts/smoke-backup.mjs",
     "smoke:chat": "npm run build && node scripts/smoke-chat.mjs",
     "smoke:deployed": "node scripts/smoke-deployed.mjs",
+    "smoke:invite-restart": "node scripts/smoke-invite-restart.mjs",
     "smoke:delivery": "npm run test:controller && node scripts/smoke-delivery.mjs",
     "smoke:ops": "node scripts/smoke-ops.mjs",
     "smoke:persistence": "node scripts/smoke-persistence.mjs",
@@ -36,6 +37,7 @@
     "start": "node server.mjs",
     "test": "npm run test:unit",
     "test:controller": "node --test deploy/tests/*.test.mjs",
+    "test:compat:v011": "node scripts/smoke-v011-rollback-compatibility.mjs",
     "test:ops": "node --test deploy/tests/operations-governance.test.mjs",
     "test:unit": "npm run test:unit:release && npm run test:unit:data && npm run test:unit:delivery",
     "test:unit:domain": "vitest run --config vitest.domain.config.ts --coverage",
@@ -85,9 +87,11 @@
     "jsdom": "29.1.1",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.4",
+    "terser": "5.49.0",
     "typescript": "^5.5.3",
     "vite": "^8.1.4",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "workbox-build": "7.4.1"
   },
   "overrides": {
     "js-yaml": "^4.1.2",

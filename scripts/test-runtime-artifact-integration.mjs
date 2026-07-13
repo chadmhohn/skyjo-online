@@ -81,6 +81,14 @@ try {
     controllerContract.entries.has('server-game-state-validation.mjs'),
     'The packaged artifact must include the persisted game-state validator imported at production startup.'
   );
+  assert.ok(
+    controllerContract.entries.has('server-invite-codes.mjs'),
+    'The packaged artifact must include the persistent invite-code module imported at production startup.'
+  );
+  assert.ok(
+    controllerContract.entries.has('server-room-invites.mjs'),
+    'The packaged artifact must include the signed room-invite module imported at production startup.'
+  );
   assert.ok(controllerContract.entries.has('node_modules/minimist/package.json'), 'The real production tree must exercise minimist pruning.');
   assert.equal(
     [...controllerContract.entries].some((entry) => entry.split('/').some(isForbiddenArchivePathSegment)),

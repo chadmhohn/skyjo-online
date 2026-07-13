@@ -1107,3 +1107,10 @@ test('artifact producer and live controller require the same operations scripts'
     assert.ok(REQUIRED_ARCHIVE_ENTRIES.has(script), `${script} must be required by the live controller`);
   }
 });
+
+test('artifact producer and live controller include invite runtime modules', () => {
+  for (const module of ['server-invite-codes.mjs', 'server-room-invites.mjs']) {
+    assert.ok(REQUIRED_ARCHIVE_FILES.includes(module), `${module} must be required by the artifact producer`);
+    assert.ok(REQUIRED_ARCHIVE_ENTRIES.has(module), `${module} must be required by the live controller`);
+  }
+});

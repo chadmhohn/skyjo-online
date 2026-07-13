@@ -83,6 +83,8 @@ const adminEmail = process.env.SKYJO_ADMIN_EMAIL || 'chad.hohn@groundworkrevops.
 const adminInitialPassword = process.env.SKYJO_ADMIN_INITIAL_PASSWORD || '';
 const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
 const trustProxyClientIp = process.env.SKYJO_TRUST_PROXY_CLIENT_IP === 'true';
+const testPwaVariantsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_VARIANTS === 'true';
+const testPwaNetworkFaultsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_NETWORK_FAULTS === 'true';
 const vapidPublicKey = process.env.SKYJO_VAPID_PUBLIC_KEY || '';
 const vapidPrivateKey = process.env.SKYJO_VAPID_PRIVATE_KEY || '';
 const vapidSubject = process.env.SKYJO_VAPID_SUBJECT || `mailto:${adminEmail}`;
@@ -139,9 +141,9 @@ const mimeTypes = new Map([
   ['.webp', 'image/webp']
 ]);
 
-if (!accessPassword || !sessionSecret) {
-  console.error('Missing SKYJO_ACCESS_PASSWORD or SKYJO_SESSION_SECRET.');
-  console.error('Set both env vars before running npm start.');
+if (!accessPassword || !sessionSecret || typeof inviteSecret !== 'string' || inviteSecret.length < 16) {
+  console.error('Skyjo authentication secrets are missing or invalid.');
+  console.error('Set the access, session, and invite secrets before running npm start.');
   process.exit(1);
 }
 
@@ -258,7 +260,12 @@ function accountToken(req) {
 }
 
 function isPublicPwaAsset(pathname) {
-  return pathname === '/manifest.webmanifest' || pathname === '/sw.js' || pathname.startsWith('/skyjo-icon');
+  return pathname === '/manifest.webmanifest' ||
+    pathname === '/sw.js' ||
+    pathname === '/offline.html' ||
+    /^\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg)$/.test(pathname) ||
+    /^\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/.test(pathname) ||
+    /^\/audio\/[A-Za-z0-9_.-]+\.mp3$/.test(pathname);
 }
 
 function currentAccountUser(req) {
@@ -286,6 +293,16 @@ function sendJsonResponse(res, status, payload, headers = {}) {
     'Content-Type': 'application/json; charset=utf-8',
     ...headers
   });
+}
+
+function testPwaWorkerSource(variant) {
+  return `const version=${JSON.stringify(variant)};
+self.addEventListener('install', () => {});
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKYJO_TEST_VERSION') event.ports[0]?.postMessage(version);
+  if (event.data?.type === 'SKYJO_ACTIVATE_UPDATE' && event.source) event.waitUntil(self.skipWaiting());
+});\n`;
 }
 
 function makeRoomCode(randomInt = crypto.randomInt) {
@@ -661,6 +678,7 @@ function renderPwaHead(title) {
   return `<meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0a1410" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Skyjo" />
@@ -1259,6 +1277,12 @@ async function serveStatic(req, res) {
     const stat = await fs.stat(filePath);
     if (stat.isDirectory()) filePath = path.join(filePath, 'index.html');
   } catch {
+    const acceptsHtml = String(req.headers.accept || '').includes('text/html');
+    const isSpaNavigation = req.method === 'GET' && acceptsHtml && path.extname(pathname) === '';
+    if (!isSpaNavigation) {
+      send(res, 404, 'Not found', { 'Content-Type': 'text/plain; charset=utf-8' });
+      return;
+    }
     filePath = path.join(distDir, 'index.html');
   }
 
@@ -1266,12 +1290,20 @@ async function serveStatic(req, res) {
     const data = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
     const fileName = path.basename(filePath);
-    const cacheControl = ext === '.html' || ext === '.webmanifest' || fileName === 'sw.js'
-      ? 'no-store'
-      : 'public, max-age=31536000, immutable';
+    const relativePath = path.relative(distDir, filePath).replaceAll(path.sep, '/');
+    const immutableAsset = /^assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/.test(relativePath);
+    const cacheControl = immutableAsset ? 'public, max-age=31536000, immutable' : 'no-store';
+    const htmlHeaders = ext === '.html'
+      ? {
+          'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        }
+      : {};
     send(res, 200, data, {
       'Cache-Control': cacheControl,
-      'Content-Type': mimeTypes.get(ext) || 'application/octet-stream'
+      'Content-Type': mimeTypes.get(ext) || 'application/octet-stream',
+      'Cross-Origin-Resource-Policy': 'same-origin',
+      ...(fileName === 'sw.js' ? { 'Service-Worker-Allowed': '/' } : {}),
+      ...htmlHeaders
     });
   } catch {
     send(res, 404, 'Not found', { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -1331,6 +1363,30 @@ const server = http.createServer(async (req, res) => {
       });
       sendJsonResponse(res, result.statusCode, result.payload, { 'Cache-Control': 'no-store' });
       return;
+    }
+
+    const testNetworkFault = testPwaNetworkFaultsEnabled &&
+      parseCookies(req.headers.cookie).get('skyjo_pwa_test_network_fault') === 'drop';
+    if (
+      testNetworkFault &&
+      (url.pathname.startsWith('/api/') || (
+        req.method === 'GET' && (url.pathname === '/' || url.pathname === '/single-player')
+      ))
+    ) {
+      req.socket.destroy();
+      return;
+    }
+
+    if (testPwaVariantsEnabled && url.pathname === '/sw.js') {
+      const variant = parseCookies(req.headers.cookie).get('skyjo_sw_test_variant');
+      if (variant === 'A' || variant === 'B') {
+        send(res, 200, testPwaWorkerSource(variant), {
+          'Cache-Control': 'no-store',
+          'Content-Type': 'application/javascript; charset=utf-8',
+          'Service-Worker-Allowed': '/'
+        });
+        return;
+      }
     }
 
     if (isPublicPwaAsset(url.pathname)) {
