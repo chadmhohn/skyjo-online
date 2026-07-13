@@ -13,7 +13,14 @@ export type RoomConnectionFrame = Record<string, unknown>;
 
 export type RoomConnectionSession =
   | { action: 'create-room'; name: string }
-  | { action: 'join-room'; code: string; name: string; playerId?: string; recoveryCommandId?: string };
+  | {
+      action: 'join-room';
+      code: string;
+      name: string;
+      playerId?: string;
+      recoveryCommandId?: string;
+      recoveryExpectedRevision?: number;
+    };
 
 export type SavedRoomConnectionSession = Extract<RoomConnectionSession, { action: 'join-room' }> & {
   playerId: string;

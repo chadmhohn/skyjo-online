@@ -2,6 +2,13 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import App from '../../../src/App';
+import {
+  RESET_RECOVERY_MAX_SERIALIZED_LENGTH,
+  RESET_RECOVERY_STORAGE_KEY,
+  parseResetRecoveryHint,
+  serializeResetRecoveryHint,
+  type ResetRecoveryHint
+} from '../../../src/resetRecovery';
 import type { AccountUser } from '../../../src/account';
 import {
   createRoomSnapshot,
@@ -81,6 +88,15 @@ const accountUser: AccountUser = {
   createdAt: 1,
   updatedAt: 2,
   lastLoginAt: 3
+};
+
+const savedRecoveryPlayerId = '00000000-0000-4000-8000-000000000001';
+const savedRecoveryCommandId = '10000000-0000-4000-8000-000000000001';
+const validResetRecoveryHint: ResetRecoveryHint = {
+  fromCode: 'ABCDE',
+  playerId: savedRecoveryPlayerId,
+  commandId: savedRecoveryCommandId,
+  expectedRevision: 7
 };
 
 function makeCard(id: string, value: number, faceUp = false, removed = false): Card {
@@ -317,6 +333,92 @@ afterEach(() => {
 });
 
 describe('multiplayer lobby', () => {
+  it('serializes and parses only the exact bounded reset recovery hint contract', () => {
+    const serialized = serializeResetRecoveryHint(validResetRecoveryHint);
+    expect(serialized).toBe(
+      `{"fromCode":"ABCDE","playerId":"${savedRecoveryPlayerId}","commandId":"${savedRecoveryCommandId}","expectedRevision":7}`
+    );
+    expect(parseResetRecoveryHint(serialized)).toEqual(validResetRecoveryHint);
+    const boundaryValue = serialized.padEnd(RESET_RECOVERY_MAX_SERIALIZED_LENGTH, ' ');
+    expect(parseResetRecoveryHint(boundaryValue)).toEqual(validResetRecoveryHint);
+    expect(parseResetRecoveryHint(`${boundaryValue} `)).toBeNull();
+
+    for (const malformed of [
+      null,
+      '',
+      '{',
+      JSON.stringify({ ...validResetRecoveryHint, extra: true }),
+      JSON.stringify({ ...validResetRecoveryHint, fromCode: 'abcde' }),
+      JSON.stringify({ ...validResetRecoveryHint, playerId: 'not-a-uuid' }),
+      JSON.stringify({ ...validResetRecoveryHint, commandId: 'not-a-uuid' }),
+      JSON.stringify({ ...validResetRecoveryHint, expectedRevision: -1 }),
+      JSON.stringify({ ...validResetRecoveryHint, expectedRevision: 1.5 }),
+      JSON.stringify({ ...validResetRecoveryHint, expectedRevision: Number.MAX_SAFE_INTEGER })
+    ]) {
+      expect(parseResetRecoveryHint(malformed)).toBeNull();
+    }
+    expect(() => serializeResetRecoveryHint({ ...validResetRecoveryHint, expectedRevision: -1 })).toThrow(
+      /invalid reset recovery hint/i
+    );
+  });
+
+  it('removes a malformed persisted recovery hint before saved-seat boot', async () => {
+    window.localStorage.setItem('skyjo-room-code', 'ABCDE');
+    window.localStorage.setItem('skyjo-player-id', savedRecoveryPlayerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, '{');
+    await renderLobby();
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
+    const socket = openSocket();
+    expect(lastFrame(socket)).toEqual({
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: savedRecoveryPlayerId
+    });
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
+  });
+
+  it.each([
+    ['room code', { ...validResetRecoveryHint, fromCode: 'FGHIJ' }],
+    [
+      'player seat',
+      { ...validResetRecoveryHint, playerId: '00000000-0000-4000-8000-000000000002' }
+    ]
+  ])('removes a recovery hint that mismatches the saved %s', async (_label, hint) => {
+    window.localStorage.setItem('skyjo-room-code', 'ABCDE');
+    window.localStorage.setItem('skyjo-player-id', savedRecoveryPlayerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serializeResetRecoveryHint(hint));
+    await renderLobby();
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
+    const socket = openSocket();
+    expect(lastFrame(socket)).not.toHaveProperty('recoveryCommandId');
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
+  });
+
+  it('boots a matching saved reset hint onto the join wire without exposing its internal revision', async () => {
+    const serialized = serializeResetRecoveryHint(validResetRecoveryHint);
+    window.localStorage.setItem('skyjo-room-code', 'ABCDE');
+    window.localStorage.setItem('skyjo-player-id', savedRecoveryPlayerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serialized);
+    await renderLobby();
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
+    const socket = openSocket();
+    expect(lastFrame(socket)).toEqual({
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: savedRecoveryPlayerId,
+      recoveryCommandId: savedRecoveryCommandId
+    });
+    expect(lastFrame(socket)).not.toHaveProperty('recoveryExpectedRevision');
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(serialized);
+  });
+
   it('requires an account and preserves a sanitized shared room in the sign-in handoff', async () => {
     await renderLobby(null, '/lobby?room=a-b_c!12-extra');
 

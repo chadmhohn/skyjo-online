@@ -39,6 +39,7 @@ import {
   type RoomConnectionSocket,
   type RoomConnectionState
 } from './roomConnection';
+import { parseResetRecoveryHint, RESET_RECOVERY_STORAGE_KEY } from './resetRecovery';
 import {
   MULTIPLAYER_PROTOCOL_VERSION,
   multiplayerRoomForRender,
@@ -2387,6 +2388,8 @@ function MultiplayerConnectionStatus({ state, roomActive }: { state: RoomConnect
 type InitialLobbySession = {
   joinCode: string;
   playerId: string;
+  recoveryCommandId?: string;
+  recoveryExpectedRevision?: number;
   roomCode: string;
 };
 
@@ -2420,11 +2423,27 @@ function getInitialLobbySession(): InitialLobbySession {
   const savedPlayerId = window.localStorage.getItem('skyjo-player-id') || '';
   const sharedRoomCode = cleanRoomCode(new URLSearchParams(window.location.search).get('room'));
   const useSavedSession = !sharedRoomCode || sharedRoomCode === savedRoomCode;
+  const roomCode = useSavedSession ? savedRoomCode : '';
+  const playerId = useSavedSession ? savedPlayerId : '';
+  const rawRecoveryHint = window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY);
+  const recoveryHint = parseResetRecoveryHint(rawRecoveryHint);
+  const useRecoveryHint = Boolean(
+    recoveryHint && recoveryHint.fromCode === roomCode && recoveryHint.playerId === playerId
+  );
+  if (rawRecoveryHint !== null && !useRecoveryHint) {
+    window.localStorage.removeItem(RESET_RECOVERY_STORAGE_KEY);
+  }
 
   return {
     joinCode: sharedRoomCode || savedRoomCode,
-    playerId: useSavedSession ? savedPlayerId : '',
-    roomCode: useSavedSession ? savedRoomCode : ''
+    playerId,
+    roomCode,
+    ...(useRecoveryHint && recoveryHint
+      ? {
+          recoveryCommandId: recoveryHint.commandId,
+          recoveryExpectedRevision: recoveryHint.expectedRevision
+        }
+      : {})
   };
 }
 
@@ -2518,7 +2537,13 @@ function Lobby() {
         action: 'join-room',
         code: roomCodeRef.current,
         name: accountUser.displayName,
-        playerId: playerIdRef.current
+        playerId: playerIdRef.current,
+        ...(initialLobby.recoveryCommandId && initialLobby.recoveryExpectedRevision !== undefined
+          ? {
+              recoveryCommandId: initialLobby.recoveryCommandId,
+              recoveryExpectedRevision: initialLobby.recoveryExpectedRevision
+            }
+          : {})
       });
     }
     controller.setOnline(navigator.onLine !== false);
@@ -2527,7 +2552,7 @@ function Lobby() {
       if (connectionControllerRef.current === controller) connectionControllerRef.current = null;
       controller.dispose();
     };
-  }, [accountUser]);
+  }, [accountUser, initialLobby.recoveryCommandId, initialLobby.recoveryExpectedRevision]);
 
   useEffect(() => {
     playerIdRef.current = playerId;
