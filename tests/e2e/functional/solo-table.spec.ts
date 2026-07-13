@@ -69,3 +69,24 @@ test('solo progress survives refresh and a service-worker update without auto-di
   await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
   await expect(page.getByRole('button', { name: /Reveal opening card/ }).filter({ visible: true })).toHaveCount(11);
 });
+
+test('repeated responsive captures explicitly start a new durable game', async ({ page, skyjoServer }) => {
+  await installSeededBrowserRuntime(page, 60);
+  const opponentRosters: string[][] = [];
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 820, height: 1180 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`${skyjoServer.baseURL}/single-player`);
+    const gameTable = page.locator('[data-testid="game-table"]');
+    const resumeChoice = page.locator('[data-testid="solo-resume-choice"]');
+    await expect(gameTable.or(resumeChoice)).toBeVisible();
+    if (await resumeChoice.isVisible()) {
+      await page.getByRole('button', { name: 'New Game' }).click();
+    }
+    await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+    opponentRosters.push(await page.locator('[data-testid="opponent-rail"] h2').allTextContents());
+  }
+  expect(opponentRosters[1]).toEqual(opponentRosters[0]);
+});

@@ -17,6 +17,12 @@ test('single-player table matches canonical responsive baselines', async ({ page
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await page.goto(`${skyjoServer.baseURL}/single-player`);
+    const gameTable = page.locator('[data-testid="game-table"]');
+    const resumeChoice = page.locator('[data-testid="solo-resume-choice"]');
+    await expect(gameTable.or(resumeChoice)).toBeVisible();
+    if (await resumeChoice.isVisible()) {
+      await page.getByRole('button', { name: 'New Game' }).click();
+    }
     await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
     await expect(page).toHaveScreenshot(`single-player-${viewport.width}x${viewport.height}.png`, {
       fullPage: true
