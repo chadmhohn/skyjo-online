@@ -1,4 +1,4 @@
-/* global __ENV, __VU */
+/* global __ENV, __VU, open */
 import http from 'k6/http';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import { WebSocket } from 'k6/websockets';
@@ -9,6 +9,7 @@ const durationSeconds = integerEnvironment('SKYJO_LOAD_DURATION_SECONDS', 600, 1
 const expectedClients = rooms * clientsPerRoom;
 const expectedMarkers = rooms * durationSeconds;
 const expectedObservations = expectedMarkers * clientsPerRoom;
+const authenticationDocument = loadAuthenticationDocument();
 
 const clientsConnected = new Counter('skyjo_clients_connected');
 const errorCount = new Counter('skyjo_load_errors');
@@ -20,6 +21,7 @@ const propagation = new Trend('skyjo_propagation_ms', true);
 const revisionDivergences = new Counter('skyjo_revision_divergences');
 const roomsCompleted = new Counter('skyjo_rooms_completed');
 const roomsStarted = new Counter('skyjo_rooms_started');
+const sessionsVerified = new Counter('skyjo_sessions_verified');
 
 export const options = {
   discardResponseBodies: false,
@@ -44,7 +46,8 @@ export const options = {
     skyjo_propagation_ms: ['p(95)<=250'],
     skyjo_revision_divergences: ['count==0'],
     skyjo_rooms_completed: [`count==${rooms}`],
-    skyjo_rooms_started: [`count==${rooms}`]
+    skyjo_rooms_started: [`count==${rooms}`],
+    skyjo_sessions_verified: [`count==${expectedClients}`]
   }
 };
 
@@ -63,11 +66,21 @@ function requiredEnvironment(name) {
   return value;
 }
 
-function cookieValue(response, name) {
-  const values = response.cookies?.[name];
-  const value = Array.isArray(values) ? values[0]?.value : undefined;
-  if (typeof value !== 'string' || !value) throw new Error('Certification authentication did not set its expected cookie.');
-  return value;
+function exactKeys(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function loadAuthenticationDocument() {
+  let document;
+  try {
+    document = JSON.parse(open(requiredEnvironment('SKYJO_LOAD_AUTH_FILE')));
+  } catch {
+    throw new Error('Load authentication bootstrap document is unavailable or invalid.');
+  }
+  return document;
 }
 
 function assertHttpStatus(response, expected, label) {
@@ -77,11 +90,25 @@ function assertHttpStatus(response, expected, label) {
 export function setup() {
   const baseUrl = requiredEnvironment('SKYJO_LOAD_BASE_URL').replace(/\/$/, '');
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(baseUrl)) throw new Error('Load certification may target only an isolated localhost server.');
-  const accessPassword = requiredEnvironment('SKYJO_LOAD_ACCESS_PASSWORD');
   const sourceSha = requiredEnvironment('SKYJO_RELEASE_SHA');
   if (!/^[a-f0-9]{40}$/.test(sourceSha)) throw new Error('Load certification requires a full source SHA.');
   const siteCookieName = requiredEnvironment('SKYJO_LOAD_SITE_COOKIE_NAME');
   const accountCookieName = requiredEnvironment('SKYJO_LOAD_ACCOUNT_COOKIE_NAME');
+
+  if (
+    !exactKeys(authenticationDocument, ['clientCookies', 'formatVersion', 'kind', 'releaseSha', 'topology']) ||
+    authenticationDocument.formatVersion !== 1 ||
+    authenticationDocument.kind !== 'skyjo-load-authentication' ||
+    authenticationDocument.releaseSha !== sourceSha ||
+    !exactKeys(authenticationDocument.topology, ['clients', 'clientsPerRoom', 'rooms']) ||
+    authenticationDocument.topology.rooms !== rooms ||
+    authenticationDocument.topology.clientsPerRoom !== clientsPerRoom ||
+    authenticationDocument.topology.clients !== expectedClients ||
+    !Array.isArray(authenticationDocument.clientCookies) ||
+    authenticationDocument.clientCookies.length !== expectedClients
+  ) {
+    throw new Error('Load authentication bootstrap identity or topology is invalid.');
+  }
 
   const versionResponse = http.get(`${baseUrl}/version`, { redirects: 0, tags: { operation: 'release-identity' } });
   assertHttpStatus(versionResponse, 200, 'Release identity');
@@ -90,37 +117,31 @@ export function setup() {
     throw new Error('Load target release identity does not match the tested source.');
   }
 
-  const access = http.post(
-    `${baseUrl}/login`,
-    { next: '/', password: accessPassword },
-    { redirects: 0, tags: { operation: 'access-login' } }
-  );
-  assertHttpStatus(access, 303, 'Access login');
-  const siteCookie = cookieValue(access, siteCookieName);
-  const clientCookies = [];
+  const clientCookies = authenticationDocument.clientCookies;
+  const userIds = {};
   for (let index = 0; index < expectedClients; index += 1) {
-    const roomIndex = Math.floor(index / clientsPerRoom) + 1;
-    const seatIndex = (index % clientsPerRoom) + 1;
-    const signup = http.post(
-      `${baseUrl}/api/account/signup`,
-      JSON.stringify({
-        email: `cert-${String(roomIndex).padStart(2, '0')}-${String(seatIndex).padStart(2, '0')}@example.test`,
-        displayName: `R${String(roomIndex).padStart(2, '0')} Seat ${seatIndex}`,
-        password: 'certification-account-password',
-        confirmPassword: 'certification-account-password'
-      }),
-      {
-        redirects: 0,
-        headers: {
-          Cookie: `${siteCookieName}=${siteCookie}`,
-          'Content-Type': 'application/json'
-        },
-        tags: { operation: 'account-provision' }
-      }
-    );
-    assertHttpStatus(signup, 201, 'Account provisioning');
-    const accountCookie = cookieValue(signup, accountCookieName);
-    clientCookies.push(`${siteCookieName}=${siteCookie}; ${accountCookieName}=${accountCookie}`);
+    const cookie = clientCookies[index];
+    if (
+      typeof cookie !== 'string' ||
+      cookie.length > 4096 ||
+      /[\r\n]/.test(cookie) ||
+      !cookie.includes(`${siteCookieName}=`) ||
+      !cookie.includes(`${accountCookieName}=`)
+    ) {
+      throw new Error('Load authentication bootstrap contains an invalid session.');
+    }
+    const proof = http.get(`${baseUrl}/api/account/me`, {
+      redirects: 0,
+      headers: { Cookie: cookie },
+      tags: { operation: 'account-session-proof' }
+    });
+    assertHttpStatus(proof, 200, 'Account session proof');
+    const userId = proof.json()?.user?.id;
+    if (typeof userId !== 'string' || !userId || userIds[userId]) {
+      throw new Error('Load authentication sessions are not distinct accounts.');
+    }
+    userIds[userId] = true;
+    sessionsVerified.add(1);
   }
 
   return {
@@ -202,7 +223,8 @@ export function handleSummary(data) {
       propagationP95Ms: finiteMetric(data, 'skyjo_propagation_ms', 'p(95)', -1),
       revisionDivergences: finiteMetric(data, 'skyjo_revision_divergences', 'count', -1),
       roomsCompleted: finiteMetric(data, 'skyjo_rooms_completed', 'count', -1),
-      roomsStarted: finiteMetric(data, 'skyjo_rooms_started', 'count', -1)
+      roomsStarted: finiteMetric(data, 'skyjo_rooms_started', 'count', -1),
+      sessionsVerified: finiteMetric(data, 'skyjo_sessions_verified', 'count', -1)
     },
     thresholdsPassed: allExpectedThresholdsPassed(data)
   };

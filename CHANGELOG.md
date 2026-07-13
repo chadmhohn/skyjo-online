@@ -7,7 +7,7 @@
 - Added durable solo sessions, an account-partitioned statistics outbox, persistent invite install codes, offline solo launch, and safe update handoff.
 - Centered the deck, discard pile, and action guidance between opponents and the local board across phone, tablet, and desktop layouts.
 - Completed keyboard, VoiceOver-oriented semantics, modal focus, 200% text, reduced-motion, touch-target, and large-roster interaction polish.
-- Added exact-topology realtime load, measured SIGKILL persistence recovery, eight-client persona, nightly certification, and immutable release-evidence gates.
+- Added exact-topology realtime load with process-stage RSS evidence, measured SIGKILL persistence recovery, eight-client persona, nightly certification, and immutable release-evidence gates.
 
 ## 0.1.1 - 2026-07-12
 

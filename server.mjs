@@ -34,6 +34,7 @@ import {
 } from './server-dist/serverRoomLifecycle.js';
 import {
   createRoomSnapshot,
+  hasPrivateDrawnCardVisibility,
   MULTIPLAYER_PROTOCOL_VERSION
 } from './server-dist/protocolV2.js';
 import {
@@ -441,9 +442,24 @@ function sendJson(ws, payload) {
   sendRealtimeJson(ws, payload);
 }
 
+function roomSnapshotVisibility(room, playerId) {
+  return hasPrivateDrawnCardVisibility(room.state, playerId)
+    ? `private:${playerId}`
+    : 'public';
+}
+
 function broadcastRoom(room) {
+  const snapshots = new Map();
+  const serverNow = Date.now();
   for (const client of room.clients) {
-    sendRoomSnapshot(client, room);
+    if (!client.playerId) continue;
+    const visibility = roomSnapshotVisibility(room, client.playerId);
+    let snapshot = snapshots.get(visibility);
+    if (!snapshot) {
+      snapshot = createRoomSnapshot(room, client.playerId, serverNow, lifecyclePolicy);
+      snapshots.set(visibility, snapshot);
+    }
+    sendRoomSnapshot(client, room, {}, snapshot);
   }
 }
 
@@ -451,7 +467,7 @@ function sendCurrentRoom(ws, room) {
   sendRoomSnapshot(ws, room);
 }
 
-function sendRoomSnapshot(ws, room, options = {}) {
+function sendRoomSnapshot(ws, room, options = {}, preparedSnapshot = null) {
   if (!ws.playerId || !room.players.some((player) => player.id === ws.playerId)) return false;
   const type = options.type === 'resync' ? 'resync' : 'snapshot';
   const payload = {
@@ -459,7 +475,7 @@ function sendRoomSnapshot(ws, room, options = {}) {
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
     playerId: ws.playerId,
     revision: room.revision,
-    room: createRoomSnapshot(room, ws.playerId, Date.now(), lifecyclePolicy),
+    room: preparedSnapshot || createRoomSnapshot(room, ws.playerId, Date.now(), lifecyclePolicy),
     ...(type === 'resync'
       ? {
           reason: options.reason || 'revision-mismatch',

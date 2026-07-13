@@ -3,6 +3,7 @@ import {
   MULTIPLAYER_PROTOCOL_VERSION,
   PUBLIC_SNAPSHOT_LIMITS,
   createRoomSnapshot,
+  hasPrivateDrawnCardVisibility,
   multiplayerRoomForRender,
   parseClientCommand,
   redactGameState,
@@ -193,6 +194,7 @@ describe('protocol v2 player-specific projection', () => {
     const drawn = apply(openedState(), 'p1', { type: 'draw-blind' });
     const alice = createRoomSnapshot(roomWithState(drawn), 'p1');
     const bob = createRoomSnapshot(roomWithState(drawn), 'p2');
+    const otherViewerIds = ['p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'];
 
     expect(alice.state?.drawPileCount).toBe(drawn.drawPile.length);
     expect(alice.state).not.toHaveProperty('drawPile');
@@ -209,9 +211,14 @@ describe('protocol v2 player-specific projection', () => {
     ];
     internalIds.forEach((id) => expect(JSON.stringify(alice)).not.toContain(`"${id}"`));
     expect(alice.state?.drawnCard?.value).toBe(drawn.drawnCard?.value);
+    expect(hasPrivateDrawnCardVisibility(drawn, 'p1')).toBe(true);
+    expect(otherViewerIds.every((viewerId) => !hasPrivateDrawnCardVisibility(drawn, viewerId))).toBe(true);
     expect(bob.state?.drawnCard).toBeNull();
     expect(bob.state?.hasDrawnCard).toBe(true);
     expect(JSON.stringify(bob)).not.toContain(String(drawn.drawnCard?.id));
+    for (const viewerId of otherViewerIds.slice(1)) {
+      expect(createRoomSnapshot(roomWithState(drawn), viewerId)).toEqual(bob);
+    }
   });
 
   it('sanitizes historical numeric draw logs before, during, and after later moves', () => {

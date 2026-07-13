@@ -155,12 +155,14 @@ export function validateK6CertificationSummary(value) {
     'propagationP95Ms',
     'revisionDivergences',
     'roomsCompleted',
-    'roomsStarted'
+    'roomsStarted',
+    'sessionsVerified'
   ], 'k6 metrics');
   const metrics = value.metrics;
   exactNumber(metrics.roomsStarted, CERTIFICATION_LIMITS.rooms, 'Started rooms');
   exactNumber(metrics.roomsCompleted, CERTIFICATION_LIMITS.rooms, 'Completed rooms');
   exactNumber(metrics.clientsConnected, CERTIFICATION_LIMITS.clients, 'Connected clients');
+  exactNumber(metrics.sessionsVerified, CERTIFICATION_LIMITS.clients, 'Authenticated sessions');
   exactNumber(metrics.markersSent, CERTIFICATION_LIMITS.markers, 'Sent markers');
   exactNumber(metrics.markerObservations, CERTIFICATION_LIMITS.observations, 'Marker observations');
   exactNumber(metrics.iterations, CERTIFICATION_LIMITS.rooms, 'Completed k6 iterations');
@@ -266,14 +268,88 @@ export function validateRecoveryCertification(value) {
   return value;
 }
 
-export function createAutomatedCertificationEvidence({ release, k6Summary, maxRssKib, recovery, persona }) {
+function validateRssStage(value, expectedName, measuredForGate) {
+  assertExactKeys(value, [
+    'measuredForGate',
+    'name',
+    'peakElapsedMs',
+    'peakRssKib',
+    'sampleIntervalMs',
+    'samples'
+  ], `RSS stage ${expectedName}`);
+  exactString(value.name, expectedName, 'RSS stage name');
+  exactBoolean(value.measuredForGate, measuredForGate, `RSS stage ${expectedName} measuredForGate`);
+  finiteNumber(value.peakRssKib, `RSS stage ${expectedName} peak`, { integer: true, minimum: 1 });
+  finiteNumber(value.peakElapsedMs, `RSS stage ${expectedName} peak time`, { integer: true });
+  finiteNumber(value.sampleIntervalMs, `RSS stage ${expectedName} sample interval`, { integer: true, minimum: 100 });
+  if (value.sampleIntervalMs > 60_000) throw new Error('RSS sample interval exceeds one minute.');
+  if (!Array.isArray(value.samples) || value.samples.length < 1 || value.samples.length > 256) {
+    throw new Error('RSS stage must contain between one and 256 bounded samples.');
+  }
+  let previousElapsedMs = -1;
+  for (const sample of value.samples) {
+    assertExactKeys(sample, ['elapsedMs', 'rssKib'], `RSS stage ${expectedName} sample`);
+    finiteNumber(sample.elapsedMs, `RSS stage ${expectedName} sample time`, { integer: true });
+    finiteNumber(sample.rssKib, `RSS stage ${expectedName} sample`, { integer: true, minimum: 1 });
+    if (sample.elapsedMs <= previousElapsedMs) throw new Error('RSS sample times must increase strictly.');
+    if (sample.rssKib > value.peakRssKib) throw new Error('RSS sample exceeds the recorded stage peak.');
+    previousElapsedMs = sample.elapsedMs;
+  }
+  if (value.peakElapsedMs > previousElapsedMs + value.sampleIntervalMs) {
+    throw new Error('RSS peak time falls outside the sampled stage boundary.');
+  }
+  return value;
+}
+
+export function createRssStageEvidence({ sourceSha, accountBootstrap, authenticatedLoad }) {
+  const evidence = {
+    formatVersion: CERTIFICATION_FORMAT_VERSION,
+    kind: 'skyjo-rss-stage-evidence',
+    limitKibExclusive: CERTIFICATION_LIMITS.rssKibExclusive,
+    sourceSha,
+    authenticatedLoadPassed: authenticatedLoad.peakRssKib < CERTIFICATION_LIMITS.rssKibExclusive,
+    stages: [accountBootstrap, authenticatedLoad]
+  };
+  return validateRssStageEvidence(evidence);
+}
+
+export function validateRssStageEvidence(value) {
+  assertExactKeys(value, [
+    'authenticatedLoadPassed',
+    'formatVersion',
+    'kind',
+    'limitKibExclusive',
+    'sourceSha',
+    'stages'
+  ], 'RSS stage evidence');
+  exactNumber(value.formatVersion, CERTIFICATION_FORMAT_VERSION, 'RSS evidence format version');
+  exactString(value.kind, 'skyjo-rss-stage-evidence', 'RSS evidence kind');
+  exactNumber(value.limitKibExclusive, CERTIFICATION_LIMITS.rssKibExclusive, 'RSS limit');
+  if (!fullShaPattern.test(value.sourceSha)) throw new Error('RSS source SHA must be a full lowercase commit SHA.');
+  if (!Array.isArray(value.stages) || value.stages.length !== 2) {
+    throw new Error('RSS evidence must contain exactly two process stages.');
+  }
+  validateRssStage(value.stages[0], 'account-bootstrap', false);
+  validateRssStage(value.stages[1], 'authenticated-load', true);
+  exactBoolean(
+    value.authenticatedLoadPassed,
+    value.stages[1].peakRssKib < CERTIFICATION_LIMITS.rssKibExclusive,
+    'Authenticated load RSS result'
+  );
+  assertSanitizedCertificationValue(value);
+  return value;
+}
+
+export function createAutomatedCertificationEvidence({ release, k6Summary, rss, recovery, persona }) {
   validateReleaseCertificationIdentity(release);
   validateK6CertificationSummary(k6Summary);
+  validateRssStageEvidence(rss);
   validateRecoveryCertification(recovery);
   validateEightClientPersonaEvidence(persona);
-  finiteNumber(maxRssKib, 'Maximum application RSS', { integer: true, minimum: 1 });
-  if (maxRssKib >= CERTIFICATION_LIMITS.rssKibExclusive) throw new Error('Application RSS must remain below 256 MiB.');
+  if (!rss.authenticatedLoadPassed) throw new Error('Authenticated load RSS must remain below 256 MiB.');
+  const maxRssKib = rss.stages[1].peakRssKib;
   if (persona.release.sourceSha !== release.sourceSha) throw new Error('Persona evidence belongs to a different source SHA.');
+  if (rss.sourceSha !== release.sourceSha) throw new Error('RSS evidence belongs to a different source SHA.');
 
   const evidence = {
     formatVersion: CERTIFICATION_FORMAT_VERSION,
@@ -293,6 +369,7 @@ export function createAutomatedCertificationEvidence({ release, k6Summary, maxRs
     },
     recovery,
     persona,
+    rss,
     gates: {
       exactTopology: true,
       finiteMeasurements: true,
@@ -310,7 +387,7 @@ export function createAutomatedCertificationEvidence({ release, k6Summary, maxRs
 }
 
 export function validateAutomatedCertificationEvidence(value) {
-  assertExactKeys(value, ['formatVersion', 'gates', 'kind', 'load', 'persona', 'recovery', 'release', 'topology'], 'Automated certification evidence');
+  assertExactKeys(value, ['formatVersion', 'gates', 'kind', 'load', 'persona', 'recovery', 'release', 'rss', 'topology'], 'Automated certification evidence');
   exactNumber(value.formatVersion, CERTIFICATION_FORMAT_VERSION, 'Certification format version');
   exactString(value.kind, 'skyjo-pwa-automated-certification', 'Certification evidence kind');
   validateReleaseCertificationIdentity(value.release);
@@ -336,7 +413,8 @@ export function validateAutomatedCertificationEvidence(value) {
     'propagationP95Ms',
     'revisionDivergences',
     'roomsCompleted',
-    'roomsStarted'
+    'roomsStarted',
+    'sessionsVerified'
   ], 'Certification load evidence');
   validateK6CertificationSummary({
     formatVersion: CERTIFICATION_FORMAT_VERSION,
@@ -348,6 +426,14 @@ export function validateAutomatedCertificationEvidence(value) {
   });
   finiteNumber(value.load.maxRssKib, 'Maximum application RSS', { integer: true, minimum: 1 });
   if (value.load.maxRssKib >= CERTIFICATION_LIMITS.rssKibExclusive) throw new Error('Application RSS must remain below 256 MiB.');
+  validateRssStageEvidence(value.rss);
+  if (
+    value.rss.sourceSha !== value.release.sourceSha ||
+    !value.rss.authenticatedLoadPassed ||
+    value.rss.stages[1].peakRssKib !== value.load.maxRssKib
+  ) {
+    throw new Error('Authenticated load RSS evidence does not match the release peak.');
+  }
   validateRecoveryCertification(value.recovery);
   validateEightClientPersonaEvidence(value.persona);
   if (value.persona.release.sourceSha !== value.release.sourceSha) throw new Error('Persona source SHA does not match release source SHA.');
@@ -380,6 +466,20 @@ export function serializeCertificationEvidence(value) {
   return `${JSON.stringify(sortedValue(value), null, 2)}\n`;
 }
 
+export function serializeRssStageEvidence(value) {
+  validateRssStageEvidence(value);
+  return `${JSON.stringify(sortedValue(value), null, 2)}\n`;
+}
+
+export function assertRssStageEvidenceMatchesCertification(certification, rssEvidence) {
+  validateAutomatedCertificationEvidence(certification);
+  validateRssStageEvidence(rssEvidence);
+  if (serializeRssStageEvidence(certification.rss) !== serializeRssStageEvidence(rssEvidence)) {
+    throw new Error('Standalone RSS evidence does not exactly match combined certification evidence.');
+  }
+  return rssEvidence;
+}
+
 export function certificationSha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
@@ -392,6 +492,39 @@ export async function writeCertificationEvidence(filePath, value) {
   const checksumPath = `${filePath}.sha256`;
   await fs.writeFile(checksumPath, `${digest}  ${path.basename(filePath)}\n`, { encoding: 'utf8', mode: 0o600 });
   return { digest, checksumPath };
+}
+
+export async function writeRssStageEvidence(filePath, value) {
+  const data = serializeRssStageEvidence(value);
+  const digest = certificationSha256(data);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, data, { encoding: 'utf8', mode: 0o600 });
+  const checksumPath = `${filePath}.sha256`;
+  await fs.writeFile(checksumPath, `${digest}  ${path.basename(filePath)}\n`, { encoding: 'utf8', mode: 0o600 });
+  return { digest, checksumPath };
+}
+
+export async function readVerifiedRssStageEvidence(filePath, checksumPath = `${filePath}.sha256`) {
+  const [data, checksum] = await Promise.all([
+    fs.readFile(filePath, 'utf8'),
+    fs.readFile(checksumPath, 'utf8')
+  ]);
+  const expectedName = path.basename(filePath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = checksum.match(new RegExp(`^([a-f0-9]{64})  ${expectedName}\\n$`));
+  if (!match || !sha256Pattern.test(match[1])) throw new Error('RSS evidence checksum file is invalid.');
+  const actual = certificationSha256(data);
+  if (!crypto.timingSafeEqual(Buffer.from(match[1]), Buffer.from(actual))) {
+    throw new Error('RSS evidence checksum mismatch.');
+  }
+  let decoded;
+  try {
+    decoded = JSON.parse(data);
+  } catch {
+    throw new Error('RSS evidence is not valid JSON.');
+  }
+  validateRssStageEvidence(decoded);
+  if (serializeRssStageEvidence(decoded) !== data) throw new Error('RSS evidence is not canonically serialized.');
+  return { evidence: decoded, digest: actual };
 }
 
 export async function readVerifiedCertificationEvidence(filePath, checksumPath = `${filePath}.sha256`) {

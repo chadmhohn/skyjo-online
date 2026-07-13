@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import {
   MAX_INBOUND_CLIENT_FRAME_BYTES,
   MULTIPLAYER_PROTOCOL_VERSION
@@ -106,7 +107,7 @@ export function sendRealtimeJson(
   try {
     const serialized = JSON.stringify(payload);
     if (typeof serialized !== 'string') return false;
-    if (new TextEncoder().encode(serialized).byteLength > maxPayloadBytes) {
+    if (Buffer.byteLength(serialized, 'utf8') > maxPayloadBytes) {
       closeOversizedSocket(socket);
       return false;
     }
@@ -132,7 +133,7 @@ function parseRealtimeFrame(
   if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes <= 0) {
     return { message: null, oversized: false };
   }
-  if (new TextEncoder().encode(payload).byteLength > maxPayloadBytes) {
+  if (Buffer.byteLength(payload, 'utf8') > maxPayloadBytes) {
     return { message: null, oversized: true };
   }
   let message: unknown;

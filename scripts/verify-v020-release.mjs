@@ -3,7 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { readVerifiedCertificationEvidence } from './certification-lib.mjs';
+import {
+  assertRssStageEvidenceMatchesCertification,
+  readVerifiedCertificationEvidence,
+  readVerifiedRssStageEvidence
+} from './certification-lib.mjs';
 import { loadReleaseIdentity } from '../server-release.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -15,13 +19,23 @@ function parseArguments(argv) {
     evidence: path.join(root, 'test-results', 'certification', 'automated.json'),
     productionBaseUrl: '',
     releaseSha: '',
+    rssChecksum: path.join(root, 'test-results', 'certification', 'rss-stages.json.sha256'),
+    rssEvidence: path.join(root, 'test-results', 'certification', 'rss-stages.json'),
     tag: ''
   };
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index];
     const value = argv[index + 1];
-    if (!value || !['--checksum', '--evidence', '--production-base-url', '--release-sha', '--tag'].includes(name)) {
-      throw new Error('Usage: verify-v020-release --release-sha SHA [--evidence FILE --checksum FILE --tag v0.2.0 --production-base-url HTTPS_URL]');
+    if (!value || ![
+      '--checksum',
+      '--evidence',
+      '--production-base-url',
+      '--release-sha',
+      '--rss-checksum',
+      '--rss-evidence',
+      '--tag'
+    ].includes(name)) {
+      throw new Error('Usage: verify-v020-release --release-sha SHA [--evidence FILE --checksum FILE --rss-evidence FILE --rss-checksum FILE --tag v0.2.0 --production-base-url HTTPS_URL]');
     }
     const key = name.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     options[key] = value;
@@ -64,13 +78,14 @@ async function main() {
   if (checkoutOutput.trim().toLowerCase() !== options.releaseSha) {
     throw new Error('The checked-out source does not match the certified v0.2.0 commit.');
   }
-  const { evidence, digest } = await readVerifiedCertificationEvidence(
-    path.resolve(options.evidence),
-    path.resolve(options.checksum)
-  );
+  const [{ evidence, digest }, { evidence: rssEvidence }] = await Promise.all([
+    readVerifiedCertificationEvidence(path.resolve(options.evidence), path.resolve(options.checksum)),
+    readVerifiedRssStageEvidence(path.resolve(options.rssEvidence), path.resolve(options.rssChecksum))
+  ]);
   if (evidence.release.sourceSha !== options.releaseSha || evidence.release.version !== '0.2.0') {
     throw new Error('Certification evidence belongs to a different release.');
   }
+  assertRssStageEvidenceMatchesCertification(evidence, rssEvidence);
   const packageDocument = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
   if (packageDocument.version !== '0.2.0') throw new Error('package.json does not identify v0.2.0.');
   const changelog = await fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8');

@@ -376,10 +376,7 @@ function publicName(value: string): string {
 }
 
 export function redactGameState(state: GameState, viewerPlayerId: string): PublicGameStateSnapshot {
-  const activePlayer = state.players[state.currentPlayerIndex];
-  const viewerMaySeeDrawnCard = Boolean(
-    state.selectedSource === 'draw' && state.drawnCard && activePlayer?.id === viewerPlayerId
-  );
+  const viewerMaySeeDrawnCard = hasPrivateDrawnCardVisibility(state, viewerPlayerId);
   const log = state.log
     .slice(0, PUBLIC_SNAPSHOT_LIMITS.logEntries)
     .map((entry) => entry.replace(/^(.+) drew a -?\d+\.$/, '$1 drew a blind card.'))
@@ -425,6 +422,11 @@ export function redactGameState(state: GameState, viewerPlayerId: string): Publi
       }))
     }))
   };
+}
+
+export function hasPrivateDrawnCardVisibility(state: GameState | null, viewerPlayerId: string): boolean {
+  const activePlayer = state?.players[state.currentPlayerIndex];
+  return Boolean(state?.selectedSource === 'draw' && state.drawnCard && activePlayer?.id === viewerPlayerId);
 }
 
 interface SnapshotRoomSource extends Omit<

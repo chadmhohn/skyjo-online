@@ -6,14 +6,19 @@ import {
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
   K6_LINUX_AMD64_SHA256,
+  assertRssStageEvidenceMatchesCertification,
   assertSanitizedCertificationValue,
   createAutomatedCertificationEvidence,
+  createRssStageEvidence,
   readVerifiedCertificationEvidence,
+  readVerifiedRssStageEvidence,
   validateAutomatedCertificationEvidence,
   validateEightClientPersonaEvidence,
   validateK6CertificationSummary,
   validateRecoveryCertification,
-  writeCertificationEvidence
+  validateRssStageEvidence,
+  writeCertificationEvidence,
+  writeRssStageEvidence
 } from '../../../scripts/certification-lib.mjs';
 import { REQUIRED_CHECKS } from '../../../scripts/github-governance-lib.mjs';
 
@@ -51,7 +56,8 @@ function k6Summary() {
       propagationP95Ms: 125,
       revisionDivergences: 0,
       roomsCompleted: 20,
-      roomsStarted: 20
+      roomsStarted: 20,
+      sessionsVerified: 160
     },
     thresholdsPassed: true
   };
@@ -98,11 +104,39 @@ function recoveryEvidence() {
   };
 }
 
+function rssStageEvidence(authenticatedLoadPeak = 128_000) {
+  return createRssStageEvidence({
+    sourceSha,
+    accountBootstrap: {
+      name: 'account-bootstrap',
+      measuredForGate: false,
+      peakElapsedMs: 2_000,
+      peakRssKib: 300_000,
+      sampleIntervalMs: 2_000,
+      samples: [
+        { elapsedMs: 0, rssKib: 80_000 },
+        { elapsedMs: 2_000, rssKib: 300_000 }
+      ]
+    },
+    authenticatedLoad: {
+      name: 'authenticated-load',
+      measuredForGate: true,
+      peakElapsedMs: 5_000,
+      peakRssKib: authenticatedLoadPeak,
+      sampleIntervalMs: 5_000,
+      samples: [
+        { elapsedMs: 0, rssKib: 70_000 },
+        { elapsedMs: 5_000, rssKib: authenticatedLoadPeak }
+      ]
+    }
+  });
+}
+
 function automatedEvidence() {
   return createAutomatedCertificationEvidence({
     release: releaseIdentity(),
     k6Summary: k6Summary(),
-    maxRssKib: 128_000,
+    rss: rssStageEvidence(),
     recovery: recoveryEvidence(),
     persona: personaEvidence()
   });
@@ -112,11 +146,14 @@ describe('v0.2.0 certification evidence', () => {
   it('accepts only the exact finite release topology and thresholds', () => {
     expect(validateK6CertificationSummary(k6Summary())).toEqual(k6Summary());
     expect(validateRecoveryCertification(recoveryEvidence())).toEqual(recoveryEvidence());
+    expect(validateRssStageEvidence(rssStageEvidence())).toEqual(rssStageEvidence());
     expect(validateEightClientPersonaEvidence(personaEvidence())).toEqual(personaEvidence());
     expect(validateAutomatedCertificationEvidence(automatedEvidence())).toEqual(automatedEvidence());
+    expect(assertRssStageEvidenceMatchesCertification(automatedEvidence(), rssStageEvidence())).toEqual(rssStageEvidence());
 
     for (const mutate of [
       (summary: ReturnType<typeof k6Summary>) => { summary.metrics.clientsConnected = 159; },
+      (summary: ReturnType<typeof k6Summary>) => { summary.metrics.sessionsVerified = 159; },
       (summary: ReturnType<typeof k6Summary>) => { summary.metrics.errorRate = 0.001; },
       (summary: ReturnType<typeof k6Summary>) => { summary.metrics.propagationP95Ms = 250.01; },
       (summary: ReturnType<typeof k6Summary>) => { summary.metrics.revisionDivergences = 1; },
@@ -142,7 +179,7 @@ describe('v0.2.0 certification evidence', () => {
     expect(() => createAutomatedCertificationEvidence({
       release: releaseIdentity(),
       k6Summary: k6Summary(),
-      maxRssKib: CERTIFICATION_LIMITS.rssKibExclusive,
+      rss: rssStageEvidence(CERTIFICATION_LIMITS.rssKibExclusive),
       recovery: recoveryEvidence(),
       persona: personaEvidence()
     })).toThrow(/RSS/i);
@@ -152,10 +189,15 @@ describe('v0.2.0 certification evidence', () => {
     expect(() => createAutomatedCertificationEvidence({
       release: releaseIdentity(),
       k6Summary: k6Summary(),
-      maxRssKib: 100_000,
+      rss: rssStageEvidence(),
       recovery: recoveryEvidence(),
       persona: wrongPersona
     })).toThrow(/different source SHA/i);
+
+    const mismatchedRss = rssStageEvidence();
+    mismatchedRss.stages[0].peakRssKib -= 1;
+    mismatchedRss.stages[0].samples[1].rssKib -= 1;
+    expect(() => assertRssStageEvidenceMatchesCertification(automatedEvidence(), mismatchedRss)).toThrow(/does not exactly match/i);
   });
 
   it('rejects PII, credentials, filesystem paths, SQL, and raw protocol evidence', () => {
@@ -182,7 +224,13 @@ describe('v0.2.0 certification evidence', () => {
   it('writes canonical evidence and verifies its exact SHA-256 checksum', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-certification-unit-'));
     const evidencePath = path.join(directory, 'automated.json');
+    const rssPath = path.join(directory, 'rss-stages.json');
     try {
+      const rssWritten = await writeRssStageEvidence(rssPath, rssStageEvidence());
+      expect(await fs.readFile(rssWritten.checksumPath, 'utf8')).toMatch(/^[a-f0-9]{64} {2}rss-stages\.json\n$/);
+      expect((await readVerifiedRssStageEvidence(rssPath, rssWritten.checksumPath)).evidence).toEqual(rssStageEvidence());
+      await fs.appendFile(rssPath, ' ');
+      await expect(readVerifiedRssStageEvidence(rssPath, rssWritten.checksumPath)).rejects.toThrow(/checksum/i);
       const written = await writeCertificationEvidence(evidencePath, automatedEvidence());
       const verified = await readVerifiedCertificationEvidence(evidencePath, written.checksumPath);
       expect(verified.digest).toBe(written.digest);
@@ -198,11 +246,13 @@ describe('v0.2.0 certification evidence', () => {
 
 describe('v0.2.0 workflow governance', () => {
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
-    const [ci, nightly, installer, load, verifier, packageDocument, packageLock, changelog] = await Promise.all([
+    const [ci, nightly, installer, load, runner, realtime, verifier, packageDocument, packageLock, changelog] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
       fs.readFile(path.join(root, '.github', 'workflows', 'nightly-certification.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'install-k6.sh'), 'utf8'),
       fs.readFile(path.join(root, 'tests', 'load', 'skyjo-realtime.k6.js'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'run-automated-certification.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'src', 'serverRealtime.ts'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'verify-v020-release.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
@@ -225,8 +275,21 @@ describe('v0.2.0 workflow governance', () => {
     expect(load).toMatch(/executor: 'per-vu-iterations'/);
     expect(load).toMatch(/skyjo_operation_error_rate: \['rate<0\.001'\]/);
     expect(load).toMatch(/skyjo_propagation_ms: \['p\(95\)<=250'\]/);
+    expect(load).toMatch(/skyjo_sessions_verified: \[`count==\$\{expectedClients\}`\]/);
+    expect(load).toMatch(/SKYJO_LOAD_AUTH_FILE/);
+    expect(load).not.toMatch(/\/api\/account\/signup/);
+    expect(runner).toMatch(/bootstrapLoadAuthentication[\s\S]*?stopCertificationServer\(server\)/);
+    const bootstrapSection = runner.match(/async function bootstrapLoadAuthentication[\s\S]*?(?=async function runK6Certification)/)?.[0] || '';
+    const measuredLoadSection = runner.match(/async function runK6Certification[\s\S]*?(?=async function resolveK6Binary)/)?.[0] || '';
+    expect(bootstrapSection).toMatch(/catch \(error\) \{[\s\S]*?fs\.rm\(authenticationPath, \{ force: true \}\)/);
+    expect(measuredLoadSection).toMatch(/finally \{[\s\S]*?fs\.rm\(authenticationPath, \{ force: true \}\)/);
+    expect(runner).toMatch(/writeRssStageEvidence\(rssEvidencePath, rss\)/);
+    expect(realtime).toMatch(/Buffer\.byteLength/);
+    expect(realtime).not.toMatch(/new TextEncoder/);
     expect(verifier).not.toMatch(/gh release create|\/releases/);
     expect(verifier).toMatch(/rev-parse', 'HEAD\^\{commit\}'/);
+    expect(verifier).toMatch(/readVerifiedRssStageEvidence/);
+    expect(verifier).toMatch(/assertRssStageEvidenceMatchesCertification\(evidence, rssEvidence\)/);
     expect(JSON.parse(packageDocument).version).toBe('0.2.0');
     expect(JSON.parse(packageLock).version).toBe('0.2.0');
     expect(changelog).toMatch(/^## 0\.2\.0 - 2026-07-13$/m);

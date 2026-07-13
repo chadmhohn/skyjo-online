@@ -12,9 +12,11 @@ import {
   K6_LINUX_AMD64_SHA256,
   K6_VERSION,
   createAutomatedCertificationEvidence,
+  createRssStageEvidence,
   validateEightClientPersonaEvidence,
   validateK6CertificationSummary,
-  writeCertificationEvidence
+  writeCertificationEvidence,
+  writeRssStageEvidence
 } from './certification-lib.mjs';
 import { loadReleaseIdentity } from '../server-release.mjs';
 
@@ -24,6 +26,7 @@ const resultsDirectory = path.join(root, 'test-results', 'certification');
 const personaEvidencePath = path.join(resultsDirectory, 'eight-client-personas.json');
 const k6SummaryPath = path.join(resultsDirectory, 'k6-summary.json');
 const automatedEvidencePath = path.join(resultsDirectory, 'automated.json');
+const rssEvidencePath = path.join(resultsDirectory, 'rss-stages.json');
 const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const siteCookieName = 'skyjo_cert_site';
 const accountCookieName = 'skyjo_cert_account';
@@ -191,25 +194,38 @@ function cookieFrom(response, name) {
 }
 
 async function createRecoveryAccount(baseUrl, trial) {
+  const siteCookie = await createSiteAccessCookie(baseUrl, 'Recovery');
+  const accountCookie = await createAccountSession(baseUrl, siteCookie, {
+    email: `recovery-trial-${trial}@example.test`,
+    displayName: `Recovery Trial ${trial}`,
+    password: 'recovery-certification-password'
+  }, 'Recovery');
+  return `${siteCookie}; ${accountCookie}`;
+}
+
+async function createSiteAccessCookie(baseUrl, stage) {
   const access = await fetch(`${baseUrl}/login`, {
     method: 'POST',
     body: new URLSearchParams({ next: '/', password: accessPassword }),
     redirect: 'manual'
   });
-  if (access.status !== 303) throw new Error('Recovery access login failed.');
-  const siteCookie = cookieFrom(access, siteCookieName);
+  if (access.status !== 303) throw new Error(`${stage} access login failed.`);
+  return cookieFrom(access, siteCookieName);
+}
+
+async function createAccountSession(baseUrl, siteCookie, account, stage) {
   const signup = await fetch(`${baseUrl}/api/account/signup`, {
     method: 'POST',
     headers: { Cookie: siteCookie, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      email: `recovery-trial-${trial}@example.test`,
-      displayName: `Recovery Trial ${trial}`,
-      password: 'recovery-certification-password',
-      confirmPassword: 'recovery-certification-password'
+      email: account.email,
+      displayName: account.displayName,
+      password: account.password,
+      confirmPassword: account.password
     })
   });
-  if (signup.status !== 201) throw new Error('Recovery account provisioning failed.');
-  return `${siteCookie}; ${cookieFrom(signup, accountCookieName)}`;
+  if (signup.status !== 201) throw new Error(`${stage} account provisioning failed.`);
+  return cookieFrom(signup, accountCookieName);
 }
 
 class RecoverySocket {
@@ -465,21 +481,129 @@ async function readVmRssKib(pid) {
   return value;
 }
 
+function startRssStageSampler(pid, { name, measuredForGate, sampleIntervalMs, onError = () => {} }) {
+  const startedAt = Date.now();
+  const samples = [];
+  let peakElapsedMs = 0;
+  let peakRssKib = 0;
+  let lastRecordedAt = -sampleIntervalMs;
+  let stopping = false;
+  let samplingError = null;
+  let result = null;
+
+  const completion = (async () => {
+    while (!stopping) {
+      const rssKib = await readVmRssKib(pid);
+      const elapsedMs = Date.now() - startedAt;
+      if (rssKib > peakRssKib) {
+        peakRssKib = rssKib;
+        peakElapsedMs = elapsedMs;
+      }
+      if (samples.length === 0 || elapsedMs - lastRecordedAt >= sampleIntervalMs) {
+        samples.push({ elapsedMs, rssKib });
+        lastRecordedAt = elapsedMs;
+      }
+      await delay(100);
+    }
+  })().catch((error) => {
+    samplingError = error;
+    try {
+      onError();
+    } catch {
+      // The sampling error remains the primary stage failure.
+    }
+  });
+
+  return {
+    async stop() {
+      if (result) return result;
+      stopping = true;
+      await completion;
+      if (samplingError) throw samplingError;
+      if (peakRssKib < 1 || samples.length < 1) throw new Error('RSS stage produced no finite samples.');
+      result = {
+        name,
+        measuredForGate,
+        peakElapsedMs,
+        peakRssKib,
+        sampleIntervalMs,
+        samples
+      };
+      return result;
+    }
+  };
+}
+
+async function bootstrapLoadAuthentication(dataDirectory, sourceSha, authenticationPath) {
+  let server = null;
+  let sampler = null;
+  try {
+    server = await spawnCertificationServer(dataDirectory, sourceSha);
+    sampler = startRssStageSampler(server.child.pid, {
+      name: 'account-bootstrap',
+      measuredForGate: false,
+      sampleIntervalMs: 2_000
+    });
+    const siteCookie = await createSiteAccessCookie(server.baseUrl, 'Load bootstrap');
+    const clientCookies = [];
+    for (let index = 0; index < CERTIFICATION_LIMITS.clients; index += 1) {
+      const room = Math.floor(index / CERTIFICATION_LIMITS.clientsPerRoom) + 1;
+      const seat = (index % CERTIFICATION_LIMITS.clientsPerRoom) + 1;
+      const accountCookie = await createAccountSession(server.baseUrl, siteCookie, {
+        email: `cert-${String(room).padStart(2, '0')}-${String(seat).padStart(2, '0')}@example.test`,
+        displayName: `R${String(room).padStart(2, '0')} Seat ${seat}`,
+        password: 'certification-account-password'
+      }, 'Load bootstrap');
+      clientCookies.push(`${siteCookie}; ${accountCookie}`);
+    }
+    const stage = await sampler.stop();
+    sampler = null;
+    const authentication = {
+      formatVersion: 1,
+      kind: 'skyjo-load-authentication',
+      releaseSha: sourceSha,
+      topology: {
+        rooms: CERTIFICATION_LIMITS.rooms,
+        clientsPerRoom: CERTIFICATION_LIMITS.clientsPerRoom,
+        clients: CERTIFICATION_LIMITS.clients
+      },
+      clientCookies
+    };
+    await fs.writeFile(authenticationPath, `${JSON.stringify(authentication)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600
+    });
+    await stopCertificationServer(server);
+    server = null;
+    return stage;
+  } catch (error) {
+    await fs.rm(authenticationPath, { force: true });
+    throw error;
+  } finally {
+    await sampler?.stop().catch(() => {});
+    await stopCertificationServer(server).catch(async () => {
+      await stopCertificationServer(server, 'SIGKILL').catch(() => {});
+    });
+  }
+}
+
 async function runK6Certification(parentDirectory, sourceSha, k6Binary) {
   const dataDirectory = path.join(parentDirectory, 'load');
-  const server = await spawnCertificationServer(dataDirectory, sourceSha);
+  const authenticationPath = path.join(parentDirectory, 'load-authentication.json');
+  const accountBootstrap = await bootstrapLoadAuthentication(dataDirectory, sourceSha, authenticationPath);
+  let server = null;
   let k6Output = '';
-  let sampling = true;
-  let samplingError = null;
-  let maxRssKib = 0;
+  let sampler = null;
   try {
+    server = await spawnCertificationServer(dataDirectory, sourceSha);
     const child = spawn(k6Binary, ['run', '--quiet', path.join(root, 'tests', 'load', 'skyjo-realtime.k6.js')], {
       cwd: root,
       env: {
         ...process.env,
         SKYJO_K6_SUMMARY_FILE: k6SummaryPath,
-        SKYJO_LOAD_ACCESS_PASSWORD: accessPassword,
         SKYJO_LOAD_ACCOUNT_COOKIE_NAME: accountCookieName,
+        SKYJO_LOAD_AUTH_FILE: authenticationPath,
         SKYJO_LOAD_BASE_URL: server.baseUrl,
         SKYJO_LOAD_CLIENTS_PER_ROOM: String(CERTIFICATION_LIMITS.clientsPerRoom),
         SKYJO_LOAD_DURATION_SECONDS: String(CERTIFICATION_LIMITS.durationSeconds),
@@ -496,19 +620,17 @@ async function runK6Certification(parentDirectory, sourceSha, k6Binary) {
         k6Output = `${k6Output}${chunk}`.slice(-64_000);
       });
     }
-    const sampler = (async () => {
-      while (sampling) {
-        maxRssKib = Math.max(maxRssKib, await readVmRssKib(server.child.pid));
-        await delay(100);
+    sampler = startRssStageSampler(server.child.pid, {
+      name: 'authenticated-load',
+      measuredForGate: true,
+      sampleIntervalMs: 5_000,
+      onError: () => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }
-    })().catch((error) => {
-      samplingError = error;
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     });
     const [code, signal] = await once(child, 'close');
-    sampling = false;
-    await sampler;
-    if (samplingError) throw samplingError;
+    const authenticatedLoad = await sampler.stop();
+    sampler = null;
     let summary;
     try {
       summary = JSON.parse(await fs.readFile(k6SummaryPath, 'utf8'));
@@ -520,10 +642,13 @@ async function runK6Certification(parentDirectory, sourceSha, k6Binary) {
       if (k6Output) process.stderr.write(k6Output);
       throw new Error(`k6 certification failed (${signal || code}).`);
     }
-    if (maxRssKib >= CERTIFICATION_LIMITS.rssKibExclusive) throw new Error('Application RSS reached 256 MiB.');
-    return { summary, maxRssKib };
+    return {
+      summary,
+      rss: createRssStageEvidence({ sourceSha, accountBootstrap, authenticatedLoad })
+    };
   } finally {
-    sampling = false;
+    await sampler?.stop().catch(() => {});
+    await fs.rm(authenticationPath, { force: true });
     await stopCertificationServer(server).catch(async () => {
       await stopCertificationServer(server, 'SIGKILL').catch(() => {});
     });
@@ -574,7 +699,13 @@ async function main() {
     });
     const persona = JSON.parse(await fs.readFile(personaEvidencePath, 'utf8'));
     validateEightClientPersonaEvidence(persona);
-    const { summary: k6Summary, maxRssKib } = await runK6Certification(temporaryDirectory, sourceSha, k6Binary);
+    const { summary: k6Summary, rss } = await runK6Certification(temporaryDirectory, sourceSha, k6Binary);
+    await writeRssStageEvidence(rssEvidencePath, rss);
+    if (!rss.authenticatedLoadPassed) {
+      throw new Error(
+        `Authenticated load RSS peak ${rss.stages[1].peakRssKib} KiB reached the exclusive ${rss.limitKibExclusive} KiB limit.`
+      );
+    }
     const recovery = await runRecoveryCertification(temporaryDirectory, sourceSha);
     const evidence = createAutomatedCertificationEvidence({
       release: {
@@ -588,7 +719,7 @@ async function main() {
         k6ArchiveSha256: K6_LINUX_AMD64_SHA256
       },
       k6Summary,
-      maxRssKib,
+      rss,
       recovery,
       persona
     });
