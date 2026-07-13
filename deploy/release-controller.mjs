@@ -259,6 +259,83 @@ function combinedActionAndCleanupError(primaryCaught, cleanupCaught) {
   return combined;
 }
 
+function assertRunIdentity(stat, expectedIdentity) {
+  if (!expectedIdentity || typeof expectedIdentity !== 'object') {
+    throw new Error('A proven deployment run identity is required for cleanup.');
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('Deployment run directory type changed before cleanup.');
+  }
+  const actual = {
+    dev: stat.dev,
+    ino: stat.ino,
+    uid: stat.uid,
+    gid: stat.gid,
+    mode: stat.mode & 0o7777
+  };
+  for (const key of ['dev', 'ino', 'uid', 'gid', 'mode']) {
+    if (actual[key] !== expectedIdentity[key]) {
+      throw new Error(`Deployment run directory ${key} changed before cleanup.`);
+    }
+  }
+}
+
+export async function proveClaimedRunDirectory(workDirectory, {
+  openFile = fsp.open,
+  inspect = fsp.lstat,
+  requireRootOwnership = process.platform !== 'win32'
+} = {}) {
+  const handle = await openFile(
+    workDirectory,
+    fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0) | (fs.constants.O_NOFOLLOW || 0)
+  );
+  let handleStat;
+  let pathStat;
+  try {
+    handleStat = await handle.stat();
+    pathStat = await inspect(workDirectory);
+  } finally {
+    await handle.close();
+  }
+  if (!handleStat.isDirectory() || !pathStat.isDirectory() || pathStat.isSymbolicLink() ||
+      handleStat.dev !== pathStat.dev || handleStat.ino !== pathStat.ino) {
+    throw new Error('Deployment run directory identity is unsafe.');
+  }
+  const identity = Object.freeze({
+    dev: handleStat.dev,
+    ino: handleStat.ino,
+    uid: handleStat.uid,
+    gid: handleStat.gid,
+    mode: handleStat.mode & 0o7777
+  });
+  if (requireRootOwnership && (identity.uid !== 0 || identity.gid !== 0 || identity.mode !== 0o711)) {
+    throw new Error('Deployment run directory claim is incomplete.');
+  }
+  assertRunIdentity(pathStat, identity);
+  return identity;
+}
+
+async function proveClaimedFile(filePath, originalStat, expectedContent) {
+  const handle = await fsp.open(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  let handleStat;
+  let pathStat;
+  let content;
+  try {
+    handleStat = await handle.stat();
+    pathStat = await fsp.lstat(filePath);
+    if (expectedContent !== undefined) content = await handle.readFile('utf8');
+  } finally {
+    await handle.close();
+  }
+  if (!handleStat.isFile() || !pathStat.isFile() || pathStat.isSymbolicLink() ||
+      handleStat.dev !== pathStat.dev || handleStat.ino !== pathStat.ino ||
+      handleStat.dev !== originalStat.dev || handleStat.ino !== originalStat.ino ||
+      (process.platform !== 'win32' && (handleStat.uid !== 0 || handleStat.gid !== 0 || (handleStat.mode & 0o7777) !== 0o400)) ||
+      (expectedContent !== undefined && content !== expectedContent)) {
+    throw new Error('Deployment stage claim artifact identity is unsafe.');
+  }
+}
+
 async function prepareCandidate({ runId, releaseSha, digest }) {
   await fsyncDirectoryStrict(PATHS.stage);
   const stageDirectory = resolveWithin(PATHS.stage, runId);
@@ -318,32 +395,37 @@ async function prepareCandidate({ runId, releaseSha, digest }) {
   await run('/usr/bin/chmod', ['0400', sourceArchive]);
   await fsyncDirectoryStrict(stageDirectory);
   const workDirectory = stageDirectory;
-  const privateArchive = resolveWithin(workDirectory, 'artifact.tar.gz');
-  try {
-    await fsp.rm(privateArchive, { force: true });
-    await copyArchive(sourceArchive, privateArchive);
-    if (await sha256File(privateArchive) !== digest) throw new Error('Artifact SHA-256 does not match the approved digest.');
-    const names = lines(await run('/usr/bin/tar', ['--gzip', '--list', '--file', privateArchive], { timeoutMs: 30_000 }));
-    const verbose = lines(await run('/usr/bin/tar', ['--gzip', '--list', '--verbose', '--full-time', '--numeric-owner', '--file', privateArchive], { timeoutMs: 30_000 }));
-    const archiveContract = validateArchiveListing(names, verbose);
-    const candidate = resolveWithin(workDirectory, 'release');
-    await fsp.rm(candidate, { recursive: true, force: true });
-    await fsp.mkdir(candidate, { mode: 0o755 });
-    await run('/usr/bin/tar', ['--gzip', '--extract', '--file', privateArchive, '--directory', candidate, '--no-same-owner', '--no-same-permissions', '--delay-directory-restore']);
-    const identity = await loadVerifiedReleaseIdentity(candidate, releaseSha);
-    if (Math.floor(Date.parse(archiveContract.canonicalTimestamp) / 1000) !== Math.floor(Date.parse(identity.buildTimestamp) / 1000)) {
-      throw new Error('Archive timestamp does not match release identity.');
-    }
-    await run('/usr/bin/chown', ['--recursive', 'root:root', candidate]);
-    await run('/usr/bin/chmod', ['--recursive', 'u=rwX,go=rX', candidate]);
-    await fsp.writeFile(resolveWithin(candidate, '.skyjo-deployment.json'), `${JSON.stringify({ releaseSha, artifactSha256: digest })}\n`, { mode: 0o444 });
-    return { workDirectory, candidate, identity };
-  } catch (caught) {
-    const primaryError = normalizeError(caught);
-    try { await cleanupRun(runId, workDirectory); }
-    catch (cleanupError) { throw combinedActionAndCleanupError(primaryError, cleanupError); }
-    throw primaryError;
+  const runIdentity = await proveClaimedRunDirectory(workDirectory);
+  if (runIdentity.dev !== stageStat.dev || runIdentity.ino !== stageStat.ino) {
+    throw new Error('Deployment run directory changed while it was claimed.');
   }
+  await proveClaimedFile(markerPath, markerStat, `${runId}\n`);
+  await proveClaimedFile(sourceArchive, archiveStat);
+  const privateArchive = resolveWithin(workDirectory, 'artifact.tar.gz');
+  return executeWithRequiredRunCleanup({
+    cleanupOnSuccess: false,
+    cleanup: () => cleanupRun(runId, workDirectory, { expectedIdentity: runIdentity }),
+    action: async () => {
+      await fsp.rm(privateArchive, { force: true });
+      await copyArchive(sourceArchive, privateArchive);
+      if (await sha256File(privateArchive) !== digest) throw new Error('Artifact SHA-256 does not match the approved digest.');
+      const names = lines(await run('/usr/bin/tar', ['--gzip', '--list', '--file', privateArchive], { timeoutMs: 30_000 }));
+      const verbose = lines(await run('/usr/bin/tar', ['--gzip', '--list', '--verbose', '--full-time', '--numeric-owner', '--file', privateArchive], { timeoutMs: 30_000 }));
+      const archiveContract = validateArchiveListing(names, verbose);
+      const candidate = resolveWithin(workDirectory, 'release');
+      await fsp.rm(candidate, { recursive: true, force: true });
+      await fsp.mkdir(candidate, { mode: 0o755 });
+      await run('/usr/bin/tar', ['--gzip', '--extract', '--file', privateArchive, '--directory', candidate, '--no-same-owner', '--no-same-permissions', '--delay-directory-restore']);
+      const identity = await loadVerifiedReleaseIdentity(candidate, releaseSha);
+      if (Math.floor(Date.parse(archiveContract.canonicalTimestamp) / 1000) !== Math.floor(Date.parse(identity.buildTimestamp) / 1000)) {
+        throw new Error('Archive timestamp does not match release identity.');
+      }
+      await run('/usr/bin/chown', ['--recursive', 'root:root', candidate]);
+      await run('/usr/bin/chmod', ['--recursive', 'u=rwX,go=rX', candidate]);
+      await fsp.writeFile(resolveWithin(candidate, '.skyjo-deployment.json'), `${JSON.stringify({ releaseSha, artifactSha256: digest })}\n`, { mode: 0o444 });
+      return { workDirectory, candidate, identity, runIdentity };
+    }
+  });
 }
 
 export function validateEffectiveSystemdProperties(unit, actual, expected) {
@@ -843,10 +925,17 @@ async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
 
 export async function cleanupRun(runId, workDirectory, {
   stageRoot = PATHS.stage,
+  expectedIdentity,
   remove = fsp.rm,
   inspect = fsp.lstat
 } = {}) {
   if (path.resolve(workDirectory) !== resolveWithin(stageRoot, runId)) throw new Error('Refusing to clean an unexpected deployment path.');
+  const current = await inspect(workDirectory).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!current) return;
+  assertRunIdentity(current, expectedIdentity);
   await remove(workDirectory, { recursive: true, force: true });
   const residue = await inspect(workDirectory).then(() => true).catch((error) => {
     if (error?.code === 'ENOENT') return false;
@@ -860,10 +949,11 @@ async function cleanupReplayedRun(runId) {
   const stat = await fsp.lstat(workDirectory).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (!stat) return;
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Replayed deployment stage is unsafe.');
-  await cleanupRun(runId, workDirectory);
+  const expectedIdentity = await proveClaimedRunDirectory(workDirectory);
+  await cleanupRun(runId, workDirectory, { expectedIdentity });
 }
 
-export async function executeWithRequiredRunCleanup({ action, cleanup }) {
+export async function executeWithRequiredRunCleanup({ action, cleanup, cleanupOnSuccess = true }) {
   let primaryError;
   let result;
   try {
@@ -872,6 +962,7 @@ export async function executeWithRequiredRunCleanup({ action, cleanup }) {
     primaryError = caught instanceof Error ? caught : new Error(String(caught));
   }
   if (primaryError?.preserveRunRoot === true) throw primaryError;
+  if (!primaryError && !cleanupOnSuccess) return result;
   try {
     await cleanup();
   } catch (caught) {
@@ -896,7 +987,7 @@ async function verifyAction(parsed) {
       await canary(prepared.candidate, prepared.identity, snapshot, parsed.runId);
       return { verified: parsed.releaseSha, activated: false };
     },
-    cleanup: () => cleanupRun(parsed.runId, prepared.workDirectory)
+    cleanup: () => cleanupRun(parsed.runId, prepared.workDirectory, { expectedIdentity: prepared.runIdentity })
   });
 }
 
@@ -1111,7 +1202,7 @@ async function promoteAction(parsed) {
       }
       return immutableTarget;
     },
-    cleanup: () => cleanupRun(parsed.runId, prepared.workDirectory)
+    cleanup: () => cleanupRun(parsed.runId, prepared.workDirectory, { expectedIdentity: prepared.runIdentity })
   });
   // Everything that can fail without changing the live service, including
   // retention and run-root deletion, completes before stop/swap.
