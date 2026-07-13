@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { createAccountStore } from '../../server-account-store.mjs';
 import { saveRoomsToDisk } from '../../server-room-persistence.mjs';
@@ -84,6 +86,71 @@ function healthyResult(overrides = {}) {
   };
 }
 
+async function expectProcessExit(operation, expectedCode) {
+  await assert.rejects(operation, (error) => {
+    assert.equal(error.code, expectedCode);
+    return true;
+  });
+}
+
+async function createReadinessLauncherFixture(root, launcher) {
+  const functionEnd = launcher.indexOf('\naction=${1:-}');
+  assert.ok(functionEnd > 0, 'readiness launcher functions must be extractable');
+  const harness = path.join(root, 'readiness-harness.sh');
+  await fs.writeFile(harness, `${launcher.slice(0, functionEnd)}
+mode=$1
+shift
+case "$mode" in
+  run) run_readiness "$@" ;;
+  safe-file) safe_readiness_file "$@" || exit 66 ;;
+  safe-directory) safe_readiness_directory "$@" || exit 66 ;;
+  resolve) resolve_readiness_release "$@" || exit 65 ;;
+  current) readiness_current_matches "$@" || exit 65 ;;
+  *) exit 64 ;;
+esac
+`, { mode: 0o700 });
+
+  const uid = Number((await execFileAsync('/usr/bin/id', ['-u'])).stdout.trim());
+  const gid = Number((await execFileAsync('/usr/bin/id', ['-g'])).stdout.trim());
+  const groups = (await execFileAsync('/usr/bin/id', ['-Gn'])).stdout.trim();
+  const releaseRoot = path.join(root, 'releases');
+  const release = path.join(releaseRoot, releaseSha);
+  const scripts = path.join(release, 'scripts');
+  const current = path.join(root, 'current');
+  const output = path.join(root, 'evidence', 'local-readiness.json');
+  const node = path.join(root, 'node');
+  await fs.mkdir(scripts, { recursive: true, mode: 0o755 });
+  await fs.chmod(releaseRoot, 0o755);
+  await fs.chmod(release, 0o755);
+  await fs.chmod(scripts, 0o755);
+  await fs.copyFile(path.join(repoRoot, 'scripts', 'monitor-readiness.mjs'), path.join(scripts, 'monitor-readiness.mjs'));
+  await fs.copyFile(path.join(repoRoot, 'scripts', 'readiness-monitor-lib.mjs'), path.join(scripts, 'readiness-monitor-lib.mjs'));
+  await fs.chmod(path.join(scripts, 'monitor-readiness.mjs'), 0o644);
+  await fs.chmod(path.join(scripts, 'readiness-monitor-lib.mjs'), 0o644);
+  await fs.writeFile(node, `#!/bin/sh
+exec "${process.execPath}" "$@"
+`, { mode: 0o755 });
+  await fs.symlink(release, current);
+
+  const args = [
+    String(uid), String(gid), groups,
+    String(uid), String(gid),
+    node, current, releaseRoot, output
+  ];
+  return { root, harness, uid, gid, groups, releaseRoot, release, scripts, current, output, node, args };
+}
+
+async function runReadinessFixture(fixture, options = {}) {
+  return execFileAsync('/bin/sh', [fixture.harness, 'run', ...(options.args || fixture.args)], {
+    env: { ...process.env, ...(options.env || {}) }
+  });
+}
+
+async function replaceSymlink(link, target) {
+  await fs.unlink(link);
+  await fs.symlink(target, link);
+}
+
 function response(status, body) {
   return {
     status,
@@ -135,6 +202,204 @@ test('monitor evidence is an atomic normalized private JSON file', async () => {
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('resolved readiness execution replaces the symlinked false-success with trusted evidence', {
+  skip: process.platform === 'win32'
+}, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-readiness-launch-'));
+  try {
+    const launcher = await fs.readFile(path.join(deployRoot, 'skyjo-ops-launch'), 'utf8');
+    const fixture = await createReadinessLauncherFixture(root, launcher);
+    const symlinkedEntry = path.join(root, 'symlinked-monitor-readiness.mjs');
+    const falseOutput = path.join(root, 'false-success-evidence.json');
+    await fs.symlink(path.join(repoRoot, 'scripts', 'monitor-readiness.mjs'), symlinkedEntry);
+    const falseSuccess = await execFileAsync(process.execPath, [
+      symlinkedEntry,
+      '--monitor', 'local',
+      '--base-url', 'http://127.0.0.1:4180',
+      '--attempts', '1',
+      '--timeout-ms', '100',
+      '--output', falseOutput,
+      '--fail-unhealthy'
+    ]);
+    assert.equal(falseSuccess.stdout, '');
+    assert.equal(falseSuccess.stderr, '');
+    await assert.rejects(fs.readFile(falseOutput, 'utf8'), { code: 'ENOENT' });
+
+    const payload = {
+      status: 'ready',
+      releaseSha,
+      schemaVersion: 2,
+      protocolVersion: 1,
+      checks: { database: 'ok', roomState: 'ok', lastPersist: 'ok' }
+    };
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(payload));
+    });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(4180, '127.0.0.1', resolve);
+    });
+    let result;
+    try {
+      result = await runReadinessFixture(fixture, {
+        env: {
+          NODE_OPTIONS: '--this-option-must-be-cleared',
+          NODE_PATH: pathToFileURL(root).href
+        }
+      });
+    } finally {
+      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+    assert.match(result.stdout, /"monitor":"local","status":"healthy"/);
+    assert.equal(result.stderr, '');
+    const text = await fs.readFile(fixture.output, 'utf8');
+    const evidence = JSON.parse(text);
+    assert.deepEqual(evidence, healthyResult({ monitor: 'local', checkedAt: evidence.checkedAt }));
+    assert.equal(text, `${JSON.stringify(evidence, null, 2)}\n`);
+    assert.equal((await fs.stat(fixture.output)).mode & 0o777, 0o600);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('readiness launcher rejects identity and immutable-path drift and propagates monitor failures', {
+  skip: process.platform === 'win32'
+}, async () => {
+  const launcherPath = path.join(deployRoot, 'skyjo-ops-launch');
+  const launcher = await fs.readFile(launcherPath, 'utf8');
+  await expectProcessExit(execFileAsync('/bin/sh', [launcherPath]), 64);
+  await expectProcessExit(execFileAsync('/bin/sh', [launcherPath, 'unknown']), 64);
+  await expectProcessExit(execFileAsync('/bin/sh', [launcherPath, 'daily', 'extra']), 64);
+  await expectProcessExit(execFileAsync('/bin/sh', [launcherPath, 'readiness']), 77);
+
+  async function rejectsFixture(mutator, code) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-readiness-reject-'));
+    try {
+      const fixture = await createReadinessLauncherFixture(root, launcher);
+      await mutator(fixture);
+      await expectProcessExit(runReadinessFixture(fixture), code);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  await rejectsFixture(async (fixture) => {
+    const args = [...fixture.args];
+    args[0] = String(fixture.uid + 1);
+    fixture.args = args;
+  }, 77);
+  await rejectsFixture(async (fixture) => {
+    const args = [...fixture.args];
+    args[1] = String(fixture.gid + 1);
+    fixture.args = args;
+  }, 77);
+  await rejectsFixture(async (fixture) => {
+    const args = [...fixture.args];
+    args[2] = `${fixture.groups} unexpected-supplemental-group`;
+    fixture.args = args;
+  }, 77);
+  await rejectsFixture(
+    (fixture) => replaceSymlink(fixture.current, path.join(fixture.root, 'outside', releaseSha)),
+    65
+  );
+  await rejectsFixture(
+    (fixture) => replaceSymlink(fixture.current, path.join(fixture.releaseRoot, 'nested', releaseSha)),
+    65
+  );
+  await rejectsFixture(
+    (fixture) => replaceSymlink(fixture.current, path.join(fixture.releaseRoot, 'not-a-release-sha')),
+    65
+  );
+  await rejectsFixture(async (fixture) => {
+    await fs.chmod(fixture.releaseRoot, 0o775);
+  }, 65);
+  await rejectsFixture(async (fixture) => {
+    const realReleaseRoot = `${fixture.releaseRoot}-real`;
+    await fs.rename(fixture.releaseRoot, realReleaseRoot);
+    await fs.symlink(realReleaseRoot, fixture.releaseRoot);
+  }, 65);
+  await rejectsFixture(async (fixture) => {
+    const otherRelease = path.join(fixture.releaseRoot, 'b'.repeat(40));
+    await fs.rename(fixture.release, otherRelease);
+    await fs.symlink(otherRelease, fixture.release);
+  }, 65);
+  await rejectsFixture(async (fixture) => {
+    await fs.link(fixture.current, path.join(fixture.root, 'second-current-link'));
+  }, 65);
+  await rejectsFixture(async (fixture) => {
+    await fs.chmod(fixture.release, 0o775);
+  }, 65);
+  await rejectsFixture(async (fixture) => {
+    const realScripts = `${fixture.scripts}-real`;
+    await fs.rename(fixture.scripts, realScripts);
+    await fs.symlink(realScripts, fixture.scripts);
+  }, 66);
+  await rejectsFixture(async (fixture) => {
+    await fs.chmod(fixture.scripts, 0o775);
+  }, 66);
+
+  for (const basename of ['monitor-readiness.mjs', 'readiness-monitor-lib.mjs']) {
+    await rejectsFixture(async (fixture) => {
+      const target = path.join(fixture.scripts, basename);
+      const realTarget = `${target}.real`;
+      await fs.rename(target, realTarget);
+      await fs.symlink(realTarget, target);
+    }, 66);
+    await rejectsFixture(async (fixture) => {
+      const target = path.join(fixture.scripts, basename);
+      const realTarget = `${target}.real`;
+      await fs.rename(target, realTarget);
+      await fs.link(realTarget, target);
+    }, 66);
+    await rejectsFixture(async (fixture) => {
+      await fs.chmod(path.join(fixture.scripts, basename), 0o664);
+    }, 66);
+  }
+
+  const helperRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-readiness-owner-'));
+  try {
+    const fixture = await createReadinessLauncherFixture(helperRoot, launcher);
+    await expectProcessExit(execFileAsync('/bin/sh', [
+      fixture.harness, 'safe-directory', fixture.releaseRoot, String(fixture.uid + 1), String(fixture.gid)
+    ]), 66);
+    await expectProcessExit(execFileAsync('/bin/sh', [
+      fixture.harness, 'safe-directory', fixture.release, String(fixture.uid + 1), String(fixture.gid)
+    ]), 66);
+    await expectProcessExit(execFileAsync('/bin/sh', [
+      fixture.harness, 'safe-directory', fixture.scripts, String(fixture.uid + 1), String(fixture.gid)
+    ]), 66);
+    for (const target of [
+      fixture.node,
+      path.join(fixture.scripts, 'monitor-readiness.mjs'),
+      path.join(fixture.scripts, 'readiness-monitor-lib.mjs')
+    ]) {
+      await expectProcessExit(execFileAsync('/bin/sh', [
+        fixture.harness, 'safe-file', target, String(fixture.uid + 1), String(fixture.gid)
+      ]), 66);
+    }
+    await expectProcessExit(execFileAsync('/bin/sh', [
+      fixture.harness, 'resolve', fixture.current, fixture.releaseRoot,
+      String(fixture.uid + 1), String(fixture.gid)
+    ]), 65);
+
+    const currentStat = await fs.lstat(fixture.current);
+    const currentIdentity = [
+      currentStat.dev, currentStat.ino, currentStat.uid, currentStat.gid, currentStat.nlink
+    ].join(':');
+    await replaceSymlink(fixture.current, path.join(fixture.releaseRoot, 'c'.repeat(40)));
+    await expectProcessExit(execFileAsync('/bin/sh', [
+      fixture.harness, 'current', fixture.current, currentIdentity, fixture.release
+    ]), 65);
+  } finally {
+    await fs.rm(helperRoot, { recursive: true, force: true });
+  }
+
+  await rejectsFixture(async (fixture) => {
+    await fs.writeFile(fixture.node, '#!/bin/sh\nexit 42\n', { mode: 0o755 });
+  }, 42);
 });
 
 test('operations activation accepts only private healthy evidence for its exact release', async () => {
@@ -741,12 +1006,13 @@ test('retention verifies retained backups before deleting any older backup', asy
 });
 
 test('workflow and systemd assets preserve pins, staged activation, and exact schedules', async () => {
-  const [dependabot, ci, codeql, monitor, installer, tmpfiles, dailyService, dailyTimer, monthlyService, monthlyTimer, readinessTimer, readinessService] = await Promise.all([
+  const [dependabot, ci, codeql, monitor, installer, launcher, tmpfiles, dailyService, dailyTimer, monthlyService, monthlyTimer, readinessTimer, readinessService] = await Promise.all([
     fs.readFile(path.join(repoRoot, '.github', 'dependabot.yml'), 'utf8'),
     fs.readFile(path.join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8'),
     fs.readFile(path.join(repoRoot, '.github', 'workflows', 'codeql.yml'), 'utf8'),
     fs.readFile(path.join(repoRoot, '.github', 'workflows', 'production-monitor.yml'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'install-skyjo-operations.sh'), 'utf8'),
+    fs.readFile(path.join(deployRoot, 'skyjo-ops-launch'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'skyjo-online-operations.tmpfiles'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'skyjo-backup-daily.service'), 'utf8'),
     fs.readFile(path.join(deployRoot, 'skyjo-backup-daily.timer'), 'utf8'),
@@ -785,7 +1051,24 @@ test('workflow and systemd assets preserve pins, staged activation, and exact sc
   assert.match(monthlyTimer, /OnCalendar=\*-\*-01 04:15:00 UTC/);
   assert.match(readinessTimer, /OnUnitActiveSec=2m/);
   assert.match(readinessService, /ConditionPathExists=\/etc\/skyjo-online-operations\.enabled/);
+  assert.match(readinessService, /User=skyjo-monitor\nGroup=skyjo-monitor/);
+  assert.match(readinessService, /ExecStart=\/usr\/local\/lib\/skyjo-online\/skyjo-ops-launch readiness/);
+  assert.doesNotMatch(readinessService, /\/srv\/skyjo-online\/current\/scripts\/monitor-readiness\.mjs/);
   assert.match(readinessService, /IPAddressAllow=localhost/);
+  const readinessBranch = launcher.slice(0, launcher.indexOf('\ndaily|monthly) ;;'));
+  const scheduledBranch = launcher.slice(launcher.indexOf('\n[ "$(/usr/bin/id -u)" -eq 0 ]'));
+  assert.match(readinessBranch, /id -u skyjo-monitor[\s\S]*id -g skyjo-monitor[\s\S]*id -Gn skyjo-monitor/);
+  assert.match(readinessBranch, /stat -c %u:%g:%h "\$current_link"/);
+  assert.match(readinessBranch, /readlink "\$current_link"[\s\S]*readlink -f "\$current_link"/);
+  assert.match(readinessBranch, /dirname "\$release_target"[\s\S]*\^\[a-f0-9\]\{40\}\$/);
+  assert.match(readinessBranch, /monitor-readiness\.mjs[\s\S]*readiness-monitor-lib\.mjs/);
+  assert.match(readinessBranch, /stat -c %u:%g:%h "\$safe_file"[\s\S]*\?\?\?\?\?w\*\|\?\?\?\?\?\?\?\?w\*/);
+  assert.match(readinessBranch, /readiness_current_matches[\s\S]*unset NODE_OPTIONS NODE_PATH[\s\S]*exec "\$node" "\$script"/);
+  assert.match(readinessBranch, /0 0 \\\n    \/opt\/skyjo-online\/node\/bin\/node/);
+  assert.doesNotMatch(readinessBranch, /skyjo-release-controller\.lock|flock/);
+  assert.match(scheduledBranch, /skyjo-release-controller\.lock[\s\S]*flock --exclusive --wait 300 9/);
+  assert.match(scheduledBranch, /SKYJO_RELEASE_FILE[\s\S]*SKYJO_DB_FILE[\s\S]*SKYJO_ROOMS_FILE/);
+  assert.match(scheduledBranch, /exec "\$node" "\$script" --kind "\$action"/);
   assert.equal(tmpfiles.trim(), 'f /run/lock/skyjo-release-controller.lock 0600 root root -');
   assert.match(dailyService, /ReadWritePaths=\/run\/lock\/skyjo-release-controller\.lock \/var\/backups\/skyjo-online\n/);
   assert.doesNotMatch(dailyService, /ReadWritePaths=.*skyjo-restore-drills/);

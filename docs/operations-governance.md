@@ -70,7 +70,7 @@ Backup verification accepts a checksum-valid, contiguous historical migration/pr
 
 ## Monitoring and incidents
 
-The VPS monitor calls only `http://127.0.0.1:4180/readyz` every two minutes and stores a private, fixed-schema result in `/var/lib/skyjo-monitor/local-readiness.json`. It runs as the non-login `skyjo-monitor` user, cannot read production state, backups, or the environment file, and records only a failure class, HTTP status, timestamp, and validated release identity.
+The VPS monitor calls only `http://127.0.0.1:4180/readyz` every two minutes and stores a private, fixed-schema result in `/var/lib/skyjo-monitor/local-readiness.json`. It runs as the non-login `skyjo-monitor` user, cannot read production state, backups, or the environment file, and records only a failure class, HTTP status, timestamp, and validated release identity. Its root-owned launcher verifies that identity, resolves `current` to one direct root-owned immutable release, rejects linked or externally writable runtime assets, clears Node preload/module-path overrides, and invokes the monitor through the exact release path with fixed arguments. This avoids treating Node's symlink-resolved ES module as a successful non-entrypoint import.
 
 The GitHub public monitor runs every 15 minutes but remains inert until this repository variable is exactly `true`:
 
