@@ -27,6 +27,7 @@ import {
   createRoomLifecycleScheduler,
   dueHostTransfer,
   hostFlags,
+  markPlayersDisconnectedForShutdown,
   reclaimAiSeat,
   WAITING_HOST_TRANSFER_MS
 } from './server-dist/serverRoomLifecycle.js';
@@ -504,11 +505,7 @@ function markAllPlayersDisconnected() {
   const timestamp = Date.now();
   for (const room of rooms.values()) {
     room.clients.clear();
-    for (const player of room.players) {
-      if (player.connected) player.disconnectedAt = timestamp;
-      else if (!Number.isFinite(player.disconnectedAt)) player.disconnectedAt = timestamp;
-      player.connected = false;
-    }
+    markPlayersDisconnectedForShutdown(room, timestamp);
   }
 }
 

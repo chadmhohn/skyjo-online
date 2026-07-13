@@ -7,6 +7,7 @@ import {
   dueHostTransfer,
   hostFlags,
   hostTransferDeadline,
+  markPlayersDisconnectedForShutdown,
   oldestConnectedHuman,
   playerDisconnectedAt,
   presenceFields,
@@ -66,6 +67,24 @@ describe('server room lifecycle', () => {
     expect(presenceFields(offline, false, 900).disconnectedAt).toBe(500);
     expect(presenceFields(offline, true, 900)).toEqual({ connected: true, disconnectedAt: null, lastSeenAt: 900 });
     expect(playerDisconnectedAt({ ...offline, disconnectedAt: undefined })).toBeNull();
+  });
+
+  it('anchors shutdown disconnects and refreshes only affected room activity', () => {
+    const value = { ...room('playing'), updatedAt: 100 };
+    value.players[1] = player('guest', { connected: false, disconnectedAt: 400 });
+    expect(markPlayersDisconnectedForShutdown(value, 500)).toBe(true);
+    expect(value.updatedAt).toBe(500);
+    expect(value.players).toEqual([
+      expect.objectContaining({ id: 'host', connected: false, disconnectedAt: 500 }),
+      expect.objectContaining({ id: 'guest', connected: false, disconnectedAt: 400 })
+    ]);
+
+    expect(markPlayersDisconnectedForShutdown(value, 900)).toBe(false);
+    expect(value.updatedAt).toBe(500);
+    value.players[1].disconnectedAt = null;
+    expect(markPlayersDisconnectedForShutdown(value, 1_000)).toBe(true);
+    expect(value.updatedAt).toBe(1_000);
+    expect(value.players[1]).toMatchObject({ connected: false, disconnectedAt: 1_000 });
   });
 
   it('plans deterministic waiting and active host transfers at exact deadlines', () => {

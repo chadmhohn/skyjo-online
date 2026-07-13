@@ -1,4 +1,5 @@
 import {
+  EXPLICIT_PRESENCE_VERSION,
   MULTIPLAYER_PROTOCOL_VERSION,
   PUBLIC_SNAPSHOT_LIMITS,
   parseClientCommand,
@@ -461,6 +462,7 @@ function sessionWireFrame(currentSession: RoomConnectionSession): RoomConnection
   return {
     type: 'join-room',
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    presenceVersion: EXPLICIT_PRESENCE_VERSION,
     code: currentSession.code,
     name: currentSession.name,
     ...(currentSession.playerId ? { playerId: currentSession.playerId } : {}),

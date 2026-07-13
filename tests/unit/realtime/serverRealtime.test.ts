@@ -295,6 +295,45 @@ describe('serverRealtime transport seam', () => {
     expect(harness.onProtocolV1Message).toHaveBeenCalledWith(socket, { type: 'join-room', code: 'ABCDE' });
   });
 
+  it('keeps explicit-presence v2 joins hidden while rolling prior-v2 joins forward as visible', () => {
+    const current = createHarness();
+    const { socket: currentSocket } = current.connect();
+    currentSocket.emit('message', JSON.stringify({
+      type: 'join-room',
+      protocolVersion: 2,
+      presenceVersion: 1,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'player-1'
+    }));
+    expect(currentSocket.visible).toBe(false);
+    expect(current.onProtocolV1Message).toHaveBeenCalledOnce();
+
+    const prior = createHarness();
+    const { socket: priorSocket } = prior.connect();
+    const admitted: { context: RealtimeRoomPlayer | null } = { context: null };
+    prior.onProtocolV1Message.mockImplementation((admittedSocket) => {
+      const priorContext = roomContext(admittedSocket as FakeSocket);
+      priorContext.player.connected = false;
+      priorContext.player.disconnectedAt = 100;
+      prior.contexts.set(admittedSocket, priorContext);
+      syncPlayerPresence(priorContext.room, priorContext.player, 500);
+      prior.sendCurrentRoom(admittedSocket, priorContext.room);
+      admitted.context = priorContext;
+    });
+    priorSocket.emit('message', JSON.stringify({
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'player-1'
+    }));
+    expect(priorSocket.visible).toBe(true);
+    expect(prior.onProtocolV1Message).toHaveBeenCalledOnce();
+    expect(admitted.context?.player).toMatchObject({ connected: true, disconnectedAt: null, lastSeenAt: 500 });
+    expect(prior.sendCurrentRoom).toHaveBeenCalledOnce();
+  });
+
   it('returns the stable error for invalid frames and pre-join presence', () => {
     const harness = createHarness();
     const { socket } = harness.connect();
@@ -497,6 +536,23 @@ describe('serverRealtime transport seam', () => {
     expect(hasVisibleLiveClient(room, player.id, current)).toBe(false);
     syncPlayerPresence(room, player);
     expect(player.connected).toBe(true);
+  });
+
+  it('treats a live socket without the v2 visibility marker as visible for rolling compatibility', () => {
+    const priorV2Socket = new FakeSocket();
+    priorV2Socket.roomCode = 'ABCDE';
+    priorV2Socket.playerId = 'player-1';
+    delete priorV2Socket.visible;
+    const room: RealtimeRoom = {
+      code: 'ABCDE',
+      clients: new Set([priorV2Socket]),
+      updatedAt: 0
+    };
+    const player: RealtimePlayer = { id: 'player-1', connected: false, disconnectedAt: 100 };
+
+    expect(hasVisibleLiveClient(room, player.id)).toBe(true);
+    syncPlayerPresence(room, player, 500);
+    expect(player).toMatchObject({ connected: true, disconnectedAt: null, lastSeenAt: 500 });
   });
 
   it('pings every interval, accepts pong, and terminates a half-open socket on the next interval', () => {

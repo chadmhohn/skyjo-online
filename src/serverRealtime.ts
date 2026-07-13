@@ -1,4 +1,7 @@
-import { MAX_INBOUND_CLIENT_FRAME_BYTES } from './protocolV2.js';
+import {
+  MAX_INBOUND_CLIENT_FRAME_BYTES,
+  MULTIPLAYER_PROTOCOL_VERSION
+} from './protocolV2.js';
 import { presenceFields } from './serverRoomLifecycle.js';
 
 export type RealtimeClientMessage = Record<string, unknown>;
@@ -278,6 +281,17 @@ export function registerRealtimeServer({
           sendCurrentRoom(socket, context.room);
         }
         return;
+      }
+
+      if (
+        message.type === 'join-room' &&
+        message.protocolVersion === MULTIPLAYER_PROTOCOL_VERSION &&
+        !Object.prototype.hasOwnProperty.call(message, 'presenceVersion')
+      ) {
+        // Protocol-v2 clients deployed before explicit presence support remain
+        // visible during a rolling upgrade. New clients advertise the marker
+        // and publish their foreground state after the first snapshot.
+        socket.visible = true;
       }
 
       onProtocolMessage(socket, message);

@@ -351,6 +351,7 @@ describe('protocol v2 room admission', () => {
 
   it.each([
     [{ type: 'join-room', protocolVersion: 2, code: 'MISS', name: 'x' }, 'room-not-found'],
+    [{ type: 'join-room', protocolVersion: 2, presenceVersion: 2, code: 'ROOM1', name: 'x' }, 'invalid-command'],
     [{ type: 'join-room', protocolVersion: 2, code: 'ROOM1', name: 'x', playerId: HOST_ID, extra: true }, 'invalid-command']
   ])('rejects invalid join requests without mutation', (message, code) => {
     const value = harness();
@@ -397,6 +398,29 @@ describe('protocol v2 room admission', () => {
     expect(value.room.revision).toBe(0);
     expect(value.room.players[0].lastSeenAt).toBe(500);
     expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toHaveLength(0);
+    expect(value.calls.snapshots).toHaveLength(1);
+  });
+
+  it('preserves a hidden reconnect until the client explicitly reports visible presence', () => {
+    const value = harness(room({
+      players: [
+        { ...player(HOST_ID, 'Host', true), connected: false, disconnectedAt: 100 },
+        player(GUEST_ID, 'Guest')
+      ]
+    }));
+    value.socket.visible = false;
+    value.handler(value.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      presenceVersion: 1,
+      code: 'room1',
+      name: 'ignored',
+      playerId: HOST_ID
+    });
+
+    expect(value.socket.visible).toBe(false);
+    expect(value.room.players[0]).toMatchObject({ connected: false, disconnectedAt: 100, lastSeenAt: 500 });
     expect(value.calls.broadcasts).toHaveLength(0);
     expect(value.calls.snapshots).toHaveLength(1);
   });
@@ -871,6 +895,47 @@ describe('protocol v2 command ordering and receipts', () => {
     expect(order).toEqual(['snapshot', 'ack']);
     expect(value.room.revision).toBe(8);
     expect(value.calls.persisted).toBe(0);
+  });
+
+  it.each([
+    ['away', { connected: false, disconnectedAt: 100 }],
+    ['AI-controlled', { controller: 'ai' as const }]
+  ])('replays an exact receipt for an %s seat before live-human guards', (_label, seatState) => {
+    const action: GameCommand = { type: 'send-chat-message', text: 'hello' };
+    const host = { ...player(HOST_ID, 'Host', true), ...seatState };
+    const value = harness(room({
+      players: [host, player(GUEST_ID, 'Guest')],
+      revision: 8,
+      recentCommandIds: [receipt(action)]
+    }));
+    const order: string[] = [];
+    value.options.sendRoomSnapshot = () => order.push('snapshot');
+    value.options.sendJson = (_ws, payload) => order.push(String((payload as Record<string, unknown>).type));
+
+    createProtocolV2MessageHandler(value.options)(value.socket, command(action, 0));
+
+    expect(order).toEqual(['snapshot', 'ack']);
+    expect(value.room.revision).toBe(8);
+    expect(value.calls.persisted).toBe(0);
+  });
+
+  it.each([
+    ['away', { connected: false, disconnectedAt: 100 }],
+    ['AI-controlled', { controller: 'ai' as const }]
+  ])('rejects a conflicting command id for an %s seat before live-human guards', (_label, seatState) => {
+    const priorAction: GameCommand = { type: 'send-chat-message', text: 'original' };
+    const host = { ...player(HOST_ID, 'Host', true), ...seatState };
+    const value = harness(room({
+      players: [host, player(GUEST_ID, 'Guest')],
+      revision: 8,
+      recentCommandIds: [receipt(priorAction)]
+    }));
+
+    value.handler(value.socket, command({ type: 'send-chat-message', text: 'conflict' }, 0));
+
+    expect(lastPayload(value)).toMatchObject({ code: 'command-id-conflict', commandId: COMMAND_ID });
+    expect(value.calls.snapshots).toHaveLength(0);
+    expect(value.room.revision).toBe(8);
   });
 
   it.each([

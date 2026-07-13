@@ -1,4 +1,5 @@
 import {
+  EXPLICIT_PRESENCE_VERSION,
   MAX_RECENT_COMMAND_RECEIPTS,
   MULTIPLAYER_PROTOCOL_VERSION,
   parseClientCommand,
@@ -401,6 +402,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       const isCreate = message.type === 'create-room';
       const hasPlayerId = typeof message.playerId === 'string';
       const hasRecoveryCommandId = typeof message.recoveryCommandId === 'string';
+      const hasPresenceVersion = Object.prototype.hasOwnProperty.call(message, 'presenceVersion');
       const validKeys = isCreate
         ? hasExactKeys(message, ['type', 'protocolVersion', 'name'])
         : hasExactKeys(
@@ -412,10 +414,13 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
                   'code',
                   'name',
                   'playerId',
+                  ...(hasPresenceVersion ? ['presenceVersion'] : []),
                   ...(hasRecoveryCommandId ? ['recoveryCommandId'] : [])
                 ]
-              : ['type', 'protocolVersion', 'code', 'name']
-          ) && (!hasRecoveryCommandId || hasPlayerId);
+              : ['type', 'protocolVersion', 'code', 'name', ...(hasPresenceVersion ? ['presenceVersion'] : [])]
+          ) &&
+          (!hasRecoveryCommandId || hasPlayerId) &&
+          (!hasPresenceVersion || message.presenceVersion === EXPLICIT_PRESENCE_VERSION);
       if (!validKeys) {
         commandError(sendJson, ws, 'Invalid room request.');
         return;
@@ -540,7 +545,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         room.players.push(player);
         createdPlayer = true;
       }
-      const publicConnectionChanged = !player.connected;
+      const wasPubliclyConnected = player.connected;
       const publicNameChanged = player.name !== accountUser.displayName;
       player.userId = player.userId || accountUser.id;
       player.name = accountUser.displayName;
@@ -548,12 +553,12 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       player.lastSeenAt = timestamp;
       player.controller = player.controller || 'human';
       room.readyForNextRoundPlayerIds = normalizedReadyIds(room);
-      ws.visible = true;
       ws.roomCode = room.code;
       ws.playerId = player.id;
       ws.admittedRoomCode = room.code;
       room.clients.add(ws);
       syncPlayerPresence(room, player, timestamp);
+      const publicConnectionChanged = player.connected !== wasPubliclyConnected;
       if (createdPlayer) {
         room.revision += 1;
       }
@@ -592,14 +597,6 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     }
     const { room, player } = context;
     const command = parsed.command;
-    if (player.controller === 'ai') {
-      commandError(sendJson, ws, 'AI control is still completing an action for this seat.', command.commandId, 'ai-controls-seat');
-      return;
-    }
-    if (!player.connected) {
-      commandError(sendJson, ws, 'Return to the active room before sending an action.', command.commandId, 'player-away');
-      return;
-    }
     const actionDigest = digestAction(parsed.canonicalAction);
     const priorReceipt = room.recentCommandIds.find((receipt) => receipt.commandId === command.commandId);
     if (priorReceipt) {
@@ -613,6 +610,14 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       }
       sendRoomSnapshot(ws, room);
       acknowledge(ws, priorReceipt);
+      return;
+    }
+    if (player.controller === 'ai') {
+      commandError(sendJson, ws, 'AI control is still completing an action for this seat.', command.commandId, 'ai-controls-seat');
+      return;
+    }
+    if (!player.connected) {
+      commandError(sendJson, ws, 'Return to the active room before sending an action.', command.commandId, 'player-away');
       return;
     }
 

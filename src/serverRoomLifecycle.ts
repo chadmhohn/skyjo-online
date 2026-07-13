@@ -92,6 +92,22 @@ export function presenceFields(
   };
 }
 
+export function markPlayersDisconnectedForShutdown(
+  room: { players: RoomPlayer[]; updatedAt: number },
+  now: number
+): boolean {
+  let changed = false;
+  for (const player of room.players) {
+    if (player.connected || !Number.isFinite(player.disconnectedAt)) {
+      player.disconnectedAt = now;
+      changed = true;
+    }
+    player.connected = false;
+  }
+  if (changed) room.updatedAt = now;
+  return changed;
+}
+
 export function oldestConnectedHuman(
   players: readonly RoomPlayer[],
   excludedPlayerId?: string

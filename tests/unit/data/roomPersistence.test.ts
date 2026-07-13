@@ -35,6 +35,7 @@ import {
 import { createRoomSnapshot } from '../../../src/protocolV2';
 import { isMultiplayerRoomSnapshot } from '../../../src/roomConnection';
 import { createSeededRandom } from '../../../src/runtime';
+import { markPlayersDisconnectedForShutdown } from '../../../src/serverRoomLifecycle';
 import type { GameState } from '../../../src/types';
 
 const fixedNow = Date.parse('2026-07-11T12:00:00Z');
@@ -1038,6 +1039,26 @@ describe('room persistence', () => {
     const anchored = normalizeRoomsDocument(missingAnchor, { now: fixedNow + 1_200, pruneStale: false });
     expect(anchored.legacy).toBe(true);
     expect(anchored.rooms[0].players[0]).toMatchObject({ disconnectedAt: fixedNow + 1_200 });
+  });
+
+  it('retains a stale-looking live room after shutdown stamps its disconnect activity', () => {
+    const shutdownAt = fixedNow;
+    const runtimeRoom = room(shutdownAt - ROOM_STALE_MS - 1);
+    expect(normalizeRoomsDocument(
+      serializeRooms(new Map([[runtimeRoom.code, runtimeRoom]]), shutdownAt),
+      { now: shutdownAt, staleMs: ROOM_STALE_MS }
+    ).rooms).toEqual([]);
+
+    expect(markPlayersDisconnectedForShutdown(runtimeRoom, shutdownAt)).toBe(true);
+    const restored = normalizeRoomsDocument(
+      serializeRooms(new Map([[runtimeRoom.code, runtimeRoom]]), shutdownAt),
+      { now: shutdownAt + 1, staleMs: ROOM_STALE_MS }
+    );
+    expect(restored.rooms).toHaveLength(1);
+    expect(restored.rooms[0]).toMatchObject({ code: runtimeRoom.code, updatedAt: shutdownAt });
+    expect(restored.rooms[0].players).toEqual(expect.arrayContaining([
+      expect.objectContaining({ connected: false, disconnectedAt: shutdownAt })
+    ]));
   });
 
   it('rejects an AI controller in a waiting-room persistence document', () => {

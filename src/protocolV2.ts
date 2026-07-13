@@ -26,6 +26,7 @@ import type {
 } from './types';
 
 export const MULTIPLAYER_PROTOCOL_VERSION = 2 as const;
+export const EXPLICIT_PRESENCE_VERSION = 1 as const;
 // This is a client-to-server command-frame limit, not a server snapshot limit.
 export const MAX_INBOUND_CLIENT_FRAME_BYTES = 16_384;
 export const MAX_RECENT_COMMAND_RECEIPTS = 128;
