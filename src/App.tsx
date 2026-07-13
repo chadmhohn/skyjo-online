@@ -1330,9 +1330,13 @@ function RoomChat({
       {isOpen ? (
         <div className="skyjo-chat-body mt-3 grid gap-3">
           <div
+            aria-atomic="false"
+            aria-label="Table chat messages"
             aria-live="polite"
+            aria-relevant="additions"
             className="skyjo-chat-messages max-h-64 space-y-2 overflow-y-auto rounded-xl border border-[#f5e6c8]/10 bg-black/10 p-2"
             ref={messagesRef}
+            role="log"
           >
             {messages.length > 0 ? (
               messages.map((message) => {

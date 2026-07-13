@@ -700,6 +700,9 @@ describe('multiplayer lobby', () => {
     expect(await screen.findByText('Link copied')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Table Chat/ }));
+    const chatLog = screen.getByRole('log', { name: 'Table chat messages' });
+    expect(chatLog).toHaveAttribute('aria-atomic', 'false');
+    expect(chatLog).toHaveAttribute('aria-relevant', 'additions');
     const messageInput = screen.getByRole('textbox', { name: 'Message' });
     const sendButton = screen.getByRole('button', { name: 'Send' });
     expect(sendButton).toBeDisabled();
@@ -1226,7 +1229,8 @@ describe('multiplayer lobby', () => {
     expect(screen.getByText('ABCDE')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Put the discard card back.' })[0]).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Reset Room' })).toBeDisabled();
-    expect(screen.getAllByRole('button', { name: /Replace card 1 with the discard card/ })[0]).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /Replace with the discard card/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('gridcell', { name: /row 1, column 1, face-down\. Not currently actionable/ })[0]).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Table Chat/ }));
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
@@ -1305,7 +1309,7 @@ describe('multiplayer game table', () => {
     const { socket, user } = await createJoinedRoom(makeRoom({ state: openingState, status: 'playing' }));
 
     expect(screen.getAllByText('Choose two face-down cards').length).toBeGreaterThan(0);
-    await user.click(screen.getAllByRole('button', { name: 'Reveal opening card 1.' })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 1, face-down\. Reveal this opening card/ })[0]);
     const openingCommand = expectCommand(socket, { type: 'reveal-opening-card', cardIndex: 0 }, 0);
     const openingAfterReveal = makeState({
       players: [
@@ -1364,7 +1368,7 @@ describe('multiplayer game table', () => {
     expect(screen.getAllByText('Drawn card waiting').length).toBeGreaterThan(0);
     await user.click(screen.getAllByRole('button', { name: /Discard \+ reveal/ })[0]);
     expect(screen.getAllByText('Discard mode: select a highlighted hidden card.').length).toBeGreaterThan(0);
-    await user.click(screen.getAllByRole('button', { name: 'Reveal hidden card 3 after discarding the drawn card.' })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 3, face-down\. Reveal after discarding the drawn card/ })[0]);
     const discardRevealCommand = expectCommand(socket, { type: 'discard-and-reveal', cardIndex: 2 }, 5);
     convergeCommand(
       socket,
@@ -1374,7 +1378,7 @@ describe('multiplayer game table', () => {
 
     receiveSnapshot(socket, makeRoom({ state: drawnState, status: 'playing', revision: 7 }));
     await user.click(screen.getAllByRole('button', { name: /Place drawn card/ })[0]);
-    await user.click(screen.getAllByRole('button', { name: 'Replace card 1 with the drawn card.' })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 1, .*Replace with the drawn card/ })[0]);
     expectCommand(socket, { type: 'replace-card', cardIndex: 0 }, 7);
 
     expect(socket.sent.some((frame) => (frame as { type?: string }).type === 'update-state')).toBe(false);

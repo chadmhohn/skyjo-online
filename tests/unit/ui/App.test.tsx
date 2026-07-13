@@ -31,6 +31,6 @@ describe('application shell', () => {
     expect(screen.getAllByTestId('opponent-rail')).toHaveLength(1);
     expect(screen.getAllByTestId('table-center')).toHaveLength(1);
     expect(screen.getAllByTestId('local-board')).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: /Reveal opening card/ })).not.toHaveLength(0);
+    expect(screen.getAllByRole('button', { name: /Reveal this opening card/ })).not.toHaveLength(0);
   });
 });

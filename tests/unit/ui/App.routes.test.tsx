@@ -321,8 +321,8 @@ describe('application routes and solo controls', () => {
     const actor = userEvent.setup();
     renderRoute('/single-player');
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /Reveal opening card/ }).length).toBeGreaterThan(0);
-    await actor.click(screen.getAllByRole('button', { name: /Reveal opening card 1/ })[0]);
+    expect(screen.getAllByRole('button', { name: /Reveal this opening card/ }).length).toBeGreaterThan(0);
+    await actor.click(screen.getAllByRole('button', { name: /row 1, column 1, face-down\. Reveal this opening card/ })[0]);
     expect(mocks.playAudioCue).toHaveBeenCalledWith('flip');
 
     await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
