@@ -22,6 +22,7 @@ const maxPersistedChatMessages = 80;
 const maxPersistedChatMessageLength = 280;
 const maxPersistedRooms = 10_000;
 const commandIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const roomInstanceIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const sha256Pattern = /^[a-f0-9]{64}$/;
 const resetRoomActionDigest = createHash('sha256').update(JSON.stringify({ type: 'reset-room' })).digest('hex');
 const unsupportedWindowsDirectorySyncCodes = new Set(['EINVAL', 'ENOTSUP', 'EPERM']);
@@ -270,6 +271,20 @@ function deriveLegacyGameSessionId({ code, hostId, players }) {
   return `legacy-${createHash('sha256').update(canonicalRoomIdentity).digest('hex')}`;
 }
 
+function deriveLegacyRoomInstanceId({ code, hostId, players }) {
+  const canonicalRoomIdentity = JSON.stringify([
+    'skyjo-room-instance-v1',
+    code,
+    hostId,
+    players.map((player) => [player.id, player.userId ?? null, player.joinedAt ?? null])
+  ]);
+  const digest = createHash('sha256').update(canonicalRoomIdentity).digest('hex');
+  const uuidHex = `${digest.slice(0, 12)}4${digest.slice(13, 16)}${(
+    (Number.parseInt(digest[16], 16) & 0x3) | 0x8
+  ).toString(16)}${digest.slice(17, 32)}`;
+  return `${uuidHex.slice(0, 8)}-${uuidHex.slice(8, 12)}-${uuidHex.slice(12, 16)}-${uuidHex.slice(16, 20)}-${uuidHex.slice(20)}`;
+}
+
 function normalizeRoom(value, roomIndex, restoredAt) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} must be an object.`);
@@ -302,6 +317,12 @@ function normalizeRoom(value, roomIndex, restoredAt) {
   if (!playerIds.has(hostId)) {
     throw formatError(`Room ${roomIndex} host is not a room player.`);
   }
+  if (value.roomInstanceId !== undefined && !roomInstanceIdPattern.test(stringValue(value.roomInstanceId))) {
+    throw formatError(`Room ${roomIndex} has an invalid room instance id.`);
+  }
+  const roomInstanceId = value.roomInstanceId === undefined
+    ? deriveLegacyRoomInstanceId({ code, hostId, players })
+    : stringValue(value.roomInstanceId).toLowerCase();
 
   if (value.chatMessages !== undefined && !Array.isArray(value.chatMessages)) {
     throw formatError(`Room ${roomIndex} chat messages must be an array.`);
@@ -390,6 +411,7 @@ function normalizeRoom(value, roomIndex, restoredAt) {
     completedGameId: optionalBoundedIdentifier(value.completedGameId, `Room ${roomIndex} completed game id`),
     gameSessionId,
     finishedByAi: value.finishedByAi === true,
+    roomInstanceId,
     revision,
     recentCommandIds,
     resetAliases,
@@ -527,6 +549,9 @@ export function normalizeRoomsDocument(value, options = {}) {
     );
     return room.gameSessionId !== persistedGameSessionId;
   });
+  const backfilledRoomInstanceId = normalizedRooms.some(
+    (room, index) => room.roomInstanceId !== document.rooms[index].roomInstanceId
+  );
   const backfilledLifecycleAnchor = document.rooms.some((room) =>
     Array.isArray(room.players) && room.players.some((player) =>
       player.connected === true || player.disconnectedAt === undefined || player.disconnectedAt === null
@@ -555,7 +580,7 @@ export function normalizeRoomsDocument(value, options = {}) {
 
   return {
     ...document,
-    legacy: document.legacy || backfilledGameSessionId || backfilledLifecycleAnchor,
+    legacy: document.legacy || backfilledGameSessionId || backfilledRoomInstanceId || backfilledLifecycleAnchor,
     rooms: pruneStale ? normalizedRooms.filter((room) => room.updatedAt >= now - staleMs) : normalizedRooms
   };
 }
@@ -671,6 +696,12 @@ export function serializeRoom(room) {
   if (playerIds.size !== serializedPlayers.length) throw formatError(`Room ${code} contains duplicate player ids.`);
   if (!playerIds.has(hostId)) throw formatError(`Room ${code} host is not a room player.`);
   const playersById = new Map(serializedPlayers.map((player) => [player.id, player]));
+  if (room.roomInstanceId !== undefined && !roomInstanceIdPattern.test(stringValue(room.roomInstanceId))) {
+    throw formatError(`Room ${code} has an invalid room instance id.`);
+  }
+  const roomInstanceId = room.roomInstanceId === undefined
+    ? deriveLegacyRoomInstanceId({ code, hostId, players: serializedPlayers })
+    : stringValue(room.roomInstanceId).toLowerCase();
   const chatMessages = Array.isArray(room.chatMessages)
     ? room.chatMessages
         .map((message) => normalizeChatMessage(message, code, playersById))
@@ -714,6 +745,7 @@ export function serializeRoom(room) {
     completedGameId: optionalBoundedIdentifier(room.completedGameId, `Room ${code} completed game id`),
     gameSessionId: optionalBoundedIdentifier(room.gameSessionId, `Room ${code} game session id`),
     finishedByAi: room.finishedByAi === true,
+    roomInstanceId,
     revision: Number.isSafeInteger(room.revision) && room.revision >= 0 ? room.revision : 0,
     recentCommandIds,
     resetAliases: resetAliasesForRetention.length > 0

@@ -470,6 +470,15 @@ let reconnectSocket;
 
 try {
   await waitForHealth(baseUrl);
+  const publicLoginPage = await fetch(`${baseUrl}/login`);
+  assert.equal(publicLoginPage.status, 200);
+  assert.match(publicLoginPage.headers.get('cache-control') || '', /no-store/i);
+  assert.equal(publicLoginPage.headers.get('referrer-policy'), 'no-referrer');
+  assert.match(publicLoginPage.headers.get('content-security-policy') || '', /default-src 'self'/);
+  const publicLoginHtml = await publicLoginPage.text();
+  for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
+    assert.match(publicLoginHtml, new RegExp(marker), `login SSR head includes ${marker}`);
+  }
   const publicManifest = await fetch(`${baseUrl}/manifest.webmanifest`);
   assert.equal(publicManifest.status, 200, 'PWA manifest stays available before the site-password gate');
   assert.match(publicManifest.headers.get('content-type') || '', /application\/manifest\+json/);
@@ -486,6 +495,14 @@ try {
   assert.equal(protectedShareLink.status, 302);
   assert.equal(protectedShareLink.headers.get('location'), '/login?next=%2Flobby%3Froom%3DABCDE');
   const cookie = await login(baseUrl, password, '/lobby?room=ABCDE');
+  const authenticatedShell = await fetch(`${baseUrl}/`, { headers: { Cookie: cookie } });
+  assert.equal(authenticatedShell.status, 200);
+  assert.match(authenticatedShell.headers.get('cache-control') || '', /no-store/i);
+  assert.equal(authenticatedShell.headers.get('referrer-policy'), 'no-referrer');
+  const authenticatedShellHtml = await authenticatedShell.text();
+  for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
+    assert.match(authenticatedShellHtml, new RegExp(marker), `SPA head includes ${marker}`);
+  }
   const cardAudio = await fetch(`${baseUrl}/audio/card-flip.mp3`, { headers: { Cookie: cookie } });
   assert.equal(cardAudio.status, 200, 'card audio assets are served after shared-password login');
   assert.match(cardAudio.headers.get('content-type') || '', /audio\/mpeg/);
@@ -628,7 +645,13 @@ try {
   assert.match(hostInvite.payload.path, /^\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   const inviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(inviteLanding.status, 200, 'valid room invite opens the install/browser choice page');
+  assert.match(inviteLanding.headers.get('cache-control') || '', /no-store/i);
+  assert.equal(inviteLanding.headers.get('referrer-policy'), 'no-referrer');
+  assert.match(inviteLanding.headers.get('content-security-policy') || '', /default-src 'self'/);
   const inviteLandingHtml = await inviteLanding.text();
+  for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
+    assert.match(inviteLandingHtml, new RegExp(marker), `invite SSR head includes ${marker}`);
+  }
   assert.equal(inviteLandingHtml.includes(`Join Room ${parkingRoomCode}`), true, 'invite landing shows the room code');
   assert.match(inviteLandingHtml, /Add Skyjo to your Home Screen/, 'invite landing explains the home screen path');
   assert.match(inviteLandingHtml, /Open in Browser/, 'invite landing keeps the browser path available');
@@ -646,7 +669,7 @@ try {
   const inviteCookie = redeemedInvite.headers.get('set-cookie');
   assert.ok(inviteCookie, 'valid room invite sets the shared gate cookie');
   const inviteLobby = await fetch(`${baseUrl}/lobby?room=${parkingRoomCode}`, {
-    headers: { Cookie: inviteCookie.split(';')[0] },
+    headers: { Accept: 'text/html', Cookie: inviteCookie.split(';')[0] },
     redirect: 'manual'
   });
   assert.equal(inviteLobby.status, 200, 'redeemed invite cookie can load the lobby');
@@ -660,7 +683,7 @@ try {
   const installCodeCookie = installCodeRedeem.headers.get('set-cookie');
   assert.ok(installCodeCookie, 'install code redemption sets the shared gate cookie');
   const installCodeLobby = await fetch(`${baseUrl}/lobby?room=${parkingRoomCode}`, {
-    headers: { Cookie: installCodeCookie.split(';')[0] },
+    headers: { Accept: 'text/html', Cookie: installCodeCookie.split(';')[0] },
     redirect: 'manual'
   });
   assert.equal(installCodeLobby.status, 200, 'install code cookie can load the lobby');
@@ -689,8 +712,12 @@ try {
   const invalidInvitePayload = Buffer.from(JSON.stringify({ room: invalidInviteRoom, exp: Date.now() + 60000 })).toString('base64url');
   const invalidInviteUrl = fixedOriginUrl(baseUrl, `/invite/${invalidInvitePayload}.bad-signature`);
   const invalidInvite = await fetch(invalidInviteUrl, { redirect: 'manual' });
-  assert.equal(invalidInvite.status, 302, 'invalid room invite falls back to the normal password gate');
-  assert.equal(invalidInvite.headers.get('location'), `/login?next=${encodeURIComponent(`/lobby?room=${invalidInviteRoom}`)}`);
+  assert.equal(invalidInvite.status, 410, 'invalid room invite fails closed without reflecting untrusted payload data');
+  assert.equal(invalidInvite.headers.get('location'), null, 'invalid room invite does not redirect using attacker-controlled data');
+  assert.equal(invalidInvite.headers.get('set-cookie'), null, 'invalid room invite does not grant access');
+  const invalidInviteHtml = await invalidInvite.text();
+  assert.match(invalidInviteHtml, /invite unavailable/i);
+  assert.equal(invalidInviteHtml.includes(invalidInviteRoom), false, 'invalid invite response does not reflect an attacker room');
   parkingHostSocket.close();
   await new Promise((resolve) => parkingHostSocket.once('close', resolve));
   parkingHostSocket = null;
@@ -718,6 +745,15 @@ try {
     { type: 'join-room', code: resetOldRoomCode, name: 'Reset Guest' },
     'reset guest snapshot'
   );
+  const resetRoomInvite = await accountRequest(baseUrl, hostAccount.cookie, '/api/rooms/invite', {
+    roomCode: resetOldRoomCode
+  });
+  assert.equal(resetRoomInvite.response.status, 200, 'reset-room host can mint an invite before replacement');
+  const resetInviteLanding = await fetch(`${baseUrl}${resetRoomInvite.payload.path}`, { redirect: 'manual' });
+  assert.equal(resetInviteLanding.status, 200);
+  const resetInviteHtml = await resetInviteLanding.text();
+  const resetInstallCode = resetInviteHtml.match(/id="invite-code" readonly value="([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{7})"/)?.[1];
+  assert.ok(resetInstallCode, 'pre-reset invite creates a persistent short code');
   const resetGuestNoticePromise = waitForMessage(
     resetGuestSocket,
     (message) => message.type === 'error' && message.code === 'room-reset',
@@ -729,6 +765,23 @@ try {
   assert.equal(resetNewHostRoom.room.status, 'waiting');
   assert.equal(resetNewHostRoom.room.players.length, 1, 'fresh reset room starts with the host only');
   assert.match(resetGuestNotice.message, /new room link/i);
+  const staleLongInvite = await fetch(`${baseUrl}${resetRoomInvite.payload.path}?open=browser`, { redirect: 'manual' });
+  assert.equal(staleLongInvite.status, 410, 'long invite is stale after the room instance is replaced');
+  assert.equal(staleLongInvite.headers.get('set-cookie'), null, 'stale long invite cannot grant access');
+  const staleShortInvite = await fetch(`${baseUrl}/invite-code`, {
+    method: 'POST',
+    body: new URLSearchParams({ code: resetInstallCode }),
+    redirect: 'manual'
+  });
+  assert.equal(staleShortInvite.status, 410, 'short invite is consumed and rejected after room replacement');
+  assert.equal(staleShortInvite.headers.get('set-cookie'), null, 'stale short invite cannot grant access');
+  const staleShortInviteReplay = await fetch(`${baseUrl}/invite-code`, {
+    method: 'POST',
+    body: new URLSearchParams({ code: resetInstallCode }),
+    redirect: 'manual'
+  });
+  assert.equal(staleShortInviteReplay.status, 303, 'consumed stale code becomes the generic invalid response');
+  assert.equal(staleShortInviteReplay.headers.get('location'), '/login?inviteError=1');
   resetShareGuestSocket = await openSocket(baseUrl, guestAccount.cookie, 'reset share guest');
   const resetShareGuestJoined = await sendAdmission(
     resetShareGuestSocket,

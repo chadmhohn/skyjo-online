@@ -74,6 +74,8 @@ export const test = base.extend<object, WorkerFixtures>({
           SKYJO_ROOMS_FILE: path.join(dataDir, 'rooms.json'),
           SKYJO_SECURE_COOKIES: 'false',
           SKYJO_SESSION_SECRET: `test-session-${runId}-${project}-${workerInfo.workerIndex}`,
+          SKYJO_TEST_PWA_NETWORK_FAULTS: 'true',
+          SKYJO_TEST_PWA_VARIANTS: 'true',
           SKYJO_VAPID_PRIVATE_KEY: '',
           SKYJO_VAPID_PUBLIC_KEY: ''
         },

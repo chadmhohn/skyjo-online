@@ -11,6 +11,11 @@ import {
   serializeRooms
 } from '../../../server-room-persistence.mjs';
 import {
+  createRoomInviteToken,
+  inviteMatchesRoom,
+  parseRoomInviteToken
+} from '../../../server-room-invites.mjs';
+import {
   createMultiplayerGame,
   drawBlind,
   replaceCard,
@@ -23,6 +28,8 @@ const v011Tag = 'v0.1.1';
 const v011Commit = '15b354786a0b0ced130b9cdb4da89b904b5942e8';
 const fixedNow = Date.parse('2026-07-11T12:00:00Z');
 const resetCommandId = '10000000-0000-4000-8000-000000000001';
+const currentRoomInstanceId = '33333333-3333-4333-8333-333333333333';
+const inviteSecret = 'rollback-invite-test-secret-value';
 const resetActionDigest = createHash('sha256')
   .update(JSON.stringify({ type: 'reset-room' }))
   .digest('hex');
@@ -133,6 +140,7 @@ function completedState(gameOver: boolean): GameState {
 function roomWithCurrentMetadata(state: GameState, status: 'playing' | 'finished') {
   return {
     roomVersion: 2,
+    roomInstanceId: currentRoomInstanceId,
     code: 'FGHIJ',
     hostId: 'host-1',
     players: [
@@ -330,5 +338,52 @@ describe('exact v0.1.1 room persistence compatibility', () => {
       recentCommandIds: [],
       resetAliases: []
     });
+  });
+
+  it('invalidates pre-rollback long and short invites after an exact old-writer round trip', () => {
+    const room = roomWithCurrentMetadata(activeBlindDrawState(), 'playing');
+    const currentDocument = serializeRooms(new Map([[room.code, room]]), fixedNow);
+    expect(currentDocument.rooms[0].roomInstanceId).toBe(currentRoomInstanceId);
+    const currentBeforeRollback = normalizeRoomsDocument(currentDocument, { now: fixedNow }).rooms[0];
+    expect(currentBeforeRollback.roomInstanceId).toBe(currentRoomInstanceId);
+
+    const longInvite = createRoomInviteToken({
+      roomCode: room.code,
+      roomInstanceId: currentRoomInstanceId,
+      secret: inviteSecret,
+      ttlMs: 60_000,
+      now: () => fixedNow,
+      randomBytes: () => Buffer.alloc(16, 9)
+    });
+    const parsedLongInvite = parseRoomInviteToken(longInvite.token, {
+      secret: inviteSecret,
+      now: () => fixedNow + 1
+    });
+    const consumedShortCodeBinding = {
+      room: room.code,
+      roomInstanceId: currentRoomInstanceId
+    };
+    expect(inviteMatchesRoom(parsedLongInvite, currentBeforeRollback)).toBe(true);
+    expect(inviteMatchesRoom(consumedShortCodeBinding, currentBeforeRollback)).toBe(true);
+
+    const oldNormalized = exactV011.normalizeRoomsDocument(structuredClone(currentDocument), {
+      now: fixedNow + 1
+    });
+    expect(oldNormalized.rooms[0]).not.toHaveProperty('roomInstanceId');
+    const oldRewritten = exactV011.serializeRooms(
+      new Map([[oldNormalized.rooms[0].code, oldNormalized.rooms[0]]]),
+      fixedNow + 1
+    );
+    expect(oldRewritten.rooms[0]).not.toHaveProperty('roomInstanceId');
+
+    const currentAfterRollback = normalizeRoomsDocument(oldRewritten, { now: fixedNow + 2 }).rooms[0];
+    expect(currentAfterRollback.roomInstanceId).not.toBe(currentRoomInstanceId);
+    expect(currentAfterRollback.roomInstanceId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(inviteMatchesRoom(parsedLongInvite, currentAfterRollback)).toBe(false);
+    expect(inviteMatchesRoom(consumedShortCodeBinding, currentAfterRollback)).toBe(false);
+
+    const currentRewrite = serializeRooms(new Map([[currentAfterRollback.code, currentAfterRollback]]), fixedNow + 3);
+    const currentReread = normalizeRoomsDocument(currentRewrite, { now: fixedNow + 4 }).rooms[0];
+    expect(currentReread.roomInstanceId).toBe(currentAfterRollback.roomInstanceId);
   });
 });

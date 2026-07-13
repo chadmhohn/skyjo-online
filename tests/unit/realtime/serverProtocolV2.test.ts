@@ -96,7 +96,8 @@ function room(overrides: Partial<ProtocolV2Room> = {}): ProtocolV2Room {
     state: null,
     status: 'waiting',
     updatedAt: 100,
-    ...overrides
+    ...overrides,
+    roomInstanceId: overrides.roomInstanceId || '11111111-1111-4111-8111-111111111111'
   };
 }
 

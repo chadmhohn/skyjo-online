@@ -27,6 +27,8 @@ export default defineConfig({
         'src/App.tsx',
         'src/account.tsx',
         'src/audio.ts',
+        'src/lazyRoomConnection.ts',
+        'src/pwaUpdate.ts',
         'src/push.ts',
         'src/resetRecovery.ts',
         'src/soloDurability.ts'
@@ -36,6 +38,8 @@ export default defineConfig({
         'src/App.tsx': uiThresholds,
         'src/account.tsx': uiThresholds,
         'src/audio.ts': uiThresholds,
+        'src/lazyRoomConnection.ts': uiThresholds,
+        'src/pwaUpdate.ts': uiThresholds,
         'src/push.ts': uiThresholds,
         'src/resetRecovery.ts': uiThresholds,
         'src/soloDurability.ts': uiThresholds

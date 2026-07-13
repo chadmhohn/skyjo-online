@@ -81,13 +81,40 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   const payload = await manifest.json();
   expect(payload).toMatchObject({
     name: expect.any(String),
-    display: 'standalone'
+    display: 'standalone',
+    id: '/',
+    scope: '/',
+    start_url: '/'
   });
   expect(payload.icons.length).toBeGreaterThanOrEqual(2);
 
+  const appleIcon = await request.get(`${skyjoServer.baseURL}/skyjo-icon-v2-180.png`);
+  expect(appleIcon.ok()).toBe(true);
+  expect(appleIcon.headers()['content-type']).toMatch(/^image\/png\b/);
+  const iconBytes = await appleIcon.body();
+  expect(iconBytes.subarray(1, 4).toString('ascii')).toBe('PNG');
+  expect(iconBytes.readUInt32BE(16)).toBe(180);
+  expect(iconBytes.readUInt32BE(20)).toBe(180);
+
   const serviceWorker = await request.get(`${skyjoServer.baseURL}/sw.js`);
   expect(serviceWorker.ok()).toBe(true);
-  expect(await serviceWorker.text()).toContain("addEventListener('push'");
+  const serviceWorkerSource = await serviceWorker.text();
+  expect(serviceWorkerSource).toContain("addEventListener('push'");
+  expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
+  expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
+  const originGuardIndex = serviceWorkerSource.indexOf('if (event.origin !== self.location.origin) return;');
+  const activationIndex = serviceWorkerSource.indexOf('if (isActivation) {');
+  const skipWaitingIndex = serviceWorkerSource.indexOf('void self.skipWaiting().catch(() => {});');
+  const graceIndex = serviceWorkerSource.indexOf('setTimeout(resolve, skipWaitingGraceMs)');
+  const sourceGuardIndex = serviceWorkerSource.indexOf('if (!event.source) return;');
+  const sanitizerIndex = serviceWorkerSource.indexOf("event.data?.type === 'SKYJO_SANITIZE_CACHE'");
+  expect(originGuardIndex).toBeGreaterThan(-1);
+  expect(activationIndex).toBeGreaterThan(originGuardIndex);
+  expect(skipWaitingIndex).toBeGreaterThan(-1);
+  expect(graceIndex).toBeGreaterThan(skipWaitingIndex);
+  expect(sourceGuardIndex).toBeGreaterThan(activationIndex);
+  expect(sanitizerIndex).toBeGreaterThan(sourceGuardIndex);
+  expect(serviceWorkerSource).not.toContain('waitUntil(self.skipWaiting())');
 });
 
 test('single-player stats deduplicate one UUID without collapsing an equal-score game', async ({ page, skyjoServer }) => {
