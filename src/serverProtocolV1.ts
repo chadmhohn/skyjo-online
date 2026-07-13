@@ -150,6 +150,10 @@ export function createProtocolV1MessageHandler(options: ProtocolV1HandlerOptions
         sendJson(ws, { type: 'error', message: 'That game has already started.' });
         return;
       }
+      const previousPlayer = player
+        ? { connected: player.connected, name: player.name, userId: player.userId }
+        : null;
+      let createdPlayer = false;
       if (!player) {
         if (room.players.length >= 8) {
           sendJson(ws, { type: 'error', message: 'Room is full.' });
@@ -163,7 +167,9 @@ export function createProtocolV1MessageHandler(options: ProtocolV1HandlerOptions
           host: false
         };
         room.players.push(player);
+        createdPlayer = true;
       }
+      const previousReadyIds = [...room.readyForNextRoundPlayerIds];
       player.userId = player.userId || accountUser.id;
       player.name = accountUser.displayName;
       room.readyForNextRoundPlayerIds = normalizedReadyIds(room);
@@ -172,10 +178,20 @@ export function createProtocolV1MessageHandler(options: ProtocolV1HandlerOptions
       ws.playerId = player.id;
       room.clients.add(ws);
       syncPlayerPresence(room, player);
-      room.updatedAt = now();
-      persistRoomsSoon();
+      const publicRoomChanged =
+        createdPlayer ||
+        !previousPlayer ||
+        previousPlayer.connected !== player.connected ||
+        previousPlayer.name !== player.name ||
+        previousPlayer.userId !== player.userId ||
+        previousReadyIds.length !== room.readyForNextRoundPlayerIds.length ||
+        previousReadyIds.join('\u0000') !== room.readyForNextRoundPlayerIds.join('\u0000');
+      if (publicRoomChanged) {
+        room.updatedAt = now();
+        persistRoomsSoon();
+      }
       sendJson(ws, { type: 'joined', playerId: player.id, room: publicRoom(room) });
-      broadcastRoom(room);
+      if (publicRoomChanged) broadcastRoom(room);
       return;
     }
 

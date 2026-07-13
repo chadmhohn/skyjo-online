@@ -24,10 +24,17 @@ class FakeSocket implements RealtimeSocket {
   playerId?: string | null;
   roomCode?: string | null;
   visible?: boolean;
+  heartbeatAwaitingPong?: boolean;
   readonly sent: string[] = [];
-  private readonly listeners = new Map<SocketEvent, Array<(...args: unknown[]) => void>>();
+  pingCount = 0;
+  pingAttempts = 0;
+  terminateCount = 0;
+  terminateAttempts = 0;
+  throwOnPing = false;
+  throwOnTerminate = false;
+  private readonly listeners = new Map<SocketEvent | 'pong', Array<(...args: unknown[]) => void>>();
 
-  on(event: SocketEvent, listener: (...args: unknown[]) => void): void {
+  on(event: SocketEvent | 'pong', listener: (...args: unknown[]) => void): void {
     const current = this.listeners.get(event) ?? [];
     this.listeners.set(event, [...current, listener]);
   }
@@ -36,7 +43,19 @@ class FakeSocket implements RealtimeSocket {
     this.sent.push(payload);
   }
 
-  emit(event: SocketEvent, ...args: unknown[]): void {
+  ping(): void {
+    this.pingAttempts += 1;
+    if (this.throwOnPing) throw new Error('ping raced closed');
+    this.pingCount += 1;
+  }
+
+  terminate(): void {
+    this.terminateAttempts += 1;
+    if (this.throwOnTerminate) throw new Error('terminate raced closed');
+    this.terminateCount += 1;
+  }
+
+  emit(event: SocketEvent | 'pong', ...args: unknown[]): void {
     for (const listener of this.listeners.get(event) ?? []) listener(...args);
   }
 }
@@ -110,10 +129,18 @@ function createHarness() {
   const currentAccountUser = vi.fn((): unknown | null => ({ id: 'account-1' }));
   const persistRoomsSoon = vi.fn();
   const broadcastRoom = vi.fn();
+  const sendCurrentRoom = vi.fn();
   const now = vi.fn(() => 1_234);
   const onProtocolV1Message = vi.fn<(socket: RealtimeSocket, message: RealtimeClientMessage) => void>();
+  let heartbeatCallback: (() => void) | null = null;
+  const heartbeatHandle = { unref: vi.fn() };
+  const scheduleInterval = vi.fn((callback: () => void) => {
+    heartbeatCallback = callback;
+    return heartbeatHandle;
+  });
+  const cancelInterval = vi.fn();
 
-  registerRealtimeServer({
+  const dispose = registerRealtimeServer({
     server,
     webSocketServer,
     hasValidSession,
@@ -121,9 +148,12 @@ function createHarness() {
     roomPlayer: (socket) => contexts.get(socket) ?? null,
     persistRoomsSoon,
     broadcastRoom,
+    sendCurrentRoom,
     now,
     isShuttingDown: () => shuttingDown,
-    onProtocolV1Message
+    onProtocolV1Message,
+    scheduleInterval,
+    cancelInterval
   });
 
   return {
@@ -134,8 +164,16 @@ function createHarness() {
     currentAccountUser,
     persistRoomsSoon,
     broadcastRoom,
+    sendCurrentRoom,
     now,
     onProtocolV1Message,
+    scheduleInterval,
+    cancelInterval,
+    heartbeatHandle,
+    dispose,
+    heartbeat() {
+      heartbeatCallback?.();
+    },
     setShuttingDown(value: boolean) {
       shuttingDown = value;
     },
@@ -230,7 +268,7 @@ describe('serverRealtime transport seam', () => {
     expect(harness.onProtocolV1Message).not.toHaveBeenCalled();
   });
 
-  it('updates same-seat presence with an exact injected timestamp', () => {
+  it('targeted-resynchronizes redundant same-seat presence without persistence or peer broadcast', () => {
     const harness = createHarness();
     const { socket } = harness.connect();
     const sibling = new FakeSocket();
@@ -240,14 +278,50 @@ describe('serverRealtime transport seam', () => {
     socket.emit('message', '{"type":"set-presence","visible":false}');
     expect(socket.visible).toBe(false);
     expect(context.player.connected).toBe(true);
-    expect(context.room.updatedAt).toBe(1_234);
-    expect(harness.persistRoomsSoon).toHaveBeenCalledOnce();
-    expect(harness.broadcastRoom).toHaveBeenCalledWith(context.room);
+    expect(context.room.updatedAt).toBe(0);
+    expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
+    expect(harness.broadcastRoom).not.toHaveBeenCalled();
+    expect(harness.sendCurrentRoom).toHaveBeenCalledWith(socket, context.room);
 
     sibling.visible = false;
     socket.emit('message', '{"type":"set-presence"}');
     expect(socket.visible).toBe(true);
     expect(context.player.connected).toBe(true);
+    expect(harness.sendCurrentRoom).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects an explicitly malformed presence value without changing room state', () => {
+    const harness = createHarness();
+    const { socket } = harness.connect();
+    const context = roomContext(socket);
+    harness.contexts.set(socket, context);
+
+    socket.emit('message', '{"type":"set-presence","visible":"false"}');
+
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: 'error', message: 'Invalid presence.' }
+    ]);
+    expect(socket.visible).toBe(true);
+    expect(context.player.connected).toBe(true);
+    expect(context.room.updatedAt).toBe(0);
+    expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
+    expect(harness.broadcastRoom).not.toHaveBeenCalled();
+    expect(harness.sendCurrentRoom).not.toHaveBeenCalled();
+  });
+
+  it('persists and broadcasts a genuine aggregate presence edge exactly once', () => {
+    const harness = createHarness();
+    const { socket } = harness.connect();
+    const context = roomContext(socket);
+    harness.contexts.set(socket, context);
+
+    socket.emit('message', '{"type":"set-presence","visible":false}');
+
+    expect(context.player.connected).toBe(false);
+    expect(context.room.updatedAt).toBe(1_234);
+    expect(harness.persistRoomsSoon).toHaveBeenCalledOnce();
+    expect(harness.broadcastRoom).toHaveBeenCalledWith(context.room);
+    expect(harness.sendCurrentRoom).not.toHaveBeenCalled();
   });
 
   it('keeps a seat connected when a sibling socket remains and disconnects the final socket', () => {
@@ -261,7 +335,9 @@ describe('serverRealtime transport seam', () => {
 
     expect(siblingContext.room.clients.has(siblingConnection.socket)).toBe(false);
     expect(siblingContext.player.connected).toBe(true);
-    expect(siblingContext.room.updatedAt).toBe(2_001);
+    expect(siblingContext.room.updatedAt).toBe(0);
+    expect(siblingHarness.persistRoomsSoon).not.toHaveBeenCalled();
+    expect(siblingHarness.broadcastRoom).not.toHaveBeenCalled();
 
     const finalHarness = createHarness();
     finalHarness.now.mockReturnValue(2_002);
@@ -317,5 +393,131 @@ describe('serverRealtime transport seam', () => {
     expect(hasVisibleLiveClient(room, player.id, current)).toBe(false);
     syncPlayerPresence(room, player);
     expect(player.connected).toBe(true);
+  });
+
+  it('pings every interval, accepts pong, and terminates a half-open socket on the next interval', () => {
+    const harness = createHarness();
+    const { socket } = harness.connect();
+    const context = roomContext(socket);
+    harness.contexts.set(socket, context);
+
+    expect(harness.scheduleInterval).toHaveBeenCalledWith(expect.any(Function), 15_000);
+    expect(harness.heartbeatHandle.unref).toHaveBeenCalledOnce();
+
+    harness.heartbeat();
+    expect(socket.pingCount).toBe(1);
+    expect(socket.heartbeatAwaitingPong).toBe(true);
+    expect(socket.terminateCount).toBe(0);
+
+    socket.emit('pong');
+    expect(socket.heartbeatAwaitingPong).toBe(false);
+    harness.heartbeat();
+    expect(socket.pingCount).toBe(2);
+    harness.heartbeat();
+    expect(socket.terminateCount).toBe(1);
+    expect(context.room.updatedAt).toBe(0);
+    expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
+    expect(harness.broadcastRoom).not.toHaveBeenCalled();
+  });
+
+  it('isolates ping and terminate races so one socket cannot abort the heartbeat sweep', () => {
+    const pingHarness = createHarness();
+    const throwingPing = pingHarness.connect().socket;
+    throwingPing.throwOnPing = true;
+    const healthyPing = new FakeSocket();
+    pingHarness.webSocketServer.nextSocket = healthyPing;
+    pingHarness.connect();
+    expect(() => pingHarness.heartbeat()).not.toThrow();
+    expect(throwingPing.pingAttempts).toBe(1);
+    expect(throwingPing.terminateAttempts).toBe(1);
+    expect(healthyPing.pingCount).toBe(1);
+    pingHarness.heartbeat();
+    expect(throwingPing.terminateAttempts).toBe(2);
+
+    const terminateHarness = createHarness();
+    const throwingTerminate = terminateHarness.connect().socket;
+    throwingTerminate.heartbeatAwaitingPong = true;
+    throwingTerminate.throwOnTerminate = true;
+    const healthyTerminate = new FakeSocket();
+    healthyTerminate.heartbeatAwaitingPong = true;
+    terminateHarness.webSocketServer.nextSocket = healthyTerminate;
+    terminateHarness.connect();
+    healthyTerminate.heartbeatAwaitingPong = true;
+    expect(() => terminateHarness.heartbeat()).not.toThrow();
+    expect(throwingTerminate.terminateAttempts).toBe(1);
+    expect(healthyTerminate.terminateCount).toBe(1);
+    terminateHarness.heartbeat();
+    expect(throwingTerminate.terminateAttempts).toBe(2);
+  });
+
+  it('removes closed sockets from heartbeat and disposes the shared timer idempotently', () => {
+    const harness = createHarness();
+    const { socket } = harness.connect();
+    socket.emit('close');
+    harness.heartbeat();
+    expect(socket.pingCount).toBe(0);
+
+    harness.dispose();
+    harness.dispose();
+    expect(harness.cancelInterval).toHaveBeenCalledOnce();
+    harness.setShuttingDown(true);
+    socket.emit('close');
+    expect(harness.cancelInterval).toHaveBeenCalledOnce();
+  });
+
+  it('rejects invalid heartbeat configuration', () => {
+    const harness = createHarness();
+    harness.dispose();
+    expect(() => registerRealtimeServer({
+      server: harness.server,
+      webSocketServer: harness.webSocketServer,
+      hasValidSession: harness.hasValidSession,
+      currentAccountUser: harness.currentAccountUser,
+      roomPlayer: () => null,
+      persistRoomsSoon: harness.persistRoomsSoon,
+      broadcastRoom: harness.broadcastRoom,
+      sendCurrentRoom: harness.sendCurrentRoom,
+      now: harness.now,
+      isShuttingDown: () => false,
+      onProtocolV1Message: harness.onProtocolV1Message,
+      heartbeatIntervalMs: 0
+    })).toThrow(/heartbeatIntervalMs/i);
+    expect(() => registerRealtimeServer({
+      server: harness.server,
+      webSocketServer: harness.webSocketServer,
+      hasValidSession: harness.hasValidSession,
+      currentAccountUser: harness.currentAccountUser,
+      roomPlayer: () => null,
+      persistRoomsSoon: harness.persistRoomsSoon,
+      broadcastRoom: harness.broadcastRoom,
+      sendCurrentRoom: harness.sendCurrentRoom,
+      now: harness.now,
+      isShuttingDown: () => false,
+      onProtocolV1Message: harness.onProtocolV1Message,
+      heartbeatIntervalMs: Number.POSITIVE_INFINITY
+    })).toThrow(/heartbeatIntervalMs/i);
+  });
+
+  it('supports the production interval defaults and clears their unrefed timer', () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.dispose();
+    const dispose = registerRealtimeServer({
+      server: new FakeHttpServer(),
+      webSocketServer: new FakeWebSocketServer(),
+      hasValidSession: () => true,
+      currentAccountUser: () => ({ id: 'account-1' }),
+      roomPlayer: () => null,
+      persistRoomsSoon: vi.fn(),
+      broadcastRoom: vi.fn(),
+      sendCurrentRoom: vi.fn(),
+      now: () => 0,
+      isShuttingDown: () => false,
+      onProtocolV1Message: vi.fn()
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
   });
 });
