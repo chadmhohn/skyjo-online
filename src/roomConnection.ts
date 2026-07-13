@@ -1,5 +1,6 @@
 import {
   MULTIPLAYER_PROTOCOL_VERSION,
+  PUBLIC_SNAPSHOT_LIMITS,
   parseClientCommand,
   type PublicGameStateSnapshot,
   type PublicPlayerSnapshot,
@@ -76,7 +77,6 @@ export const ROOM_SYNC_TIMEOUT_MS = 8_000;
 const socketConnecting = 0;
 const socketOpen = 1;
 const resumeCoalesceMs = 250;
-const maximumDeckCards = 150;
 const commandIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
 interface PendingCommandState {
@@ -163,8 +163,18 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-function isStringOrNull(value: unknown): boolean {
-  return value === null || typeof value === 'string';
+function isBoundedString(value: unknown, maximumLength: number, allowEmpty = false): value is string {
+  return typeof value === 'string' &&
+    (allowEmpty || value.length > 0) &&
+    value.length <= maximumLength;
+}
+
+function isPublicIdentifier(value: unknown): value is string {
+  return isBoundedString(value, PUBLIC_SNAPSHOT_LIMITS.identifierLength);
+}
+
+function isPublicIdentifierOrNull(value: unknown): boolean {
+  return value === null || isPublicIdentifier(value);
 }
 
 function isCardSnapshot(value: unknown): boolean {
@@ -179,8 +189,8 @@ function isCardSnapshot(value: unknown): boolean {
 function isGamePlayerSnapshot(value: unknown): boolean {
   return isRecord(value) &&
     hasExactKeys(value, ['id', 'name', 'kind', 'grid', 'totalScore', 'roundScore']) &&
-    typeof value.id === 'string' &&
-    typeof value.name === 'string' && value.name.length > 0 && value.name.length <= 24 &&
+    isPublicIdentifier(value.id) &&
+    isBoundedString(value.name, PUBLIC_SNAPSHOT_LIMITS.nameLength) &&
     (value.kind === 'human' || value.kind === 'ai') &&
     Array.isArray(value.grid) &&
     value.grid.length === 12 &&
@@ -193,13 +203,13 @@ function isRoundHistorySnapshot(value: unknown): boolean {
   return isRecord(value) &&
     hasExactKeys(value, ['round', 'closerId', 'scores']) &&
     Number.isSafeInteger(value.round) &&
-    typeof value.closerId === 'string' &&
-    Array.isArray(value.scores) && value.scores.length > 0 && value.scores.length <= 8 &&
+    isPublicIdentifier(value.closerId) &&
+    Array.isArray(value.scores) && value.scores.length > 0 && value.scores.length <= PUBLIC_SNAPSHOT_LIMITS.players &&
     value.scores.every((score) =>
       isRecord(score) &&
       hasExactKeys(score, ['playerId', 'name', 'roundScore', 'totalScore']) &&
-      typeof score.playerId === 'string' &&
-      typeof score.name === 'string' &&
+      isPublicIdentifier(score.playerId) &&
+      isBoundedString(score.name, PUBLIC_SNAPSHOT_LIMITS.nameLength) &&
       Number.isFinite(score.roundScore) &&
       Number.isFinite(score.totalScore)
     );
@@ -210,7 +220,7 @@ function isGameStateSnapshot(value: unknown): boolean {
     !isRecord(value) ||
     !Array.isArray(value.players) ||
     value.players.length === 0 ||
-    value.players.length > 8
+    value.players.length > PUBLIC_SNAPSHOT_LIMITS.players
   ) return false;
   if (!hasExactKeys(value, [
     'players',
@@ -244,9 +254,9 @@ function isGameStateSnapshot(value: unknown): boolean {
     return false;
   }
   if (value.selectedSource !== null && value.selectedSource !== 'draw' && value.selectedSource !== 'discard') return false;
-  if (!Number.isSafeInteger(value.drawPileCount) || Number(value.drawPileCount) < 0 || Number(value.drawPileCount) > maximumDeckCards) return false;
+  if (!Number.isSafeInteger(value.drawPileCount) || Number(value.drawPileCount) < 0 || Number(value.drawPileCount) > PUBLIC_SNAPSHOT_LIMITS.cards) return false;
   if (!isRecord(value.discardPile) || !hasExactKeys(value.discardPile, ['count', 'top'])) return false;
-  if (!Number.isSafeInteger(value.discardPile.count) || Number(value.discardPile.count) < 0 || Number(value.discardPile.count) > maximumDeckCards) return false;
+  if (!Number.isSafeInteger(value.discardPile.count) || Number(value.discardPile.count) < 0 || Number(value.discardPile.count) > PUBLIC_SNAPSHOT_LIMITS.cards) return false;
   if (Number(value.discardPile.count) === 0 ? value.discardPile.top !== null : !isCardSnapshot(value.discardPile.top)) return false;
   if (value.discardPile.top !== null && (value.discardPile.top as PublicCardSnapshot).id !== 'discard-top') return false;
   if (typeof value.hasDrawnCard !== 'boolean') return false;
@@ -255,11 +265,11 @@ function isGameStateSnapshot(value: unknown): boolean {
   if (value.drawnCard !== null && (value.drawnCard as PublicCardSnapshot).id !== 'drawn-card') return false;
   if (value.hasDrawnCard !== (value.phase === 'choose-replacement' && value.selectedSource === 'draw')) return false;
   if (!Number.isSafeInteger(value.round) || Number(value.round) < 1) return false;
-  if (!Array.isArray(value.log) || value.log.length > 8 || !value.log.every((item) => typeof item === 'string' && item.length <= 320)) return false;
-  if (!isStringOrNull(value.winnerId) || !isStringOrNull(value.nextStarterId) || !isStringOrNull(value.roundCloserId)) return false;
-  if (!Array.isArray(value.finalTurnPlayerIds) || value.finalTurnPlayerIds.length > 8 || !value.finalTurnPlayerIds.every((id) => typeof id === 'string')) return false;
-  if (!isRecord(value.openingRevealCounts) || Object.keys(value.openingRevealCounts).length > 8 || !Object.values(value.openingRevealCounts).every(Number.isFinite)) return false;
-  return Array.isArray(value.roundHistory) && value.roundHistory.length <= 100 && value.roundHistory.every(isRoundHistorySnapshot);
+  if (!Array.isArray(value.log) || value.log.length > PUBLIC_SNAPSHOT_LIMITS.logEntries || !value.log.every((item) => isBoundedString(item, PUBLIC_SNAPSHOT_LIMITS.logEntryLength, true))) return false;
+  if (!isPublicIdentifierOrNull(value.winnerId) || !isPublicIdentifierOrNull(value.nextStarterId) || !isPublicIdentifierOrNull(value.roundCloserId)) return false;
+  if (!Array.isArray(value.finalTurnPlayerIds) || value.finalTurnPlayerIds.length > PUBLIC_SNAPSHOT_LIMITS.players || !value.finalTurnPlayerIds.every(isPublicIdentifier)) return false;
+  if (!isRecord(value.openingRevealCounts) || Object.keys(value.openingRevealCounts).length > PUBLIC_SNAPSHOT_LIMITS.players || !Object.keys(value.openingRevealCounts).every(isPublicIdentifier) || !Object.values(value.openingRevealCounts).every(Number.isFinite)) return false;
+  return Array.isArray(value.roundHistory) && value.roundHistory.length <= PUBLIC_SNAPSHOT_LIMITS.historyEntries && value.roundHistory.every(isRoundHistorySnapshot);
 }
 
 function isRoomPlayerSnapshot(value: unknown): boolean {
@@ -269,8 +279,8 @@ function isRoomPlayerSnapshot(value: unknown): boolean {
   if ('lastSeenAt' in value) keys.push('lastSeenAt');
   if ('controller' in value) keys.push('controller');
   return hasExactKeys(value, keys) &&
-    typeof value.id === 'string' &&
-    typeof value.name === 'string' &&
+    isPublicIdentifier(value.id) &&
+    isBoundedString(value.name, PUBLIC_SNAPSHOT_LIMITS.nameLength) &&
     typeof value.connected === 'boolean' &&
     typeof value.host === 'boolean' &&
     (value.joinedAt === undefined || (Number.isFinite(value.joinedAt) && Number(value.joinedAt) >= 0)) &&
@@ -281,10 +291,10 @@ function isRoomPlayerSnapshot(value: unknown): boolean {
 function isChatMessageSnapshot(value: unknown): boolean {
   return isRecord(value) &&
     hasExactKeys(value, ['id', 'playerId', 'playerName', 'text', 'createdAt']) &&
-    typeof value.id === 'string' &&
-    typeof value.playerId === 'string' &&
-    typeof value.playerName === 'string' &&
-    typeof value.text === 'string' && value.text.length > 0 && value.text.length <= 280 &&
+    isPublicIdentifier(value.id) &&
+    isPublicIdentifier(value.playerId) &&
+    isBoundedString(value.playerName, PUBLIC_SNAPSHOT_LIMITS.nameLength) &&
+    isBoundedString(value.text, PUBLIC_SNAPSHOT_LIMITS.chatMessageLength) &&
     typeof value.createdAt === 'number' &&
     Number.isFinite(new Date(value.createdAt).getTime());
 }
@@ -307,21 +317,21 @@ export function isMultiplayerRoomSnapshot(
     'completedGameId',
     'revision'
   ])) return false;
-  if (typeof room.code !== 'string' || !room.code) return false;
+  if (typeof room.code !== 'string' || room.code.length !== PUBLIC_SNAPSHOT_LIMITS.roomCodeLength || !/^[A-Z0-9]+$/.test(room.code)) return false;
   if (expectedCode && room.code !== expectedCode) return false;
-  if (typeof room.hostId !== 'string' || !room.hostId) return false;
-  if (!Array.isArray(room.players) || room.players.length < 1 || room.players.length > 8 || !room.players.every(isRoomPlayerSnapshot)) {
+  if (!isPublicIdentifier(room.hostId)) return false;
+  if (!Array.isArray(room.players) || room.players.length < 1 || room.players.length > PUBLIC_SNAPSHOT_LIMITS.players || !room.players.every(isRoomPlayerSnapshot)) {
     return false;
   }
   const roomPlayerIds = room.players.map((player) => (player as Record<string, unknown>).id);
   if (new Set(roomPlayerIds).size !== roomPlayerIds.length || !roomPlayerIds.includes(room.hostId)) return false;
   if (!['waiting', 'playing', 'finished'].includes(String(room.status)) || !Number.isFinite(room.updatedAt)) return false;
-  if (!Array.isArray(room.chatMessages) || room.chatMessages.length > 80 || !room.chatMessages.every(isChatMessageSnapshot)) return false;
+  if (!Array.isArray(room.chatMessages) || room.chatMessages.length > PUBLIC_SNAPSHOT_LIMITS.chatMessages || !room.chatMessages.every(isChatMessageSnapshot)) return false;
   if (!room.chatMessages.every((message) => roomPlayerIds.includes((message as Record<string, unknown>).playerId))) return false;
-  if (!Array.isArray(room.readyForNextRoundPlayerIds) || room.readyForNextRoundPlayerIds.length > 8 || !room.readyForNextRoundPlayerIds.every((id) => typeof id === 'string' && roomPlayerIds.includes(id))) {
+  if (!Array.isArray(room.readyForNextRoundPlayerIds) || room.readyForNextRoundPlayerIds.length > PUBLIC_SNAPSHOT_LIMITS.players || !room.readyForNextRoundPlayerIds.every((id) => isPublicIdentifier(id) && roomPlayerIds.includes(id))) {
     return false;
   }
-  if (!isStringOrNull(room.completedGameId)) return false;
+  if (!isPublicIdentifierOrNull(room.completedGameId)) return false;
   if (!Number.isSafeInteger(room.revision) || Number(room.revision) < 0) return false;
   if (room.state === null) return true;
   if (!isGameStateSnapshot(room.state)) return false;
@@ -337,7 +347,7 @@ function isAuthoritativeSnapshot(
 ): boolean {
   if (frame.type !== 'snapshot' && frame.type !== 'resync') return false;
   if (frame.protocolVersion !== MULTIPLAYER_PROTOCOL_VERSION) return false;
-  if (typeof frame.playerId !== 'string' || !frame.playerId) return false;
+  if (!isPublicIdentifier(frame.playerId)) return false;
   if (!Number.isSafeInteger(frame.revision) || Number(frame.revision) < 0) return false;
   const establishedPlayerId = currentSession?.action === 'join-room' ? currentSession.playerId : undefined;
   const recoveryExpectation = resetRecoveryExpectation(currentSession);

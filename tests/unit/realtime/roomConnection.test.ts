@@ -9,6 +9,7 @@ import {
   type RoomConnectionSocket,
   type RoomConnectionState
 } from '../../../src/roomConnection';
+import { PUBLIC_SNAPSHOT_LIMITS } from '../../../src/protocolV2';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -340,6 +341,58 @@ describe('room connection controller', () => {
     ];
 
     for (const invalid of invalidRooms) expect(isMultiplayerRoomSnapshot(invalid, 'ABCDE')).toBe(false);
+  });
+
+  it('enforces every shared public snapshot string and collection boundary', () => {
+    type MutableGameStateFixture = Omit<
+      ReturnType<typeof validGameState>,
+      'winnerId' | 'finalTurnPlayerIds' | 'openingRevealCounts'
+    > & {
+      winnerId: string | null;
+      finalTurnPlayerIds: string[];
+      openingRevealCounts: Record<string, number>;
+    };
+    type MutableRoomFixture = Omit<ReturnType<typeof validActiveRoom>, 'completedGameId' | 'state'> & {
+      completedGameId: string | null;
+      state: MutableGameStateFixture;
+    };
+    const overIdentifier = 'i'.repeat(PUBLIC_SNAPSHOT_LIMITS.identifierLength + 1);
+    const overName = 'n'.repeat(PUBLIC_SNAPSHOT_LIMITS.nameLength + 1);
+    const overLog = 'l'.repeat(PUBLIC_SNAPSHOT_LIMITS.logEntryLength + 1);
+    const overChat = 'c'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength + 1);
+    const mutations: Array<(candidate: MutableRoomFixture) => void> = [
+      (candidate) => { candidate.code = 'ABCDEF'; },
+      (candidate) => { candidate.hostId = overIdentifier; },
+      (candidate) => { candidate.players[0].id = overIdentifier; },
+      (candidate) => { candidate.players[0].name = overName; },
+      (candidate) => { candidate.chatMessages[0].id = overIdentifier; },
+      (candidate) => { candidate.chatMessages[0].playerId = overIdentifier; },
+      (candidate) => { candidate.chatMessages[0].playerName = overName; },
+      (candidate) => { candidate.chatMessages[0].text = overChat; },
+      (candidate) => { candidate.completedGameId = overIdentifier; },
+      (candidate) => { candidate.readyForNextRoundPlayerIds = [overIdentifier]; },
+      (candidate) => { candidate.state.players[0].id = overIdentifier; },
+      (candidate) => { candidate.state.players[0].name = overName; },
+      (candidate) => { candidate.state.log = [overLog]; },
+      (candidate) => { candidate.state.winnerId = overIdentifier; },
+      (candidate) => { candidate.state.finalTurnPlayerIds = [overIdentifier]; },
+      (candidate) => { candidate.state.openingRevealCounts = { [overIdentifier]: 2 }; },
+      (candidate) => { candidate.state.roundHistory[0].closerId = overIdentifier; },
+      (candidate) => { candidate.state.roundHistory[0].scores[0].playerId = overIdentifier; },
+      (candidate) => { candidate.state.roundHistory[0].scores[0].name = overName; },
+      (candidate) => {
+        candidate.state.roundHistory = Array.from(
+          { length: PUBLIC_SNAPSHOT_LIMITS.historyEntries + 1 },
+          () => structuredClone(candidate.state.roundHistory[0])
+        );
+      }
+    ];
+
+    for (const mutate of mutations) {
+      const candidate = structuredClone(validActiveRoom()) as MutableRoomFixture;
+      mutate(candidate);
+      expect(isMultiplayerRoomSnapshot(candidate)).toBe(false);
+    }
   });
 
   it('uses the production WebSocket and timer defaults behind a deterministic fake-time boundary', async () => {

@@ -14,6 +14,7 @@ export const ROOMS_PROTOCOL_VERSION = 1;
 export const SUPPORTED_ROOMS_PROTOCOL_VERSIONS = Object.freeze([1]);
 export const MAX_PERSISTED_RESET_ALIASES = 8;
 export const MAX_PERSISTED_COMMAND_RECEIPTS = 128;
+export const MAX_PERSISTED_IDENTIFIER_LENGTH = 128;
 
 const validStatuses = new Set(['waiting', 'playing', 'finished']);
 const maxPersistedChatMessages = 80;
@@ -42,6 +43,19 @@ function hasOwn(value, key) {
 
 function stringValue(value, fallback = '') {
   return typeof value === 'string' ? value : fallback;
+}
+
+function boundedIdentifier(value, label) {
+  const normalized = stringValue(value).trim();
+  if (!normalized || normalized.length > MAX_PERSISTED_IDENTIFIER_LENGTH || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw formatError(`${label} is invalid.`);
+  }
+  return normalized;
+}
+
+function optionalBoundedIdentifier(value, label) {
+  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) return null;
+  return boundedIdentifier(value, label);
 }
 
 function retainCommandReceiptsForResetAliases(receipts, aliases) {
@@ -84,14 +98,14 @@ function normalizePlayer(value, roomIndex, fallbackTimestamp) {
   if (value.host !== undefined && typeof value.host !== 'boolean') {
     throw formatError(`Room ${roomIndex} contains an invalid player host state.`);
   }
-  const id = stringValue(value.id).trim();
+  const id = boundedIdentifier(value.id, `Room ${roomIndex} player id`);
   const name = stringValue(value.name, 'Player').trim().slice(0, 24) || 'Player';
-  if (!id) {
-    throw formatError(`Room ${roomIndex} contains a player without an id.`);
-  }
   if (value.userId !== undefined && typeof value.userId !== 'string') {
     throw formatError(`Room ${roomIndex} contains an invalid player user id.`);
   }
+  const userId = value.userId === undefined || value.userId.trim() === ''
+    ? undefined
+    : boundedIdentifier(value.userId, `Room ${roomIndex} player user id`);
   const joinedAt = value.joinedAt === undefined ? fallbackTimestamp : optionalTimestamp(value.joinedAt, `Room ${roomIndex} player joinedAt`);
   const lastSeenAt = value.lastSeenAt === undefined ? fallbackTimestamp : optionalTimestamp(value.lastSeenAt, `Room ${roomIndex} player lastSeenAt`);
   if (value.controller !== undefined && value.controller !== 'human' && value.controller !== 'ai') {
@@ -99,7 +113,7 @@ function normalizePlayer(value, roomIndex, fallbackTimestamp) {
   }
   return {
     id,
-    userId: stringValue(value.userId).trim() || undefined,
+    userId,
     name,
     connected: false,
     host: value.host === true,
@@ -171,12 +185,12 @@ function normalizeChatMessage(value, roomIndex, playersById) {
   if (value.playerName !== undefined && (typeof value.playerName !== 'string' || value.playerName.trim() === '')) {
     throw formatError(`Room ${roomIndex} contains an invalid chat player name.`);
   }
-  const id = stringValue(value.id).trim();
-  const playerId = stringValue(value.playerId).trim();
+  const id = boundedIdentifier(value.id, `Room ${roomIndex} chat message id`);
+  const playerId = boundedIdentifier(value.playerId, `Room ${roomIndex} chat player id`);
   const playerName = stringValue(value.playerName, 'Player').trim().slice(0, 24) || 'Player';
   const text = stringValue(value.text).replace(/\s+/g, ' ').trim().slice(0, maxPersistedChatMessageLength);
   const createdAt = value.createdAt;
-  if (!id || !playerId || !text || !Number.isFinite(createdAt) || createdAt < 0) {
+  if (!text || !Number.isFinite(createdAt) || createdAt < 0) {
     throw formatError(`Room ${roomIndex} contains a malformed chat message.`);
   }
   if (!playersById.has(playerId)) {
@@ -242,10 +256,10 @@ function normalizeRoom(value, roomIndex) {
     throw formatError(`Room ${roomIndex} must be an object.`);
   }
   const code = stringValue(value.code).trim().toUpperCase();
-  const hostId = stringValue(value.hostId).trim();
+  const hostId = boundedIdentifier(value.hostId, `Room ${roomIndex} host id`);
   const status = stringValue(value.status);
   const updatedAt = value.updatedAt;
-  if (!/^[A-Z0-9]{5}$/.test(code) || !hostId || !validStatuses.has(status) || !Number.isFinite(updatedAt) || updatedAt < 0) {
+  if (!/^[A-Z0-9]{5}$/.test(code) || !validStatuses.has(status) || !Number.isFinite(updatedAt) || updatedAt < 0) {
     throw formatError(`Room ${roomIndex} is missing required state.`);
   }
   if (!Array.isArray(value.players) || value.players.length < 1 || value.players.length > 8) {
@@ -339,8 +353,8 @@ function normalizeRoom(value, roomIndex) {
     state,
     status,
     updatedAt,
-    completedGameId: stringValue(value.completedGameId).trim() || null,
-    gameSessionId: stringValue(value.gameSessionId).trim() || null,
+    completedGameId: optionalBoundedIdentifier(value.completedGameId, `Room ${roomIndex} completed game id`),
+    gameSessionId: optionalBoundedIdentifier(value.gameSessionId, `Room ${roomIndex} game session id`),
     revision,
     recentCommandIds,
     resetAliases,
@@ -504,35 +518,38 @@ export function resolveRoomsFilePath(env = process.env) {
 }
 
 export function serializeRoom(room) {
+  const code = stringValue(room.code);
+  if (!/^[A-Z0-9]{5}$/.test(code)) throw formatError('Room code is invalid.');
+  const hostId = boundedIdentifier(room.hostId, `Room ${code} host id`);
+  if (!Array.isArray(room.players) || room.players.length < 1 || room.players.length > 8) {
+    throw formatError(`Room ${code} must contain between one and eight players.`);
+  }
   if (Array.isArray(room.resetAliases) && room.resetAliases.length > MAX_PERSISTED_RESET_ALIASES) {
-    throw formatError(`Room ${room.code} contains too many reset aliases.`);
+    throw formatError(`Room ${code} contains too many reset aliases.`);
   }
   const resetAliasesForRetention = Array.isArray(room.resetAliases) ? room.resetAliases : [];
   const serializedPlayers = room.players.map((player) => ({
-    id: player.id,
-    userId: player.userId || undefined,
-    name: player.name,
+    ...normalizePlayer(player, code, room.updatedAt),
     connected: player.connected === true,
-    host: player.host === true,
-    joinedAt: Number.isFinite(player.joinedAt) ? player.joinedAt : room.updatedAt,
-    lastSeenAt: Number.isFinite(player.lastSeenAt) ? player.lastSeenAt : room.updatedAt,
-    controller: player.controller === 'ai' ? 'ai' : 'human'
+    host: player.host === true
   }));
   const playerIds = new Set(serializedPlayers.map((player) => player.id));
+  if (playerIds.size !== serializedPlayers.length) throw formatError(`Room ${code} contains duplicate player ids.`);
+  if (!playerIds.has(hostId)) throw formatError(`Room ${code} host is not a room player.`);
   const playersById = new Map(serializedPlayers.map((player) => [player.id, player]));
   const chatMessages = Array.isArray(room.chatMessages)
     ? room.chatMessages
-        .map((message) => normalizeChatMessage(message, room.code, playersById))
+        .map((message) => normalizeChatMessage(message, code, playersById))
         .slice(-maxPersistedChatMessages)
     : [];
   const readyForNextRoundPlayerIds = normalizeReadyPlayerIds(
     room.readyForNextRoundPlayerIds,
-    room.code,
+    code,
     playerIds
   );
   const state = normalizeRoomGameState(
     room.state,
-    room.code,
+    code,
     room.status,
     serializedPlayers,
     readyForNextRoundPlayerIds
@@ -547,26 +564,26 @@ export function serializeRoom(room) {
       }))
     : [];
   if (recentCommandIds.length > MAX_PERSISTED_COMMAND_RECEIPTS) {
-    throw formatError(`Room ${room.code} contains too many command receipts.`);
+    throw formatError(`Room ${code} contains too many command receipts.`);
   }
   const receiptsByCommandId = new Map(recentCommandIds.map((receipt) => [receipt.commandId, receipt]));
   return {
     roomVersion: 2,
-    code: room.code,
-    hostId: room.hostId,
+    code,
+    hostId,
     players: serializedPlayers,
     chatMessages,
     readyForNextRoundPlayerIds,
     state,
     status: room.status,
     updatedAt: room.updatedAt,
-    completedGameId: room.completedGameId || null,
-    gameSessionId: room.gameSessionId || null,
+    completedGameId: optionalBoundedIdentifier(room.completedGameId, `Room ${code} completed game id`),
+    gameSessionId: optionalBoundedIdentifier(room.gameSessionId, `Room ${code} game session id`),
     revision: Number.isSafeInteger(room.revision) && room.revision >= 0 ? room.revision : 0,
     recentCommandIds,
     resetAliases: resetAliasesForRetention.length > 0
       ? resetAliasesForRetention
-          .map((alias) => normalizeResetAlias(alias, room.code, room.code, playerIds, receiptsByCommandId))
+          .map((alias) => normalizeResetAlias(alias, code, code, playerIds, receiptsByCommandId))
       : []
   };
 }

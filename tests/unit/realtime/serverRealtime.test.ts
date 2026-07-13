@@ -1,6 +1,9 @@
 import {
   hasVisibleLiveClient,
   parseRealtimeMessage,
+  REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES,
+  REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES,
+  REALTIME_OVERSIZED_CLOSE_CODE,
   registerRealtimeServer,
   sendRealtimeJson,
   syncPlayerPresence,
@@ -30,6 +33,9 @@ class FakeSocket implements RealtimeSocket {
   pingAttempts = 0;
   terminateCount = 0;
   terminateAttempts = 0;
+  closeCount = 0;
+  closeCode?: number;
+  closeReason?: string;
   throwOnPing = false;
   throwOnTerminate = false;
   private readonly listeners = new Map<SocketEvent | 'pong', Array<(...args: unknown[]) => void>>();
@@ -41,6 +47,12 @@ class FakeSocket implements RealtimeSocket {
 
   send(payload: string): void {
     this.sent.push(payload);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.closeCount += 1;
+    this.closeCode = code;
+    this.closeReason = reason;
   }
 
   ping(): void {
@@ -209,12 +221,38 @@ describe('serverRealtime transport seam', () => {
     for (const raw of ['{', 'null', '42', '"message"', '[]']) expect(parseRealtimeMessage(raw)).toBeNull();
   });
 
+  it('measures inbound client frames by UTF-8 bytes at the exact boundary', () => {
+    const payload = JSON.stringify({ type: 'command', text: '🙂'.repeat(4_090) });
+    const byteLength = new TextEncoder().encode(payload).byteLength;
+    expect(payload.length).toBeLessThan(REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES);
+    expect(byteLength).toBeGreaterThan(REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES);
+    expect(parseRealtimeMessage(payload, byteLength)).toEqual({ type: 'command', text: '🙂'.repeat(4_090) });
+    expect(parseRealtimeMessage(payload, byteLength - 1)).toBeNull();
+  });
+
   it('serializes payloads only while the socket is open', () => {
     const socket = new FakeSocket();
     expect(sendRealtimeJson(socket, { type: 'room', revision: 3 })).toBe(true);
     socket.readyState = 3;
     expect(sendRealtimeJson(socket, { type: 'ignored' })).toBe(false);
     expect(socket.sent).toEqual(['{"type":"room","revision":3}']);
+  });
+
+  it('uses an independent generous UTF-8 outbound public snapshot cap', () => {
+    const socket = new FakeSocket();
+    const largerThanInbound = { type: 'snapshot', log: ['🙂'.repeat(5_000)] };
+    expect(new TextEncoder().encode(JSON.stringify(largerThanInbound)).byteLength)
+      .toBeGreaterThan(REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES);
+    expect(sendRealtimeJson(socket, largerThanInbound)).toBe(true);
+
+    const largerThanOutbound = {
+      type: 'snapshot',
+      log: ['🙂'.repeat(Math.ceil(REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES / 4))]
+    };
+    expect(sendRealtimeJson(socket, largerThanOutbound)).toBe(false);
+    expect(socket.sent).toHaveLength(1);
+    expect(socket.closeCount).toBe(1);
+    expect(socket.closeCode).toBe(REALTIME_OVERSIZED_CLOSE_CODE);
   });
 
   it('rejects wrong-path and invalid-session upgrades before account lookup', () => {
@@ -266,6 +304,50 @@ describe('serverRealtime transport seam', () => {
     ]);
     expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
     expect(harness.onProtocolV1Message).not.toHaveBeenCalled();
+  });
+
+  it('rejects and closes an oversized multibyte command without protocol or room side effects', () => {
+    const harness = createHarness();
+    const { socket } = harness.connect();
+    const context = roomContext(socket);
+    harness.contexts.set(socket, context);
+    const beforeRoom = structuredClone({
+      code: context.room.code,
+      updatedAt: context.room.updatedAt,
+      player: context.player
+    });
+    const random = vi.fn(() => 0.5);
+    const databaseWrite = vi.fn();
+    harness.onProtocolV1Message.mockImplementation(() => {
+      random();
+      databaseWrite();
+      context.room.updatedAt = 9_999;
+      harness.persistRoomsSoon();
+      harness.broadcastRoom(context.room);
+    });
+    const payload = JSON.stringify({
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'send-chat-message', text: '🙂'.repeat(4_090) }
+    });
+    expect(payload.length).toBeLessThan(REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES);
+    expect(new TextEncoder().encode(payload).byteLength).toBeGreaterThan(REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES);
+
+    socket.emit('message', payload);
+
+    expect(socket.sent).toEqual([]);
+    expect(socket.closeCount).toBe(1);
+    expect(socket.closeCode).toBe(REALTIME_OVERSIZED_CLOSE_CODE);
+    expect(socket.closeReason).toBe('Message too large.');
+    expect(harness.onProtocolV1Message).not.toHaveBeenCalled();
+    expect(random).not.toHaveBeenCalled();
+    expect(databaseWrite).not.toHaveBeenCalled();
+    expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
+    expect(harness.broadcastRoom).not.toHaveBeenCalled();
+    expect(harness.sendCurrentRoom).not.toHaveBeenCalled();
+    expect({ code: context.room.code, updatedAt: context.room.updatedAt, player: context.player }).toEqual(beforeRoom);
   });
 
   it('targeted-resynchronizes redundant same-seat presence without persistence or peer broadcast', () => {

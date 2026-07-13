@@ -23,7 +23,7 @@ import {
   type ProtocolV2Room,
   type ProtocolV2Socket
 } from '../../../src/serverProtocolV2';
-import { sendRealtimeJson } from '../../../src/serverRealtime';
+import { sendRealtimeJson, type RealtimeClientMessage } from '../../../src/serverRealtime';
 import type { RoomPlayer } from '../../../src/types';
 
 const HOST_ID = '00000000-0000-4000-8000-000000000001';
@@ -714,6 +714,53 @@ describe('protocol v2 command ordering and receipts', () => {
 });
 
 describe('protocol v2 gameplay and lifecycle commands', () => {
+  it.each([
+    [
+      'out-of-turn command',
+      command({ type: 'reveal-opening-card', cardIndex: 0 }),
+      'illegal-move'
+    ],
+    [
+      'cross-seat envelope actor',
+      { ...command({ type: 'reveal-opening-card', cardIndex: 0 }), playerId: HOST_ID },
+      'invalid-command'
+    ],
+    [
+      'forged action actor',
+      {
+        ...command({ type: 'reveal-opening-card', cardIndex: 0 }),
+        action: { type: 'reveal-opening-card', cardIndex: 0, playerId: HOST_ID }
+      },
+      'invalid-command'
+    ]
+  ])('rejects a guest %s without any authoritative side effect', (_label, payload, expectedCode) => {
+    const players = [player(HOST_ID, 'Host', true), player(GUEST_ID, 'Guest')];
+    const state = createMultiplayerGame(players, 1, null, () => 0.5);
+    state.currentPlayerIndex = 0;
+    state.phase = 'opening-reveal';
+    const value = harness(room({ state, status: 'playing' }));
+    const guest = socket(GUEST_ID).socket;
+    value.room.clients.add(guest);
+    const before = serializeRooms(value.rooms, 500);
+
+    value.handler(guest, payload as RealtimeClientMessage);
+
+    expect(lastPayload(value)).toMatchObject({
+      type: 'error',
+      code: expectedCode,
+      commandId: COMMAND_ID
+    });
+    expect(serializeRooms(value.rooms, 500)).toEqual(before);
+    expect(value.calls.randomValues).toEqual([]);
+    expect(value.calls.uuidValues).toEqual([]);
+    expect(value.calls.persisted).toBe(0);
+    expect(value.calls.broadcasts).toEqual([]);
+    expect(value.calls.notified).toBe(0);
+    expect(value.calls.completed).toEqual([]);
+    expect(value.calls.completionErrors).toEqual([]);
+    expect(value.calls.snapshots).toEqual([]);
+  });
+
   it('rejects gameplay without a live game and illegal moves without committing', () => {
     const waiting = harness();
     waiting.handler(waiting.socket, command({ type: 'draw-blind' }));

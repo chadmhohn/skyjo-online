@@ -11,7 +11,7 @@ import {
 } from './server-dist/serverValidation.js';
 import {
   hasVisibleLiveClient,
-  REALTIME_MAX_PAYLOAD_BYTES,
+  REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES,
   registerRealtimeServer,
   sendRealtimeJson,
   syncPlayerPresence
@@ -1272,7 +1272,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: REALTIME_MAX_PAYLOAD_BYTES });
+const wss = new WebSocketServer({ noServer: true, maxPayload: REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES });
 
 const handleProtocolV2Message = createProtocolV2MessageHandler({
   allPlayersReadyForNextRound,

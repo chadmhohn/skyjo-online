@@ -19,8 +19,21 @@ import type {
 } from './types';
 
 export const MULTIPLAYER_PROTOCOL_VERSION = 2 as const;
-export const MAX_REALTIME_PAYLOAD_BYTES = 16_384;
+// This is a client-to-server command-frame limit, not a server snapshot limit.
+export const MAX_INBOUND_CLIENT_FRAME_BYTES = 16_384;
 export const MAX_RECENT_COMMAND_RECEIPTS = 128;
+export const PUBLIC_SNAPSHOT_LIMITS = Object.freeze({
+  cards: 150,
+  chatMessageLength: 280,
+  chatMessages: 80,
+  historyEntries: 100,
+  identifierLength: 128,
+  logEntries: 8,
+  logEntryLength: 320,
+  nameLength: 24,
+  players: 8,
+  roomCodeLength: 5
+});
 
 export type GameCommand =
   | { type: 'reveal-opening-card'; cardIndex: number }
@@ -290,19 +303,26 @@ function publicCard(card: Card, id: string, reveal: boolean): PublicCardSnapshot
   };
 }
 
+function publicName(value: string): string {
+  return value.slice(0, PUBLIC_SNAPSHOT_LIMITS.nameLength);
+}
+
 export function redactGameState(state: GameState, viewerPlayerId: string): PublicGameStateSnapshot {
   const activePlayer = state.players[state.currentPlayerIndex];
   const viewerMaySeeDrawnCard = Boolean(
     state.selectedSource === 'draw' && state.drawnCard && activePlayer?.id === viewerPlayerId
   );
-  const log = state.log.map((entry) => entry.replace(/^(.+) drew a -?\d+\.$/, '$1 drew a blind card.'));
+  const log = state.log
+    .slice(0, PUBLIC_SNAPSHOT_LIMITS.logEntries)
+    .map((entry) => entry.replace(/^(.+) drew a -?\d+\.$/, '$1 drew a blind card.'))
+    .map((entry) => entry.slice(0, PUBLIC_SNAPSHOT_LIMITS.logEntryLength));
   const discardTop = state.discardPile[0];
 
   return {
     players: state.players.map((player, playerIndex) => ({
       id: player.id,
       kind: player.kind,
-      name: player.name,
+      name: publicName(player.name),
       grid: player.grid.map((card, cardIndex) =>
         publicCard(card, `grid-${playerIndex}-${cardIndex}`, card.faceUp || card.removed)
       ),
@@ -326,12 +346,12 @@ export function redactGameState(state: GameState, viewerPlayerId: string): Publi
     roundCloserId: state.roundCloserId,
     finalTurnPlayerIds: [...state.finalTurnPlayerIds],
     openingRevealCounts: { ...state.openingRevealCounts },
-    roundHistory: state.roundHistory.map((entry) => ({
+    roundHistory: state.roundHistory.slice(-PUBLIC_SNAPSHOT_LIMITS.historyEntries).map((entry) => ({
       round: entry.round,
       closerId: entry.closerId,
       scores: entry.scores.map((score) => ({
         playerId: score.playerId,
-        name: score.name,
+        name: publicName(score.name),
         roundScore: score.roundScore,
         totalScore: score.totalScore
       }))
@@ -350,18 +370,18 @@ export function createRoomSnapshot(room: SnapshotRoomSource, viewerPlayerId: str
     hostId: room.hostId,
     players: room.players.map((player) => ({
       id: player.id,
-      name: player.name,
+      name: publicName(player.name),
       connected: player.connected,
       host: player.host,
       ...(Number.isFinite(player.joinedAt) ? { joinedAt: player.joinedAt } : {}),
       ...(Number.isFinite(player.lastSeenAt) ? { lastSeenAt: player.lastSeenAt } : {}),
       ...(player.controller ? { controller: player.controller } : {})
     })),
-    chatMessages: room.chatMessages.map((message) => ({
+    chatMessages: room.chatMessages.slice(-PUBLIC_SNAPSHOT_LIMITS.chatMessages).map((message) => ({
       id: message.id,
       playerId: message.playerId,
-      playerName: message.playerName,
-      text: message.text,
+      playerName: publicName(message.playerName),
+      text: message.text.slice(0, PUBLIC_SNAPSHOT_LIMITS.chatMessageLength),
       createdAt: message.createdAt
     })),
     readyForNextRoundPlayerIds: [...room.readyForNextRoundPlayerIds],

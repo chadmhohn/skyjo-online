@@ -1,6 +1,7 @@
 import {
   MAX_RECENT_COMMAND_RECEIPTS,
   MULTIPLAYER_PROTOCOL_VERSION,
+  PUBLIC_SNAPSHOT_LIMITS,
   createRoomSnapshot,
   multiplayerRoomForRender,
   parseClientCommand,
@@ -10,6 +11,11 @@ import {
   type GameCommand
 } from '../../../src/protocolV2';
 import { createMultiplayerGame } from '../../../src/game';
+import { isMultiplayerRoomSnapshot } from '../../../src/roomConnection';
+import {
+  REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES,
+  sendRealtimeJson
+} from '../../../src/serverRealtime';
 import type { GameState, RoomPlayer } from '../../../src/types';
 
 const ids = [
@@ -231,6 +237,91 @@ describe('protocol v2 player-specific projection', () => {
     });
     snapshot.players[0].name = 'Changed';
     expect(source.players[0].name).toBe('Alice');
+  });
+
+  it('projects the persisted superset into the exact bounded public contract below the outbound cap', () => {
+    const playerIds = Array.from(
+      { length: PUBLIC_SNAPSHOT_LIMITS.players },
+      (_, index) => `${String(index).padStart(3, '0')}${'p'.repeat(PUBLIC_SNAPSHOT_LIMITS.identifierLength - 3)}`
+    );
+    const stateRoster = playerIds.map((id, index) => ({
+      id,
+      name: `${String(index)}${'N'.repeat(63)}`
+    }));
+    const state = createMultiplayerGame(stateRoster, 257, null, () => 0.5);
+    state.log = Array.from({ length: 8 }, (_, index) => `${index}${'L'.repeat(511)}`);
+    state.roundHistory = Array.from({ length: 256 }, (_, index) => ({
+      round: index + 1,
+      closerId: playerIds[index % playerIds.length],
+      scores: playerIds.map((playerId, playerIndex) => ({
+        playerId,
+        name: `${String(playerIndex)}${'H'.repeat(63)}`,
+        roundScore: 0,
+        totalScore: 0
+      }))
+    }));
+    const source = {
+      code: 'ABCDE',
+      hostId: playerIds[0],
+      players: playerIds.map((id, index) => ({
+        id,
+        name: `${String(index)}${'R'.repeat(PUBLIC_SNAPSHOT_LIMITS.nameLength - 1)}`,
+        connected: true,
+        host: index === 0
+      })),
+      chatMessages: Array.from({ length: PUBLIC_SNAPSHOT_LIMITS.chatMessages }, (_, index) => ({
+        id: `${String(index).padStart(3, '0')}${'c'.repeat(PUBLIC_SNAPSHOT_LIMITS.identifierLength - 3)}`,
+        playerId: playerIds[index % playerIds.length],
+        playerName: `${String(index % playerIds.length)}${'C'.repeat(23)}`,
+        text: 'T'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength),
+        createdAt: index + 1
+      })),
+      readyForNextRoundPlayerIds: [],
+      state,
+      status: 'playing' as const,
+      updatedAt: 10,
+      completedGameId: 'g'.repeat(PUBLIC_SNAPSHOT_LIMITS.identifierLength),
+      revision: 4
+    };
+
+    const snapshot = createRoomSnapshot(source, playerIds[0]);
+    expect(snapshot.players).toHaveLength(PUBLIC_SNAPSHOT_LIMITS.players);
+    expect(snapshot.players.every((player) => player.name.length === PUBLIC_SNAPSHOT_LIMITS.nameLength)).toBe(true);
+    expect(snapshot.chatMessages).toHaveLength(PUBLIC_SNAPSHOT_LIMITS.chatMessages);
+    expect(snapshot.chatMessages.every((message) =>
+      message.playerName.length === PUBLIC_SNAPSHOT_LIMITS.nameLength &&
+      message.text.length === PUBLIC_SNAPSHOT_LIMITS.chatMessageLength
+    )).toBe(true);
+    expect(snapshot.state?.log).toHaveLength(PUBLIC_SNAPSHOT_LIMITS.logEntries);
+    expect(snapshot.state?.log.every((entry) => entry.length === PUBLIC_SNAPSHOT_LIMITS.logEntryLength)).toBe(true);
+    expect(snapshot.state?.roundHistory).toHaveLength(PUBLIC_SNAPSHOT_LIMITS.historyEntries);
+    expect(snapshot.state?.roundHistory[0].round).toBe(157);
+    expect(snapshot.state?.roundHistory.every((entry) =>
+      entry.scores.every((score) => score.name.length === PUBLIC_SNAPSHOT_LIMITS.nameLength)
+    )).toBe(true);
+    expect(snapshot.players.map((player) => player.id)).toEqual(playerIds);
+    expect(isMultiplayerRoomSnapshot(snapshot, source.code)).toBe(true);
+
+    const frame = {
+      type: 'snapshot',
+      protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+      playerId: playerIds[0],
+      revision: source.revision,
+      room: snapshot
+    };
+    const byteLength = new TextEncoder().encode(JSON.stringify(frame)).byteLength;
+    expect(byteLength).toBeLessThan(REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES);
+    const send = vi.fn();
+    expect(sendRealtimeJson({
+      OPEN: 1,
+      readyState: 1,
+      on: vi.fn(),
+      close: vi.fn(),
+      ping: vi.fn(),
+      send,
+      terminate: vi.fn()
+    }, frame)).toBe(true);
+    expect(send).toHaveBeenCalledOnce();
   });
 
   it('adapts counts to null client-only placeholders without inventing hidden information', () => {

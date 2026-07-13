@@ -1,3 +1,5 @@
+import { MAX_INBOUND_CLIENT_FRAME_BYTES } from './protocolV2.js';
+
 export type RealtimeClientMessage = Record<string, unknown>;
 
 export interface RealtimeSocket {
@@ -9,6 +11,7 @@ export interface RealtimeSocket {
   visible?: boolean;
   heartbeatAwaitingPong?: boolean;
   on(event: 'message' | 'close' | 'pong', listener: (...args: unknown[]) => void): unknown;
+  close?(code?: number, reason?: string): unknown;
   ping(): unknown;
   send(payload: string): unknown;
   terminate(): unknown;
@@ -79,12 +82,27 @@ export interface RealtimeServerOptions {
 }
 
 export const REALTIME_HEARTBEAT_INTERVAL_MS = 15_000;
-export const REALTIME_MAX_PAYLOAD_BYTES = 16_384;
+// Client commands stay deliberately small. Public server snapshots use the
+// separate outbound budget below and must never be constrained by this limit.
+export const REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES = MAX_INBOUND_CLIENT_FRAME_BYTES;
+export const REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES = 1_024 * 1_024;
+export const REALTIME_OVERSIZED_CLOSE_CODE = 1_009;
 
-export function sendRealtimeJson(socket: RealtimeSocket, payload: unknown): boolean {
+export function sendRealtimeJson(
+  socket: RealtimeSocket,
+  payload: unknown,
+  maxPayloadBytes = REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES
+): boolean {
   if (socket.readyState !== socket.OPEN) return false;
+  if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes <= 0) return false;
   try {
-    socket.send(JSON.stringify(payload));
+    const serialized = JSON.stringify(payload);
+    if (typeof serialized !== 'string') return false;
+    if (new TextEncoder().encode(serialized).byteLength > maxPayloadBytes) {
+      closeOversizedSocket(socket);
+      return false;
+    }
+    socket.send(serialized);
     return true;
   } catch {
     return false;
@@ -93,20 +111,49 @@ export function sendRealtimeJson(socket: RealtimeSocket, payload: unknown): bool
 
 export function parseRealtimeMessage(
   raw: unknown,
-  maxPayloadBytes = REALTIME_MAX_PAYLOAD_BYTES
+  maxPayloadBytes = REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES
 ): RealtimeClientMessage | null {
+  return parseRealtimeFrame(raw, maxPayloadBytes).message;
+}
+
+function parseRealtimeFrame(
+  raw: unknown,
+  maxPayloadBytes: number
+): { message: RealtimeClientMessage | null; oversized: boolean } {
   const payload = String(raw);
-  if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes <= 0) return null;
-  if (new TextEncoder().encode(payload).byteLength > maxPayloadBytes) return null;
+  if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes <= 0) {
+    return { message: null, oversized: false };
+  }
+  if (new TextEncoder().encode(payload).byteLength > maxPayloadBytes) {
+    return { message: null, oversized: true };
+  }
   let message: unknown;
   try {
     message = JSON.parse(payload);
   } catch {
-    return null;
+    return { message: null, oversized: false };
   }
 
-  if (!message || typeof message !== 'object' || Array.isArray(message)) return null;
-  return message as RealtimeClientMessage;
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    return { message: null, oversized: false };
+  }
+  return { message: message as RealtimeClientMessage, oversized: false };
+}
+
+function closeOversizedSocket(socket: RealtimeSocket): void {
+  try {
+    if (socket.close) {
+      socket.close(REALTIME_OVERSIZED_CLOSE_CODE, 'Message too large.');
+      return;
+    }
+    socket.terminate();
+  } catch {
+    try {
+      socket.terminate();
+    } catch {
+      // A racing close has already removed the oversized client.
+    }
+  }
 }
 
 export function hasVisibleLiveClient(
@@ -180,8 +227,13 @@ export function registerRealtimeServer({
     });
 
     socket.on('message', (raw) => {
-      const message = parseRealtimeMessage(raw);
+      const parsed = parseRealtimeFrame(raw, REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES);
+      const message = parsed.message;
       if (!message) {
+        if (parsed.oversized) {
+          closeOversizedSocket(socket);
+          return;
+        }
         sendRealtimeJson(socket, { type: 'error', protocolVersion: 2, code: 'invalid-message', message: 'Invalid message.' });
         return;
       }

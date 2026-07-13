@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   DEFAULT_ROOMS_FILE,
   MAX_PERSISTED_COMMAND_RECEIPTS,
+  MAX_PERSISTED_IDENTIFIER_LENGTH,
   MAX_PERSISTED_RESET_ALIASES,
   ROOMS_FILE_FORMAT,
   ROOMS_FILE_VERSION,
@@ -30,6 +31,7 @@ import {
   revealOpeningCard
 } from '../../../src/game';
 import { createRoomSnapshot } from '../../../src/protocolV2';
+import { isMultiplayerRoomSnapshot } from '../../../src/roomConnection';
 import { createSeededRandom } from '../../../src/runtime';
 import type { GameState } from '../../../src/types';
 
@@ -258,6 +260,87 @@ describe('room persistence', () => {
 
     expect(restored.players[0].name).toBe('Ada Lovelace');
     expect(restored.chatMessages[0]).toMatchObject({ playerId: 'host-1', playerName: 'Ada' });
+  });
+
+  it('keeps distinct maximum-length identifiers exact instead of truncating them into a collision', () => {
+    const prefix = 'p'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH - 1);
+    const firstId = `${prefix}1`;
+    const secondId = `${prefix}2`;
+    const value = room();
+    value.hostId = firstId;
+    value.players[0].id = firstId;
+    value.players[1].id = secondId;
+    value.chatMessages[0].id = `${'c'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH - 1)}1`;
+    value.chatMessages[0].playerId = firstId;
+
+    const restored = normalizeRoomsDocument(
+      serializeRooms(new Map([[value.code, value]]), fixedNow),
+      { now: fixedNow }
+    ).rooms[0];
+    const snapshot = createRoomSnapshot(restored, firstId);
+
+    expect(snapshot.players.map((player) => player.id)).toEqual([firstId, secondId]);
+    expect(new Set(snapshot.players.map((player) => player.id)).size).toBe(2);
+    expect(snapshot.hostId).toBe(firstId);
+    expect(snapshot.chatMessages[0].playerId).toBe(firstId);
+    expect(isMultiplayerRoomSnapshot(snapshot, value.code)).toBe(true);
+  });
+
+  it('composes every persisted identifier boundary and rejects oversized runtime identities', () => {
+    const value = room();
+    const hostId = 'h'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH);
+    const guestId = 'p'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH);
+    value.hostId = hostId;
+    value.players[0].id = hostId;
+    value.players[0].userId = 'u'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH);
+    value.players[0].name = 'N'.repeat(64);
+    value.players[1].id = guestId;
+    value.players[1].userId = 'v'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH);
+    value.chatMessages[0].id = 'c'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH);
+    value.chatMessages[0].playerId = hostId;
+    value.completedGameId = 'g'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH);
+    value.gameSessionId = 's'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH);
+
+    const serialized = serializeRooms(new Map([[value.code, value]]), fixedNow);
+    const restored = normalizeRoomsDocument(serialized, { now: fixedNow }).rooms[0];
+    expect(restored).toMatchObject({
+      hostId,
+      completedGameId: value.completedGameId,
+      gameSessionId: value.gameSessionId,
+      players: [
+        { id: hostId, userId: value.players[0].userId, name: 'N'.repeat(24) },
+        { id: guestId, userId: value.players[1].userId }
+      ],
+      chatMessages: [{ id: value.chatMessages[0].id, playerId: hostId }]
+    });
+
+    const oversized = 'x'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH + 1);
+    const corruptions: Array<(candidate: ReturnType<typeof room>) => void> = [
+      (candidate) => {
+        candidate.players[0].id = oversized;
+        candidate.hostId = oversized;
+        candidate.chatMessages[0].playerId = oversized;
+      },
+      (candidate) => { candidate.players[0].userId = oversized; },
+      (candidate) => { candidate.chatMessages[0].id = oversized; },
+      (candidate) => { candidate.completedGameId = oversized; },
+      (candidate) => { candidate.gameSessionId = oversized; }
+    ];
+    for (const corrupt of corruptions) {
+      const candidate = room();
+      corrupt(candidate);
+      expect(() => serializeRooms(new Map([[candidate.code, candidate]]), fixedNow)).toThrow(/invalid/i);
+    }
+
+    const tooManyPlayers = room();
+    tooManyPlayers.players = Array.from({ length: 9 }, (_, index) => ({
+      ...tooManyPlayers.players[0],
+      id: `player-${index}`,
+      host: index === 0
+    }));
+    tooManyPlayers.hostId = tooManyPlayers.players[0].id;
+    tooManyPlayers.chatMessages = [];
+    expect(() => serializeRooms(new Map([[tooManyPlayers.code, tooManyPlayers]]), fixedNow)).toThrow(/one and eight players/i);
   });
 
   it('restores private state before applying player-specific snapshot redaction', async () => {
@@ -508,10 +591,11 @@ describe('room persistence', () => {
     const duplicated = serializeRooms(
       new Map([
         ['first', room(fixedNow, 'ABCDE')],
-        ['second', room(fixedNow, 'abcde')]
+        ['second', room(fixedNow, 'FGHIJ')]
       ]),
       fixedNow
     );
+    duplicated.rooms[1].code = 'ABCDE';
     await fs.writeFile(roomsFile, JSON.stringify(duplicated), 'utf8');
     await expect(loadRoomsFromDisk(roomsFile, { now: fixedNow })).rejects.toThrow(/duplicate room code/i);
   });
@@ -519,15 +603,27 @@ describe('room persistence', () => {
   it.each([
     ['a non-object player', (value: ReturnType<typeof room>) => { value.players[0] = null as never; }],
     ['a player without an id', (value: ReturnType<typeof room>) => { value.players[0].id = ''; }],
+    ['an overlong player id', (value: ReturnType<typeof room>) => {
+      const id = 'p'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH + 1);
+      value.players[0].id = id;
+      value.hostId = id;
+      value.chatMessages[0].playerId = id;
+    }],
     ['duplicate player ids', (value: ReturnType<typeof room>) => { value.players[1].id = value.players[0].id; }],
     ['a non-string player name', (value: ReturnType<typeof room>) => { value.players[0].name = 42 as never; }],
     ['an empty player name', (value: ReturnType<typeof room>) => { value.players[0].name = ''; }],
     ['a non-string user id', (value: ReturnType<typeof room>) => { value.players[0].userId = 42 as never; }],
+    ['an overlong user id', (value: ReturnType<typeof room>) => {
+      value.players[0].userId = 'u'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH + 1);
+    }],
     ['a non-boolean connection state', (value: ReturnType<typeof room>) => { value.players[0].connected = 'yes' as never; }],
     ['a non-boolean host state', (value: ReturnType<typeof room>) => { value.players[0].host = 'yes' as never; }],
     ['a host outside the player list', (value: ReturnType<typeof room>) => { value.hostId = 'missing'; }],
     ['non-array chat', (value: ReturnType<typeof room>) => { value.chatMessages = {} as never; }],
     ['a non-object chat message', (value: ReturnType<typeof room>) => { value.chatMessages = [null as never]; }],
+    ['an overlong chat id', (value: ReturnType<typeof room>) => {
+      value.chatMessages[0].id = 'c'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH + 1);
+    }],
     ['a non-string chat player name', (value: ReturnType<typeof room>) => { value.chatMessages[0].playerName = 42 as never; }],
     ['an invalid chat timestamp', (value: ReturnType<typeof room>) => { value.chatMessages[0].createdAt = 'now' as never; }],
     ['a malformed chat message', (value: ReturnType<typeof room>) => { value.chatMessages[0].text = ''; }],
@@ -562,7 +658,13 @@ describe('room persistence', () => {
     }],
     ['a non-numeric update time', (value: ReturnType<typeof room>) => { value.updatedAt = 'now' as never; }],
     ['a non-string completed game id', (value: ReturnType<typeof room>) => { value.completedGameId = 1 as never; }],
-    ['a non-string game session id', (value: ReturnType<typeof room>) => { value.gameSessionId = 1 as never; }]
+    ['an overlong completed game id', (value: ReturnType<typeof room>) => {
+      value.completedGameId = 'g'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH + 1);
+    }],
+    ['a non-string game session id', (value: ReturnType<typeof room>) => { value.gameSessionId = 1 as never; }],
+    ['an overlong game session id', (value: ReturnType<typeof room>) => {
+      value.gameSessionId = 's'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH + 1);
+    }]
   ])('rejects persisted room corruption: %s', async (_name, corrupt) => {
     const value = room();
     corrupt(value);
