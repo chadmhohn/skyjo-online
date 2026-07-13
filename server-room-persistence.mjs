@@ -13,12 +13,12 @@ export const ROOMS_FILE_VERSION = 2;
 export const ROOMS_PROTOCOL_VERSION = 1;
 export const SUPPORTED_ROOMS_PROTOCOL_VERSIONS = Object.freeze([1]);
 export const MAX_PERSISTED_RESET_ALIASES = 8;
+export const MAX_PERSISTED_COMMAND_RECEIPTS = 128;
 
 const validStatuses = new Set(['waiting', 'playing', 'finished']);
 const maxPersistedChatMessages = 80;
 const maxPersistedChatMessageLength = 280;
 const maxPersistedRooms = 10_000;
-const maxRecentCommandReceipts = 128;
 const commandIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const sha256Pattern = /^[a-f0-9]{64}$/;
 const resetRoomActionDigest = createHash('sha256').update(JSON.stringify({ type: 'reset-room' })).digest('hex');
@@ -42,6 +42,21 @@ function hasOwn(value, key) {
 
 function stringValue(value, fallback = '') {
   return typeof value === 'string' ? value : fallback;
+}
+
+function retainCommandReceiptsForResetAliases(receipts, aliases) {
+  const pinnedCommandIds = new Set(aliases.map((alias) => stringValue(alias?.commandId)));
+  const maximumUnpinnedReceipts = Math.max(0, MAX_PERSISTED_COMMAND_RECEIPTS - pinnedCommandIds.size);
+  const retained = [];
+  let unpinnedCount = 0;
+  for (let index = receipts.length - 1; index >= 0; index -= 1) {
+    const receipt = receipts[index];
+    const pinned = pinnedCommandIds.has(stringValue(receipt?.commandId));
+    if (!pinned && unpinnedCount >= maximumUnpinnedReceipts) continue;
+    retained.push(receipt);
+    if (!pinned) unpinnedCount += 1;
+  }
+  return retained.reverse();
 }
 
 function formatError(message, code = 'INVALID_ROOMS_FILE', options = undefined) {
@@ -273,7 +288,7 @@ function normalizeRoom(value, roomIndex) {
   if (value.recentCommandIds !== undefined && !Array.isArray(value.recentCommandIds)) {
     throw formatError(`Room ${roomIndex} command receipts must be an array.`);
   }
-  if (Array.isArray(value.recentCommandIds) && value.recentCommandIds.length > maxRecentCommandReceipts) {
+  if (Array.isArray(value.recentCommandIds) && value.recentCommandIds.length > MAX_PERSISTED_COMMAND_RECEIPTS) {
     throw formatError(`Room ${roomIndex} contains too many command receipts.`);
   }
   const recentCommandIds = Array.isArray(value.recentCommandIds)
@@ -492,6 +507,7 @@ export function serializeRoom(room) {
   if (Array.isArray(room.resetAliases) && room.resetAliases.length > MAX_PERSISTED_RESET_ALIASES) {
     throw formatError(`Room ${room.code} contains too many reset aliases.`);
   }
+  const resetAliasesForRetention = Array.isArray(room.resetAliases) ? room.resetAliases : [];
   const serializedPlayers = room.players.map((player) => ({
     id: player.id,
     userId: player.userId || undefined,
@@ -522,7 +538,7 @@ export function serializeRoom(room) {
     readyForNextRoundPlayerIds
   );
   const recentCommandIds = Array.isArray(room.recentCommandIds)
-    ? room.recentCommandIds.slice(-maxRecentCommandReceipts).map((receipt) => ({
+    ? retainCommandReceiptsForResetAliases(room.recentCommandIds, resetAliasesForRetention).map((receipt) => ({
         commandId: receipt.commandId,
         playerId: receipt.playerId,
         expectedRevision: receipt.expectedRevision,
@@ -530,6 +546,9 @@ export function serializeRoom(room) {
         actionDigest: receipt.actionDigest
       }))
     : [];
+  if (recentCommandIds.length > MAX_PERSISTED_COMMAND_RECEIPTS) {
+    throw formatError(`Room ${room.code} contains too many command receipts.`);
+  }
   const receiptsByCommandId = new Map(recentCommandIds.map((receipt) => [receipt.commandId, receipt]));
   return {
     roomVersion: 2,
@@ -545,8 +564,8 @@ export function serializeRoom(room) {
     gameSessionId: room.gameSessionId || null,
     revision: Number.isSafeInteger(room.revision) && room.revision >= 0 ? room.revision : 0,
     recentCommandIds,
-    resetAliases: Array.isArray(room.resetAliases)
-      ? room.resetAliases
+    resetAliases: resetAliasesForRetention.length > 0
+      ? resetAliasesForRetention
           .map((alias) => normalizeResetAlias(alias, room.code, room.code, playerIds, receiptsByCommandId))
       : []
   };

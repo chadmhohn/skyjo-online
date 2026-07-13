@@ -36,6 +36,24 @@ export interface ProtocolV2ResetAliasIndexEntry {
 
 export type ProtocolV2ResetAliasIndex = Map<string, ProtocolV2ResetAliasIndexEntry[]>;
 
+export function retainCommandReceiptsForResetAliases(
+  receipts: readonly CommandReceipt[],
+  aliases: readonly Pick<ProtocolV2ResetAlias, 'commandId'>[]
+): CommandReceipt[] {
+  const pinnedCommandIds = new Set(aliases.map((alias) => alias.commandId));
+  const maximumUnpinnedReceipts = Math.max(0, MAX_RECENT_COMMAND_RECEIPTS - pinnedCommandIds.size);
+  const retained: CommandReceipt[] = [];
+  let unpinnedCount = 0;
+  for (let index = receipts.length - 1; index >= 0; index -= 1) {
+    const receipt = receipts[index];
+    const pinned = pinnedCommandIds.has(receipt.commandId);
+    if (!pinned && unpinnedCount >= maximumUnpinnedReceipts) continue;
+    retained.push(receipt);
+    if (!pinned) unpinnedCount += 1;
+  }
+  return retained.reverse();
+}
+
 export interface ProtocolV2Room {
   chatMessages: RoomChatMessage[];
   clients: Set<RealtimeSocket>;
@@ -209,8 +227,15 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     });
   }
 
-  function commitReceipt(room: ProtocolV2Room, receipt: CommandReceipt): void {
-    room.recentCommandIds = [...room.recentCommandIds, receipt].slice(-MAX_RECENT_COMMAND_RECEIPTS);
+  function commitReceipt(room: ProtocolV2Room, receipt: CommandReceipt, timestamp: number): void {
+    const liveAliases = room.resetAliases.filter((alias) => alias.expiresAt > timestamp);
+    const aliasesPruned = liveAliases.length !== room.resetAliases.length;
+    room.resetAliases = liveAliases;
+    room.recentCommandIds = retainCommandReceiptsForResetAliases(
+      [...room.recentCommandIds, receipt],
+      liveAliases
+    );
+    if (aliasesPruned) rebuildResetAliasIndex(resetAliasIndex, rooms);
   }
 
   return (ws: ProtocolV2Socket, message: RealtimeClientMessage): void => {
@@ -486,7 +511,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       room.revision = nextRevision;
       room.updatedAt = timestamp;
       player.lastSeenAt = timestamp;
-      commitReceipt(room, receipt);
+      commitReceipt(room, receipt, timestamp);
       persistRoomsSoon();
       broadcastRoom(room);
       acknowledge(ws, receipt);
@@ -584,7 +609,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
           expiresAt: timestamp + RESET_ALIAS_TTL_MS
         }
       ];
-      commitReceipt(newRoom, receipt);
+      commitReceipt(newRoom, receipt, timestamp);
       for (const client of oldRoom.clients) {
         if (client === ws) continue;
         sendJson(client as ProtocolV2Socket, {
@@ -617,7 +642,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     room.revision = nextRevision;
     room.updatedAt = timestamp;
     player.lastSeenAt = timestamp;
-    commitReceipt(room, receipt);
+    commitReceipt(room, receipt, timestamp);
     persistRoomsSoon();
     broadcastRoom(room);
     acknowledge(ws, receipt);

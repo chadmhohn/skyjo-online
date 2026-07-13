@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   loadRoomsFromDisk,
+  MAX_PERSISTED_COMMAND_RECEIPTS,
   normalizeRoomsDocument,
   serializeRooms
 } from '../../../server-room-persistence.mjs';
@@ -197,6 +198,17 @@ function cardOrder(state: GameState) {
   };
 }
 
+function highChurnReceipt(index: number) {
+  const revision = index + 2;
+  return {
+    commandId: `20000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    playerId: 'host-1',
+    expectedRevision: revision - 1,
+    revision,
+    actionDigest: 'b'.repeat(64)
+  };
+}
+
 describe('exact v0.1.1 room persistence compatibility', () => {
   beforeAll(async () => {
     tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-v011-compatibility-'));
@@ -278,5 +290,45 @@ describe('exact v0.1.1 room persistence compatibility', () => {
     await fs.writeFile(goldenPath, goldenBytes, 'utf8');
     const loaded = await loadRoomsFromDisk(goldenPath, { now: fixedNow + 1 });
     expect(loaded).toEqual(currentNormalized.rooms);
+  });
+
+  it('keeps rollback compatibility after receipt churn while preserving the reset recovery receipt', () => {
+    const state = activeBlindDrawState();
+    const room = roomWithCurrentMetadata(state, 'playing');
+    const unpinnedReceipts = Array.from(
+      { length: MAX_PERSISTED_COMMAND_RECEIPTS },
+      (_, index) => highChurnReceipt(index)
+    );
+    room.revision = unpinnedReceipts.at(-1)?.revision || 1;
+    room.recentCommandIds = [room.recentCommandIds[0], ...unpinnedReceipts];
+    room.resetAliases[0].expiresAt = fixedNow - 1;
+
+    const currentDocument = serializeRooms(new Map([[room.code, room]]), fixedNow);
+    expect(currentDocument.rooms[0].recentCommandIds).toHaveLength(MAX_PERSISTED_COMMAND_RECEIPTS);
+    expect(currentDocument.rooms[0].recentCommandIds.map((receipt: { commandId: string }) => receipt.commandId)).toEqual([
+      resetCommandId,
+      ...unpinnedReceipts.slice(1).map((receipt) => receipt.commandId)
+    ]);
+    expect(currentDocument.rooms[0].resetAliases).toEqual(room.resetAliases);
+
+    const oldNormalized = exactV011.normalizeRoomsDocument(structuredClone(currentDocument), {
+      now: fixedNow
+    });
+    expect(oldNormalized.rooms[0].state).toEqual(state);
+    expect(oldNormalized.rooms[0]).not.toHaveProperty('recentCommandIds');
+    expect(oldNormalized.rooms[0]).not.toHaveProperty('resetAliases');
+
+    const exactV011Golden = exactV011.serializeRooms(
+      new Map([[oldNormalized.rooms[0].code, oldNormalized.rooms[0]]]),
+      fixedNow
+    );
+    const currentRestored = normalizeRoomsDocument(exactV011Golden, { now: fixedNow }).rooms[0];
+    expect(currentRestored.state).toEqual(state);
+    expect(cardOrder(currentRestored.state as GameState)).toEqual(cardOrder(state));
+    expect(currentRestored).toMatchObject({
+      revision: 0,
+      recentCommandIds: [],
+      resetAliases: []
+    });
   });
 });

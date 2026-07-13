@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   DEFAULT_ROOMS_FILE,
+  MAX_PERSISTED_COMMAND_RECEIPTS,
   MAX_PERSISTED_RESET_ALIASES,
   ROOMS_FILE_FORMAT,
   ROOMS_FILE_VERSION,
@@ -35,6 +36,17 @@ import type { GameState } from '../../../src/types';
 const fixedNow = Date.parse('2026-07-11T12:00:00Z');
 const resetActionDigest = createHash('sha256').update(JSON.stringify({ type: 'reset-room' })).digest('hex');
 const resetCommandId = '10000000-0000-4000-8000-000000000001';
+
+function ordinaryCommandReceipt(index: number) {
+  const revision = index + 2;
+  return {
+    commandId: `20000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    playerId: 'host-1',
+    expectedRevision: revision - 1,
+    revision,
+    actionDigest: 'b'.repeat(64)
+  };
+}
 
 function room(updatedAt = fixedNow, code = 'ABCDE') {
   return {
@@ -288,6 +300,56 @@ describe('room persistence', () => {
       recentCommandIds: [],
       resetAliases: []
     });
+  });
+
+  it('pins an expired reset receipt while pruning high-churn unpinned receipts to the total cap', async () => {
+    const value = roomWithResetAlias();
+    const unpinnedReceipts = Array.from(
+      { length: MAX_PERSISTED_COMMAND_RECEIPTS },
+      (_, index) => ordinaryCommandReceipt(index)
+    );
+    value.revision = unpinnedReceipts.at(-1)?.revision || 1;
+    value.recentCommandIds = [value.recentCommandIds[0], ...unpinnedReceipts];
+    value.resetAliases[0].expiresAt = fixedNow - 1;
+    expect(value.recentCommandIds).toHaveLength(MAX_PERSISTED_COMMAND_RECEIPTS + 1);
+
+    const serialized = serializeRooms(new Map([[value.code, value]]), fixedNow);
+    const serializedRoom = serialized.rooms[0];
+    expect(serializedRoom.recentCommandIds).toHaveLength(MAX_PERSISTED_COMMAND_RECEIPTS);
+    expect(serializedRoom.recentCommandIds.map((receipt: { commandId: string }) => receipt.commandId)).toEqual([
+      resetCommandId,
+      ...unpinnedReceipts.slice(1).map((receipt) => receipt.commandId)
+    ]);
+    expect(serializedRoom.resetAliases).toEqual(value.resetAliases);
+
+    const normalized = normalizeRoomsDocument(serialized, { now: fixedNow }).rooms[0];
+    expect(normalized.recentCommandIds).toEqual(serializedRoom.recentCommandIds);
+    expect(normalized.resetAliases).toEqual(value.resetAliases);
+
+    await saveRoomsToDisk(new Map([[value.code, value]]), roomsFile);
+    const [restored] = await loadRoomsFromDisk(roomsFile, { now: fixedNow });
+    expect(restored.recentCommandIds).toEqual(serializedRoom.recentCommandIds);
+    expect(restored.resetAliases).toEqual(value.resetAliases);
+  });
+
+  it('rejects an already-persisted document containing 129 command receipts', async () => {
+    const value = roomWithResetAlias();
+    const firstWindow = Array.from(
+      { length: MAX_PERSISTED_COMMAND_RECEIPTS - 1 },
+      (_, index) => ordinaryCommandReceipt(index)
+    );
+    value.revision = firstWindow.at(-1)?.revision || 1;
+    value.recentCommandIds = [value.recentCommandIds[0], ...firstWindow];
+    const persisted = serializeRooms(new Map([[value.code, value]]), fixedNow);
+    expect(persisted.rooms[0].recentCommandIds).toHaveLength(MAX_PERSISTED_COMMAND_RECEIPTS);
+
+    const overflowReceipt = ordinaryCommandReceipt(MAX_PERSISTED_COMMAND_RECEIPTS - 1);
+    persisted.rooms[0].revision = overflowReceipt.revision;
+    persisted.rooms[0].recentCommandIds.push(overflowReceipt);
+    expect(() => normalizeRoomsDocument(persisted, { now: fixedNow })).toThrow(/too many command receipts/i);
+
+    await fs.writeFile(roomsFile, JSON.stringify(persisted), 'utf8');
+    await expect(loadRoomsFromDisk(roomsFile, { now: fixedNow })).rejects.toThrow(/too many command receipts/i);
   });
 
   it('accepts finite past aliases, enforces bounds, and rejects malformed or unlinked aliases', () => {

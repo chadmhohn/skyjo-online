@@ -1,5 +1,11 @@
+import { createHash } from 'node:crypto';
+import {
+  normalizeRoomsDocument,
+  serializeRooms
+} from '../../../server-room-persistence.mjs';
 import { createMultiplayerGame } from '../../../src/game';
 import {
+  MAX_RECENT_COMMAND_RECEIPTS,
   MULTIPLAYER_PROTOCOL_VERSION,
   type ClientCommand,
   type CommandReceipt,
@@ -11,6 +17,7 @@ import {
   isResetAliasCodeReserved,
   MAX_RESET_ALIASES,
   rebuildResetAliasIndex,
+  retainCommandReceiptsForResetAliases,
   RESET_ALIAS_TTL_MS,
   type ProtocolV2HandlerOptions,
   type ProtocolV2Room,
@@ -24,6 +31,14 @@ const GUEST_ID = '00000000-0000-4000-8000-000000000002';
 const NEW_ID = '00000000-0000-4000-8000-000000000003';
 const COMMAND_ID = '10000000-0000-4000-8000-000000000001';
 const OTHER_COMMAND_ID = '10000000-0000-4000-8000-000000000002';
+
+function commandIdAt(index: number): string {
+  return `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+}
+
+function persistedDigest(canonicalAction: string): string {
+  return createHash('sha256').update(canonicalAction).digest('hex');
+}
 
 function player(id: string, name: string, host = false, userId = `${id}-account`): RoomPlayer {
   return {
@@ -359,6 +374,85 @@ describe('protocol v2 room admission', () => {
     expect(value.calls.persisted).toBe(1);
   });
 
+  it('serializes, reloads, and recovers a reset after 129 later commands', () => {
+    const value = harness();
+    value.handler(value.socket, command({ type: 'reset-room' }));
+    const target = value.rooms.get('NEW01');
+    if (!target) throw new Error('Reset target was not created.');
+    for (let index = 2; index <= 130; index += 1) {
+      value.handler(value.socket, command(
+        { type: 'send-chat-message', text: `message-${index}` },
+        target.revision,
+        commandIdAt(index)
+      ));
+    }
+
+    expect(target.recentCommandIds).toHaveLength(MAX_RECENT_COMMAND_RECEIPTS);
+    expect(target.recentCommandIds.some((item) => item.commandId === COMMAND_ID)).toBe(true);
+    expect(target.recentCommandIds.some((item) => item.commandId === commandIdAt(2))).toBe(false);
+    target.recentCommandIds = target.recentCommandIds.map((item) => ({
+      ...item,
+      actionDigest: item.commandId === COMMAND_ID
+        ? persistedDigest(JSON.stringify({ type: 'reset-room' }))
+        : 'b'.repeat(64)
+    }));
+
+    const document = serializeRooms(new Map([[target.code, target]]), 500);
+    expect(document.rooms[0].recentCommandIds).toHaveLength(MAX_RECENT_COMMAND_RECEIPTS);
+    const restored = normalizeRoomsDocument(document, { now: 500, pruneStale: false }).rooms[0] as ProtocolV2Room;
+    const recovery = harness(restored);
+    const recoveryHandler = createProtocolV2MessageHandler({
+      ...recovery.options,
+      digestAction: persistedDigest,
+      resetAliasIndex: createResetAliasIndex(recovery.rooms)
+    });
+    recoveryHandler(recovery.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ROOM1',
+      name: 'ignored',
+      playerId: HOST_ID,
+      recoveryCommandId: COMMAND_ID
+    });
+
+    expect(recovery.calls.snapshots.at(-1)).toMatchObject({
+      room: { code: 'NEW01', revision: 130 },
+      options: { type: 'resync', commandId: COMMAND_ID, reason: 'room-reset' }
+    });
+    expect(lastPayload(recovery)).toMatchObject({ type: 'ack', commandId: COMMAND_ID, revision: 1 });
+
+    const beforeReplay = serializeRooms(recovery.rooms, 500);
+    recovery.calls.snapshots.length = 0;
+    recovery.calls.json.length = 0;
+    recovery.calls.broadcasts.length = 0;
+    recovery.calls.persisted = 0;
+    recovery.calls.notified = 0;
+    recovery.calls.randomValues.length = 0;
+    recovery.calls.uuidValues.length = 0;
+    recoveryHandler(recovery.socket, command({ type: 'reset-room' }, 0, COMMAND_ID));
+
+    expect(serializeRooms(recovery.rooms, 500)).toEqual(beforeReplay);
+    expect(recovery.calls.snapshots).toEqual([{
+      socket: recovery.socket,
+      room: restored,
+      options: undefined
+    }]);
+    expect(recovery.calls.json).toEqual([{
+      socket: recovery.socket,
+      payload: {
+        type: 'ack',
+        protocolVersion: 2,
+        commandId: COMMAND_ID,
+        revision: 1
+      }
+    }]);
+    expect(recovery.calls.persisted).toBe(0);
+    expect(recovery.calls.broadcasts).toEqual([]);
+    expect(recovery.calls.notified).toBe(0);
+    expect(recovery.calls.randomValues).toEqual([]);
+    expect(recovery.calls.uuidValues).toEqual([]);
+  });
+
   it('never lets a recovery hint fall through to a recycled direct room code', () => {
     const target = resetRecoveryTarget({
       resetAliases: [{ fromCode: 'OLD01', commandId: COMMAND_ID, playerId: HOST_ID, expiresAt: 499 }]
@@ -468,6 +562,77 @@ describe('protocol v2 room admission', () => {
 });
 
 describe('protocol v2 command ordering and receipts', () => {
+  it('keeps every alias-pinned receipt and fills the remaining total window with newest unpinned receipts', () => {
+    const aliases = Array.from({ length: MAX_RESET_ALIASES }, (_, index) => ({
+      commandId: commandIdAt(index + 1)
+    }));
+    const receipts = Array.from({ length: MAX_RECENT_COMMAND_RECEIPTS + MAX_RESET_ALIASES }, (_, index) =>
+      receipt(
+        { type: 'send-chat-message', text: `message-${index + 1}` },
+        {
+          commandId: commandIdAt(index + 1),
+          expectedRevision: index,
+          revision: index + 1
+        }
+      )
+    );
+
+    const retained = retainCommandReceiptsForResetAliases(receipts, aliases);
+    expect(retained).toHaveLength(MAX_RECENT_COMMAND_RECEIPTS);
+    expect(aliases.every((alias) => retained.some((item) => item.commandId === alias.commandId))).toBe(true);
+    expect(retained.filter((item) => !aliases.some((alias) => alias.commandId === item.commandId))).toHaveLength(
+      MAX_RECENT_COMMAND_RECEIPTS - MAX_RESET_ALIASES
+    );
+    expect(retained.map((item) => item.revision)).toEqual([
+      ...Array.from({ length: MAX_RESET_ALIASES }, (_, index) => index + 1),
+      ...Array.from(
+        { length: MAX_RECENT_COMMAND_RECEIPTS - MAX_RESET_ALIASES },
+        (_, index) => index + (MAX_RESET_ALIASES * 2) + 1
+      )
+    ]);
+  });
+
+  it('prunes expired aliases and evicts their newly unpinned receipt in the same accepted command', () => {
+    const resetReceipt = receipt({ type: 'reset-room' });
+    const ordinaryReceipts = Array.from({ length: MAX_RECENT_COMMAND_RECEIPTS }, (_, index) =>
+      receipt(
+        { type: 'send-chat-message', text: `message-${index + 2}` },
+        {
+          commandId: commandIdAt(index + 2),
+          expectedRevision: index + 1,
+          revision: index + 2
+        }
+      )
+    );
+    const target = resetRecoveryTarget({
+      revision: MAX_RECENT_COMMAND_RECEIPTS + 1,
+      recentCommandIds: [resetReceipt, ...ordinaryReceipts],
+      resetAliases: [{
+        fromCode: 'OLD01',
+        commandId: COMMAND_ID,
+        playerId: HOST_ID,
+        expiresAt: 499
+      }]
+    });
+    const value = harness(target);
+    value.socket.roomCode = target.code;
+    const aliasIndex = createResetAliasIndex(value.rooms);
+    const handler = createProtocolV2MessageHandler({ ...value.options, resetAliasIndex: aliasIndex });
+    handler(value.socket, command(
+      { type: 'send-chat-message', text: 'after expiry' },
+      target.revision,
+      commandIdAt(MAX_RECENT_COMMAND_RECEIPTS + 2)
+    ));
+
+    expect(target.resetAliases).toEqual([]);
+    expect(aliasIndex.has('OLD01')).toBe(false);
+    expect(target.recentCommandIds).toHaveLength(MAX_RECENT_COMMAND_RECEIPTS);
+    expect(target.recentCommandIds.some((item) => item.commandId === COMMAND_ID)).toBe(false);
+    expect(target.recentCommandIds.map((item) => item.revision)).toEqual(
+      Array.from({ length: MAX_RECENT_COMMAND_RECEIPTS }, (_, index) => index + 3)
+    );
+  });
+
   it('fails closed for malformed commands and commands before admission', () => {
     const value = harness();
     value.handler(value.socket, { type: 'wat' });
