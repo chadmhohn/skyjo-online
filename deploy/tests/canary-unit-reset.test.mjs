@@ -12,6 +12,15 @@ const serverUnit = 'skyjo-online-canary@123-1-canary.service';
 const smokeUnit = 'skyjo-online-canary-smoke@123-1-canary.service';
 const productionSmokeUnit = 'skyjo-online-smoke@123-1-production.service';
 const legacyProofUnit = 'skyjo-online-legacy-proof@123-1-production.service';
+const productionRunId = '1783902382025837200-1-production';
+
+function isolatedCanaryUnits(runId) {
+  return [
+    `skyjo-online-canary@${runId}.service`,
+    `skyjo-online-canary-smoke@${runId}.service`,
+    `skyjo-online-state-proof@${runId}.service`
+  ];
+}
 
 function fragmentFor(unit) {
   if (unit.startsWith('skyjo-online-canary-smoke@')) return '/etc/systemd/system/skyjo-online-canary-smoke@.service';
@@ -76,6 +85,59 @@ test('a garbage-collected successful instance reloads clean and is never reset',
     FragmentPath: '/etc/systemd/system/skyjo-online-canary@.service',
     DropInPaths: '', CollectMode: 'inactive'
   });
+});
+
+test('isolated canary templates accept exact production-lane run IDs through the maximum contract length', async () => {
+  for (const runId of [productionRunId, `${'9'.repeat(20)}-${'9'.repeat(6)}-production`]) {
+    const units = isolatedCanaryUnits(runId);
+    const calls = [];
+    assert.deepEqual(await certifyTemporaryUnitsClean(units, {
+      systemctl: async (args) => {
+        calls.push(args);
+        return unitState(args.at(-1));
+      }
+    }), units.map((unit) => ({ unit, status: 'clean' })));
+    assert.deepEqual(calls.map(commandKind), units.map((unit) => ['show', unit]));
+  }
+});
+
+test('a production-lane canary lifecycle certifies all isolated units before environment removal', async () => {
+  const units = isolatedCanaryUnits(productionRunId);
+  const calls = [];
+  const noOp = (name) => async () => { calls.push(name); };
+  await executeCanaryLifecycle({
+    prepareEnvironment: noOp('prepareEnvironment'),
+    startServer: noOp('startServer'),
+    waitUntilReady: noOp('waitUntilReady'),
+    runAuthenticatedSmoke: noOp('runAuthenticatedSmoke'),
+    runStateProof: noOp('runStateProof'),
+    verifySourceSnapshot: noOp('verifySourceSnapshot'),
+    stopServer: noOp('stopServer'),
+    resetUnits: async () => {
+      calls.push('resetUnits');
+      await certifyTemporaryUnitsClean(units, {
+        systemctl: async (args) => {
+          calls.push(`show:${args.at(-1)}`);
+          return unitState(args.at(-1));
+        }
+      });
+    },
+    removeEnvironment: noOp('removeEnvironment')
+  });
+  assert.deepEqual(calls, [
+    'prepareEnvironment', 'startServer', 'waitUntilReady', 'runAuthenticatedSmoke',
+    'runStateProof', 'verifySourceSnapshot', 'stopServer', 'resetUnits',
+    ...units.map((unit) => `show:${unit}`), 'removeEnvironment'
+  ]);
+});
+
+test('duplicate production-lane canary units are rejected before systemctl', async () => {
+  const unit = isolatedCanaryUnits(productionRunId)[0];
+  let calls = 0;
+  await assert.rejects(certifyTemporaryUnitsClean([unit, unit], {
+    systemctl: async () => { calls += 1; }
+  }), /unit list is invalid/);
+  assert.equal(calls, 0);
 });
 
 test('an exact failed instance is reset and reinspected but still fails certification', async () => {
@@ -297,8 +359,10 @@ test('unrelated failed units are rejected before systemctl and exact-unit comman
   }), [{ unit: legacyProofUnit, status: 'clean' }]);
   for (const invalidUnit of [
     'skyjo-online-legacy-proof@bootstrap-activation.service',
-    'skyjo-online-canary@123-1-production.service',
     'skyjo-online-smoke@123-1-canary.service',
+    'skyjo-online-legacy-proof@123-1-canary.service',
+    'skyjo-online-canary@123-1-staging.service',
+    'skyjo-online-canary-smoke@123-1-production-extra.service',
     'skyjo-online-canary@0-1-canary.service',
     'skyjo-online-smoke@123-0-production.service',
     `skyjo-online-canary@${'1'.repeat(21)}-1-canary.service`,
