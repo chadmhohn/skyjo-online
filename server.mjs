@@ -1373,7 +1373,11 @@ const server = http.createServer(async (req, res) => {
         req.method === 'GET' && (url.pathname === '/' || url.pathname === '/single-player')
       ))
     ) {
-      req.socket.destroy();
+      if (typeof req.socket.resetAndDestroy === 'function') {
+        req.socket.resetAndDestroy();
+      } else {
+        req.socket.destroy();
+      }
       return;
     }
 

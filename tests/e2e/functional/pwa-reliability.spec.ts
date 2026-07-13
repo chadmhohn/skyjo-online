@@ -22,16 +22,46 @@ async function workerVersion(page: Page): Promise<string | null> {
   return page.evaluate(async () => {
     const worker = navigator.serviceWorker.controller;
     if (!worker) return null;
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<string | null>((resolve) => {
       const channel = new MessageChannel();
-      const timeout = window.setTimeout(() => reject(new Error('Worker version response timed out.')), 5_000);
-      channel.port1.onmessage = (event) => {
+      let settled = false;
+      const finish = (version: string | null) => {
+        if (settled) return;
+        settled = true;
         window.clearTimeout(timeout);
-        resolve(String(event.data));
+        channel.port1.close();
+        resolve(version);
       };
-      worker.postMessage({ type: 'SKYJO_TEST_VERSION' }, [channel.port2]);
+      const timeout = window.setTimeout(() => finish(null), 500);
+      channel.port1.onmessage = (event) => {
+        finish(String(event.data));
+      };
+      channel.port1.onmessageerror = () => finish(null);
+      channel.port1.start();
+      try {
+        worker.postMessage({ type: 'SKYJO_TEST_VERSION' }, [channel.port2]);
+      } catch {
+        finish(null);
+      }
     });
-  });
+  }).catch(() => null);
+}
+
+async function expectWorkerVersion(page: Page, expected: 'A' | 'B') {
+  await expect.poll(() => workerVersion(page), {
+    timeout: 15_000,
+    intervals: [100, 250, 500, 1_000]
+  }).toBe(expected);
+}
+
+async function expectSessionStorageNumber(page: Page, key: string, expected: number) {
+  await expect.poll(() => page.evaluate((storageKey) => {
+    const value = sessionStorage.getItem(storageKey);
+    return value === null ? null : Number(value);
+  }, key).catch(() => null), {
+    timeout: 15_000,
+    intervals: [100, 250, 500, 1_000]
+  }).toBe(expected);
 }
 
 async function setWorkerVariant(context: BrowserContext, baseURL: string, variant: 'A' | 'B') {
@@ -278,7 +308,7 @@ test('a changed worker defers on solo and lobby routes, then applies once from a
   await setWorkerVariant(context, skyjoServer.baseURL, 'A');
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   await waitForServiceWorkerControl(page);
-  await expect.poll(() => workerVersion(page)).toBe('A');
+  await expectWorkerVersion(page, 'A');
 
   await setWorkerVariant(context, skyjoServer.baseURL, 'B');
   await page.evaluate(async () => {
@@ -288,22 +318,22 @@ test('a changed worker defers on solo and lobby routes, then applies once from a
   await expect.poll(() => page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration('/'))?.waiting))).toBe(true);
   await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
   await expect(page.getByRole('button', { name: 'Update now' })).toHaveCount(0);
-  expect(await workerVersion(page)).toBe('A');
+  await expectWorkerVersion(page, 'A');
 
   await page.goto(`${skyjoServer.baseURL}/lobby`);
   await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
   await expect(page.getByRole('button', { name: 'Update now' })).toHaveCount(0);
-  expect(await workerVersion(page)).toBe('A');
+  await expectWorkerVersion(page, 'A');
 
   await page.goto(`${skyjoServer.baseURL}/`);
   const loadsBeforeApply = Number(await page.evaluate(() => sessionStorage.getItem('skyjo-test-page-loads')));
   const appliedReload = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: 'Update now' }).click();
   await appliedReload;
-  await expect.poll(() => workerVersion(page)).toBe('B');
-  await expect.poll(() => page.evaluate(() => Number(sessionStorage.getItem('skyjo-test-page-loads')))).toBe(loadsBeforeApply + 1);
+  await expectWorkerVersion(page, 'B');
+  await expectSessionStorageNumber(page, 'skyjo-test-page-loads', loadsBeforeApply + 1);
   await page.waitForTimeout(750);
-  expect(await page.evaluate(() => Number(sessionStorage.getItem('skyjo-test-page-loads')))).toBe(loadsBeforeApply + 1);
+  await expectSessionStorageNumber(page, 'skyjo-test-page-loads', loadsBeforeApply + 1);
 });
 
 test('cross-tab activation never reloads a protected game and preserves one safe reload prompt', async ({ context, page, skyjoServer }) => {
@@ -314,7 +344,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
   await setWorkerVariant(context, skyjoServer.baseURL, 'A');
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   await waitForServiceWorkerControl(page);
-  await expect.poll(() => workerVersion(page)).toBe('A');
+  await expectWorkerVersion(page, 'A');
   const protectedLoads = Number(await page.evaluate(() => sessionStorage.getItem('skyjo-cross-tab-loads')));
 
   const updater = await context.newPage();
@@ -328,9 +358,9 @@ test('cross-tab activation never reloads a protected game and preserves one safe
   const updaterReload = updater.waitForNavigation({ waitUntil: 'domcontentloaded' });
   await updater.getByRole('button', { name: 'Update now' }).click();
   await updaterReload;
-  await expect.poll(() => workerVersion(updater)).toBe('B');
+  await expectWorkerVersion(updater, 'B');
 
-  await expect.poll(() => workerVersion(page)).toBe('B');
+  await expectWorkerVersion(page, 'B');
   expect(await page.evaluate(() => Number(sessionStorage.getItem('skyjo-cross-tab-loads')))).toBe(protectedLoads);
   await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
   await expect(page.getByRole('button', { name: /Reload now|Update now/ })).toHaveCount(0);
@@ -341,7 +371,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
   const protectedReload = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: 'Reload now' }).click();
   await protectedReload;
-  await expect.poll(() => page.evaluate(() => Number(sessionStorage.getItem('skyjo-cross-tab-loads')))).toBe(loadsBeforeReload + 1);
+  await expectSessionStorageNumber(page, 'skyjo-cross-tab-loads', loadsBeforeReload + 1);
   await page.waitForTimeout(750);
-  expect(await page.evaluate(() => Number(sessionStorage.getItem('skyjo-cross-tab-loads')))).toBe(loadsBeforeReload + 1);
+  await expectSessionStorageNumber(page, 'skyjo-cross-tab-loads', loadsBeforeReload + 1);
 });
