@@ -466,6 +466,35 @@ describe('runtime artifact safety contract', () => {
     expect(() => validateRuntimeEntries(malformed, releaseSha)).toThrow('Invalid runtime release identity');
   });
 
+  test.each([
+    'validateMultiplayerStateUpdate',
+    'legalMultiplayerStateUpdates',
+    'deepEqual',
+    'isLegalRecycledDrawUpdate',
+    'unorderedCardsEqual',
+    'proposedState'
+  ])('rejects retired whole-state validation symbol %s from the runtime', (symbol) => {
+    const entries = replaceFile(
+      fixtureEntries(),
+      'server-dist/serverValidation.js',
+      Buffer.from(`export function ${symbol}() { return true; }\n`)
+    );
+    expect(() => validateRuntimeEntries(entries, releaseSha)).toThrow(
+      `retired whole-state validation symbol: ${symbol}`
+    );
+  });
+
+  test('scans every first-party compiled server module for retired whole-state validation code', () => {
+    const entries = replaceFile(
+      fixtureEntries(),
+      'server-dist/serverProtocolV2.js',
+      Buffer.from('export const proposedState = {}\n')
+    );
+    expect(() => validateRuntimeEntries(entries, releaseSha)).toThrow(
+      'retired whole-state validation symbol: proposedState'
+    );
+  });
+
   test('rejects oversized entries and noncanonical owner, mode, or mtime metadata', () => {
     const oversized = fixtureEntries();
     oversized[0] = { ...oversized[0], size: MAX_FILE_BYTES + 1 };

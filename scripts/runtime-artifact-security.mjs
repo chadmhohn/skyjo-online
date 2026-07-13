@@ -22,6 +22,15 @@ export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRIES = 4096;
 export const RUNTIME_SBOM_NAME = 'skyjo-runtime.cdx.json';
 
+const RETIRED_WHOLE_STATE_VALIDATION_SYMBOLS = Object.freeze([
+  'validateMultiplayerStateUpdate',
+  'legalMultiplayerStateUpdates',
+  'deepEqual',
+  'isLegalRecycledDrawUpdate',
+  'unorderedCardsEqual',
+  'proposedState'
+]);
+
 export const RUNTIME_ROOT_FILES = Object.freeze([
   'package-lock.json',
   'package.json',
@@ -418,6 +427,16 @@ export function validateRuntimeEntries(entries, expectedReleaseSha) {
   }
   for (const requiredPath of REQUIRED_ARCHIVE_FILES) {
     if (!files.has(requiredPath)) throw new Error(`Runtime archive is missing required file: ${requiredPath}.`);
+  }
+
+  for (const [runtimePath, contents] of files) {
+    if (runtimePath !== 'server.mjs' && !/^server-dist\/[^/]+\.js$/.test(runtimePath)) continue;
+    const source = contents.toString('utf8');
+    for (const symbol of RETIRED_WHOLE_STATE_VALIDATION_SYMBOLS) {
+      if (source.includes(symbol)) {
+        throw new Error(`Runtime archive contains retired whole-state validation symbol: ${symbol}.`);
+      }
+    }
   }
 
   const rootRelease = files.get('release.json');
