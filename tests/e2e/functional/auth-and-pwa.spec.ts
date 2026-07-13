@@ -114,6 +114,28 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   expect(sanitizerIndex).toBeGreaterThan(sourceGuardIndex);
 });
 
+test('test-only PWA activation diagnostics acknowledge bounded JSON without caching', async ({ request, skyjoServer }) => {
+  const unavailable = await request.get(`${skyjoServer.baseURL}/__test/pwa-activation-message`);
+  expect(unavailable.status()).toBe(404);
+  expect(unavailable.headers()['cache-control']).toBe('no-store');
+
+  const response = await request.post(`${skyjoServer.baseURL}/__test/pwa-activation-message`, {
+    data: {
+      eventOriginState: 'string',
+      eventOrigin: 'null',
+      source: 'null',
+      sourceType: 'object',
+      sourceUrlOrigin: null,
+      sourceUrlPath: '/lobby?room=must-not-log',
+      portsLength: 0
+    }
+  });
+
+  expect(response.status()).toBe(204);
+  expect(response.headers()['cache-control']).toBe('no-store');
+  expect(await response.body()).toHaveLength(0);
+});
+
 test('single-player stats deduplicate one UUID without collapsing an equal-score game', async ({ page, skyjoServer }) => {
   const email = `solo-${Date.now()}-${Math.random().toString(16).slice(2)}@example.test`;
   const account = await page.context().request.post(`${skyjoServer.baseURL}/api/account/signup`, {

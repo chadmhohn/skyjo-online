@@ -65,6 +65,11 @@ import {
 import { createPersistenceHealthTracker } from './server-persistence-health.mjs';
 import { createReadinessResult, createVersionResult } from './server-readiness.mjs';
 import { loadReleaseIdentity, releaseValidationOptionsForEnvironment } from './server-release.mjs';
+import {
+  handleTestPwaDiagnosticRequest,
+  testPwaDiagnosticRoute,
+  testPwaWorkerSource
+} from './server-test-pwa-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(__dirname, 'dist');
@@ -293,23 +298,6 @@ function sendJsonResponse(res, status, payload, headers = {}) {
     'Content-Type': 'application/json; charset=utf-8',
     ...headers
   });
-}
-
-function testPwaWorkerSource(variant) {
-  return `const version=${JSON.stringify(variant)};
-self.addEventListener('install', () => {});
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
-self.addEventListener('message', (event) => {
-  const isActivation = event.data?.type === 'SKYJO_ACTIVATE_UPDATE';
-  if (event.origin !== self.location.origin) {
-    const isWebKitNullSourceActivation = isActivation && event.origin === '' && event.source === null;
-    if (!isWebKitNullSourceActivation) return;
-  }
-  if (isActivation) {
-    event.waitUntil(self.skipWaiting());
-    return;
-  }
-});\n`;
 }
 
 function makeRoomCode(randomInt = crypto.randomInt) {
@@ -1243,19 +1231,19 @@ async function handleInviteCodeRedeem(req, res) {
   sendInviteRoomAccess(res, invite.roomCode);
 }
 
-async function readRequestBody(req) {
+async function readRequestBody(req, maximumBytes = 256 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 256 * 1024) throw new PublicApiError('REQUEST_TOO_LARGE');
+    if (size > maximumBytes) throw new PublicApiError('REQUEST_TOO_LARGE');
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function readJsonBody(req) {
-  const body = await readRequestBody(req);
+async function readJsonBody(req, maximumBytes) {
+  const body = await readRequestBody(req, maximumBytes);
   if (!body.trim()) return {};
   let parsed;
   try {
@@ -1401,6 +1389,20 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
+    }
+
+    const testPwaDiagnostic = testPwaDiagnosticRoute(testPwaVariantsEnabled, req.method, url.pathname);
+    if (testPwaDiagnostic === 'unavailable') {
+      send(res, 404, 'Not found', { 'Content-Type': 'text/plain; charset=utf-8' });
+      return;
+    }
+    if (testPwaDiagnostic === 'enabled') {
+      await handleTestPwaDiagnosticRequest(req, res, {
+        readJsonBody,
+        send,
+        log: (line) => console.log(line)
+      });
+      return;
     }
 
     if (isPublicPwaAsset(url.pathname)) {

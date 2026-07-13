@@ -43,6 +43,7 @@ export const RUNTIME_ROOT_FILES = Object.freeze([
   'server-room-invites.mjs',
   'server-room-persistence.mjs',
   'server-state-backup.mjs',
+  'server-test-pwa-diagnostics.mjs',
   'server.mjs'
 ]);
 
