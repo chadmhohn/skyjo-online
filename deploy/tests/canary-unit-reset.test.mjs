@@ -131,6 +131,15 @@ test('a production-lane canary lifecycle certifies all isolated units before env
   ]);
 });
 
+test('duplicate production-lane canary units are rejected before systemctl', async () => {
+  const unit = isolatedCanaryUnits(productionRunId)[0];
+  let calls = 0;
+  await assert.rejects(certifyTemporaryUnitsClean([unit, unit], {
+    systemctl: async () => { calls += 1; }
+  }), /unit list is invalid/);
+  assert.equal(calls, 0);
+});
+
 test('an exact failed instance is reset and reinspected but still fails certification', async () => {
   let failed = true;
   let resets = 0;
