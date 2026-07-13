@@ -12,5 +12,5 @@
     "rootDir": "src",
     "declaration": false
   },
-  "include": ["src/game.ts", "src/runtime.ts", "src/serverProtocolV1.ts", "src/serverRealtime.ts", "src/serverValidation.ts", "src/types.ts"]
+  "include": ["src/game.ts", "src/protocolV2.ts", "src/runtime.ts", "src/serverProtocolV2.ts", "src/serverRealtime.ts", "src/serverValidation.ts", "src/types.ts"]
 }

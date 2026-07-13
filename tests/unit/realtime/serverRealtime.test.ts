@@ -151,7 +151,7 @@ function createHarness() {
     sendCurrentRoom,
     now,
     isShuttingDown: () => shuttingDown,
-    onProtocolV1Message,
+    onProtocolMessage: onProtocolV1Message,
     scheduleInterval,
     cancelInterval
   });
@@ -261,8 +261,8 @@ describe('serverRealtime transport seam', () => {
     socket.emit('message', '{"type":"set-presence","visible":false}');
 
     expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
-      { type: 'error', message: 'Invalid message.' },
-      { type: 'error', message: 'Join or create a room first.' }
+      { type: 'error', protocolVersion: 2, code: 'invalid-message', message: 'Invalid message.' },
+      { type: 'error', protocolVersion: 2, code: 'room-required', message: 'Join or create a room first.' }
     ]);
     expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
     expect(harness.onProtocolV1Message).not.toHaveBeenCalled();
@@ -299,7 +299,7 @@ describe('serverRealtime transport seam', () => {
     socket.emit('message', '{"type":"set-presence","visible":"false"}');
 
     expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
-      { type: 'error', message: 'Invalid presence.' }
+      { type: 'error', protocolVersion: 2, code: 'invalid-presence', message: 'Invalid presence.' }
     ]);
     expect(socket.visible).toBe(true);
     expect(context.player.connected).toBe(true);
@@ -479,7 +479,7 @@ describe('serverRealtime transport seam', () => {
       sendCurrentRoom: harness.sendCurrentRoom,
       now: harness.now,
       isShuttingDown: () => false,
-      onProtocolV1Message: harness.onProtocolV1Message,
+      onProtocolMessage: harness.onProtocolV1Message,
       heartbeatIntervalMs: 0
     })).toThrow(/heartbeatIntervalMs/i);
     expect(() => registerRealtimeServer({
@@ -493,7 +493,7 @@ describe('serverRealtime transport seam', () => {
       sendCurrentRoom: harness.sendCurrentRoom,
       now: harness.now,
       isShuttingDown: () => false,
-      onProtocolV1Message: harness.onProtocolV1Message,
+      onProtocolMessage: harness.onProtocolV1Message,
       heartbeatIntervalMs: Number.POSITIVE_INFINITY
     })).toThrow(/heartbeatIntervalMs/i);
   });
@@ -513,7 +513,7 @@ describe('serverRealtime transport seam', () => {
       sendCurrentRoom: vi.fn(),
       now: () => 0,
       isShuttingDown: () => false,
-      onProtocolV1Message: vi.fn()
+      onProtocolMessage: vi.fn()
     });
     expect(vi.getTimerCount()).toBe(1);
     dispose();

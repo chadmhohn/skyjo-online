@@ -7,16 +7,20 @@ import webPush from 'web-push';
 import { WebSocketServer } from 'ws';
 import {
   createInitialRoomState,
-  createNextRoundRoomState,
-  validateMultiplayerStateUpdate
+  createNextRoundRoomState
 } from './server-dist/serverValidation.js';
 import {
   hasVisibleLiveClient,
+  REALTIME_MAX_PAYLOAD_BYTES,
   registerRealtimeServer,
   sendRealtimeJson,
   syncPlayerPresence
 } from './server-dist/serverRealtime.js';
-import { createProtocolV1MessageHandler } from './server-dist/serverProtocolV1.js';
+import { createProtocolV2MessageHandler } from './server-dist/serverProtocolV2.js';
+import {
+  createRoomSnapshot,
+  MULTIPLAYER_PROTOCOL_VERSION
+} from './server-dist/protocolV2.js';
 import {
   loadRoomsSnapshotFromDisk,
   resolveRoomsFilePath,
@@ -359,20 +363,6 @@ function handleRoomInviteAccess(res, url, { landing = false } = {}) {
   return true;
 }
 
-function publicRoom(room) {
-  return {
-    code: room.code,
-    hostId: room.hostId,
-    players: room.players,
-    chatMessages: room.chatMessages || [],
-    readyForNextRoundPlayerIds: Array.isArray(room.readyForNextRoundPlayerIds) ? room.readyForNextRoundPlayerIds : [],
-    state: room.state,
-    status: room.status,
-    updatedAt: room.updatedAt,
-    completedGameId: room.completedGameId || null
-  };
-}
-
 function gamePlayerIds(room) {
   const players = Array.isArray(room.state?.players) && room.state.players.length > 0 ? room.state.players : room.players;
   return players.map((player) => player.id);
@@ -402,14 +392,32 @@ function sendJson(ws, payload) {
 }
 
 function broadcastRoom(room) {
-  const payload = JSON.stringify({ type: 'room', room: publicRoom(room) });
   for (const client of room.clients) {
-    if (client.readyState === client.OPEN) client.send(payload);
+    sendRoomSnapshot(client, room);
   }
 }
 
 function sendCurrentRoom(ws, room) {
-  sendJson(ws, { type: 'room', room: publicRoom(room) });
+  sendRoomSnapshot(ws, room);
+}
+
+function sendRoomSnapshot(ws, room, options = {}) {
+  if (!ws.playerId || !room.players.some((player) => player.id === ws.playerId)) return false;
+  const type = options.type === 'resync' ? 'resync' : 'snapshot';
+  const payload = {
+    type,
+    protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    playerId: ws.playerId,
+    revision: room.revision,
+    room: createRoomSnapshot(room, ws.playerId),
+    ...(type === 'resync'
+      ? {
+          reason: options.reason || 'revision-mismatch',
+          ...(options.commandId ? { commandId: options.commandId } : {})
+        }
+      : {})
+  };
+  return sendJson(ws, payload);
 }
 
 function queueRoomsSave() {
@@ -467,17 +475,30 @@ function roomPlayer(ws) {
 }
 
 function createWaitingRoom({ code, hostPlayer, ws }) {
+  const timestamp = Date.now();
   return {
+    roomVersion: 2,
     code,
     hostId: hostPlayer.id,
-    players: [{ id: hostPlayer.id, userId: hostPlayer.userId, name: hostPlayer.name, connected: true, host: true }],
+    players: [{
+      id: hostPlayer.id,
+      userId: hostPlayer.userId,
+      name: hostPlayer.name,
+      connected: true,
+      host: true,
+      joinedAt: timestamp,
+      lastSeenAt: timestamp,
+      controller: 'human'
+    }],
     chatMessages: [],
     readyForNextRoundPlayerIds: [],
     state: null,
     status: 'waiting',
-    updatedAt: Date.now(),
+    updatedAt: timestamp,
     completedGameId: null,
     gameSessionId: null,
+    revision: 0,
+    recentCommandIds: [],
     clients: new Set([ws])
   };
 }
@@ -1245,9 +1266,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: REALTIME_MAX_PAYLOAD_BYTES });
 
-const handleProtocolV1Message = createProtocolV1MessageHandler({
+const handleProtocolV2Message = createProtocolV2MessageHandler({
   allPlayersReadyForNextRound,
   appendRoomChatMessage,
   broadcastRoom,
@@ -1255,20 +1276,21 @@ const handleProtocolV1Message = createProtocolV1MessageHandler({
   createInitialRoomState,
   createNextRoundRoomState,
   createWaitingRoom,
+  digestAction: (canonicalAction) => crypto.createHash('sha256').update(canonicalAction).digest('hex'),
   makeRoomCodeForSocket,
   normalizedReadyIds,
   notifyAwayPlayersAfterMove,
   now: Date.now,
   persistRoomsSoon,
-  publicRoom,
+  random: () => crypto.randomInt(0, 0x1_0000_0000) / 0x1_0000_0000,
   randomUuid: crypto.randomUUID,
   recordCompletedGame: (input) => accountStore.recordCompletedGame(input),
   roomPlayer,
   rooms,
   sendJson,
+  sendRoomSnapshot,
   setPlayerReadyForNextRound,
   syncPlayerPresence,
-  validateMultiplayerStateUpdate,
   reportCompletedGameError: (error) => console.error('Failed to record multiplayer game:', error)
 });
 
@@ -1283,7 +1305,7 @@ const disposeRealtimeServer = registerRealtimeServer({
   sendCurrentRoom,
   now: Date.now,
   isShuttingDown: () => shuttingDown,
-  onProtocolV1Message: handleProtocolV1Message
+  onProtocolMessage: handleProtocolV2Message
 });
 
 setInterval(() => {

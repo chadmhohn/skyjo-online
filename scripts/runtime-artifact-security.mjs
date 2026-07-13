@@ -53,8 +53,9 @@ export const REQUIRED_ARCHIVE_FILES = Object.freeze([
   'dist/release.json.sha256',
   'dist/index.html',
   'server-dist/game.js',
+  'server-dist/protocolV2.js',
   'server-dist/runtime.js',
-  'server-dist/serverProtocolV1.js',
+  'server-dist/serverProtocolV2.js',
   'server-dist/serverRealtime.js',
   'server-dist/serverValidation.js',
   'server-dist/types.js',
@@ -405,6 +406,9 @@ export function validateRuntimeEntries(entries, expectedReleaseSha) {
     }
     const normalized = normalizeArchivePath(entry.rawPath, { allowRoot: isDirectory });
     if (normalized === '') continue;
+    if (normalized === 'server-dist/serverProtocolV1.js') {
+      throw new Error('Runtime archive contains the retired protocol-v1 state mutation handler.');
+    }
     if (!isAllowedRuntimePath(normalized, isDirectory)) throw new Error(`Runtime archive path is not allowlisted: ${normalized}.`);
     if (seen.has(normalized)) throw new Error(`Runtime archive contains duplicate path: ${normalized}.`);
     seen.add(normalized);

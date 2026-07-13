@@ -72,24 +72,35 @@ export interface RealtimeServerOptions {
   sendCurrentRoom: (socket: RealtimeSocket, room: RealtimeRoom) => unknown;
   now: () => number;
   isShuttingDown: () => boolean;
-  onProtocolV1Message: (socket: RealtimeSocket, message: RealtimeClientMessage) => void;
+  onProtocolMessage: (socket: RealtimeSocket, message: RealtimeClientMessage) => void;
   heartbeatIntervalMs?: number;
   scheduleInterval?: (callback: () => void, intervalMs: number) => unknown;
   cancelInterval?: (handle: unknown) => void;
 }
 
 export const REALTIME_HEARTBEAT_INTERVAL_MS = 15_000;
+export const REALTIME_MAX_PAYLOAD_BYTES = 16_384;
 
 export function sendRealtimeJson(socket: RealtimeSocket, payload: unknown): boolean {
   if (socket.readyState !== socket.OPEN) return false;
-  socket.send(JSON.stringify(payload));
-  return true;
+  try {
+    socket.send(JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export function parseRealtimeMessage(raw: unknown): RealtimeClientMessage | null {
+export function parseRealtimeMessage(
+  raw: unknown,
+  maxPayloadBytes = REALTIME_MAX_PAYLOAD_BYTES
+): RealtimeClientMessage | null {
+  const payload = String(raw);
+  if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes <= 0) return null;
+  if (new TextEncoder().encode(payload).byteLength > maxPayloadBytes) return null;
   let message: unknown;
   try {
-    message = JSON.parse(String(raw));
+    message = JSON.parse(payload);
   } catch {
     return null;
   }
@@ -131,7 +142,7 @@ export function registerRealtimeServer({
   sendCurrentRoom,
   now,
   isShuttingDown,
-  onProtocolV1Message,
+  onProtocolMessage,
   heartbeatIntervalMs = REALTIME_HEARTBEAT_INTERVAL_MS,
   scheduleInterval = (callback, intervalMs) => setInterval(callback, intervalMs),
   cancelInterval = (handle) => clearInterval(handle as ReturnType<typeof setInterval>)
@@ -171,18 +182,18 @@ export function registerRealtimeServer({
     socket.on('message', (raw) => {
       const message = parseRealtimeMessage(raw);
       if (!message) {
-        sendRealtimeJson(socket, { type: 'error', message: 'Invalid message.' });
+        sendRealtimeJson(socket, { type: 'error', protocolVersion: 2, code: 'invalid-message', message: 'Invalid message.' });
         return;
       }
 
       if (message.type === 'set-presence') {
         const context = roomPlayer(socket);
         if (!context) {
-          sendRealtimeJson(socket, { type: 'error', message: 'Join or create a room first.' });
+          sendRealtimeJson(socket, { type: 'error', protocolVersion: 2, code: 'room-required', message: 'Join or create a room first.' });
           return;
         }
         if ('visible' in message && typeof message.visible !== 'boolean') {
-          sendRealtimeJson(socket, { type: 'error', message: 'Invalid presence.' });
+          sendRealtimeJson(socket, { type: 'error', protocolVersion: 2, code: 'invalid-presence', message: 'Invalid presence.' });
           return;
         }
         const wasConnected = context.player.connected;
@@ -198,7 +209,7 @@ export function registerRealtimeServer({
         return;
       }
 
-      onProtocolV1Message(socket, message);
+      onProtocolMessage(socket, message);
     });
 
     socket.on('close', () => {

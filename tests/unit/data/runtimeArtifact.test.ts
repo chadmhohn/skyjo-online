@@ -324,7 +324,8 @@ describe('runtime artifact safety contract', () => {
   test('validates the complete allowlisted runtime and byte-identical release identities', () => {
     const result = validateRuntimeEntries(fixtureEntries(), releaseSha);
     expect(result.releaseIdentity.releaseSha).toBe(releaseSha);
-    expect(result.files.has('server-dist/serverProtocolV1.js')).toBe(true);
+    expect(result.files.has('server-dist/protocolV2.js')).toBe(true);
+    expect(result.files.has('server-dist/serverProtocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverRealtime.js')).toBe(true);
     expect(result.files.has('src/game.ts')).toBe(false);
   });
@@ -445,9 +446,12 @@ describe('runtime artifact safety contract', () => {
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverRealtime.js'), releaseSha)).toThrow(
       'missing required'
     );
-    expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverProtocolV1.js'), releaseSha)).toThrow(
+    expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverProtocolV2.js'), releaseSha)).toThrow(
       'missing required'
     );
+    const retiredProtocol = fixtureEntries();
+    retiredProtocol.push({ ...retiredProtocol[0], rawPath: 'server-dist/serverProtocolV1.js' });
+    expect(() => validateRuntimeEntries(retiredProtocol, releaseSha)).toThrow('retired protocol-v1');
     const unequalIdentity = replaceFile(fixtureEntries(), 'dist/release.json', Buffer.from('{}'));
     expect(() => validateRuntimeEntries(unequalIdentity, releaseSha)).toThrow('byte-identical');
     const badChecksum = replaceFile(fixtureEntries(), 'release.json.sha256', Buffer.from(`${'0'.repeat(64)}  release.json\n`));

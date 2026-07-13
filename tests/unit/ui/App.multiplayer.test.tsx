@@ -129,6 +129,7 @@ function makeRoom(overrides: Partial<MultiplayerRoom> = {}): MultiplayerRoom {
     status: 'waiting',
     updatedAt: 100,
     completedGameId: null,
+    revision: 0,
     ...overrides
   };
 }

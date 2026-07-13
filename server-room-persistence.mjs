@@ -13,6 +13,9 @@ const validStatuses = new Set(['waiting', 'playing', 'finished']);
 const maxPersistedChatMessages = 80;
 const maxPersistedChatMessageLength = 280;
 const maxPersistedRooms = 10_000;
+const maxRecentCommandReceipts = 128;
+const commandIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const sha256Pattern = /^[a-f0-9]{64}$/;
 const unsupportedWindowsDirectorySyncCodes = new Set(['EINVAL', 'ENOTSUP', 'EPERM']);
 
 export class RoomPersistenceFormatError extends Error {
@@ -47,7 +50,7 @@ function optionalTimestamp(value, fieldName) {
   return value;
 }
 
-function normalizePlayer(value, roomIndex) {
+function normalizePlayer(value, roomIndex, fallbackTimestamp) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} contains an invalid player.`);
   }
@@ -68,13 +71,48 @@ function normalizePlayer(value, roomIndex) {
   if (value.userId !== undefined && typeof value.userId !== 'string') {
     throw formatError(`Room ${roomIndex} contains an invalid player user id.`);
   }
+  const joinedAt = value.joinedAt === undefined ? fallbackTimestamp : optionalTimestamp(value.joinedAt, `Room ${roomIndex} player joinedAt`);
+  const lastSeenAt = value.lastSeenAt === undefined ? fallbackTimestamp : optionalTimestamp(value.lastSeenAt, `Room ${roomIndex} player lastSeenAt`);
+  if (value.controller !== undefined && value.controller !== 'human' && value.controller !== 'ai') {
+    throw formatError(`Room ${roomIndex} contains an invalid player controller.`);
+  }
   return {
     id,
     userId: stringValue(value.userId).trim() || undefined,
     name,
     connected: false,
-    host: value.host === true
+    host: value.host === true,
+    joinedAt,
+    lastSeenAt,
+    controller: value.controller || 'human'
   };
+}
+
+function normalizeCommandReceipt(value, roomIndex, playerIds, roomRevision) {
+  if (!isRecord(value)) throw formatError(`Room ${roomIndex} contains an invalid command receipt.`);
+  const keys = Object.keys(value).sort();
+  const expectedKeys = ['actionDigest', 'commandId', 'expectedRevision', 'playerId', 'revision'].sort();
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw formatError(`Room ${roomIndex} contains an invalid command receipt.`);
+  }
+  const commandId = stringValue(value.commandId);
+  const playerId = stringValue(value.playerId);
+  const expectedRevision = value.expectedRevision;
+  const revision = value.revision;
+  const actionDigest = stringValue(value.actionDigest);
+  if (
+    !commandIdPattern.test(commandId) ||
+    !playerIds.has(playerId) ||
+    !Number.isSafeInteger(expectedRevision) ||
+    expectedRevision < 0 ||
+    !Number.isSafeInteger(revision) ||
+    revision !== expectedRevision + 1 ||
+    revision > roomRevision ||
+    !sha256Pattern.test(actionDigest)
+  ) {
+    throw formatError(`Room ${roomIndex} contains a malformed command receipt.`);
+  }
+  return { commandId, playerId, expectedRevision, revision, actionDigest };
 }
 
 function normalizeChatMessage(value, roomIndex) {
@@ -116,7 +154,15 @@ function normalizeRoom(value, roomIndex) {
     throw formatError(`Room ${roomIndex} must contain between one and eight players.`);
   }
 
-  const players = value.players.map((player) => normalizePlayer(player, roomIndex));
+  if (value.roomVersion !== undefined && value.roomVersion !== 1 && value.roomVersion !== 2) {
+    throw formatError(`Room ${roomIndex} has an unsupported room version.`);
+  }
+  const revision = value.revision === undefined ? 0 : value.revision;
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw formatError(`Room ${roomIndex} has an invalid revision.`);
+  }
+
+  const players = value.players.map((player) => normalizePlayer(player, roomIndex, updatedAt));
   const playerIds = new Set(players.map((player) => player.id));
   if (playerIds.size !== players.length) {
     throw formatError(`Room ${roomIndex} contains duplicate player ids.`);
@@ -144,6 +190,22 @@ function normalizeRoom(value, roomIndex) {
         .filter((id, index, ids) => playerIds.has(id) && ids.indexOf(id) === index)
     : [];
 
+  if (value.recentCommandIds !== undefined && !Array.isArray(value.recentCommandIds)) {
+    throw formatError(`Room ${roomIndex} command receipts must be an array.`);
+  }
+  if (Array.isArray(value.recentCommandIds) && value.recentCommandIds.length > maxRecentCommandReceipts) {
+    throw formatError(`Room ${roomIndex} contains too many command receipts.`);
+  }
+  const recentCommandIds = Array.isArray(value.recentCommandIds)
+    ? value.recentCommandIds.map((receipt) => normalizeCommandReceipt(receipt, roomIndex, playerIds, revision))
+    : [];
+  if (new Set(recentCommandIds.map((receipt) => receipt.commandId)).size !== recentCommandIds.length) {
+    throw formatError(`Room ${roomIndex} contains duplicate command ids.`);
+  }
+  if (new Set(recentCommandIds.map((receipt) => receipt.revision)).size !== recentCommandIds.length) {
+    throw formatError(`Room ${roomIndex} contains duplicate command revisions.`);
+  }
+
   if (value.state !== undefined && value.state !== null && !isRecord(value.state)) {
     throw formatError(`Room ${roomIndex} game state must be an object or null.`);
   }
@@ -155,6 +217,7 @@ function normalizeRoom(value, roomIndex) {
   }
 
   return {
+    roomVersion: 2,
     code,
     hostId,
     players: players.map((player) => ({
@@ -168,6 +231,8 @@ function normalizeRoom(value, roomIndex) {
     updatedAt,
     completedGameId: stringValue(value.completedGameId).trim() || null,
     gameSessionId: stringValue(value.gameSessionId).trim() || null,
+    revision,
+    recentCommandIds,
     clients: new Set()
   };
 }
@@ -316,6 +381,7 @@ export function resolveRoomsFilePath(env = process.env) {
 
 export function serializeRoom(room) {
   return {
+    roomVersion: 2,
     code: room.code,
     hostId: room.hostId,
     players: room.players.map((player) => ({
@@ -323,7 +389,10 @@ export function serializeRoom(room) {
       userId: player.userId || undefined,
       name: player.name,
       connected: player.connected === true,
-      host: player.host === true
+      host: player.host === true,
+      joinedAt: Number.isFinite(player.joinedAt) ? player.joinedAt : room.updatedAt,
+      lastSeenAt: Number.isFinite(player.lastSeenAt) ? player.lastSeenAt : room.updatedAt,
+      controller: player.controller === 'ai' ? 'ai' : 'human'
     })),
     chatMessages: Array.isArray(room.chatMessages)
       ? room.chatMessages.map((message) => normalizeChatMessage(message, room.code)).slice(-maxPersistedChatMessages)
@@ -335,7 +404,17 @@ export function serializeRoom(room) {
     status: room.status,
     updatedAt: room.updatedAt,
     completedGameId: room.completedGameId || null,
-    gameSessionId: room.gameSessionId || null
+    gameSessionId: room.gameSessionId || null,
+    revision: Number.isSafeInteger(room.revision) && room.revision >= 0 ? room.revision : 0,
+    recentCommandIds: Array.isArray(room.recentCommandIds)
+      ? room.recentCommandIds.slice(-maxRecentCommandReceipts).map((receipt) => ({
+          commandId: receipt.commandId,
+          playerId: receipt.playerId,
+          expectedRevision: receipt.expectedRevision,
+          revision: receipt.revision,
+          actionDigest: receipt.actionDigest
+        }))
+      : []
   };
 }
 

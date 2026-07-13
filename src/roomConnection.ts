@@ -1,3 +1,12 @@
+import {
+  MULTIPLAYER_PROTOCOL_VERSION,
+  parseClientCommand,
+  type PublicGameStateSnapshot,
+  type PublicPlayerSnapshot,
+  type PublicCardSnapshot,
+  type PublicRoomSnapshot
+} from './protocolV2';
+
 export type RoomConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'error';
 
 export type RoomConnectionFrame = Record<string, unknown>;
@@ -37,6 +46,7 @@ interface RoomConnectionDependencies {
 export interface RoomConnectionOptions extends Partial<RoomConnectionDependencies> {
   onError?: (message: string) => void;
   onFrame: (frame: RoomConnectionFrame) => void;
+  onPendingCommandChange?: (pending: boolean) => void;
   onStateChange: (state: RoomConnectionState, detail: RoomConnectionStateDetail) => void;
   url: string;
 }
@@ -59,6 +69,15 @@ export const ROOM_SYNC_TIMEOUT_MS = 8_000;
 const socketConnecting = 0;
 const socketOpen = 1;
 const resumeCoalesceMs = 250;
+const maximumDeckCards = 150;
+
+interface PendingCommandState {
+  frame: RoomConnectionFrame;
+  commandId: string;
+  expectedRevision: number;
+  acknowledgedRevision: number | null;
+  sentGeneration: number;
+}
 
 function defaultOnline(): boolean {
   return typeof navigator === 'undefined' || navigator.onLine !== false;
@@ -90,7 +109,7 @@ function joinSessionFromFrame(
   frame: RoomConnectionFrame,
   previous: RoomConnectionSession | null
 ): Extract<RoomConnectionSession, { action: 'join-room' }> | null {
-  if (frame.type !== 'joined' || typeof frame.playerId !== 'string') return null;
+  if ((frame.type !== 'snapshot' && frame.type !== 'resync') || typeof frame.playerId !== 'string') return null;
   const room = frame.room;
   if (!room || typeof room !== 'object' || Array.isArray(room)) return null;
   const code = (room as { code?: unknown }).code;
@@ -107,22 +126,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
 function isStringOrNull(value: unknown): boolean {
   return value === null || typeof value === 'string';
 }
 
 function isCardSnapshot(value: unknown): boolean {
-  return isRecord(value) &&
-    typeof value.id === 'string' &&
-    Number.isFinite(value.value) &&
-    typeof value.faceUp === 'boolean' &&
-    typeof value.removed === 'boolean';
+  if (!isRecord(value) || !hasExactKeys(value, ['id', 'value', 'faceUp', 'removed'])) return false;
+  if (!/^(?:grid-\d+-\d+|discard-top|drawn-card)$/.test(String(value.id))) return false;
+  if (typeof value.faceUp !== 'boolean' || typeof value.removed !== 'boolean') return false;
+  return value.faceUp
+    ? Number.isInteger(value.value) && Number(value.value) >= -2 && Number(value.value) <= 12
+    : value.value === null;
 }
 
 function isGamePlayerSnapshot(value: unknown): boolean {
   return isRecord(value) &&
+    hasExactKeys(value, ['id', 'name', 'kind', 'grid', 'totalScore', 'roundScore']) &&
     typeof value.id === 'string' &&
-    typeof value.name === 'string' &&
+    typeof value.name === 'string' && value.name.length > 0 && value.name.length <= 24 &&
     (value.kind === 'human' || value.kind === 'ai') &&
     Array.isArray(value.grid) &&
     value.grid.length === 12 &&
@@ -133,11 +160,13 @@ function isGamePlayerSnapshot(value: unknown): boolean {
 
 function isRoundHistorySnapshot(value: unknown): boolean {
   return isRecord(value) &&
+    hasExactKeys(value, ['round', 'closerId', 'scores']) &&
     Number.isSafeInteger(value.round) &&
     typeof value.closerId === 'string' &&
-    Array.isArray(value.scores) &&
+    Array.isArray(value.scores) && value.scores.length > 0 && value.scores.length <= 8 &&
     value.scores.every((score) =>
       isRecord(score) &&
+      hasExactKeys(score, ['playerId', 'name', 'roundScore', 'totalScore']) &&
       typeof score.playerId === 'string' &&
       typeof score.name === 'string' &&
       Number.isFinite(score.roundScore) &&
@@ -152,7 +181,31 @@ function isGameStateSnapshot(value: unknown): boolean {
     value.players.length === 0 ||
     value.players.length > 8
   ) return false;
+  if (!hasExactKeys(value, [
+    'players',
+    'drawPileCount',
+    'discardPile',
+    'currentPlayerIndex',
+    'phase',
+    'selectedSource',
+    'hasDrawnCard',
+    'drawnCard',
+    'round',
+    'log',
+    'winnerId',
+    'nextStarterId',
+    'roundCloserId',
+    'finalTurnPlayerIds',
+    'openingRevealCounts',
+    'roundHistory'
+  ])) return false;
   if (!value.players.every(isGamePlayerSnapshot)) return false;
+  const publicPlayers = value.players as unknown as PublicPlayerSnapshot[];
+  if (!publicPlayers.every((player, playerIndex) =>
+    player.grid.every((card, cardIndex) => card.id === `grid-${playerIndex}-${cardIndex}`)
+  )) return false;
+  const gamePlayerIds = value.players.map((player) => (player as Record<string, unknown>).id);
+  if (new Set(gamePlayerIds).size !== gamePlayerIds.length) return false;
   if (!Number.isSafeInteger(value.currentPlayerIndex) || Number(value.currentPlayerIndex) < 0 || Number(value.currentPlayerIndex) >= value.players.length) {
     return false;
   }
@@ -160,32 +213,47 @@ function isGameStateSnapshot(value: unknown): boolean {
     return false;
   }
   if (value.selectedSource !== null && value.selectedSource !== 'draw' && value.selectedSource !== 'discard') return false;
-  if (!Array.isArray(value.drawPile) || !value.drawPile.every(isCardSnapshot)) return false;
-  if (!Array.isArray(value.discardPile) || !value.discardPile.every(isCardSnapshot)) return false;
+  if (!Number.isSafeInteger(value.drawPileCount) || Number(value.drawPileCount) < 0 || Number(value.drawPileCount) > maximumDeckCards) return false;
+  if (!isRecord(value.discardPile) || !hasExactKeys(value.discardPile, ['count', 'top'])) return false;
+  if (!Number.isSafeInteger(value.discardPile.count) || Number(value.discardPile.count) < 0 || Number(value.discardPile.count) > maximumDeckCards) return false;
+  if (Number(value.discardPile.count) === 0 ? value.discardPile.top !== null : !isCardSnapshot(value.discardPile.top)) return false;
+  if (value.discardPile.top !== null && (value.discardPile.top as PublicCardSnapshot).id !== 'discard-top') return false;
+  if (typeof value.hasDrawnCard !== 'boolean') return false;
   if (value.drawnCard !== null && !isCardSnapshot(value.drawnCard)) return false;
+  if (value.drawnCard !== null && value.hasDrawnCard !== true) return false;
+  if (value.drawnCard !== null && (value.drawnCard as PublicCardSnapshot).id !== 'drawn-card') return false;
+  if (value.hasDrawnCard !== (value.phase === 'choose-replacement' && value.selectedSource === 'draw')) return false;
   if (!Number.isSafeInteger(value.round) || Number(value.round) < 1) return false;
-  if (!Array.isArray(value.log) || !value.log.every((item) => typeof item === 'string')) return false;
+  if (!Array.isArray(value.log) || value.log.length > 8 || !value.log.every((item) => typeof item === 'string' && item.length <= 320)) return false;
   if (!isStringOrNull(value.winnerId) || !isStringOrNull(value.nextStarterId) || !isStringOrNull(value.roundCloserId)) return false;
-  if (!Array.isArray(value.finalTurnPlayerIds) || !value.finalTurnPlayerIds.every((id) => typeof id === 'string')) return false;
-  if (!isRecord(value.openingRevealCounts) || !Object.values(value.openingRevealCounts).every(Number.isFinite)) return false;
-  return Array.isArray(value.roundHistory) && value.roundHistory.every(isRoundHistorySnapshot);
+  if (!Array.isArray(value.finalTurnPlayerIds) || value.finalTurnPlayerIds.length > 8 || !value.finalTurnPlayerIds.every((id) => typeof id === 'string')) return false;
+  if (!isRecord(value.openingRevealCounts) || Object.keys(value.openingRevealCounts).length > 8 || !Object.values(value.openingRevealCounts).every(Number.isFinite)) return false;
+  return Array.isArray(value.roundHistory) && value.roundHistory.length <= 100 && value.roundHistory.every(isRoundHistorySnapshot);
 }
 
 function isRoomPlayerSnapshot(value: unknown): boolean {
-  return isRecord(value) &&
+  if (!isRecord(value)) return false;
+  const keys = ['id', 'name', 'connected', 'host'];
+  if ('joinedAt' in value) keys.push('joinedAt');
+  if ('lastSeenAt' in value) keys.push('lastSeenAt');
+  if ('controller' in value) keys.push('controller');
+  return hasExactKeys(value, keys) &&
     typeof value.id === 'string' &&
     typeof value.name === 'string' &&
     typeof value.connected === 'boolean' &&
     typeof value.host === 'boolean' &&
-    (value.userId === undefined || typeof value.userId === 'string');
+    (value.joinedAt === undefined || (Number.isFinite(value.joinedAt) && Number(value.joinedAt) >= 0)) &&
+    (value.lastSeenAt === undefined || (Number.isFinite(value.lastSeenAt) && Number(value.lastSeenAt) >= 0)) &&
+    (value.controller === undefined || value.controller === 'human' || value.controller === 'ai');
 }
 
 function isChatMessageSnapshot(value: unknown): boolean {
   return isRecord(value) &&
+    hasExactKeys(value, ['id', 'playerId', 'playerName', 'text', 'createdAt']) &&
     typeof value.id === 'string' &&
     typeof value.playerId === 'string' &&
     typeof value.playerName === 'string' &&
-    typeof value.text === 'string' &&
+    typeof value.text === 'string' && value.text.length > 0 && value.text.length <= 280 &&
     typeof value.createdAt === 'number' &&
     Number.isFinite(new Date(value.createdAt).getTime());
 }
@@ -193,45 +261,107 @@ function isChatMessageSnapshot(value: unknown): boolean {
 export function isMultiplayerRoomSnapshot(
   value: unknown,
   expectedCode: string | null = null
-): value is Record<string, unknown> {
+): value is PublicRoomSnapshot {
   if (!isRecord(value)) return false;
   const room = value;
+  if (!hasExactKeys(room, [
+    'code',
+    'hostId',
+    'players',
+    'chatMessages',
+    'readyForNextRoundPlayerIds',
+    'state',
+    'status',
+    'updatedAt',
+    'completedGameId',
+    'revision'
+  ])) return false;
   if (typeof room.code !== 'string' || !room.code) return false;
   if (expectedCode && room.code !== expectedCode) return false;
   if (typeof room.hostId !== 'string' || !room.hostId) return false;
   if (!Array.isArray(room.players) || room.players.length < 1 || room.players.length > 8 || !room.players.every(isRoomPlayerSnapshot)) {
     return false;
   }
+  const roomPlayerIds = room.players.map((player) => (player as Record<string, unknown>).id);
+  if (new Set(roomPlayerIds).size !== roomPlayerIds.length || !roomPlayerIds.includes(room.hostId)) return false;
   if (!['waiting', 'playing', 'finished'].includes(String(room.status)) || !Number.isFinite(room.updatedAt)) return false;
-  if (!Array.isArray(room.chatMessages) || !room.chatMessages.every(isChatMessageSnapshot)) return false;
-  if (!Array.isArray(room.readyForNextRoundPlayerIds) || !room.readyForNextRoundPlayerIds.every((id) => typeof id === 'string')) {
+  if (!Array.isArray(room.chatMessages) || room.chatMessages.length > 80 || !room.chatMessages.every(isChatMessageSnapshot)) return false;
+  if (!room.chatMessages.every((message) => roomPlayerIds.includes((message as Record<string, unknown>).playerId))) return false;
+  if (!Array.isArray(room.readyForNextRoundPlayerIds) || room.readyForNextRoundPlayerIds.length > 8 || !room.readyForNextRoundPlayerIds.every((id) => typeof id === 'string' && roomPlayerIds.includes(id))) {
     return false;
   }
-  if (room.completedGameId !== undefined && !isStringOrNull(room.completedGameId)) return false;
-  return room.state === null || isGameStateSnapshot(room.state);
+  if (!isStringOrNull(room.completedGameId)) return false;
+  if (!Number.isSafeInteger(room.revision) || Number(room.revision) < 0) return false;
+  if (room.state === null) return true;
+  if (!isGameStateSnapshot(room.state)) return false;
+  const statePlayerIds = (room.state as unknown as PublicGameStateSnapshot).players.map((player) => player.id);
+  return statePlayerIds.length === roomPlayerIds.length && statePlayerIds.every((id) => roomPlayerIds.includes(id));
 }
 
 function isAuthoritativeSnapshot(
   frame: RoomConnectionFrame,
   currentSession: RoomConnectionSession | null,
-  joinedOnCurrentSocket: boolean
+  synchronizedOnCurrentSocket: boolean
 ): boolean {
   const expectedCode = currentSession?.action === 'join-room' ? currentSession.code : null;
-  if (frame.type === 'joined') {
-    return typeof frame.playerId === 'string' && Boolean(frame.playerId) && isMultiplayerRoomSnapshot(frame.room, expectedCode);
+  if (frame.type !== 'snapshot' && frame.type !== 'resync') return false;
+  if (frame.protocolVersion !== MULTIPLAYER_PROTOCOL_VERSION) return false;
+  if (typeof frame.playerId !== 'string' || !frame.playerId) return false;
+  if (!Number.isSafeInteger(frame.revision) || Number(frame.revision) < 0) return false;
+  if (!isMultiplayerRoomSnapshot(frame.room, expectedCode)) return false;
+  if (!frame.room.players.some((player) => player.id === frame.playerId)) return false;
+  const establishedPlayerId = currentSession?.action === 'join-room' ? currentSession.playerId : undefined;
+  if (establishedPlayerId && frame.playerId !== establishedPlayerId) return false;
+  if (frame.revision !== frame.room.revision) return false;
+  if (frame.room.state) {
+    const activePlayerId = frame.room.state.players[frame.room.state.currentPlayerIndex]?.id;
+    const viewerIsDrawer = frame.room.state.selectedSource === 'draw' && frame.room.state.hasDrawnCard && activePlayerId === frame.playerId;
+    if (Boolean(frame.room.state.drawnCard) !== viewerIsDrawer) return false;
   }
-  if (frame.type === 'room') {
-    return joinedOnCurrentSocket && currentSession?.action === 'join-room' && isMultiplayerRoomSnapshot(frame.room, expectedCode);
+  if (frame.type === 'snapshot') {
+    return hasExactKeys(frame, ['type', 'protocolVersion', 'playerId', 'revision', 'room']);
+  }
+  const keys = ['type', 'protocolVersion', 'playerId', 'revision', 'room', 'reason'];
+  if ('commandId' in frame) keys.push('commandId');
+  return (synchronizedOnCurrentSocket || currentSession?.action === 'join-room') &&
+    hasExactKeys(frame, keys) &&
+    typeof frame.reason === 'string' &&
+    (frame.commandId === undefined || typeof frame.commandId === 'string');
+}
+
+function isAuxiliaryServerFrame(frame: RoomConnectionFrame): boolean {
+  if (frame.protocolVersion !== MULTIPLAYER_PROTOCOL_VERSION) return false;
+  if (frame.type === 'ack') {
+    return hasExactKeys(frame, ['type', 'protocolVersion', 'commandId', 'revision']) &&
+      typeof frame.commandId === 'string' &&
+      Number.isSafeInteger(frame.revision) &&
+      Number(frame.revision) >= 0;
+  }
+  if (frame.type === 'upgrade-required') {
+    const keys = ['type', 'protocolVersion', 'message'];
+    if ('commandId' in frame) keys.push('commandId');
+    return hasExactKeys(frame, keys) &&
+      typeof frame.message === 'string' &&
+      (frame.commandId === undefined || typeof frame.commandId === 'string');
+  }
+  if (frame.type === 'error') {
+    const keys = ['type', 'protocolVersion', 'code', 'message'];
+    if ('commandId' in frame) keys.push('commandId');
+    return hasExactKeys(frame, keys) &&
+      typeof frame.code === 'string' &&
+      typeof frame.message === 'string' &&
+      (frame.commandId === undefined || typeof frame.commandId === 'string');
   }
   return false;
 }
 
 function sessionWireFrame(currentSession: RoomConnectionSession): RoomConnectionFrame {
   if (currentSession.action === 'create-room') {
-    return { type: 'create-room', name: currentSession.name };
+    return { type: 'create-room', protocolVersion: MULTIPLAYER_PROTOCOL_VERSION, name: currentSession.name };
   }
   return {
     type: 'join-room',
+    protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
     code: currentSession.code,
     name: currentSession.name,
     ...(currentSession.playerId ? { playerId: currentSession.playerId } : {})
@@ -266,14 +396,45 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
   let disposed = false;
   let desiredVisible = true;
   let generation = 0;
+  let hiddenPresenceGeneration = -1;
   let lastResumeAt = Number.NEGATIVE_INFINITY;
   let online = dependencies.isOnline();
+  let pendingCommand: PendingCommandState | null = null;
+  let lastSnapshotRevision = -1;
   let reconnectTimer: unknown = null;
   let reconnectTimerToken = 0;
   let session: RoomConnectionSession | null = null;
   let state: RoomConnectionState = 'idle';
   let syncTimer: unknown = null;
   let syncTimerToken = 0;
+
+  function setPendingCommand(nextPending: PendingCommandState | null): void {
+    const changed = Boolean(pendingCommand) !== Boolean(nextPending);
+    pendingCommand = nextPending;
+    if (changed) options.onPendingCommandChange?.(Boolean(nextPending));
+  }
+
+  function completePendingIfConverged(): void {
+    const pending = pendingCommand;
+    if (
+      pending?.acknowledgedRevision !== null &&
+      pending?.acknowledgedRevision !== undefined &&
+      lastSnapshotRevision >= pending.acknowledgedRevision
+    ) {
+      setPendingCommand(null);
+    }
+  }
+
+  function replayPendingCommand(socket: RoomConnectionSocket, socketGeneration: number): void {
+    const pending = pendingCommand;
+    if (!pending || pending.sentGeneration === socketGeneration || pending.acknowledgedRevision !== null) return;
+    try {
+      socket.send(JSON.stringify(pending.frame));
+      pending.sentGeneration = socketGeneration;
+    } catch {
+      // The pending command remains ambiguous and will retry after transport recovery.
+    }
+  }
 
   function transition(nextState: RoomConnectionState, retryInMs: number | null = null): void {
     state = nextState;
@@ -410,7 +571,7 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
     }
     currentSocket = socket;
     transition(recovering ? 'reconnecting' : 'connecting');
-    let joinedOnCurrentSocket = false;
+    let synchronizedOnCurrentSocket = false;
     let transportFailureReported = false;
 
     const isCurrent = () => !disposed && currentSocket === socket && generation === socketGeneration;
@@ -437,9 +598,10 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
         return;
       }
 
+      const snapshotFrame = frame.type === 'snapshot' || frame.type === 'resync';
       if (
-        (frame.type === 'joined' || frame.type === 'room') &&
-        !isAuthoritativeSnapshot(frame, session, joinedOnCurrentSocket)
+        (snapshotFrame && !isAuthoritativeSnapshot(frame, session, synchronizedOnCurrentSocket)) ||
+        (!snapshotFrame && !isAuxiliaryServerFrame(frame))
       ) {
         handleMalformedServerFrame(socket);
         return;
@@ -448,15 +610,54 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
       const recoveredSession = joinSessionFromFrame(frame, session);
       if (recoveredSession) {
         session = recoveredSession;
-        joinedOnCurrentSocket = true;
+        synchronizedOnCurrentSocket = true;
       }
-      if (frame.type === 'joined' || frame.type === 'room') {
+      if (snapshotFrame) {
         clearSyncTimer();
         attempt = 0;
+        lastSnapshotRevision = Number(frame.revision);
+        if (
+          pendingCommand &&
+          pendingCommand.acknowledgedRevision !== null &&
+          lastSnapshotRevision < pendingCommand.acknowledgedRevision
+        ) {
+          pendingCommand.acknowledgedRevision = null;
+          pendingCommand.sentGeneration = -1;
+        }
         transition('connected');
-        if (frame.type === 'joined' && !desiredVisible) send({ type: 'set-presence', visible: false });
-      } else if (frame.type === 'error' && state !== 'connected') {
+        if (frame.type === 'resync' && pendingCommand && frame.commandId === pendingCommand.commandId) {
+          setPendingCommand(null);
+          options.onError?.('The room changed before that action was accepted. Review the synchronized table and try again.');
+        } else {
+          completePendingIfConverged();
+        }
+      } else if (frame.type === 'ack' && pendingCommand && frame.commandId === pendingCommand.commandId) {
+        const expectedAppliedRevision = pendingCommand.expectedRevision + 1;
+        if (frame.revision !== expectedAppliedRevision) {
+          handleMalformedServerFrame(socket);
+          return;
+        }
+        pendingCommand.acknowledgedRevision = Number(frame.revision);
+        completePendingIfConverged();
+      } else if (frame.type === 'upgrade-required') {
+        setPendingCommand(null);
         clearSyncTimer();
+        session = null;
+        currentSocket = null;
+        generation += 1;
+        try {
+          socket.close(1002, 'Protocol upgrade required');
+        } catch {
+          // The generation guard already detached this socket.
+        }
+        transition('error');
+      } else if (frame.type === 'error' && pendingCommand && frame.commandId === pendingCommand.commandId) {
+        setPendingCommand(null);
+      }
+
+      if (frame.type === 'error' && state !== 'connected') {
+        clearSyncTimer();
+        setPendingCommand(null);
         session = null;
         currentSocket = null;
         generation += 1;
@@ -468,6 +669,12 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
         transition('error');
       }
       options.onFrame(frame);
+      if (snapshotFrame && currentSocket === socket) {
+        if (!desiredVisible && hiddenPresenceGeneration !== socketGeneration) {
+          if (send({ type: 'set-presence', visible: false })) hiddenPresenceGeneration = socketGeneration;
+        }
+        replayPendingCommand(socket, socketGeneration);
+      }
     });
 
     socket.addEventListener('error', () => {
@@ -502,6 +709,8 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
 
   function connect(nextSession: RoomConnectionSession): void {
     if (disposed) return;
+    setPendingCommand(null);
+    lastSnapshotRevision = -1;
     clearReconnectTimer();
     retireCurrentSocket();
     attempt = 0;
@@ -530,6 +739,8 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
 
   function disconnect(): void {
     clearReconnectTimer();
+    setPendingCommand(null);
+    lastSnapshotRevision = -1;
     session = null;
     attempt = 0;
     retireCurrentSocket(1000, 'Room session ended');
@@ -539,10 +750,22 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
   function send(frame: RoomConnectionFrame): boolean {
     const socket = currentSocket;
     if (disposed || state !== 'connected' || !socket || socket.readyState !== socketOpen) return false;
+    const parsedCommand = frame.type === 'command' ? parseClientCommand(frame) : null;
+    if (frame.type === 'command' && (!parsedCommand || !parsedCommand.ok || pendingCommand)) return false;
     try {
+      if (parsedCommand?.ok) {
+        setPendingCommand({
+          frame: parsedCommand.command as unknown as RoomConnectionFrame,
+          commandId: parsedCommand.command.commandId,
+          expectedRevision: parsedCommand.command.expectedRevision,
+          acknowledgedRevision: null,
+          sentGeneration: generation
+        });
+      }
       socket.send(JSON.stringify(frame));
       return true;
     } catch {
+      if (parsedCommand?.ok) setPendingCommand(null);
       return false;
     }
   }
@@ -575,7 +798,7 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
       resume();
       return;
     }
-    send({ type: 'set-presence', visible: false });
+    if (send({ type: 'set-presence', visible: false })) hiddenPresenceGeneration = generation;
   }
 
   function setOnline(nextOnline: boolean): void {
@@ -602,6 +825,7 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
     disposed = true;
     clearReconnectTimer();
     clearSyncTimer();
+    setPendingCommand(null);
     session = null;
     retireCurrentSocket(1000, 'Page closed');
   }
