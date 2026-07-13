@@ -983,6 +983,13 @@ body {
     min-width: 0;
   }
 
+  .skyjo-game-status {
+    display: grid;
+    width: 100%;
+    flex: 1 0 100%;
+    gap: 0.25rem;
+  }
+
   .skyjo-game-table-layout {
     --skyjo-board-track: 23.5rem;
     --skyjo-table-gap: 1rem;
@@ -1223,6 +1230,145 @@ body {
     }
   }
 
+  @media (min-width: 641px) and (max-height: 900px) {
+    main.skyjo-surface:has(.skyjo-active-game-layout),
+    main.skyjo-surface:has(.skyjo-active-room-grid) {
+      padding-top: 0.75rem !important;
+      padding-bottom: 0.75rem !important;
+    }
+
+    .skyjo-active-game-layout,
+    .skyjo-active-room-grid {
+      gap: 0.65rem;
+    }
+
+    .skyjo-game-title {
+      font-size: 2.4rem;
+    }
+
+    .skyjo-game-subtitle {
+      display: none;
+    }
+
+    .skyjo-game-table-layout {
+      --skyjo-board-track: 14rem;
+      --skyjo-table-gap: 0.5rem;
+      grid-template-rows: var(--skyjo-board-track) 150px var(--skyjo-board-track);
+      border-radius: 18px;
+      padding: 0.5rem;
+    }
+
+    .skyjo-player-board-grid {
+      gap: 0.5rem;
+    }
+
+    .skyjo-player-grid {
+      border-radius: 14px;
+      padding: 0.5rem;
+    }
+
+    .skyjo-player-grid-header {
+      align-items: flex-start;
+      gap: 0.35rem;
+      margin-bottom: 0.3rem;
+    }
+
+    .skyjo-player-grid h2 {
+      font-size: 1rem;
+      line-height: 1.05;
+    }
+
+    .skyjo-player-grid-subtitle {
+      display: none;
+    }
+
+    .skyjo-player-grid-scores {
+      font-size: 0.68rem;
+    }
+
+    .skyjo-player-card-rows,
+    .skyjo-player-card-row {
+      gap: 0.2rem;
+    }
+
+    .skyjo-player-grid .skyjo-card {
+      width: min(100%, 2.75rem);
+      min-height: 44px;
+      aspect-ratio: 6 / 7;
+      border-radius: 8px;
+      font-size: 1rem;
+    }
+
+    .skyjo-player-grid .skyjo-card-hidden {
+      font-size: 0.38rem;
+      letter-spacing: 0.04em;
+    }
+
+    .skyjo-table-center-band,
+    .skyjo-table-controls {
+      height: 150px;
+      min-height: 150px;
+      max-height: 150px;
+    }
+
+    .skyjo-table-controls {
+      grid-template-columns: minmax(0, 1fr) minmax(12rem, 14rem) minmax(0, 1fr);
+      gap: 0.5rem;
+      padding: 0.5rem;
+      overflow: hidden;
+    }
+
+    .skyjo-table-band-side {
+      height: 134px;
+      align-content: start;
+      gap: 0.35rem;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .skyjo-table-header {
+      display: none;
+    }
+
+    .skyjo-turn-status,
+    .skyjo-opening-tracker,
+    .skyjo-drawn-decision,
+    .skyjo-table-guidance {
+      padding: 0.45rem;
+    }
+
+    .skyjo-table-controls .skyjo-turn-status h3 {
+      font-size: 1rem;
+    }
+
+    .skyjo-table-controls .skyjo-turn-status p,
+    .skyjo-drawn-description,
+    .skyjo-choice-help {
+      display: none;
+    }
+
+    .skyjo-opening-row {
+      padding: 0.3rem 0.4rem;
+      font-size: 0.68rem;
+    }
+
+    .skyjo-pile-button {
+      height: 134px;
+      min-height: 134px;
+      padding: 0.35rem;
+    }
+
+    .skyjo-table-card,
+    .skyjo-drawn-card {
+      width: 2.75rem;
+      min-height: 44px;
+    }
+
+    .skyjo-table-count {
+      font-size: 0.68rem;
+    }
+  }
+
   @media (max-width: 640px) {
     main.skyjo-surface:has(.skyjo-active-game-layout),
     main.skyjo-surface:has(.skyjo-active-room-grid) {
@@ -1252,6 +1398,10 @@ body {
       grid-template-columns: minmax(0, 1fr) auto;
       align-items: start;
       gap: 0.55rem;
+    }
+
+    .skyjo-game-status {
+      grid-column: 1 / -1;
     }
 
     .skyjo-game-heading {

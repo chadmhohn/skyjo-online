@@ -1795,12 +1795,6 @@ function SinglePlayer() {
             </Link>
             <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Single Player</h1>
             <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Round {state.round}. Lowest score wins; first to 100 ends the game.</p>
-            {statsSaveStatus ? <p className="mt-2 text-sm font-bold text-[#f5e6c8]/62">{statsSaveStatus}</p> : null}
-            {persistenceWarning ? (
-              <p className="mt-2 text-sm font-bold text-[#f5e6c8]/72" role="status">
-                {persistenceWarning.message}
-              </p>
-            ) : null}
           </div>
           <div className="skyjo-header-controls flex w-auto items-start justify-end">
             <div className="skyjo-header-actions flex items-start justify-end gap-2">
@@ -1813,6 +1807,16 @@ function SinglePlayer() {
               />
             </div>
           </div>
+          {statsSaveStatus || persistenceWarning ? (
+            <div className="skyjo-game-status">
+              {statsSaveStatus ? <p className="text-sm font-bold text-[#f5e6c8]/62">{statsSaveStatus}</p> : null}
+              {persistenceWarning ? (
+                <p className="text-sm font-bold text-[#f5e6c8]/72" role="status">
+                  {persistenceWarning.message}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <GameTableLayout

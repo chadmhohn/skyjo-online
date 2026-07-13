@@ -137,18 +137,25 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
         const centerBand = table.querySelector('[data-testid="table-center-band"]');
         const tablePiles = table.querySelector('[data-testid="table-piles"]');
         const localBoard = table.querySelector('[data-testid="local-board"]');
+        const heading = document.querySelector('.skyjo-game-title') as HTMLElement | null;
+        const headerControls = document.querySelector('.skyjo-header-controls');
+        const gameStatus = document.querySelector('.skyjo-game-status');
         const seats = Array.from(opponentRail?.querySelectorAll('[data-player-role="opponent"]') || []).map(rect);
         const tableRect = rect(table);
         const opponentRect = rect(opponentRail);
         const centerBandRect = rect(centerBand);
         const pilesRect = rect(tablePiles);
         const localRect = rect(localBoard);
+        const headingRect = rect(heading);
+        const headerControlsRect = rect(headerControls);
+        const gameStatusRect = gameStatus ? rect(gameStatus) : null;
         const firstSeat = seats[0];
         const lastSeat = seats.at(-1);
         return {
           centerDeltaX: Math.abs(pilesRect.left + pilesRect.width / 2 - (tableRect.left + tableRect.width / 2)),
           centerDeltaY: Math.abs(centerBandRect.top + centerBandRect.height / 2 - (tableRect.top + tableRect.height / 2)),
           centerBandHeight: centerBandRect.height,
+          compactViewportFits: opponentRect.top >= -0.5 && localRect.bottom <= window.innerHeight + 1,
           firstSeatCenterDelta: firstSeat
             ? Math.abs(firstSeat.left + firstSeat.width / 2 - (opponentRect.left + opponentRect.width / 2))
             : 0,
@@ -157,6 +164,14 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
               ? Math.abs(firstSeat.left - opponentRect.left - (opponentRect.right - lastSeat.right))
               : 0,
           noOverlap: opponentRect.bottom <= centerBandRect.top + 0.5 && centerBandRect.bottom <= localRect.top + 0.5,
+          headingText: heading?.textContent?.trim(),
+          headingNotClipped: Boolean(heading && heading.scrollWidth <= heading.clientWidth + 1),
+          headerNoOverlap:
+            headingRect.right <= headerControlsRect.left + 0.5 ||
+            headingRect.bottom <= headerControlsRect.top + 0.5 ||
+            headerControlsRect.bottom <= headingRect.top + 0.5,
+          statusOwnRow:
+            !gameStatusRect || gameStatusRect.top >= Math.max(headingRect.bottom, headerControlsRect.bottom) - 0.5,
           opponentClientWidth: (opponentRail as HTMLElement).clientWidth,
           opponentScrollWidth: (opponentRail as HTMLElement).scrollWidth,
           pageScrollWidth: document.documentElement.scrollWidth,
@@ -169,6 +184,10 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
       expect(geometry.centerDeltaX, `${playerCount} players at ${viewport.width}px center x`).toBeLessThanOrEqual(tolerance);
       expect(geometry.centerDeltaY, `${playerCount} players at ${viewport.width}px center y`).toBeLessThanOrEqual(tolerance);
       expect(geometry.noOverlap, `${playerCount} players at ${viewport.width}px overlap`).toBe(true);
+      expect(geometry.headingText).toBe('Single Player');
+      expect(geometry.headingNotClipped, `${viewport.width}px heading clipping`).toBe(true);
+      expect(geometry.headerNoOverlap, `${viewport.width}px header overlap`).toBe(true);
+      expect(geometry.statusOwnRow, `${viewport.width}px status row`).toBe(true);
       expect(geometry.pageScrollWidth, `${playerCount} players at ${viewport.width}px page scroll`).toBeLessThanOrEqual(
         geometry.viewportWidth + 1
       );
@@ -177,6 +196,9 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
       if (viewport.width <= 640) {
         expect(geometry.centerBandHeight).toBeGreaterThanOrEqual(90);
         expect(geometry.centerBandHeight).toBeLessThanOrEqual(110);
+      }
+      if (viewport.width > 640 && viewport.height <= 900) {
+        expect(geometry.compactViewportFits, `${playerCount} players at ${viewport.width}x${viewport.height}`).toBe(true);
       }
       if (playerCount === 2) expect(geometry.firstSeatCenterDelta).toBeLessThanOrEqual(2);
       if (playerCount === 3) expect(geometry.opponentOuterGapDelta).toBeLessThanOrEqual(2);
