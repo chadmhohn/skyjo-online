@@ -34,6 +34,7 @@ export interface RoomPlayer {
   lastSeenAt?: number;
   disconnectedAt?: number | null;
   controller?: 'human' | 'ai';
+  aiTakeoverAt?: number | null;
 }
 
 export interface RoomChatMessage {
@@ -55,6 +56,8 @@ export interface MultiplayerRoom {
   updatedAt: number;
   completedGameId?: string | null;
   finishedByAi?: boolean;
+  hostTransferAt?: number | null;
+  serverNow?: number;
   revision: number;
 }
 
