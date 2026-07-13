@@ -2390,6 +2390,13 @@ function MultiplayerConnectionStatus({ state, roomActive }: { state: RoomConnect
   );
 }
 
+function formatLifecycleCountdown(deadline: number, serverNow: number): string {
+  const totalSeconds = Math.max(0, Math.ceil((deadline - serverNow) / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
+}
+
 type InitialLobbySession = {
   joinCode: string;
   playerId: string;
@@ -2468,6 +2475,7 @@ function Lobby() {
   const shareStatusTimerRef = useRef<number | null>(null);
   const roomCodeRef = useRef(initialLobby.roomCode);
   const playerIdRef = useRef(initialLobby.playerId);
+  const terminalSessionRetiredRef = useRef(false);
   const resetRecoveryHintRef = useRef<ResetRecoveryHint | null>(
     initialLobby.recoveryCommandId && initialLobby.recoveryExpectedRevision !== undefined
       ? {
@@ -2484,6 +2492,8 @@ function Lobby() {
   const [roomCode, setRoomCode] = useState(initialLobby.roomCode);
   const [playerId, setPlayerId] = useState(initialLobby.playerId);
   const [room, setRoom] = useState<MultiplayerRoom | null>(null);
+  const [clientNow, setClientNow] = useState(() => Date.now());
+  const [serverClockOffset, setServerClockOffset] = useState(0);
   const [connection, setConnection] = useState<RoomConnectionState>('idle');
   const [commandPending, setCommandPending] = useState(false);
   const [error, setError] = useState('');
@@ -2517,6 +2527,44 @@ function Lobby() {
     if (!commandId || currentHint?.commandId === commandId) {
       resetRecoveryHintRef.current = null;
     }
+  }, []);
+  const retireTerminalRoomSession = useCallback((message = '') => {
+    if (terminalSessionRetiredRef.current) return;
+    terminalSessionRetiredRef.current = true;
+    const retiringRoomCode = roomCodeRef.current;
+    const retiringPlayerId = playerIdRef.current;
+    try {
+      const storedRoomCode = window.localStorage.getItem('skyjo-room-code');
+      const storedPlayerId = window.localStorage.getItem('skyjo-player-id');
+      if (
+        retiringRoomCode &&
+        retiringPlayerId &&
+        storedRoomCode === retiringRoomCode &&
+        storedPlayerId === retiringPlayerId
+      ) {
+        window.localStorage.removeItem('skyjo-player-id');
+        window.localStorage.removeItem('skyjo-room-code');
+      }
+      const storedRecoveryHint = parseResetRecoveryHint(
+        window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)
+      );
+      if (
+        storedRecoveryHint?.fromCode === retiringRoomCode &&
+        storedRecoveryHint.playerId === retiringPlayerId
+      ) {
+        window.localStorage.removeItem(RESET_RECOVERY_STORAGE_KEY);
+      }
+    } catch {
+      // The in-memory terminal state must still retire when browser storage is unavailable.
+    }
+    resetRecoveryHintRef.current = null;
+    playerIdRef.current = '';
+    roomCodeRef.current = '';
+    setPlayerId('');
+    setRoomCode('');
+    setJoinCode('');
+    setRoom(null);
+    setError(message);
   }, []);
   frameHandlerRef.current = handleRoomFrame;
 
@@ -2632,6 +2680,7 @@ function Lobby() {
       setError('Enter a room code.');
       return;
     }
+    terminalSessionRetiredRef.current = false;
     window.localStorage.setItem('skyjo-player-name', cleanedName);
     setError('');
     const controller = connectionControllerRef.current;
@@ -2657,6 +2706,12 @@ function Lobby() {
     if (message.type === 'snapshot' || message.type === 'resync') {
       const joinedPlayerId = message.playerId as string;
       const joinedRoom = multiplayerRoomForRender(message.room as PublicRoomSnapshot);
+      const receivedAt = Date.now();
+      terminalSessionRetiredRef.current = false;
+      setClientNow(receivedAt);
+      setServerClockOffset(
+        Number.isFinite(joinedRoom.serverNow) ? receivedAt - Number(joinedRoom.serverNow) : 0
+      );
       const recoveryHint = resetRecoveryHintRef.current;
       if (message.type === 'resync' && message.reason === 'room-reset') {
         clearResetRecoveryHint(typeof message.commandId === 'string' ? message.commandId : undefined);
@@ -2684,7 +2739,10 @@ function Lobby() {
       );
       return;
     }
-    if (message.type === 'ack') return;
+    if (message.type === 'ack') {
+      if (message.result === 'room-left') retireTerminalRoomSession();
+      return;
+    }
     if (message.type === 'upgrade-required') {
       setError(typeof message.message === 'string' ? message.message : 'Refresh Skyjo to continue multiplayer.');
       return;
@@ -2709,6 +2767,12 @@ function Lobby() {
         setPlayerId('');
         setRoomCode('');
         setRoom(null);
+      }
+      if (message.code === 'seat-removed' || message.code === 'stale-seat') {
+        retireTerminalRoomSession(
+          typeof message.message === 'string' ? message.message : 'That saved room seat is no longer available.'
+        );
+        return;
       }
       setError(typeof message.message === 'string' ? message.message : 'Room error.');
       return;
@@ -2943,6 +3007,26 @@ function Lobby() {
 
   const localTurn = Boolean(room?.state && room.state.players[room.state.currentPlayerIndex]?.id === playerId);
   const localPlayer = room?.players.find((player) => player.id === playerId);
+  const localIsHost = Boolean(room && localPlayer?.id === room.hostId);
+  const connectedHumanPlayerCount = room?.players.filter(
+    (player) => player.connected && (player.controller || 'human') === 'human'
+  ).length ?? 0;
+  const estimatedServerNow = clientNow - serverClockOffset;
+  const lifecycleDeadlines = room
+    ? [room.hostTransferAt, ...room.players.map((player) => player.aiTakeoverAt)].filter(
+        (deadline): deadline is number => Number.isFinite(deadline)
+      )
+    : [];
+  const hasActiveLifecycleCountdown = lifecycleDeadlines.some((deadline) => deadline > estimatedServerNow);
+  const hostTransferDeadline = room?.hostTransferAt;
+  const hostTransferCopy = room && Number.isFinite(hostTransferDeadline)
+    ? Number(hostTransferDeadline) > estimatedServerNow
+      ? `${room.status === 'waiting' ? 'Waiting-room' : 'Active-game'} host handoff in ${formatLifecycleCountdown(
+          Number(hostTransferDeadline),
+          estimatedServerNow
+        )}. The oldest connected player will become host.`
+      : `${room.status === 'waiting' ? 'Waiting-room' : 'Active-game'} host handoff is pending. The oldest connected player will become host when available.`
+    : '';
   const roomState = room?.state;
   const roomLocalPlayers = roomState?.players.filter((player) => player.id === playerId) || [];
   const roomOpponentPlayers = roomState?.players.filter((player) => player.id !== playerId) || [];
@@ -2951,7 +3035,9 @@ function Lobby() {
   const hasFourPlayerRoomDesktopGrid = roomState?.players.length === 4;
   const fourPlayerRoomBoardEntries = [...roomOpponentBoardEntries, ...roomLocalBoardEntries];
   const roomInteractionDisabledReason =
-    room && commandPending
+    room && (localPlayer?.controller || 'human') === 'ai'
+      ? 'AI is controlling your seat. Keep this tab visible to reclaim it.'
+      : room && commandPending
       ? 'Waiting for the server to confirm the previous action.'
       : room && connection !== 'connected'
       ? connection === 'offline'
@@ -2961,7 +3047,13 @@ function Lobby() {
   const connectionRequestDisabled =
     connection === 'connecting' || connection === 'reconnecting' || connection === 'offline';
   const startGameDisabledReason =
-    roomInteractionDisabledReason || (room && room.players.length < 2 ? 'Need at least two players to start.' : '');
+    roomInteractionDisabledReason ||
+    (room && connectedHumanPlayerCount < 2 ? 'Need at least two connected players to start.' : '');
+  const leaveRoomDisabledReason =
+    roomInteractionDisabledReason ||
+    (room && localIsHost && room.players.length > 1 && connectedHumanPlayerCount < 2
+      ? 'Remove disconnected seats or wait for another connected player before leaving.'
+      : '');
   const roomScoringPhase = roomState?.phase === 'round-over' || roomState?.phase === 'game-over';
   const readyForNextRoundPlayerIds = room?.readyForNextRoundPlayerIds ?? [];
   const roundReadyPlayerIds = roomState?.players.map((player) => player.id) ?? [];
@@ -2971,6 +3063,12 @@ function Lobby() {
   const localReadyForNextRound = readyForNextRoundPlayerIds.includes(playerId);
   const readySummary = roomScoringPhase ? `${readyForNextRoundCount}/${roundReadyPlayerIds.length} ready` : undefined;
   const summaryModalOpen = Boolean(roomScoringPhase && roundSummaryOpen);
+
+  useEffect(() => {
+    if (!hasActiveLifecycleCountdown) return;
+    const timer = window.setInterval(() => setClientNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveLifecycleCountdown]);
 
   useGameAudio(roomState);
 
@@ -3103,7 +3201,7 @@ function Lobby() {
                     >
                       Share
                     </button>
-                    {localPlayer?.host && room.status === 'waiting' ? (
+                    {localIsHost && room.status === 'waiting' ? (
                       <button
                         className="skyjo-button skyjo-button-primary px-4 py-2"
                         disabled={Boolean(startGameDisabledReason)}
@@ -3114,7 +3212,18 @@ function Lobby() {
                         Start Game
                       </button>
                     ) : null}
-                    {localPlayer?.host ? (
+                    {room.status === 'waiting' && connection === 'connected' ? (
+                      <button
+                        className="skyjo-button min-h-11 px-4 py-2"
+                        disabled={Boolean(leaveRoomDisabledReason)}
+                        onClick={() => sendCommand({ type: 'leave-room' })}
+                        title={leaveRoomDisabledReason || 'Leave this waiting room.'}
+                        type="button"
+                      >
+                        Leave Room
+                      </button>
+                    ) : null}
+                    {localIsHost ? (
                       <button
                         className="skyjo-button px-4 py-2"
                         disabled={Boolean(roomInteractionDisabledReason)}
@@ -3128,14 +3237,81 @@ function Lobby() {
                   </div>
                 </div>
                 {shareStatus ? <p className="skyjo-share-status mt-3 text-sm font-extrabold text-[#f5e6c8]/72">{shareStatus}</p> : null}
-                <div className="skyjo-room-roster mt-4 flex flex-wrap gap-2">
-                  {room.players.map((player) => (
-                    <span className="rounded-full border border-[#f5e6c8]/15 bg-white/[0.025] px-3 py-1 text-sm text-[#f5e6c8]/75" key={player.id}>
-                      {player.name} {player.host ? 'host' : ''} {player.connected ? 'online' : 'away'}
-                    </span>
-                  ))}
-                </div>
-                {localPlayer?.host && startGameDisabledReason ? (
+                {hostTransferCopy ? (
+                  <p className="mt-3 text-sm font-bold text-amber-100" data-testid="host-transfer-status">
+                    {hostTransferCopy}
+                  </p>
+                ) : null}
+                <ul aria-label="Room players" className="skyjo-room-roster mt-4 grid gap-2">
+                  {room.players.map((player) => {
+                    const controller = player.controller || 'human';
+                    const isHost = player.id === room.hostId;
+                    const takeoverDeadline = player.aiTakeoverAt;
+                    const takeoverEligible = Boolean(
+                      localIsHost &&
+                      room.status !== 'waiting' &&
+                      !player.connected &&
+                      controller === 'human' &&
+                      Number.isFinite(takeoverDeadline) &&
+                      Number(takeoverDeadline) <= estimatedServerNow
+                    );
+                    const reconnectCopy = !player.connected && controller === 'human' && Number.isFinite(takeoverDeadline)
+                      ? Number(takeoverDeadline) > estimatedServerNow
+                        ? `Reconnect window ${formatLifecycleCountdown(Number(takeoverDeadline), estimatedServerNow)}`
+                        : 'Reconnect window ended'
+                      : '';
+                    return (
+                      <li
+                        className="flex min-h-11 flex-wrap items-center justify-between gap-2 rounded-xl border border-[#f5e6c8]/15 bg-white/[0.025] px-3 py-2 text-sm text-[#f5e6c8]/75"
+                        key={player.id}
+                      >
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <span className="font-bold">
+                            {player.name} {isHost ? 'host ' : ''}{player.connected ? 'online' : 'away'}
+                          </span>
+                          <span className="rounded-full border border-[#f5e6c8]/15 px-2 py-0.5 text-xs font-extrabold">
+                            {player.connected ? 'Connected' : 'Disconnected'}
+                          </span>
+                          <span className="rounded-full border border-[#f5e6c8]/15 px-2 py-0.5 text-xs font-extrabold">
+                            {controller === 'ai' ? 'AI controlled' : 'Human controlled'}
+                          </span>
+                          {reconnectCopy ? (
+                            <span className="text-xs font-bold text-amber-100" data-testid={`seat-countdown-${player.id}`}>
+                              {reconnectCopy}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {localIsHost && room.status === 'waiting' && !isHost ? (
+                            <button
+                              aria-label={`Remove ${player.name} from room`}
+                              className="skyjo-button min-h-11 px-3 py-2 text-xs"
+                              disabled={Boolean(roomInteractionDisabledReason)}
+                              onClick={() => sendCommand({ type: 'remove-player', playerId: player.id })}
+                              title={roomInteractionDisabledReason || `Remove ${player.name} from this waiting room.`}
+                              type="button"
+                            >
+                              Remove
+                            </button>
+                          ) : null}
+                          {takeoverEligible ? (
+                            <button
+                              aria-label={`Hand ${player.name}'s seat to AI`}
+                              className="skyjo-button min-h-11 px-3 py-2 text-xs"
+                              disabled={Boolean(roomInteractionDisabledReason)}
+                              onClick={() => sendCommand({ type: 'takeover-player-with-ai', playerId: player.id })}
+                              title={roomInteractionDisabledReason || `Let AI continue ${player.name}'s unchanged seat.`}
+                              type="button"
+                            >
+                              Hand to AI
+                            </button>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {localIsHost && startGameDisabledReason ? (
                   <p className="skyjo-disabled-note mt-3">
                     <span>Action unavailable:</span> {startGameDisabledReason}
                   </p>
@@ -3184,7 +3360,7 @@ function Lobby() {
                 </>
               ) : (
                 <div className="skyjo-panel p-6 text-[#f5e6c8]/70">
-                  Waiting for players. The host can start once at least two people are in the room.
+                  Waiting for players. The host can start once at least two people are connected.
                 </div>
               )}
             </section>
@@ -3246,7 +3422,7 @@ function Lobby() {
                     <RoundSummary
                       actionDisabledReason={
                         roomInteractionDisabledReason ||
-                        (localPlayer?.host
+                        (localIsHost
                           ? allPlayersReadyForNextRound
                             ? undefined
                             : `Waiting for ${roundReadyPlayerIds.length - readyForNextRoundCount} player${
@@ -3258,7 +3434,7 @@ function Lobby() {
                       }
                       actionLabel={roomState.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
                       onMinimize={() => setRoundSummaryOpen(false)}
-                      onAction={localPlayer?.host ? handleNextRound : undefined}
+                      onAction={localIsHost ? handleNextRound : undefined}
                       state={roomState}
                     >
                       <div className="skyjo-ready-panel mt-4">

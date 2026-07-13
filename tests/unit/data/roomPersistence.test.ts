@@ -35,6 +35,7 @@ import {
 import { createRoomSnapshot } from '../../../src/protocolV2';
 import { isMultiplayerRoomSnapshot } from '../../../src/roomConnection';
 import { createSeededRandom } from '../../../src/runtime';
+import { markPlayersDisconnectedForShutdown } from '../../../src/serverRoomLifecycle';
 import type { GameState } from '../../../src/types';
 
 const fixedNow = Date.parse('2026-07-11T12:00:00Z');
@@ -215,7 +216,7 @@ describe('room persistence', () => {
       format: 'skyjo-rooms',
       version: 2,
       protocolVersion: 1,
-      legacy: false,
+      legacy: true,
       missing: false
     }));
     expect(snapshot.rooms).toHaveLength(1);
@@ -289,7 +290,7 @@ describe('room persistence', () => {
     const waiting = serializeRooms(new Map([['ABCDE', room()]]), fixedNow);
     delete (waiting.rooms[0] as { gameSessionId?: unknown }).gameSessionId;
     const normalizedWaiting = normalizeRoomsDocument(waiting, { now: fixedNow + 1, pruneStale: false });
-    expect(normalizedWaiting.legacy).toBe(false);
+    expect(normalizedWaiting.legacy).toBe(true);
     expect(normalizedWaiting.rooms[0].gameSessionId).toBeNull();
   });
 
@@ -334,7 +335,8 @@ describe('room persistence', () => {
         state: terminalState,
         roomCode: active.code,
         playerAccounts: {},
-        sourceKey: 'multi:crash-session'
+        sourceKey: 'multi:crash-session',
+        finishedByAi: true
       });
       expect(store.db.prepare('SELECT COUNT(*) AS count FROM games').get().count).toBe(1);
 
@@ -351,6 +353,7 @@ describe('room persistence', () => {
       expect(reconciled).toBe(1);
       expect(restored).toMatchObject({
         completedGameId: game.id,
+        finishedByAi: true,
         gameSessionId: 'crash-session',
         readyForNextRoundPlayerIds: [],
         revision: 13,
@@ -368,6 +371,7 @@ describe('room persistence', () => {
       const afterRestart = await loadRoomsSnapshotFromDisk(roomsFile, { now: fixedNow + 101 });
       expect(afterRestart.rooms[0]).toMatchObject({
         completedGameId: game.id,
+        finishedByAi: true,
         revision: 13,
         status: 'finished'
       });
@@ -399,6 +403,7 @@ describe('room persistence', () => {
       sourceKey: 'multi:crash-session',
       roomCode: active.code,
       completedAt: fixedNow + 100,
+      finishedByAi: false,
       state: completedState(true)
     };
 
@@ -462,6 +467,7 @@ describe('room persistence', () => {
       sourceKey: 'multi:finished-session',
       roomCode: normalized.code,
       completedAt: fixedNow + 100,
+      finishedByAi: false,
       state: normalized.state
     }))).toBe(0);
 
@@ -1011,5 +1017,53 @@ describe('room persistence', () => {
       failureCode: 'EIO'
     }));
     expect(JSON.parse(await fs.readFile(roomsFile, 'utf8'))).toEqual({ durable: true });
+  });
+
+  it('anchors restored disconnects to startup time and rewrites the lifecycle backfill once', () => {
+    const runtimeRoom = room();
+    const liveDocument = serializeRooms(new Map([[runtimeRoom.code, runtimeRoom]]), fixedNow);
+    const first = normalizeRoomsDocument(liveDocument, { now: fixedNow + 500, pruneStale: false });
+    expect(first.legacy).toBe(true);
+    expect(first.rooms[0].players).toEqual(expect.arrayContaining([
+      expect.objectContaining({ connected: false, disconnectedAt: fixedNow + 500 })
+    ]));
+
+    const rewritten = serializeRooms(new Map([[first.rooms[0].code, first.rooms[0]]]), fixedNow + 500);
+    const second = normalizeRoomsDocument(rewritten, { now: fixedNow + 900, pruneStale: false });
+    expect(second.legacy).toBe(false);
+    expect(second.rooms[0].players[0].disconnectedAt).toBe(fixedNow + 500);
+    expect(second.rooms[0].finishedByAi).toBe(false);
+
+    const missingAnchor = structuredClone(rewritten);
+    missingAnchor.rooms[0].players[0].disconnectedAt = null;
+    const anchored = normalizeRoomsDocument(missingAnchor, { now: fixedNow + 1_200, pruneStale: false });
+    expect(anchored.legacy).toBe(true);
+    expect(anchored.rooms[0].players[0]).toMatchObject({ disconnectedAt: fixedNow + 1_200 });
+  });
+
+  it('retains a stale-looking live room after shutdown stamps its disconnect activity', () => {
+    const shutdownAt = fixedNow;
+    const runtimeRoom = room(shutdownAt - ROOM_STALE_MS - 1);
+    expect(normalizeRoomsDocument(
+      serializeRooms(new Map([[runtimeRoom.code, runtimeRoom]]), shutdownAt),
+      { now: shutdownAt, staleMs: ROOM_STALE_MS }
+    ).rooms).toEqual([]);
+
+    expect(markPlayersDisconnectedForShutdown(runtimeRoom, shutdownAt)).toBe(true);
+    const restored = normalizeRoomsDocument(
+      serializeRooms(new Map([[runtimeRoom.code, runtimeRoom]]), shutdownAt),
+      { now: shutdownAt + 1, staleMs: ROOM_STALE_MS }
+    );
+    expect(restored.rooms).toHaveLength(1);
+    expect(restored.rooms[0]).toMatchObject({ code: runtimeRoom.code, updatedAt: shutdownAt });
+    expect(restored.rooms[0].players).toEqual(expect.arrayContaining([
+      expect.objectContaining({ connected: false, disconnectedAt: shutdownAt })
+    ]));
+  });
+
+  it('rejects an AI controller in a waiting-room persistence document', () => {
+    const waiting = serializeRooms(new Map([['ABCDE', room()]]), fixedNow);
+    waiting.rooms[0].players[0].controller = 'ai';
+    expect(() => normalizeRoomsDocument(waiting, { now: fixedNow, pruneStale: false })).toThrow(/waiting room.*AI-controlled/i);
   });
 });

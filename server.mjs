@@ -23,6 +23,15 @@ import {
   isResetAliasCodeReserved
 } from './server-dist/serverProtocolV2.js';
 import {
+  ACTIVE_PLAYER_GRACE_MS,
+  createRoomLifecycleScheduler,
+  dueHostTransfer,
+  hostFlags,
+  markPlayersDisconnectedForShutdown,
+  reclaimAiSeat,
+  WAITING_HOST_TRANSFER_MS
+} from './server-dist/serverRoomLifecycle.js';
+import {
   createRoomSnapshot,
   MULTIPLAYER_PROTOCOL_VERSION
 } from './server-dist/protocolV2.js';
@@ -76,6 +85,12 @@ const inviteCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const inviteCodeLength = 7;
 const roomCodeLength = 5;
 const secureCodeMaxAttempts = 128;
+const lifecyclePolicy = Object.freeze({
+  activePlayerGraceMs: positiveDurationFromEnvironment('SKYJO_ACTIVE_PLAYER_GRACE_MS', ACTIVE_PLAYER_GRACE_MS),
+  waitingHostTransferMs: positiveDurationFromEnvironment('SKYJO_WAITING_HOST_TRANSFER_MS', WAITING_HOST_TRANSFER_MS)
+});
+const lifecycleTickMs = positiveDurationFromEnvironment('SKYJO_LIFECYCLE_TICK_MS', 250);
+const aiActionDelayMs = positiveDurationFromEnvironment('SKYJO_AI_ACTION_DELAY_MS', 650, true);
 const inviteInstallCodes = new Map();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
@@ -84,6 +99,17 @@ let accountStore = null;
 let nextDatabaseRetryAt = 0;
 let databaseFailureLogged = false;
 let releaseIdentity = null;
+
+function positiveDurationFromEnvironment(name, fallback, allowZero = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  const minimum = allowZero ? 0 : 1;
+  if (!Number.isSafeInteger(value) || value < minimum || value > 10 * 60 * 1000) {
+    throw new Error(`${name} must be an integer between ${minimum} and 600000.`);
+  }
+  return value;
+}
 let roomPersistenceLoadAccepted = false;
 let roomCompletionRecoveryPending = false;
 const roomPersistenceHealth = createPersistenceHealthTracker();
@@ -427,7 +453,7 @@ function sendRoomSnapshot(ws, room, options = {}) {
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
     playerId: ws.playerId,
     revision: room.revision,
-    room: createRoomSnapshot(room, ws.playerId),
+    room: createRoomSnapshot(room, ws.playerId, Date.now(), lifecyclePolicy),
     ...(type === 'resync'
       ? {
           reason: options.reason || 'revision-mismatch',
@@ -476,11 +502,10 @@ async function flushRoomPersistence() {
 }
 
 function markAllPlayersDisconnected() {
+  const timestamp = Date.now();
   for (const room of rooms.values()) {
     room.clients.clear();
-    for (const player of room.players) {
-      player.connected = false;
-    }
+    markPlayersDisconnectedForShutdown(room, timestamp);
   }
 }
 
@@ -506,6 +531,7 @@ function createWaitingRoom({ code, hostPlayer, ws }) {
       host: true,
       joinedAt: timestamp,
       lastSeenAt: timestamp,
+      disconnectedAt: null,
       controller: 'human'
     }],
     chatMessages: [],
@@ -515,11 +541,43 @@ function createWaitingRoom({ code, hostPlayer, ws }) {
     updatedAt: timestamp,
     completedGameId: null,
     gameSessionId: null,
+    finishedByAi: false,
     revision: 0,
     recentCommandIds: [],
     resetAliases: [],
     clients: new Set([ws])
   };
+}
+
+function reclaimVisiblePlayer(room, player, timestamp) {
+  const reclaimed = reclaimAiSeat(room, player.id);
+  if (!reclaimed || room.revision >= Number.MAX_SAFE_INTEGER) return false;
+  room.players = reclaimed.players;
+  room.readyForNextRoundPlayerIds = reclaimed.readyForNextRoundPlayerIds;
+  const reclaimedPlayer = room.players.find((candidate) => candidate.id === player.id);
+  if (reclaimedPlayer) {
+    reclaimedPlayer.disconnectedAt = null;
+    reclaimedPlayer.lastSeenAt = timestamp;
+  }
+  room.revision += 1;
+  room.updatedAt = timestamp;
+  return true;
+}
+
+function transferRoomHost(fence) {
+  const room = rooms.get(fence.roomCode);
+  if (!room || room.revision !== fence.expectedRevision || room.hostId !== fence.fromPlayerId) return false;
+  const timestamp = Date.now();
+  const transfer = dueHostTransfer(room, timestamp, lifecyclePolicy);
+  if (!transfer || transfer.toPlayerId !== fence.toPlayerId || transfer.deadline !== fence.deadline) return false;
+  if (room.revision >= Number.MAX_SAFE_INTEGER) return false;
+  room.hostId = transfer.toPlayerId;
+  room.players = hostFlags(room.players, transfer.toPlayerId);
+  room.revision += 1;
+  room.updatedAt = timestamp;
+  persistRoomsSoon();
+  broadcastRoom(room);
+  return true;
 }
 
 async function sendPushToUsers(userIds, payload) {
@@ -1304,6 +1362,7 @@ const handleProtocolV2Message = createProtocolV2MessageHandler({
   createNextRoundRoomState,
   createWaitingRoom,
   digestAction: (canonicalAction) => crypto.createHash('sha256').update(canonicalAction).digest('hex'),
+  lifecyclePolicy,
   makeRoomCodeForSocket,
   normalizedReadyIds,
   notifyAwayPlayersAfterMove,
@@ -1334,6 +1393,7 @@ const handleProtocolV2Message = createProtocolV2MessageHandler({
     }
     return {
       id: journal.id,
+      finishedByAi: journal.finishedByAi,
       recovered: !isDeepStrictEqual(state, submittedState),
       state
     };
@@ -1348,6 +1408,18 @@ const handleProtocolV2Message = createProtocolV2MessageHandler({
   reportCompletedGameError: (error) => console.error('Failed to record multiplayer game:', error)
 });
 
+const lifecycleScheduler = createRoomLifecycleScheduler({
+  aiActionDelayMs,
+  executeAiAction: (fence) => handleProtocolV2Message.executeAutomatedAction(fence),
+  lifecyclePolicy,
+  now: Date.now,
+  randomUuid: crypto.randomUUID,
+  rooms: () => rooms.values(),
+  tickIntervalMs: lifecycleTickMs,
+  transferHost: transferRoomHost
+});
+lifecycleScheduler.runNow();
+
 const disposeRealtimeServer = registerRealtimeServer({
   server,
   webSocketServer: wss,
@@ -1359,6 +1431,7 @@ const disposeRealtimeServer = registerRealtimeServer({
   sendCurrentRoom,
   now: Date.now,
   isShuttingDown: () => shuttingDown,
+  onPlayerVisible: reclaimVisiblePlayer,
   onProtocolMessage: handleProtocolV2Message
 });
 
@@ -1384,6 +1457,7 @@ server.listen(port, host, () => {
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  lifecycleScheduler.dispose();
   console.log(`Received ${signal}; persisting rooms before shutdown.`);
   markAllPlayersDisconnected();
   let exitCode = 0;

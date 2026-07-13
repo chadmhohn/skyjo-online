@@ -27,6 +27,7 @@ import {
   type ProtocolV2Socket
 } from '../../../src/serverProtocolV2';
 import { sendRealtimeJson, type RealtimeClientMessage } from '../../../src/serverRealtime';
+import { ACTIVE_PLAYER_GRACE_MS } from '../../../src/serverRoomLifecycle';
 import type { RoomPlayer } from '../../../src/types';
 
 const HOST_ID = '00000000-0000-4000-8000-000000000001';
@@ -350,6 +351,7 @@ describe('protocol v2 room admission', () => {
 
   it.each([
     [{ type: 'join-room', protocolVersion: 2, code: 'MISS', name: 'x' }, 'room-not-found'],
+    [{ type: 'join-room', protocolVersion: 2, presenceVersion: 2, code: 'ROOM1', name: 'x' }, 'invalid-command'],
     [{ type: 'join-room', protocolVersion: 2, code: 'ROOM1', name: 'x', playerId: HOST_ID, extra: true }, 'invalid-command']
   ])('rejects invalid join requests without mutation', (message, code) => {
     const value = harness();
@@ -396,6 +398,29 @@ describe('protocol v2 room admission', () => {
     expect(value.room.revision).toBe(0);
     expect(value.room.players[0].lastSeenAt).toBe(500);
     expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toHaveLength(0);
+    expect(value.calls.snapshots).toHaveLength(1);
+  });
+
+  it('preserves a hidden reconnect until the client explicitly reports visible presence', () => {
+    const value = harness(room({
+      players: [
+        { ...player(HOST_ID, 'Host', true), connected: false, disconnectedAt: 100 },
+        player(GUEST_ID, 'Guest')
+      ]
+    }));
+    value.socket.visible = false;
+    value.handler(value.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      presenceVersion: 1,
+      code: 'room1',
+      name: 'ignored',
+      playerId: HOST_ID
+    });
+
+    expect(value.socket.visible).toBe(false);
+    expect(value.room.players[0]).toMatchObject({ connected: false, disconnectedAt: 100, lastSeenAt: 500 });
     expect(value.calls.broadcasts).toHaveLength(0);
     expect(value.calls.snapshots).toHaveLength(1);
   });
@@ -638,6 +663,182 @@ describe('protocol v2 room admission', () => {
   });
 });
 
+describe('protocol v2 resilient seat lifecycle commands', () => {
+  it('removes a waiting player terminally and never recreates a supplied stale seat', () => {
+    const value = harness();
+    const guest = socket(GUEST_ID, `${GUEST_ID}-account`, 'Guest');
+    value.room.clients.add(guest.socket);
+    value.room.chatMessages = [{ id: 'guest-chat', playerId: GUEST_ID, playerName: 'Guest', text: 'bye', createdAt: 100 }];
+    value.room.readyForNextRoundPlayerIds = [GUEST_ID];
+
+    value.handler(guest.socket, command({ type: 'leave-room' }));
+
+    expect(value.room.players.map((candidate) => candidate.id)).toEqual([HOST_ID]);
+    expect(value.room.chatMessages).toEqual([]);
+    expect(value.room.readyForNextRoundPlayerIds).toEqual([]);
+    expect(guest.socket).toMatchObject({ roomCode: null, playerId: null });
+    expect(value.calls.json.at(-1)).toMatchObject({
+      socket: guest.socket,
+      payload: { type: 'ack', commandId: COMMAND_ID, revision: 1, result: 'room-left' }
+    });
+
+    const reconnect = socket(GUEST_ID, `${GUEST_ID}-account`, 'Guest');
+    value.handler(reconnect.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      code: value.room.code,
+      name: 'Guest',
+      playerId: GUEST_ID
+    });
+    expect(value.room.players).toHaveLength(1);
+    expect(value.calls.json.at(-1)?.payload).toMatchObject({ code: 'stale-seat' });
+  });
+
+  it('lets the canonical host remove a non-host and purges every owned reference', () => {
+    const guestReceipt = receipt(
+      { type: 'send-chat-message', text: 'guest' },
+      { playerId: GUEST_ID, commandId: OTHER_COMMAND_ID }
+    );
+    const value = harness(room({
+      chatMessages: [{ id: 'guest-chat', playerId: GUEST_ID, playerName: 'Guest', text: 'guest', createdAt: 100 }],
+      readyForNextRoundPlayerIds: [GUEST_ID],
+      recentCommandIds: [guestReceipt],
+      resetAliases: [{ fromCode: 'OLD01', commandId: OTHER_COMMAND_ID, playerId: GUEST_ID, expiresAt: 900 }]
+    }));
+    const guest = socket(GUEST_ID, `${GUEST_ID}-account`, 'Guest');
+    value.room.clients.add(guest.socket);
+
+    value.handler(value.socket, command({ type: 'remove-player', playerId: GUEST_ID }));
+
+    expect(value.room.players.map((candidate) => candidate.id)).toEqual([HOST_ID]);
+    expect(value.room.chatMessages).toEqual([]);
+    expect(value.room.readyForNextRoundPlayerIds).toEqual([]);
+    expect(value.room.resetAliases).toEqual([]);
+    expect(value.room.recentCommandIds).toEqual([expect.objectContaining({ commandId: COMMAND_ID, playerId: HOST_ID })]);
+    expect(value.room.revision).toBe(1);
+    expect(value.calls.json).toEqual(expect.arrayContaining([
+      expect.objectContaining({ socket: guest.socket, payload: expect.objectContaining({ code: 'seat-removed' }) }),
+      expect.objectContaining({ socket: value.socket, payload: expect.objectContaining({ type: 'ack', commandId: COMMAND_ID }) })
+    ]));
+  });
+
+  it('starts with connected humans only and rejects an aggregate-away host command', () => {
+    const awayId = NEW_ID;
+    const value = harness(room({
+      players: [
+        player(HOST_ID, 'Host', true),
+        player(GUEST_ID, 'Guest'),
+        player(awayId, 'Away', false, `${awayId}-account`)
+      ]
+    }));
+    value.room.players[2].connected = false;
+    value.room.players[2].disconnectedAt = 100;
+    value.handler(value.socket, command({ type: 'start-game' }));
+    expect(value.room.players.map((candidate) => candidate.id)).toEqual([HOST_ID, GUEST_ID]);
+    expect(value.room.state?.players.map((candidate) => candidate.id)).toEqual([HOST_ID, GUEST_ID]);
+    expect(value.room.players.filter((candidate) => candidate.host).map((candidate) => candidate.id)).toEqual([HOST_ID]);
+
+    const hiddenHost = harness(room({
+      players: [player(HOST_ID, 'Host', true), player(GUEST_ID, 'Guest'), player(NEW_ID, 'Other')]
+    }));
+    hiddenHost.room.players[0].connected = false;
+    hiddenHost.room.players[0].disconnectedAt = 100;
+    hiddenHost.handler(hiddenHost.socket, command({ type: 'start-game' }));
+    expect(lastPayload(hiddenHost)).toMatchObject({ code: 'player-away' });
+    expect(hiddenHost.room.status).toBe('waiting');
+    expect(hiddenHost.room.players.filter((candidate) => candidate.host).map((candidate) => candidate.id)).toEqual([HOST_ID]);
+  });
+
+  it('rejects a second room admission from a socket already admitted by this handler', () => {
+    const empty = harness();
+    const fresh = socket(HOST_ID, `${HOST_ID}-account`, 'Host');
+    fresh.socket.roomCode = null;
+    fresh.socket.playerId = null;
+    empty.handler(fresh.socket, { type: 'create-room', protocolVersion: 2, name: 'Host' });
+    expect(fresh.socket.admittedRoomCode).toBe('NEW01');
+    empty.handler(fresh.socket, { type: 'create-room', protocolVersion: 2, name: 'Host' });
+    expect(empty.calls.json.at(-1)?.payload).toMatchObject({ code: 'already-in-room' });
+  });
+
+  it('takes over only after grace and commits a complete AI turn in one fenced revision', () => {
+    const players = [player(HOST_ID, 'Host', true), player(GUEST_ID, 'Guest')];
+    const state = createMultiplayerGame(players, 1, null, () => 0.5);
+    state.phase = 'choose-source';
+    state.currentPlayerIndex = 1;
+    state.openingRevealCounts = { [HOST_ID]: 2, [GUEST_ID]: 2 };
+    const target = room({ state, status: 'playing', players });
+    target.players[1].connected = false;
+    target.players[1].disconnectedAt = 1_000;
+    const value = harness(target);
+    let timestamp = 1_000 + ACTIVE_PLAYER_GRACE_MS - 1;
+    value.options.now = () => timestamp;
+    const handler = createProtocolV2MessageHandler(value.options);
+
+    handler(value.socket, command({ type: 'takeover-player-with-ai', playerId: GUEST_ID }));
+    expect(lastPayload(value)).toMatchObject({ code: 'takeover-unavailable' });
+    expect(target.revision).toBe(0);
+
+    timestamp += 1;
+    handler(value.socket, command({ type: 'takeover-player-with-ai', playerId: GUEST_ID }));
+    expect(target.players[1]).toMatchObject({ id: GUEST_ID, controller: 'ai', connected: false });
+    expect(target.revision).toBe(1);
+    expect(handler.executeAutomatedAction({
+      commandId: OTHER_COMMAND_ID,
+      expectedRevision: 1,
+      playerId: GUEST_ID,
+      roomCode: target.code
+    })).toBe(true);
+    expect(target.revision).toBe(2);
+    expect(target.state).toMatchObject({ selectedSource: null, drawnCard: null });
+    expect(target.state?.players.find((candidate) => candidate.id === GUEST_ID)?.kind).toBe('human');
+    expect(value.calls.broadcasts).toEqual([target, target]);
+    expect(handler.executeAutomatedAction({
+      commandId: commandIdAt(99),
+      expectedRevision: 1,
+      playerId: GUEST_ID,
+      roomCode: target.code
+    })).toBe(false);
+  });
+
+  it('auto-readies every AI-controlled seat at round-over in one fenced revision', () => {
+    const thirdId = playerIdAt(3);
+    const players = [
+      player(HOST_ID, 'Host', true),
+      { ...player(GUEST_ID, 'Guest'), controller: 'ai' as const },
+      { ...player(thirdId, 'Third'), controller: 'ai' as const }
+    ];
+    const state = createMultiplayerGame(players, 1, null, () => 0.5);
+    state.phase = 'round-over';
+    const target = room({ players, state, status: 'playing' });
+    const value = harness(target);
+    const handler = createProtocolV2MessageHandler(value.options);
+
+    expect(handler.executeAutomatedAction({
+      commandId: OTHER_COMMAND_ID,
+      expectedRevision: 0,
+      playerId: GUEST_ID,
+      roomCode: target.code
+    })).toBe(true);
+
+    expect(target.readyForNextRoundPlayerIds).toEqual([GUEST_ID, thirdId]);
+    expect(target.revision).toBe(1);
+    expect(target.recentCommandIds).toEqual([expect.objectContaining({
+      commandId: OTHER_COMMAND_ID,
+      playerId: GUEST_ID,
+      revision: 1
+    })]);
+    expect(target.state?.players.every((candidate) => candidate.kind === 'human')).toBe(true);
+    expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toEqual([target]);
+    expect(handler.executeAutomatedAction({
+      commandId: commandIdAt(99),
+      expectedRevision: 0,
+      playerId: thirdId,
+      roomCode: target.code
+    })).toBe(false);
+  });
+});
+
 describe('protocol v2 command ordering and receipts', () => {
   it('keeps every alias-pinned receipt and fills the remaining total window with newest unpinned receipts', () => {
     const aliases = Array.from({ length: MAX_RESET_ALIASES }, (_, index) => ({
@@ -692,6 +893,8 @@ describe('protocol v2 command ordering and receipts', () => {
       }]
     });
     const value = harness(target);
+    target.players[0].connected = true;
+    target.players[0].disconnectedAt = null;
     value.socket.roomCode = target.code;
     const aliasIndex = createResetAliasIndex(value.rooms);
     const handler = createProtocolV2MessageHandler({ ...value.options, resetAliasIndex: aliasIndex });
@@ -730,6 +933,47 @@ describe('protocol v2 command ordering and receipts', () => {
     expect(order).toEqual(['snapshot', 'ack']);
     expect(value.room.revision).toBe(8);
     expect(value.calls.persisted).toBe(0);
+  });
+
+  it.each([
+    ['away', { connected: false, disconnectedAt: 100 }],
+    ['AI-controlled', { controller: 'ai' as const }]
+  ])('replays an exact receipt for an %s seat before live-human guards', (_label, seatState) => {
+    const action: GameCommand = { type: 'send-chat-message', text: 'hello' };
+    const host = { ...player(HOST_ID, 'Host', true), ...seatState };
+    const value = harness(room({
+      players: [host, player(GUEST_ID, 'Guest')],
+      revision: 8,
+      recentCommandIds: [receipt(action)]
+    }));
+    const order: string[] = [];
+    value.options.sendRoomSnapshot = () => order.push('snapshot');
+    value.options.sendJson = (_ws, payload) => order.push(String((payload as Record<string, unknown>).type));
+
+    createProtocolV2MessageHandler(value.options)(value.socket, command(action, 0));
+
+    expect(order).toEqual(['snapshot', 'ack']);
+    expect(value.room.revision).toBe(8);
+    expect(value.calls.persisted).toBe(0);
+  });
+
+  it.each([
+    ['away', { connected: false, disconnectedAt: 100 }],
+    ['AI-controlled', { controller: 'ai' as const }]
+  ])('rejects a conflicting command id for an %s seat before live-human guards', (_label, seatState) => {
+    const priorAction: GameCommand = { type: 'send-chat-message', text: 'original' };
+    const host = { ...player(HOST_ID, 'Host', true), ...seatState };
+    const value = harness(room({
+      players: [host, player(GUEST_ID, 'Guest')],
+      revision: 8,
+      recentCommandIds: [receipt(priorAction)]
+    }));
+
+    value.handler(value.socket, command({ type: 'send-chat-message', text: 'conflict' }, 0));
+
+    expect(lastPayload(value)).toMatchObject({ code: 'command-id-conflict', commandId: COMMAND_ID });
+    expect(value.calls.snapshots).toHaveLength(0);
+    expect(value.room.revision).toBe(8);
   });
 
   it.each([
@@ -910,6 +1154,28 @@ describe('protocol v2 completed-game atomicity', () => {
     expect(finalSnapshots).toHaveLength(playerCount);
   });
 
+  it('attributes terminal history to AI only while an AI controller still owns a seat', () => {
+    const aiOwned = harness(completionRoom(2));
+    aiOwned.room.players[1].controller = 'ai';
+    createProtocolV2MessageHandler(aiOwned.options)(
+      aiOwned.socket,
+      command({ type: 'replace-card', cardIndex: 0 }, 7, COMMAND_ID)
+    );
+    expect(aiOwned.calls.completed[0]?.finishedByAi).toBe(true);
+    expect(aiOwned.room.finishedByAi).toBe(true);
+    expect(aiOwned.room.readyForNextRoundPlayerIds).toEqual([GUEST_ID]);
+    expect(aiOwned.room.state?.players.every((candidate) => candidate.kind === 'human')).toBe(true);
+
+    const reclaimed = harness(completionRoom(2));
+    reclaimed.room.players[1].controller = 'human';
+    createProtocolV2MessageHandler(reclaimed.options)(
+      reclaimed.socket,
+      command({ type: 'replace-card', cardIndex: 0 }, 7, OTHER_COMMAND_ID)
+    );
+    expect(reclaimed.calls.completed[0]?.finishedByAi).toBe(false);
+    expect(reclaimed.room.finishedByAi).toBe(false);
+  });
+
   it('uses the trusted semantic match flag when journal object keys are reordered', () => {
     const value = harness(completionRoom(2));
     value.options.recordCompletedGame = (input) => {
@@ -1076,6 +1342,8 @@ describe('protocol v2 completed-game atomicity', () => {
       now: 500,
       pruneStale: false
     }).rooms[0] as ProtocolV2Room;
+    restoredRoom.players[0].connected = true;
+    restoredRoom.players[0].disconnectedAt = null;
     const restarted = harness(restoredRoom);
     restarted.options.recordCompletedGame = recordCompletedGame;
     const restartedHandler = createProtocolV2MessageHandler(restarted.options);

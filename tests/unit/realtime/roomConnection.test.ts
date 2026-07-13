@@ -76,14 +76,17 @@ function room(code = 'ABCDE', updatedAt = 100) {
   return {
     code,
     hostId: 'p1',
-    players: [{ id: 'p1', name: 'Alice', connected: true, host: true }],
+    players: [{ id: 'p1', name: 'Alice', connected: true, host: true, controller: 'human', disconnectedAt: null, aiTakeoverAt: null }],
     chatMessages: [],
     readyForNextRoundPlayerIds: [],
     status: 'waiting',
     state: null,
     updatedAt,
     completedGameId: null,
-    revision: 0
+    finishedByAi: false,
+    hostTransferAt: null,
+    revision: 0,
+    serverNow: updatedAt
   };
 }
 
@@ -133,8 +136,8 @@ function validActiveRoom() {
   return {
     ...room(),
     players: [
-      { id: 'p1', name: 'Alice', connected: true, host: true },
-      { id: 'p2', name: 'Bob', connected: true, host: false }
+      { id: 'p1', name: 'Alice', connected: true, host: true, controller: 'human', disconnectedAt: null, aiTakeoverAt: null },
+      { id: 'p2', name: 'Bob', connected: true, host: false, controller: 'human', disconnectedAt: null, aiTakeoverAt: null }
     ],
     chatMessages: [
       { id: 'chat-1', playerId: 'p1', playerName: 'Alice', text: 'Hello', createdAt: Date.UTC(2026, 0, 1) }
@@ -433,14 +436,16 @@ describe('room connection controller', () => {
     const joined = createHarness();
     joined.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice' });
     joined.sockets[0].open();
-    expect(joined.sockets[0].sent).toEqual([{ type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice' }]);
+    expect(joined.sockets[0].sent).toEqual([{
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice'
+    }]);
 
     const recovered = createHarness();
     recovered.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
     recovered.runTimer(0);
     recovered.sockets[0].open();
     expect(recovered.sockets[0].sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
     ]);
 
     const resetRecovery = createHarness();
@@ -458,6 +463,7 @@ describe('room connection controller', () => {
       {
         type: 'join-room',
         protocolVersion: 2,
+        presenceVersion: 1,
         code: 'ABCDE',
         name: 'Alice',
         playerId: 'p1',
@@ -492,6 +498,7 @@ describe('room connection controller', () => {
       {
         type: 'join-room',
         protocolVersion: 2,
+        presenceVersion: 1,
         code: 'ABCDE',
         name: 'Alice',
         ...(playerId ? { playerId } : {})
@@ -604,6 +611,7 @@ describe('room connection controller', () => {
     expect(recovered.sent).toEqual([{
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: 'p1',
@@ -630,12 +638,14 @@ describe('room connection controller', () => {
     expect(targetReconnect.sent).toEqual([{
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
     }]);
     targetReconnect.receive(snapshotFrame(advancedReplacement));
-    expect(targetReconnect.sent).toHaveLength(1);
+    expect(targetReconnect.sent).toHaveLength(2);
+    expect(targetReconnect.sent[1]).toEqual({ type: 'set-presence', visible: true });
 
     targetReconnect.serverClose();
     harness.runTimer(3);
@@ -644,6 +654,7 @@ describe('room connection controller', () => {
     expect(secondTargetReconnect.sent).toEqual([{
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
@@ -677,7 +688,8 @@ describe('room connection controller', () => {
     socket.receive({ type: 'ack', protocolVersion: 2, commandId, revision: 1 });
 
     expect(harness.controller.getState()).toBe('connected');
-    expect(socket.sent).toHaveLength(1);
+    expect(socket.sent).toHaveLength(2);
+    expect(socket.sent[1]).toEqual({ type: 'set-presence', visible: true });
     socket.serverClose();
     harness.runTimer(1);
     const recovered = harness.sockets[1];
@@ -685,6 +697,7 @@ describe('room connection controller', () => {
     expect(recovered.sent).toEqual([{
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
@@ -881,7 +894,7 @@ describe('room connection controller', () => {
     harness.sockets[0].open();
     expect(harness.sockets[0].sent[0]).toMatchObject({ type: 'join-room', code: 'FGHIJ', playerId: 'p2' });
 
-    harness.sockets[0].receive(snapshotFrame({ ...room('FGHIJ'), hostId: 'p2', players: [{ id: 'p2', name: 'Alice', connected: true, host: true }] }, 'p2'));
+    harness.sockets[0].receive(snapshotFrame({ ...room('FGHIJ'), hostId: 'p2', players: [{ id: 'p2', name: 'Alice', connected: true, host: true, controller: 'human', disconnectedAt: null, aiTakeoverAt: null }] }, 'p2'));
     expect(harness.controller.getState()).toBe('connected');
 
     const replaced = createHarness();
@@ -992,9 +1005,13 @@ describe('room connection controller', () => {
     expect(socket.sent.filter((frame) => frame.type === 'set-presence')).toEqual([
       { type: 'set-presence', visible: false }
     ]);
-    harness.setNow(1_300);
+    harness.setNow(1_100);
     harness.controller.setVisible(true);
     expect(socket.sent.at(-1)).toEqual({ type: 'set-presence', visible: true });
+    expect(socket.sent.filter((frame) => frame.type === 'set-presence')).toEqual([
+      { type: 'set-presence', visible: false },
+      { type: 'set-presence', visible: true }
+    ]);
   });
 
   it('retains hidden intent across a disconnect and reapplies it after the reconnect snapshot', () => {
@@ -1012,7 +1029,7 @@ describe('room connection controller', () => {
     recovered.open();
     recovered.receive(snapshotFrame(room('ABCDE', 200)));
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
       { type: 'set-presence', visible: false }
     ]);
   });
@@ -1039,7 +1056,8 @@ describe('room connection controller', () => {
     recovered.open();
     recovered.receive(snapshotFrame());
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      { type: 'set-presence', visible: true },
       pending
     ]);
   });
@@ -1117,10 +1135,11 @@ describe('room connection controller', () => {
     recovered.open();
 
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
     ]);
     recovered.receive(snapshotFrame(room('ABCDE', 200)));
-    expect(recovered.sent).toHaveLength(1);
+    expect(recovered.sent).toHaveLength(2);
+    expect(recovered.sent[1]).toEqual({ type: 'set-presence', visible: true });
     expect(harness.controller.getState()).toBe('connected');
   });
 
@@ -1148,6 +1167,7 @@ describe('room connection controller', () => {
     expect(recovered.sent).toEqual([{
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: 'p1'
@@ -1203,6 +1223,57 @@ describe('room connection controller', () => {
     expect(established.controller.getState()).toBe('connected');
     expect(socket.closes).toHaveLength(0);
     expect(established.controller.send({ type: 'send-chat-message', text: 'still connected' })).toBe(true);
+  });
+
+  it('retires a room only on the strict correlated terminal leave acknowledgement', () => {
+    const harness = createHarness();
+    harness.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    const socket = harness.sockets[0];
+    socket.open();
+    socket.receive(snapshotFrame());
+    const leave = {
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000010',
+      expectedRevision: 0,
+      action: { type: 'leave-room' }
+    };
+    expect(harness.controller.send(leave)).toBe(true);
+    socket.receive({
+      type: 'ack',
+      protocolVersion: 2,
+      commandId: leave.commandId,
+      revision: 1,
+      result: 'room-left'
+    });
+    expect(harness.controller.getState()).toBe('idle');
+    expect(socket.closes).toEqual([{ code: 1000, reason: 'Room left' }]);
+    expect(harness.frames.at(-1)).toMatchObject({ type: 'ack', result: 'room-left' });
+
+    const malformed = createHarness();
+    malformed.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    malformed.sockets[0].open();
+    malformed.sockets[0].receive(snapshotFrame());
+    malformed.sockets[0].receive({
+      type: 'ack',
+      protocolVersion: 2,
+      commandId: leave.commandId,
+      revision: 1,
+      result: 'room-left'
+    });
+    expect(malformed.sockets[0].closes.at(-1)).toEqual({ code: 1002, reason: 'Invalid server response' });
+  });
+
+  it('retires a kicked seat exactly once and does not fall through to a generic join error', () => {
+    const harness = createHarness();
+    harness.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    const socket = harness.sockets[0];
+    socket.open();
+    socket.receive(snapshotFrame());
+    socket.receive(errorFrame('This room seat was removed.', 'seat-removed'));
+    expect(harness.controller.getState()).toBe('idle');
+    expect(socket.closes).toEqual([{ code: 1000, reason: 'Room seat removed' }]);
+    expect(harness.frames.at(-1)).toMatchObject({ type: 'error', code: 'seat-removed' });
   });
 
   it('handles transport errors, constructor failures, manual disconnect, and idempotent disposal', () => {

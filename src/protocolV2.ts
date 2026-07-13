@@ -3,9 +3,16 @@ import {
   chooseDiscard,
   discardDrawnAndReveal,
   drawBlind,
+  getBestAiMove,
   replaceCard,
   revealOpeningCard
 } from './game.js';
+import {
+  aiTakeoverDeadline,
+  DEFAULT_ROOM_LIFECYCLE_POLICY,
+  hostTransferDeadline,
+  type RoomLifecyclePolicy
+} from './serverRoomLifecycle.js';
 import type { RandomSource } from './runtime.js';
 import type {
   Card,
@@ -19,6 +26,7 @@ import type {
 } from './types';
 
 export const MULTIPLAYER_PROTOCOL_VERSION = 2 as const;
+export const EXPLICIT_PRESENCE_VERSION = 1 as const;
 // This is a client-to-server command-frame limit, not a server snapshot limit.
 export const MAX_INBOUND_CLIENT_FRAME_BYTES = 16_384;
 export const MAX_RECENT_COMMAND_RECEIPTS = 128;
@@ -45,6 +53,9 @@ export type GameCommand =
   | { type: 'set-next-round-ready'; ready: boolean }
   | { type: 'start-game' }
   | { type: 'reset-room' }
+  | { type: 'leave-room' }
+  | { type: 'remove-player'; playerId: string }
+  | { type: 'takeover-player-with-ai'; playerId: string }
   | { type: 'send-chat-message'; text: string };
 
 export interface ClientCommand {
@@ -96,10 +107,12 @@ export interface PublicGameStateSnapshot {
   roundHistory: RoundHistoryEntry[];
 }
 
-export interface PublicRoomPlayerSnapshot extends Omit<RoomPlayer, 'userId'> {
+export interface PublicRoomPlayerSnapshot extends Omit<RoomPlayer, 'userId' | 'disconnectedAt'> {
   joinedAt?: number;
   lastSeenAt?: number;
-  controller?: 'human' | 'ai';
+  controller: 'human' | 'ai';
+  disconnectedAt: number | null;
+  aiTakeoverAt: number | null;
 }
 
 export interface PublicRoomSnapshot {
@@ -112,7 +125,10 @@ export interface PublicRoomSnapshot {
   status: 'waiting' | 'playing' | 'finished';
   updatedAt: number;
   completedGameId: string | null;
+  finishedByAi: boolean;
+  hostTransferAt: number | null;
   revision: number;
+  serverNow: number;
 }
 
 export interface SnapshotFrame {
@@ -165,7 +181,16 @@ function parseAction(value: unknown): GameCommand | null {
     case 'draw-blind':
     case 'start-game':
     case 'reset-room':
+    case 'leave-room':
       return hasExactKeys(value, ['type']) ? { type: value.type } : null;
+    case 'remove-player':
+    case 'takeover-player-with-ai':
+      return hasExactKeys(value, ['type', 'playerId']) &&
+        typeof value.playerId === 'string' &&
+        value.playerId.length > 0 &&
+        value.playerId.length <= PUBLIC_SNAPSHOT_LIMITS.identifierLength
+        ? { type: value.type, playerId: value.playerId }
+        : null;
     case 'set-next-round-ready':
       return hasExactKeys(value, ['type', 'ready']) && typeof value.ready === 'boolean'
         ? { type: value.type, ready: value.ready }
@@ -294,6 +319,49 @@ export function reduceAuthoritativeGameCommand(
   return { ok: true, state: nextState };
 }
 
+export function reduceAuthoritativeAiAction(
+  state: GameState | null,
+  playerId: string,
+  random: RandomSource
+): GameCommandReduction {
+  if (!state) return { ok: false, message: 'No active game.' };
+  const activePlayer = state.players[state.currentPlayerIndex];
+  if (!activePlayer || activePlayer.id !== playerId) {
+    return { ok: false, message: 'The AI seat is not the current player.' };
+  }
+  if (state.phase === 'round-over' || state.phase === 'game-over') {
+    return { ok: false, message: 'The game is waiting for round confirmation.' };
+  }
+
+  if (state.phase === 'opening-reveal') {
+    const cardIndex = activePlayer.grid.findIndex((card) => !card.faceUp && !card.removed);
+    return cardIndex >= 0
+      ? reduceAuthoritativeGameCommand(state, playerId, { type: 'reveal-opening-card', cardIndex }, random)
+      : { ok: false, message: 'The AI seat has no opening card to reveal.' };
+  }
+
+  let current = state;
+  if (current.phase === 'choose-source') {
+    const sourceMove = getBestAiMove(current);
+    const sourceAction: GameCommand = sourceMove.action === 'discard'
+      ? { type: 'choose-discard' }
+      : { type: 'draw-blind' };
+    const sourceReduction = reduceAuthoritativeGameCommand(current, playerId, sourceAction, random);
+    if (!sourceReduction.ok) return sourceReduction;
+    current = sourceReduction.state;
+  }
+
+  if (current.phase !== 'choose-replacement') {
+    return { ok: false, message: 'The AI action did not reach a replacement decision.' };
+  }
+  const placementMove = getBestAiMove(current);
+  const cardIndex = placementMove.index ?? 0;
+  const placementAction: GameCommand = placementMove.action === 'reveal'
+    ? { type: 'discard-and-reveal', cardIndex }
+    : { type: 'replace-card', cardIndex };
+  return reduceAuthoritativeGameCommand(current, playerId, placementAction, random);
+}
+
 function publicCard(card: Card, id: string, reveal: boolean): PublicCardSnapshot {
   return {
     id,
@@ -359,12 +427,21 @@ export function redactGameState(state: GameState, viewerPlayerId: string): Publi
   };
 }
 
-interface SnapshotRoomSource extends Omit<PublicRoomSnapshot, 'state' | 'players'> {
-  players: PublicRoomPlayerSnapshot[];
+interface SnapshotRoomSource extends Omit<
+  PublicRoomSnapshot,
+  'finishedByAi' | 'hostTransferAt' | 'players' | 'serverNow' | 'state'
+> {
+  finishedByAi?: boolean;
+  players: RoomPlayer[];
   state: GameState | null;
 }
 
-export function createRoomSnapshot(room: SnapshotRoomSource, viewerPlayerId: string): PublicRoomSnapshot {
+export function createRoomSnapshot(
+  room: SnapshotRoomSource,
+  viewerPlayerId: string,
+  serverNow = room.updatedAt,
+  lifecyclePolicy: RoomLifecyclePolicy = DEFAULT_ROOM_LIFECYCLE_POLICY
+): PublicRoomSnapshot {
   return {
     code: room.code,
     hostId: room.hostId,
@@ -375,7 +452,11 @@ export function createRoomSnapshot(room: SnapshotRoomSource, viewerPlayerId: str
       host: player.host,
       ...(Number.isFinite(player.joinedAt) ? { joinedAt: player.joinedAt } : {}),
       ...(Number.isFinite(player.lastSeenAt) ? { lastSeenAt: player.lastSeenAt } : {}),
-      ...(player.controller ? { controller: player.controller } : {})
+      controller: player.controller || 'human',
+      disconnectedAt: player.connected || !Number.isFinite(player.disconnectedAt)
+        ? null
+        : Number(player.disconnectedAt),
+      aiTakeoverAt: aiTakeoverDeadline(room, player, lifecyclePolicy)
     })),
     chatMessages: room.chatMessages.slice(-PUBLIC_SNAPSHOT_LIMITS.chatMessages).map((message) => ({
       id: message.id,
@@ -389,7 +470,10 @@ export function createRoomSnapshot(room: SnapshotRoomSource, viewerPlayerId: str
     status: room.status,
     updatedAt: room.updatedAt,
     completedGameId: room.completedGameId,
-    revision: room.revision
+    finishedByAi: room.finishedByAi === true,
+    hostTransferAt: hostTransferDeadline(room, lifecyclePolicy),
+    revision: room.revision,
+    serverNow
   };
 }
 

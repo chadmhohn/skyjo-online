@@ -144,6 +144,7 @@ function createHarness() {
   const sendCurrentRoom = vi.fn();
   const now = vi.fn(() => 1_234);
   const onProtocolV1Message = vi.fn<(socket: RealtimeSocket, message: RealtimeClientMessage) => void>();
+  const onPlayerVisible = vi.fn(() => false);
   let heartbeatCallback: (() => void) | null = null;
   const heartbeatHandle = { unref: vi.fn() };
   const scheduleInterval = vi.fn((callback: () => void) => {
@@ -164,6 +165,7 @@ function createHarness() {
     now,
     isShuttingDown: () => shuttingDown,
     onProtocolMessage: onProtocolV1Message,
+    onPlayerVisible,
     scheduleInterval,
     cancelInterval
   });
@@ -179,6 +181,7 @@ function createHarness() {
     sendCurrentRoom,
     now,
     onProtocolV1Message,
+    onPlayerVisible,
     scheduleInterval,
     cancelInterval,
     heartbeatHandle,
@@ -285,11 +288,50 @@ describe('serverRealtime transport seam', () => {
 
     expect(request.accountUser).toEqual({ id: 'account-1' });
     expect(socket.accountUser).toBe(request.accountUser);
-    expect(socket.visible).toBe(true);
+    expect(socket.visible).toBe(false);
     expect(harness.webSocketServer.upgrades).toEqual([{ request, socket: networkSocket, head: 'head' }]);
 
     socket.emit('message', '{"type":"join-room","code":"ABCDE"}');
     expect(harness.onProtocolV1Message).toHaveBeenCalledWith(socket, { type: 'join-room', code: 'ABCDE' });
+  });
+
+  it('keeps explicit-presence v2 joins hidden while rolling prior-v2 joins forward as visible', () => {
+    const current = createHarness();
+    const { socket: currentSocket } = current.connect();
+    currentSocket.emit('message', JSON.stringify({
+      type: 'join-room',
+      protocolVersion: 2,
+      presenceVersion: 1,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'player-1'
+    }));
+    expect(currentSocket.visible).toBe(false);
+    expect(current.onProtocolV1Message).toHaveBeenCalledOnce();
+
+    const prior = createHarness();
+    const { socket: priorSocket } = prior.connect();
+    const admitted: { context: RealtimeRoomPlayer | null } = { context: null };
+    prior.onProtocolV1Message.mockImplementation((admittedSocket) => {
+      const priorContext = roomContext(admittedSocket as FakeSocket);
+      priorContext.player.connected = false;
+      priorContext.player.disconnectedAt = 100;
+      prior.contexts.set(admittedSocket, priorContext);
+      syncPlayerPresence(priorContext.room, priorContext.player, 500);
+      prior.sendCurrentRoom(admittedSocket, priorContext.room);
+      admitted.context = priorContext;
+    });
+    priorSocket.emit('message', JSON.stringify({
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'player-1'
+    }));
+    expect(priorSocket.visible).toBe(true);
+    expect(prior.onProtocolV1Message).toHaveBeenCalledOnce();
+    expect(admitted.context?.player).toMatchObject({ connected: true, disconnectedAt: null, lastSeenAt: 500 });
+    expect(prior.sendCurrentRoom).toHaveBeenCalledOnce();
   });
 
   it('returns the stable error for invalid frames and pre-join presence', () => {
@@ -383,7 +425,7 @@ describe('serverRealtime transport seam', () => {
     expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
       { type: 'error', protocolVersion: 2, code: 'invalid-presence', message: 'Invalid presence.' }
     ]);
-    expect(socket.visible).toBe(true);
+    expect(socket.visible).toBe(false);
     expect(context.player.connected).toBe(true);
     expect(context.room.updatedAt).toBe(0);
     expect(harness.persistRoomsSoon).not.toHaveBeenCalled();
@@ -404,6 +446,25 @@ describe('serverRealtime transport seam', () => {
     expect(harness.persistRoomsSoon).toHaveBeenCalledOnce();
     expect(harness.broadcastRoom).toHaveBeenCalledWith(context.room);
     expect(harness.sendCurrentRoom).not.toHaveBeenCalled();
+  });
+
+  it('runs visible-only lifecycle reclaim and publishes its revision-neutral presence envelope once', () => {
+    const harness = createHarness();
+    harness.onPlayerVisible.mockReturnValue(true);
+    const { socket } = harness.connect();
+    const context = roomContext(socket);
+    harness.contexts.set(socket, context);
+
+    socket.emit('message', '{"type":"set-presence","visible":true}');
+
+    expect(harness.onPlayerVisible).toHaveBeenCalledWith(context.room, context.player, 1_234);
+    expect(harness.persistRoomsSoon).toHaveBeenCalledOnce();
+    expect(harness.broadcastRoom).toHaveBeenCalledWith(context.room);
+    expect(harness.sendCurrentRoom).not.toHaveBeenCalled();
+
+    harness.onPlayerVisible.mockClear();
+    socket.emit('message', '{"type":"set-presence","visible":false}');
+    expect(harness.onPlayerVisible).not.toHaveBeenCalled();
   });
 
   it('keeps a seat connected when a sibling socket remains and disconnects the final socket', () => {
@@ -475,6 +536,23 @@ describe('serverRealtime transport seam', () => {
     expect(hasVisibleLiveClient(room, player.id, current)).toBe(false);
     syncPlayerPresence(room, player);
     expect(player.connected).toBe(true);
+  });
+
+  it('treats a live socket without the v2 visibility marker as visible for rolling compatibility', () => {
+    const priorV2Socket = new FakeSocket();
+    priorV2Socket.roomCode = 'ABCDE';
+    priorV2Socket.playerId = 'player-1';
+    delete priorV2Socket.visible;
+    const room: RealtimeRoom = {
+      code: 'ABCDE',
+      clients: new Set([priorV2Socket]),
+      updatedAt: 0
+    };
+    const player: RealtimePlayer = { id: 'player-1', connected: false, disconnectedAt: 100 };
+
+    expect(hasVisibleLiveClient(room, player.id)).toBe(true);
+    syncPlayerPresence(room, player, 500);
+    expect(player).toMatchObject({ connected: true, disconnectedAt: null, lastSeenAt: 500 });
   });
 
   it('pings every interval, accepts pong, and terminates a half-open socket on the next interval', () => {

@@ -1,4 +1,8 @@
-import { MAX_INBOUND_CLIENT_FRAME_BYTES } from './protocolV2.js';
+import {
+  MAX_INBOUND_CLIENT_FRAME_BYTES,
+  MULTIPLAYER_PROTOCOL_VERSION
+} from './protocolV2.js';
+import { presenceFields } from './serverRoomLifecycle.js';
 
 export type RealtimeClientMessage = Record<string, unknown>;
 
@@ -6,6 +10,7 @@ export interface RealtimeSocket {
   readonly OPEN: number;
   readonly readyState: number;
   accountUser?: unknown;
+  admittedRoomCode?: string | null;
   playerId?: string | null;
   roomCode?: string | null;
   visible?: boolean;
@@ -19,7 +24,9 @@ export interface RealtimeSocket {
 
 export interface RealtimePlayer {
   connected: boolean;
+  disconnectedAt?: number | null;
   id: string;
+  lastSeenAt?: number;
 }
 
 export interface RealtimeRoom {
@@ -76,6 +83,7 @@ export interface RealtimeServerOptions {
   now: () => number;
   isShuttingDown: () => boolean;
   onProtocolMessage: (socket: RealtimeSocket, message: RealtimeClientMessage) => void;
+  onPlayerVisible?: (room: RealtimeRoom, player: RealtimePlayer, timestamp: number) => boolean;
   heartbeatIntervalMs?: number;
   scheduleInterval?: (callback: () => void, intervalMs: number) => unknown;
   cancelInterval?: (handle: unknown) => void;
@@ -169,8 +177,15 @@ export function hasVisibleLiveClient(
   return false;
 }
 
-export function syncPlayerPresence(room: RealtimeRoom, player: RealtimePlayer): void {
-  player.connected = hasVisibleLiveClient(room, player.id);
+export function syncPlayerPresence(room: RealtimeRoom, player: RealtimePlayer, now = Date.now()): void {
+  Object.assign(player, presenceFields(player, hasVisibleLiveClient(room, player.id), now));
+}
+
+export function detachRealtimeSocket(room: RealtimeRoom, socket: RealtimeSocket): void {
+  room.clients.delete(socket);
+  socket.roomCode = null;
+  socket.playerId = null;
+  socket.admittedRoomCode = null;
 }
 
 function rejectUpgrade(socket: RealtimeUpgradeSocket): void {
@@ -190,6 +205,7 @@ export function registerRealtimeServer({
   now,
   isShuttingDown,
   onProtocolMessage,
+  onPlayerVisible = () => false,
   heartbeatIntervalMs = REALTIME_HEARTBEAT_INTERVAL_MS,
   scheduleInterval = (callback, intervalMs) => setInterval(callback, intervalMs),
   cancelInterval = (handle) => clearInterval(handle as ReturnType<typeof setInterval>)
@@ -218,7 +234,9 @@ export function registerRealtimeServer({
 
   webSocketServer.on('connection', (socket, request) => {
     socket.accountUser = request.accountUser;
-    socket.visible = true;
+    // Presence is established explicitly after the first authoritative snapshot.
+    // This prevents a hidden reconnect from resetting grace timers or reclaiming AI.
+    socket.visible = false;
     socket.heartbeatAwaitingPong = false;
     liveSockets.add(socket);
 
@@ -250,15 +268,30 @@ export function registerRealtimeServer({
         }
         const wasConnected = context.player.connected;
         socket.visible = message.visible !== false;
-        syncPlayerPresence(context.room, context.player);
-        if (context.player.connected !== wasConnected) {
-          context.room.updatedAt = now();
+        const timestamp = now();
+        syncPlayerPresence(context.room, context.player, timestamp);
+        const lifecycleChanged = message.visible === true && context.player.connected
+          ? onPlayerVisible(context.room, context.player, timestamp)
+          : false;
+        if (context.player.connected !== wasConnected || lifecycleChanged) {
+          context.room.updatedAt = timestamp;
           persistRoomsSoon();
           broadcastRoom(context.room);
         } else {
           sendCurrentRoom(socket, context.room);
         }
         return;
+      }
+
+      if (
+        message.type === 'join-room' &&
+        message.protocolVersion === MULTIPLAYER_PROTOCOL_VERSION &&
+        !Object.prototype.hasOwnProperty.call(message, 'presenceVersion')
+      ) {
+        // Protocol-v2 clients deployed before explicit presence support remain
+        // visible during a rolling upgrade. New clients advertise the marker
+        // and publish their foreground state after the first snapshot.
+        socket.visible = true;
       }
 
       onProtocolMessage(socket, message);
@@ -269,9 +302,9 @@ export function registerRealtimeServer({
       if (isShuttingDown()) return;
       const context = roomPlayer(socket);
       if (!context) return;
-      context.room.clients.delete(socket);
+      detachRealtimeSocket(context.room, socket);
       const wasConnected = context.player.connected;
-      syncPlayerPresence(context.room, context.player);
+      syncPlayerPresence(context.room, context.player, now());
       if (context.player.connected !== wasConnected) {
         context.room.updatedAt = now();
         persistRoomsSoon();

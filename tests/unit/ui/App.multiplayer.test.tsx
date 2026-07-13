@@ -98,6 +98,8 @@ const accountUser: AccountUser = {
 const savedRecoveryPlayerId = '00000000-0000-4000-8000-000000000001';
 const savedRecoveryPeerId = '00000000-0000-4000-8000-000000000002';
 const savedRecoveryCommandId = '10000000-0000-4000-8000-000000000001';
+const newerTabPlayerId = '00000000-0000-4000-8000-000000000009';
+const newerTabCommandId = '10000000-0000-4000-8000-000000000009';
 const validResetRecoveryHint: ResetRecoveryHint = {
   fromCode: 'ABCDE',
   playerId: savedRecoveryPlayerId,
@@ -197,7 +199,8 @@ function publicRoom(room: MultiplayerRoom, viewerPlayerId = 'p1'): PublicRoomSna
       completedGameId: room.completedGameId ?? null,
       revision: room.revision
     },
-    viewerPlayerId
+    viewerPlayerId,
+    room.serverNow ?? room.updatedAt
   );
 }
 
@@ -332,7 +335,7 @@ function convergeCommand(
   receiveAck(socket, command, room.revision);
 }
 
-async function createJoinedRoom(room = makeRoom()) {
+async function createJoinedRoom(room = makeRoom(), viewerPlayerId = room.hostId) {
   const user = userEvent.setup();
   await renderLobby();
   expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'idle');
@@ -342,7 +345,7 @@ async function createJoinedRoom(room = makeRoom()) {
   expect(screen.getByRole('button', { name: 'Join' })).toBeDisabled();
   const socket = openSocket();
   expect(lastFrame(socket)).toEqual({ type: 'create-room', protocolVersion: 2, name: 'Alice' });
-  receiveSnapshot(socket, room, room.hostId);
+  receiveSnapshot(socket, room, viewerPlayerId);
   await screen.findByText(room.code);
   return { room, socket, user };
 }
@@ -408,6 +411,7 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(socket)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId
@@ -445,6 +449,7 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(socket)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId,
@@ -483,6 +488,7 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(recovered)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId,
@@ -646,7 +652,7 @@ describe('multiplayer lobby', () => {
     expect(window.localStorage.getItem('skyjo-room-code')).toBe('ABCDE');
     expect(screen.getByText(/Alice host online/)).toBeInTheDocument();
     expect(screen.getByText(/Waiting for players/)).toBeInTheDocument();
-    expect(screen.getByText(/Need at least two players to start/)).toBeInTheDocument();
+    expect(screen.getByText(/Need at least two connected players to start/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start Game' })).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: 'Share' }));
@@ -686,10 +692,8 @@ describe('multiplayer lobby', () => {
 
     act(() => document.dispatchEvent(new Event('visibilitychange')));
     act(() => window.dispatchEvent(new Event('pagehide')));
-    expect(socket.sent.slice(-2)).toEqual([
-      { type: 'set-presence', visible: true },
-      { type: 'set-presence', visible: false }
-    ]);
+    expect(socket.sent).toContainEqual({ type: 'set-presence', visible: true });
+    expect(socket.sent.at(-1)).toEqual({ type: 'set-presence', visible: false });
 
     await user.click(screen.getByRole('button', { name: 'Start Game' }));
     const startCommand = expectCommand(socket, { type: 'start-game' }, 1);
@@ -701,6 +705,268 @@ describe('multiplayer lobby', () => {
     );
   });
 
+  it('uses connected seats for start, lets the host remove a seat, and retires a confirmed leave once', async () => {
+    const waitingRoom = makeRoom({
+      players: [
+        { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true, controller: 'human' },
+        {
+          id: 'p2',
+          name: 'Bob',
+          connected: false,
+          host: false,
+          controller: 'human',
+          disconnectedAt: 1_000
+        }
+      ],
+      updatedAt: 30_000,
+      serverNow: 30_000
+    });
+    const { socket, user } = await createJoinedRoom(waitingRoom);
+
+    expect(screen.getByRole('button', { name: 'Start Game' })).toBeDisabled();
+    expect(screen.getByText(/Need at least two connected players to start/)).toBeInTheDocument();
+    expect(screen.getByText('Disconnected')).toBeInTheDocument();
+    expect(screen.getAllByText('Human controlled')).toHaveLength(2);
+
+    await user.click(screen.getByRole('button', { name: 'Remove Bob from room' }));
+    const removeCommand = expectCommand(socket, { type: 'remove-player', playerId: 'p2' }, 0);
+    convergeCommand(
+      socket,
+      removeCommand,
+      makeRoom({
+        players: [
+          { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true, controller: 'human' }
+        ],
+        revision: 1
+      })
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Leave Room' }));
+    const leaveCommand = expectCommand(socket, { type: 'leave-room' }, 1);
+    const removeItem = vi.spyOn(Storage.prototype, 'removeItem');
+    receive(socket, {
+      type: 'ack',
+      protocolVersion: 2,
+      commandId: leaveCommand.commandId,
+      revision: 2,
+      result: 'room-left'
+    });
+    receive(socket, {
+      type: 'ack',
+      protocolVersion: 2,
+      commandId: leaveCommand.commandId,
+      revision: 2,
+      result: 'room-left'
+    });
+
+    expect(window.localStorage.getItem('skyjo-player-id')).toBeNull();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeEnabled();
+    expect(removeItem.mock.calls.filter(([key]) => key === 'skyjo-player-id')).toHaveLength(1);
+    expect(removeItem.mock.calls.filter(([key]) => key === 'skyjo-room-code')).toHaveLength(1);
+  });
+
+  it('retires a removed seat once without leaving recovery data that can resurrect it', async () => {
+    const { socket } = await createJoinedRoom(makeResetCapableRoom(), savedRecoveryPlayerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serializeResetRecoveryHint(validResetRecoveryHint));
+    const removeItem = vi.spyOn(Storage.prototype, 'removeItem');
+    const terminalFrame = {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'seat-removed',
+      message: 'The host removed this seat.'
+    };
+
+    receive(socket, terminalFrame);
+    receive(socket, terminalFrame);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('The host removed this seat.');
+    expect(window.localStorage.getItem('skyjo-player-id')).toBeNull();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBeNull();
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
+    expect(removeItem.mock.calls.filter(([key]) => key === 'skyjo-player-id')).toHaveLength(1);
+    expect(removeItem.mock.calls.filter(([key]) => key === 'skyjo-room-code')).toHaveLength(1);
+    expect(removeItem.mock.calls.filter(([key]) => key === RESET_RECOVERY_STORAGE_KEY)).toHaveLength(1);
+  });
+
+  it('keeps a newer tab session in shared storage when an older tab receives a late leave acknowledgement', async () => {
+    const { socket, user } = await createJoinedRoom();
+    await user.click(screen.getByRole('button', { name: 'Leave Room' }));
+    const leaveCommand = expectCommand(socket, { type: 'leave-room' }, 0);
+    const newerHint: ResetRecoveryHint = {
+      fromCode: 'FGHIJ',
+      playerId: newerTabPlayerId,
+      commandId: newerTabCommandId,
+      expectedRevision: 4
+    };
+    window.localStorage.setItem('skyjo-room-code', newerHint.fromCode);
+    window.localStorage.setItem('skyjo-player-id', newerHint.playerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serializeResetRecoveryHint(newerHint));
+
+    receive(socket, {
+      type: 'ack',
+      protocolVersion: 2,
+      commandId: leaveCommand.commandId,
+      revision: 1,
+      result: 'room-left'
+    });
+
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeEnabled();
+    expect(screen.queryByText('ABCDE')).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBe(newerHint.fromCode);
+    expect(window.localStorage.getItem('skyjo-player-id')).toBe(newerHint.playerId);
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(serializeResetRecoveryHint(newerHint));
+  });
+
+  it('keeps a newer tab session in shared storage when an older tab receives a late seat removal', async () => {
+    const { socket } = await createJoinedRoom();
+    const newerHint: ResetRecoveryHint = {
+      fromCode: 'FGHIJ',
+      playerId: newerTabPlayerId,
+      commandId: newerTabCommandId,
+      expectedRevision: 4
+    };
+    window.localStorage.setItem('skyjo-room-code', newerHint.fromCode);
+    window.localStorage.setItem('skyjo-player-id', newerHint.playerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serializeResetRecoveryHint(newerHint));
+
+    receive(socket, {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'seat-removed',
+      message: 'The host removed this seat.'
+    });
+
+    expect(screen.getByText('The host removed this seat.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeEnabled();
+    expect(screen.queryByText('ABCDE')).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBe(newerHint.fromCode);
+    expect(window.localStorage.getItem('skyjo-player-id')).toBe(newerHint.playerId);
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(serializeResetRecoveryHint(newerHint));
+  });
+
+  it('retires a stale saved seat but keeps non-terminal recovery failures retryable', async () => {
+    window.localStorage.setItem('skyjo-room-code', 'ABCDE');
+    window.localStorage.setItem('skyjo-player-id', savedRecoveryPlayerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serializeResetRecoveryHint(validResetRecoveryHint));
+    await renderLobby();
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1_000 });
+    const socket = openSocket();
+
+    receive(socket, {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'stale-seat',
+      message: 'That saved room seat is no longer available.'
+    });
+
+    expect(screen.getByText('That saved room seat is no longer available.')).toBeInTheDocument();
+    expect(window.localStorage.getItem('skyjo-player-id')).toBeNull();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBeNull();
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry Saved Seat' })).not.toBeInTheDocument();
+
+    cleanup();
+    FakeWebSocket.instances = [];
+    await renderLobby();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'idle');
+  });
+
+  it('derives host and seat countdowns from server time without announcing every tick', async () => {
+    const waitingRoom = makeRoom({
+      players: [
+        {
+          id: 'p1',
+          name: 'Alice',
+          connected: false,
+          host: true,
+          controller: 'human',
+          disconnectedAt: 1_000
+        },
+        { id: 'p2', userId: accountUser.id, name: 'Bob', connected: true, host: false, controller: 'human' }
+      ],
+      updatedAt: 31_000,
+      serverNow: 31_000
+    });
+    const { socket } = await createJoinedRoom(waitingRoom, 'p2');
+    const waitingHandoff = screen.getByTestId('host-transfer-status');
+    expect(waitingHandoff).toHaveTextContent('Waiting-room host handoff in 0:30');
+    expect(waitingHandoff.closest('[aria-live]')).toBeNull();
+
+    receiveSnapshot(
+      socket,
+      makeRoom({
+        players: waitingRoom.players,
+        state: makeState(),
+        status: 'playing',
+        updatedAt: 61_000,
+        serverNow: 61_000,
+        revision: 1
+      }),
+      'p2'
+    );
+    const activeHandoff = screen.getByTestId('host-transfer-status');
+    expect(activeHandoff).toHaveTextContent('Active-game host handoff in 1:00');
+    expect(activeHandoff.closest('[aria-live]')).toBeNull();
+  });
+
+  it('offers AI takeover only after the server deadline and locks a locally AI-controlled seat', async () => {
+    const activeRoom = makeRoom({
+      players: [
+        { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true, controller: 'human' },
+        {
+          id: 'p2',
+          name: 'Bob',
+          connected: false,
+          host: false,
+          controller: 'human',
+          disconnectedAt: 1_000
+        }
+      ],
+      state: makeState(),
+      status: 'playing',
+      updatedAt: 61_000,
+      serverNow: 61_000
+    });
+    const { socket, user } = await createJoinedRoom(activeRoom);
+    const countdown = screen.getByTestId('seat-countdown-p2');
+    expect(countdown).toHaveTextContent('Reconnect window 1:00');
+    expect(countdown.closest('[aria-live]')).toBeNull();
+    expect(screen.queryByRole('button', { name: "Hand Bob's seat to AI" })).not.toBeInTheDocument();
+
+    receiveSnapshot(
+      socket,
+      makeRoom({
+        ...activeRoom,
+        updatedAt: 61_001,
+        serverNow: 121_001,
+        revision: 1
+      })
+    );
+    await user.click(screen.getByRole('button', { name: "Hand Bob's seat to AI" }));
+    expectCommand(socket, { type: 'takeover-player-with-ai', playerId: 'p2' }, 1);
+
+    cleanup();
+    FakeWebSocket.instances = [];
+    window.localStorage.clear();
+    const aiRoom = makeRoom({
+      players: [
+        { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true, controller: 'ai' },
+        { id: 'p2', name: 'Bob', connected: true, host: false, controller: 'human' }
+      ],
+      state: makeState(),
+      status: 'playing'
+    });
+    await createJoinedRoom(aiRoom);
+    expect(screen.getByRole('button', { name: 'Reset Room' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reset Room' })).toHaveAttribute(
+      'title',
+      'AI is controlling your seat. Keep this tab visible to reclaim it.'
+    );
+    expect(screen.getByText('AI controlled')).toBeInTheDocument();
+  });
+
   it('joins sanitized codes and surfaces server, closed-socket, and share fallback errors', async () => {
     const user = userEvent.setup();
     const fetchMock = await renderLobby(accountUser, '/lobby?room=a-b_c!12-more');
@@ -709,7 +975,9 @@ describe('multiplayer lobby', () => {
 
     await user.click(screen.getByRole('button', { name: 'Join' }));
     const socket = openSocket();
-    expect(lastFrame(socket)).toEqual({ type: 'join-room', protocolVersion: 2, code: 'ABC12', name: 'Alice' });
+    expect(lastFrame(socket)).toEqual({
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABC12', name: 'Alice'
+    });
     receive(socket, {
       type: 'error',
       protocolVersion: 2,
@@ -789,12 +1057,16 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(recovered)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
+      presenceVersion: 1,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId
     });
     receiveSnapshot(recovered, makeResetCapableRoom({ updatedAt: 200 }), savedRecoveryPlayerId);
-    expect(recovered.sent).toHaveLength(1);
+    expect(recovered.sent).toEqual([
+      expect.objectContaining({ type: 'join-room' }),
+      { type: 'set-presence', visible: true }
+    ]);
     expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
     expect(window.localStorage.getItem('skyjo-room-code')).toBe('ABCDE');
   });
@@ -807,7 +1079,9 @@ describe('multiplayer lobby', () => {
 
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
     const first = openSocket();
-    expect(lastFrame(first)).toEqual({ type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    expect(lastFrame(first)).toEqual({
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+    });
     receiveSnapshot(first, makeRoom());
     expect(window.localStorage.getItem('skyjo-player-name')).toBe('Alice');
 
@@ -823,7 +1097,9 @@ describe('multiplayer lobby', () => {
     act(() => window.dispatchEvent(new Event('focus')));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1000 });
     const resumed = openSocket();
-    expect(lastFrame(resumed)).toEqual({ type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    expect(lastFrame(resumed)).toEqual({
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+    });
     receiveSnapshot(resumed, makeRoom({ updatedAt: 200 }));
     expect(screen.getByText(/Bob online/)).toBeInTheDocument();
     expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
@@ -882,7 +1158,9 @@ describe('multiplayer lobby', () => {
     await user.click(screen.getByRole('button', { name: 'Retry Saved Seat' }));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3), { timeout: 1000 });
     const retried = openSocket();
-    expect(lastFrame(retried)).toEqual({ type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    expect(lastFrame(retried)).toEqual({
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+    });
     receive(retried, {
       type: 'error',
       protocolVersion: 2,
@@ -979,7 +1257,7 @@ describe('multiplayer lobby', () => {
     const socket = openSocket();
     receiveSnapshot(socket, makeRoom());
     expect(socket.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
       { type: 'set-presence', visible: false }
     ]);
   });
@@ -1188,7 +1466,7 @@ describe('multiplayer game table', () => {
         players: [
           { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true },
           { id: 'p2', name: 'Bob', connected: true, host: false },
-          { id: 'p3', name: 'Carol', connected: false, host: false },
+          { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ]
       })
@@ -1224,7 +1502,7 @@ describe('multiplayer game table', () => {
         players: [
           { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true },
           { id: 'p2', name: 'Bob', connected: true, host: false },
-          { id: 'p3', name: 'Carol', connected: false, host: false },
+          { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ],
         revision: 1
@@ -1248,7 +1526,7 @@ describe('multiplayer game table', () => {
         players: [
           { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true },
           { id: 'p2', name: 'Bob', connected: true, host: false },
-          { id: 'p3', name: 'Carol', connected: false, host: false },
+          { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ],
         revision: 2
@@ -1269,7 +1547,7 @@ describe('multiplayer game table', () => {
         players: [
           { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true },
           { id: 'p2', name: 'Bob', connected: true, host: false },
-          { id: 'p3', name: 'Carol', connected: false, host: false },
+          { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ],
         revision: 3
@@ -1288,7 +1566,7 @@ describe('multiplayer game table', () => {
         players: [
           { id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true },
           { id: 'p2', name: 'Bob', connected: true, host: false },
-          { id: 'p3', name: 'Carol', connected: false, host: false },
+          { id: 'p3', name: 'Carol', connected: false, host: false, disconnectedAt: 1 },
           { id: 'p4', name: 'Drew', connected: true, host: false }
         ],
         revision: 4

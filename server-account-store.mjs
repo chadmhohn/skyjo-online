@@ -769,7 +769,7 @@ export class AccountStore {
     if (typeof sourceKey !== 'string' || !sourceKey) return null;
     const row = this.db
       .prepare(
-        `SELECT id, source_key, room_code, completed_at, final_state_json
+        `SELECT id, source_key, room_code, completed_at, final_state_json, finished_by_ai
          FROM games
          WHERE source_key = ?`
       )
@@ -789,6 +789,7 @@ export class AccountStore {
       sourceKey: row.source_key,
       roomCode: row.room_code ?? null,
       completedAt: Number(row.completed_at),
+      finishedByAi: row.finished_by_ai === 1,
       state
     };
   }

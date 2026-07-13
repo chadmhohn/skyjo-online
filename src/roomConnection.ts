@@ -1,4 +1,5 @@
 import {
+  EXPLICIT_PRESENCE_VERSION,
   MULTIPLAYER_PROTOCOL_VERSION,
   PUBLIC_SNAPSHOT_LIMITS,
   parseClientCommand,
@@ -274,10 +275,9 @@ function isGameStateSnapshot(value: unknown): boolean {
 
 function isRoomPlayerSnapshot(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  const keys = ['id', 'name', 'connected', 'host'];
+  const keys = ['id', 'name', 'connected', 'host', 'controller', 'disconnectedAt', 'aiTakeoverAt'];
   if ('joinedAt' in value) keys.push('joinedAt');
   if ('lastSeenAt' in value) keys.push('lastSeenAt');
-  if ('controller' in value) keys.push('controller');
   return hasExactKeys(value, keys) &&
     isPublicIdentifier(value.id) &&
     isBoundedString(value.name, PUBLIC_SNAPSHOT_LIMITS.nameLength) &&
@@ -285,7 +285,11 @@ function isRoomPlayerSnapshot(value: unknown): boolean {
     typeof value.host === 'boolean' &&
     (value.joinedAt === undefined || (Number.isFinite(value.joinedAt) && Number(value.joinedAt) >= 0)) &&
     (value.lastSeenAt === undefined || (Number.isFinite(value.lastSeenAt) && Number(value.lastSeenAt) >= 0)) &&
-    (value.controller === undefined || value.controller === 'human' || value.controller === 'ai');
+    (value.controller === 'human' || value.controller === 'ai') &&
+    (value.disconnectedAt === null || (Number.isFinite(value.disconnectedAt) && Number(value.disconnectedAt) >= 0)) &&
+    (value.aiTakeoverAt === null || (Number.isFinite(value.aiTakeoverAt) && Number(value.aiTakeoverAt) >= 0)) &&
+    (value.connected ? value.disconnectedAt === null : value.disconnectedAt !== null) &&
+    (value.aiTakeoverAt === null || (!value.connected && value.controller === 'human' && Number(value.aiTakeoverAt) >= Number(value.disconnectedAt)));
 }
 
 function isChatMessageSnapshot(value: unknown): boolean {
@@ -315,7 +319,10 @@ export function isMultiplayerRoomSnapshot(
     'status',
     'updatedAt',
     'completedGameId',
-    'revision'
+    'finishedByAi',
+    'hostTransferAt',
+    'revision',
+    'serverNow'
   ])) return false;
   if (typeof room.code !== 'string' || room.code.length !== PUBLIC_SNAPSHOT_LIMITS.roomCodeLength || !/^[A-Z0-9]+$/.test(room.code)) return false;
   if (expectedCode && room.code !== expectedCode) return false;
@@ -325,7 +332,12 @@ export function isMultiplayerRoomSnapshot(
   }
   const roomPlayerIds = room.players.map((player) => (player as Record<string, unknown>).id);
   if (new Set(roomPlayerIds).size !== roomPlayerIds.length || !roomPlayerIds.includes(room.hostId)) return false;
+  const publicPlayers = room.players as Array<Record<string, unknown>>;
+  if (publicPlayers.filter((player) => player.host === true).length !== 1 ||
+      publicPlayers.find((player) => player.host === true)?.id !== room.hostId) return false;
   if (!['waiting', 'playing', 'finished'].includes(String(room.status)) || !Number.isFinite(room.updatedAt)) return false;
+  if (typeof room.finishedByAi !== 'boolean' || !Number.isFinite(room.serverNow) || Number(room.serverNow) < 0) return false;
+  if (room.hostTransferAt !== null && (!Number.isFinite(room.hostTransferAt) || Number(room.hostTransferAt) < 0)) return false;
   if (!Array.isArray(room.chatMessages) || room.chatMessages.length > PUBLIC_SNAPSHOT_LIMITS.chatMessages || !room.chatMessages.every(isChatMessageSnapshot)) return false;
   if (!room.chatMessages.every((message) => roomPlayerIds.includes((message as Record<string, unknown>).playerId))) return false;
   if (!Array.isArray(room.readyForNextRoundPlayerIds) || room.readyForNextRoundPlayerIds.length > PUBLIC_SNAPSHOT_LIMITS.players || !room.readyForNextRoundPlayerIds.every((id) => isPublicIdentifier(id) && roomPlayerIds.includes(id))) {
@@ -400,13 +412,29 @@ function isAuthoritativeSnapshot(
     (frame.commandId === undefined || typeof frame.commandId === 'string');
 }
 
-function isAuxiliaryServerFrame(frame: RoomConnectionFrame): boolean {
+function isAuxiliaryServerFrame(
+  frame: RoomConnectionFrame,
+  pendingCommand: PendingCommandState | null
+): boolean {
   if (frame.protocolVersion !== MULTIPLAYER_PROTOCOL_VERSION) return false;
   if (frame.type === 'ack') {
-    return hasExactKeys(frame, ['type', 'protocolVersion', 'commandId', 'revision']) &&
+    const pendingAction = isRecord(pendingCommand?.frame.action) ? pendingCommand.frame.action : null;
+    const terminalLeave = frame.result === 'room-left';
+    return hasExactKeys(
+      frame,
+      terminalLeave
+        ? ['type', 'protocolVersion', 'commandId', 'revision', 'result']
+        : ['type', 'protocolVersion', 'commandId', 'revision']
+    ) &&
       typeof frame.commandId === 'string' &&
       Number.isSafeInteger(frame.revision) &&
-      Number(frame.revision) >= 0;
+      Number(frame.revision) >= 0 &&
+      (!terminalLeave || (
+        pendingCommand !== null &&
+        pendingAction?.type === 'leave-room' &&
+        frame.commandId === pendingCommand.commandId &&
+        Number(frame.revision) === pendingCommand.expectedRevision + 1
+      ));
   }
   if (frame.type === 'upgrade-required') {
     const keys = ['type', 'protocolVersion', 'message'];
@@ -434,6 +462,7 @@ function sessionWireFrame(currentSession: RoomConnectionSession): RoomConnection
   return {
     type: 'join-room',
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    presenceVersion: EXPLICIT_PRESENCE_VERSION,
     code: currentSession.code,
     name: currentSession.name,
     ...(currentSession.playerId ? { playerId: currentSession.playerId } : {}),
@@ -472,7 +501,8 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
   let disposed = false;
   let desiredVisible = true;
   let generation = 0;
-  let hiddenPresenceGeneration = -1;
+  let lastPresenceVisible: boolean | null = null;
+  let presenceSentGeneration = -1;
   let lastResumeAt = Number.NEGATIVE_INFINITY;
   let online = dependencies.isOnline();
   let pendingCommand: PendingCommandState | null = null;
@@ -712,7 +742,7 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
         frame.commandId === pendingCommand.commandId;
       if (
         (snapshotFrame && !isAuthoritativeSnapshot(frame, session, synchronizedOnCurrentSocket, pendingCommand)) ||
-        (!snapshotFrame && !isAuxiliaryServerFrame(frame))
+        (!snapshotFrame && !isAuxiliaryServerFrame(frame, pendingCommand))
       ) {
         handleMalformedServerFrame(socket);
         return;
@@ -752,6 +782,25 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
         } else {
           completePendingIfConverged();
         }
+      } else if (
+        frame.type === 'ack' &&
+        frame.result === 'room-left' &&
+        pendingCommand &&
+        frame.commandId === pendingCommand.commandId
+      ) {
+        clearReconnectTimer();
+        clearSyncTimer();
+        setPendingCommand(null);
+        lastSnapshotRevision = -1;
+        session = null;
+        currentSocket = null;
+        generation += 1;
+        try {
+          socket.close(1000, 'Room left');
+        } catch {
+          // The terminal acknowledgement already retired this socket generation.
+        }
+        transition('idle');
       } else if (frame.type === 'ack' && pendingCommand && frame.commandId === pendingCommand.commandId) {
         const expectedAppliedRevision = pendingCommand.expectedRevision + 1;
         if (frame.revision !== expectedAppliedRevision) {
@@ -777,7 +826,23 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
         setPendingCommand(null);
       }
 
-      if (frame.type === 'error' && state !== 'connected') {
+      if (frame.type === 'error' && frame.code === 'seat-removed') {
+        clearReconnectTimer();
+        clearSyncTimer();
+        setPendingCommand(null);
+        lastSnapshotRevision = -1;
+        session = null;
+        currentSocket = null;
+        generation += 1;
+        try {
+          socket.close(1000, 'Room seat removed');
+        } catch {
+          // The terminal server result already retired this socket generation.
+        }
+        transition('idle');
+      }
+
+      if (frame.type === 'error' && frame.code !== 'seat-removed' && state !== 'connected') {
         clearSyncTimer();
         setPendingCommand(null);
         session = null;
@@ -792,8 +857,12 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
       }
       options.onFrame(frame);
       if (snapshotFrame && currentSocket === socket) {
-        if (!desiredVisible && hiddenPresenceGeneration !== socketGeneration) {
-          if (send({ type: 'set-presence', visible: false })) hiddenPresenceGeneration = socketGeneration;
+        if (presenceSentGeneration !== socketGeneration) {
+          if (send({ type: 'set-presence', visible: desiredVisible })) {
+            presenceSentGeneration = socketGeneration;
+            lastPresenceVisible = desiredVisible;
+            if (desiredVisible) lastResumeAt = dependencies.clock();
+          }
         }
         replayPendingCommand(socket, socketGeneration);
       }
@@ -909,9 +978,16 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
     const socket = currentSocket;
     if (socket?.readyState === socketOpen) {
       const timestamp = dependencies.clock();
-      if (timestamp - lastResumeAt < resumeCoalesceMs) return;
-      lastResumeAt = timestamp;
-      send({ type: 'set-presence', visible: true });
+      if (
+        presenceSentGeneration === generation &&
+        lastPresenceVisible === true &&
+        timestamp - lastResumeAt < resumeCoalesceMs
+      ) return;
+      if (send({ type: 'set-presence', visible: true })) {
+        presenceSentGeneration = generation;
+        lastPresenceVisible = true;
+        lastResumeAt = timestamp;
+      }
       return;
     }
     if (socket?.readyState === socketConnecting) return;
@@ -926,7 +1002,10 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
       resume();
       return;
     }
-    if (send({ type: 'set-presence', visible: false })) hiddenPresenceGeneration = generation;
+    if (send({ type: 'set-presence', visible: false })) {
+      presenceSentGeneration = generation;
+      lastPresenceVisible = false;
+    }
   }
 
   function setOnline(nextOnline: boolean): void {
