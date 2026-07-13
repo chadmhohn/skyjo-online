@@ -765,6 +765,34 @@ export class AccountStore {
     return this.formatGame(row);
   }
 
+  getCompletedGameJournalBySourceKey(sourceKey) {
+    if (typeof sourceKey !== 'string' || !sourceKey) return null;
+    const row = this.db
+      .prepare(
+        `SELECT id, source_key, room_code, completed_at, final_state_json
+         FROM games
+         WHERE source_key = ?`
+      )
+      .get(sourceKey);
+    if (!row) return null;
+    let state;
+    try {
+      state = JSON.parse(row.final_state_json);
+    } catch (cause) {
+      throw new Error('Completed game journal state is invalid.', { cause });
+    }
+    if (!isRecord(state) || !Array.isArray(state.players) || state.phase !== 'game-over') {
+      throw new Error('Completed game journal state is incomplete.');
+    }
+    return {
+      id: row.id,
+      sourceKey: row.source_key,
+      roomCode: row.room_code ?? null,
+      completedAt: Number(row.completed_at),
+      state
+    };
+  }
+
   getGameRowsForUser(user) {
     if (user.role === 'admin') return this.db.prepare('SELECT * FROM games ORDER BY completed_at DESC').all();
     return this.db

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   PersistedGameStateValidationError,
   normalizePersistedGameState
@@ -251,6 +252,17 @@ function normalizeRoomGameState(value, roomIndex, status, players, readyForNextR
   }
 }
 
+function deriveLegacyGameSessionId({ code, hostId, players }) {
+  // Only stable, normalized room identity participates so a lost rewrite can
+  // be derived again after later gameplay without changing the source key.
+  const canonicalRoomIdentity = JSON.stringify([
+    code,
+    hostId,
+    players.map((player) => [player.id, player.userId ?? null])
+  ]);
+  return `legacy-${createHash('sha256').update(canonicalRoomIdentity).digest('hex')}`;
+}
+
 function normalizeRoom(value, roomIndex) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} must be an object.`);
@@ -339,6 +351,15 @@ function normalizeRoom(value, roomIndex) {
   if (value.gameSessionId !== undefined && value.gameSessionId !== null && typeof value.gameSessionId !== 'string') {
     throw formatError(`Room ${roomIndex} game session id must be a string or null.`);
   }
+  const persistedGameSessionId = optionalBoundedIdentifier(
+    value.gameSessionId,
+    `Room ${roomIndex} game session id`
+  );
+  const gameSessionId = persistedGameSessionId ?? (
+    state !== null && (status === 'playing' || status === 'finished')
+      ? deriveLegacyGameSessionId({ code, hostId, players })
+      : null
+  );
 
   return {
     roomVersion: 2,
@@ -354,7 +375,7 @@ function normalizeRoom(value, roomIndex) {
     status,
     updatedAt,
     completedGameId: optionalBoundedIdentifier(value.completedGameId, `Room ${roomIndex} completed game id`),
-    gameSessionId: optionalBoundedIdentifier(value.gameSessionId, `Room ${roomIndex} game session id`),
+    gameSessionId,
     revision,
     recentCommandIds,
     resetAliases,
@@ -485,6 +506,13 @@ export function normalizeRoomsDocument(value, options = {}) {
   }
 
   const normalizedRooms = document.rooms.map((room, index) => normalizeRoom(room, index));
+  const backfilledGameSessionId = normalizedRooms.some((room, index) => {
+    const persistedGameSessionId = optionalBoundedIdentifier(
+      document.rooms[index].gameSessionId,
+      `Room ${index} game session id`
+    );
+    return room.gameSessionId !== persistedGameSessionId;
+  });
   const roomCodes = new Set();
   for (const room of normalizedRooms) {
     if (roomCodes.has(room.code)) {
@@ -508,8 +536,83 @@ export function normalizeRoomsDocument(value, options = {}) {
 
   return {
     ...document,
+    legacy: document.legacy || backfilledGameSessionId,
     rooms: pruneStale ? normalizedRooms.filter((room) => room.updatedAt >= now - staleMs) : normalizedRooms
   };
+}
+
+export function reconcileCompletedRoomJournals(rooms, findJournalBySourceKey) {
+  if (!rooms || typeof rooms.values !== 'function') {
+    throw new TypeError('rooms must provide a values() iterator');
+  }
+  if (typeof findJournalBySourceKey !== 'function') {
+    throw new TypeError('findJournalBySourceKey must be a function');
+  }
+
+  const recoveryPlans = [];
+  for (const room of rooms.values()) {
+    if (!room?.state || room.status === 'waiting' || !room.gameSessionId) continue;
+    const sourceKey = `multi:${room.gameSessionId}`;
+    const journal = findJournalBySourceKey(sourceKey);
+    if (journal === null || journal === undefined) continue;
+    if (!isRecord(journal)) {
+      throw formatError(`Room ${room.code} completion journal is invalid.`, 'INVALID_COMPLETION_JOURNAL');
+    }
+    const gameId = boundedIdentifier(journal.id, `Room ${room.code} completion journal game id`);
+    if (journal.sourceKey !== sourceKey || journal.roomCode !== room.code) {
+      throw formatError(`Room ${room.code} completion journal identity does not match.`, 'INVALID_COMPLETION_JOURNAL');
+    }
+    const completedAt = optionalTimestamp(journal.completedAt, `Room ${room.code} completion journal timestamp`);
+    if (completedAt === null) {
+      throw formatError(`Room ${room.code} completion journal timestamp is missing.`, 'INVALID_COMPLETION_JOURNAL');
+    }
+    let state;
+    try {
+      state = normalizePersistedGameState(journal.state, {
+        rosterPlayerIds: room.players.map((player) => player.id),
+        roomStatus: 'finished',
+        readyForNextRoundPlayerIds: []
+      });
+    } catch (cause) {
+      throw formatError(
+        `Room ${room.code} completion journal state is invalid.`,
+        'INVALID_COMPLETION_JOURNAL',
+        { cause }
+      );
+    }
+    if (state.phase !== 'game-over') {
+      throw formatError(`Room ${room.code} completion journal is not terminal.`, 'INVALID_COMPLETION_JOURNAL');
+    }
+    if (room.completedGameId && room.completedGameId !== gameId) {
+      throw formatError(`Room ${room.code} completion journal conflicts with persisted history.`, 'INVALID_COMPLETION_JOURNAL');
+    }
+
+    if (room.completedGameId === gameId) {
+      if (room.status !== 'finished' || !isDeepStrictEqual(room.state, state)) {
+        throw formatError(`Room ${room.code} completed state conflicts with its journal.`, 'INVALID_COMPLETION_JOURNAL');
+      }
+      continue;
+    }
+    if (!Number.isSafeInteger(room.revision) || room.revision >= Number.MAX_SAFE_INTEGER) {
+      throw formatError(`Room ${room.code} cannot advance its recovery revision.`, 'INVALID_COMPLETION_JOURNAL');
+    }
+    recoveryPlans.push({
+      room,
+      state,
+      gameId,
+      completedAt
+    });
+  }
+
+  for (const plan of recoveryPlans) {
+    plan.room.revision += 1;
+    plan.room.state = plan.state;
+    plan.room.status = 'finished';
+    plan.room.completedGameId = plan.gameId;
+    plan.room.readyForNextRoundPlayerIds = [];
+    plan.room.updatedAt = Math.max(plan.room.updatedAt, plan.completedAt);
+  }
+  return recoveryPlans.length;
 }
 
 export function resolveRoomsFilePath(env = process.env) {

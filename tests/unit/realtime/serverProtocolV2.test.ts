@@ -3,14 +3,16 @@ import {
   normalizeRoomsDocument,
   serializeRooms
 } from '../../../server-room-persistence.mjs';
-import { createMultiplayerGame } from '../../../src/game';
+import { createMultiplayerGame, replaceCard, revealOpeningCard } from '../../../src/game';
 import {
+  createRoomSnapshot,
   MAX_RECENT_COMMAND_RECEIPTS,
   MULTIPLAYER_PROTOCOL_VERSION,
   type ClientCommand,
   type CommandReceipt,
   type GameCommand
 } from '../../../src/protocolV2';
+import { isMultiplayerRoomSnapshot } from '../../../src/roomConnection';
 import {
   createProtocolV2MessageHandler,
   createResetAliasIndex,
@@ -19,6 +21,7 @@ import {
   rebuildResetAliasIndex,
   retainCommandReceiptsForResetAliases,
   RESET_ALIAS_TTL_MS,
+  type ProtocolV2CompletedGameInput,
   type ProtocolV2HandlerOptions,
   type ProtocolV2Room,
   type ProtocolV2Socket
@@ -34,6 +37,10 @@ const OTHER_COMMAND_ID = '10000000-0000-4000-8000-000000000002';
 
 function commandIdAt(index: number): string {
   return `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+}
+
+function playerIdAt(index: number): string {
+  return `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
 }
 
 function persistedDigest(canonicalAction: string): string {
@@ -149,7 +156,7 @@ function harness(roomValue = room()) {
     json: [] as Array<{ socket: ProtocolV2Socket; payload: Record<string, unknown> }>,
     persisted: 0,
     notified: 0,
-    completed: [] as unknown[],
+    completed: [] as ProtocolV2CompletedGameInput[],
     completionErrors: [] as unknown[],
     randomValues: [] as number[],
     uuidValues: [] as string[]
@@ -196,7 +203,7 @@ function harness(roomValue = room()) {
     },
     recordCompletedGame: (input) => {
       calls.completed.push(input);
-      return { id: 'completed-1' };
+      return { id: 'completed-1', recovered: false, state: input.state };
     },
     reportCompletedGameError: (error) => calls.completionErrors.push(error),
     roomPlayer: (ws) => {
@@ -222,6 +229,76 @@ function harness(roomValue = room()) {
 
 function lastPayload(value: ReturnType<typeof harness>): Record<string, unknown> {
   return value.calls.json.at(-1)?.payload || {};
+}
+
+function completionRoom(playerCount: 2 | 4 | 8): ProtocolV2Room {
+  const players = Array.from({ length: playerCount }, (_, index) =>
+    player(playerIdAt(index), index === 0 ? 'Host' : `Player ${index + 1}`, index === 0)
+  );
+  let state = createMultiplayerGame(players, 1, null, () => 0.5);
+  const remainingCards = [
+    ...state.players.flatMap((item) => item.grid),
+    ...state.drawPile,
+    ...state.discardPile
+  ].map((card) => ({ ...card, faceUp: false, removed: false }));
+  const takeCard = (value: number) => {
+    const index = remainingCards.findIndex((card) => card.value === value);
+    if (index < 0) throw new Error(`Completion fixture is missing a ${value} card.`);
+    return remainingCards.splice(index, 1)[0];
+  };
+  const hostGrid = [12, 12, 12, 12, 11, 11, 11, 11, 10, 10, 10, 10].map(takeCard);
+  const closerGrid = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(takeCard);
+  state.players = state.players.map((item, index) => ({
+    ...item,
+    grid: index === 0 ? hostGrid : index === 1 ? closerGrid : remainingCards.splice(0, 12),
+    roundScore: 0
+  }));
+  const discard = remainingCards.pop();
+  if (!discard) throw new Error('Completion fixture is missing a discard card.');
+  state.drawPile = remainingCards;
+  state.discardPile = [{ ...discard, faceUp: true }];
+  state.openingRevealCounts = Object.fromEntries(players.map((item) => [item.id, 0]));
+  for (let index = 0; index < playerCount * 2; index += 1) {
+    const activePlayer = state.players[state.currentPlayerIndex];
+    const cardIndex = activePlayer.grid.findIndex((card) => !card.faceUp && !card.removed);
+    if (cardIndex < 0) throw new Error('Completion fixture could not reveal an opening card.');
+    state = revealOpeningCard(state, cardIndex);
+  }
+  state.players = state.players.map((item, index) => {
+    if (index !== 1) return item;
+    const grid = item.grid.map((card) => ({ ...card, faceUp: true }));
+    return {
+      ...item,
+      grid,
+      roundScore: grid.reduce((total, card) => total + card.value, 0)
+    };
+  });
+  state = {
+    ...state,
+    currentPlayerIndex: 0,
+    phase: 'choose-replacement',
+    selectedSource: 'discard',
+    drawnCard: null,
+    roundCloserId: players[1].id,
+    finalTurnPlayerIds: [players[0].id]
+  };
+  return room({
+    gameSessionId: 'completion-session',
+    players,
+    revision: 7,
+    state,
+    status: 'playing'
+  });
+}
+
+function privateCardIds(candidate: ProtocolV2Room): string[] {
+  if (!candidate.state) return [];
+  return [
+    ...candidate.state.players.flatMap((item) => item.grid.map((card) => card.id)),
+    ...candidate.state.drawPile.map((card) => card.id),
+    ...candidate.state.discardPile.map((card) => card.id),
+    ...(candidate.state.drawnCard ? [candidate.state.drawnCard.id] : [])
+  ];
 }
 
 describe('protocol v2 room admission', () => {
@@ -710,6 +787,441 @@ describe('protocol v2 command ordering and receipts', () => {
     expect(broken.send).toHaveBeenCalledOnce();
     expect(healthy.send).toHaveBeenCalledOnce();
     expect(JSON.parse((healthy.send as ReturnType<typeof vi.fn>).mock.calls[0][0])).toMatchObject({ revision: 1 });
+  });
+});
+
+describe('protocol v2 completed-game atomicity', () => {
+  const playerCounts = [2, 4, 8] as const;
+
+  it.each(playerCounts)('commits a genuine %i-player completion once and redacts every final snapshot', (playerCount) => {
+    const target = completionRoom(playerCount);
+    expect(() => normalizeRoomsDocument(serializeRooms(new Map([[target.code, target]]), 500), {
+      now: 500,
+      pruneStale: false
+    })).not.toThrow();
+    const value = harness(target);
+    for (let index = 1; index < playerCount; index += 1) {
+      const member = target.players[index];
+      target.clients.add(socket(member.id, member.userId || '', member.name).socket);
+    }
+    const finalSnapshots: ReturnType<typeof createRoomSnapshot>[] = [];
+    value.options.broadcastRoom = (candidate) => {
+      value.calls.broadcasts.push(candidate);
+      for (const client of candidate.clients) {
+        if (client.playerId) finalSnapshots.push(createRoomSnapshot(candidate, client.playerId));
+      }
+    };
+    value.options.digestAction = persistedDigest;
+    const handler = createProtocolV2MessageHandler(value.options);
+    const action: GameCommand = { type: 'replace-card', cardIndex: 0 };
+    const firstCommand = command(action, 7, COMMAND_ID);
+
+    handler(value.socket, firstCommand);
+
+    expect(value.room).toMatchObject({
+      completedGameId: 'completed-1',
+      revision: 8,
+      status: 'finished',
+      updatedAt: 500
+    });
+    expect(value.room.state).toMatchObject({
+      phase: 'game-over',
+      finalTurnPlayerIds: [],
+      roundCloserId: null,
+      roundHistory: [expect.objectContaining({ round: 1 })]
+    });
+    expect(value.room.state?.roundHistory[0].scores).toHaveLength(playerCount);
+    expect(value.room.recentCommandIds).toEqual([
+      expect.objectContaining({
+        commandId: COMMAND_ID,
+        expectedRevision: 7,
+        playerId: HOST_ID,
+        revision: 8
+      })
+    ]);
+    expect(value.calls.completed).toHaveLength(1);
+    expect(value.calls.completed[0]).toMatchObject({
+      createdByUserId: `${HOST_ID}-account`,
+      mode: 'multi',
+      playerAccounts: Object.fromEntries(
+        target.players.map((member) => [member.id, member.userId || null])
+      ),
+      roomCode: 'ROOM1',
+      sourceKey: 'multi:completion-session',
+      state: { phase: 'game-over' }
+    });
+    expect(value.calls.completed[0].state).toBe(value.room.state);
+    expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toEqual([value.room]);
+    expect(value.calls.notified).toBe(1);
+    expect(value.calls.randomValues).toEqual([]);
+    expect(value.calls.uuidValues).toEqual([]);
+    expect(lastPayload(value)).toMatchObject({ type: 'ack', commandId: COMMAND_ID, revision: 8 });
+    expect(() => normalizeRoomsDocument(serializeRooms(value.rooms, 500), {
+      now: 500,
+      pruneStale: false
+    })).not.toThrow();
+
+    expect(finalSnapshots).toHaveLength(playerCount);
+    const wireJson = JSON.stringify(finalSnapshots);
+    for (const snapshot of finalSnapshots) {
+      expect(isMultiplayerRoomSnapshot(snapshot, target.code)).toBe(true);
+      expect(snapshot).toMatchObject({
+        completedGameId: 'completed-1',
+        revision: 8,
+        status: 'finished',
+        state: {
+          drawnCard: null,
+          phase: 'game-over'
+        }
+      });
+      expect(snapshot).not.toHaveProperty('clients');
+      expect(snapshot).not.toHaveProperty('gameSessionId');
+      expect(snapshot).not.toHaveProperty('recentCommandIds');
+      expect(snapshot).not.toHaveProperty('resetAliases');
+      expect(snapshot.state).not.toHaveProperty('drawPile');
+      expect(snapshot.state).toHaveProperty('drawPileCount');
+      expect(snapshot.state).toHaveProperty('discardPile');
+      for (const member of snapshot.players) expect(member).not.toHaveProperty('userId');
+    }
+    expect(wireJson).not.toContain('completion-session');
+    expect(wireJson).not.toContain('multi:completion-session');
+    for (const member of target.players) expect(wireJson).not.toContain(member.userId || 'missing-account');
+    for (const cardId of privateCardIds(value.room)) expect(wireJson).not.toContain(cardId);
+
+    handler(value.socket, firstCommand);
+    expect(value.calls.snapshots.at(-1)).toEqual({
+      socket: value.socket,
+      room: value.room,
+      options: undefined
+    });
+    expect(lastPayload(value)).toMatchObject({ type: 'ack', commandId: COMMAND_ID, revision: 8 });
+    handler(value.socket, command(action, 7, OTHER_COMMAND_ID));
+    expect(value.calls.snapshots.at(-1)).toEqual({
+      socket: value.socket,
+      room: value.room,
+      options: { type: 'resync', commandId: OTHER_COMMAND_ID, reason: 'stale-revision' }
+    });
+    expect(value.room.revision).toBe(8);
+    expect(value.calls.completed).toHaveLength(1);
+    expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toHaveLength(1);
+    expect(value.calls.notified).toBe(1);
+    expect(finalSnapshots).toHaveLength(playerCount);
+  });
+
+  it('uses the trusted semantic match flag when journal object keys are reordered', () => {
+    const value = harness(completionRoom(2));
+    value.options.recordCompletedGame = (input) => {
+      value.calls.completed.push(input);
+      const reorderedState = Object.fromEntries(
+        Object.entries(input.state).reverse()
+      ) as typeof input.state;
+      reorderedState.players = input.state.players.map((item) =>
+        Object.fromEntries(Object.entries(item).reverse()) as typeof item
+      );
+      expect(JSON.stringify(reorderedState)).not.toBe(JSON.stringify(input.state));
+      return { id: 'completed-reordered', recovered: false, state: reorderedState };
+    };
+    const handler = createProtocolV2MessageHandler(value.options);
+
+    handler(value.socket, command({ type: 'replace-card', cardIndex: 0 }, 7, COMMAND_ID));
+
+    expect(value.room).toMatchObject({
+      completedGameId: 'completed-reordered',
+      revision: 8,
+      status: 'finished'
+    });
+    expect(value.room.recentCommandIds).toEqual([
+      expect.objectContaining({ commandId: COMMAND_ID, expectedRevision: 7, revision: 8 })
+    ]);
+    expect(value.calls.completed).toHaveLength(1);
+    expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toEqual([value.room]);
+    expect(value.calls.notified).toBe(1);
+    expect(value.calls.snapshots).toEqual([]);
+    expect(lastPayload(value)).toMatchObject({ type: 'ack', commandId: COMMAND_ID, revision: 8 });
+  });
+
+  it('rolls back a failed history write completely and lets the exact command retry once', () => {
+    const value = harness(completionRoom(4));
+    const beforeDocument = serializeRooms(value.rooms, 500);
+    const beforeState = value.room.state;
+    const beforeClients = [...value.room.clients];
+    let attempts = 0;
+    value.options.recordCompletedGame = (input) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('database unavailable');
+      value.calls.completed.push(input);
+      return { id: 'completed-after-retry', recovered: false, state: input.state };
+    };
+    const handler = createProtocolV2MessageHandler(value.options);
+    const retryable = command({ type: 'replace-card', cardIndex: 0 }, 7, COMMAND_ID);
+
+    handler(value.socket, retryable);
+
+    expect(attempts).toBe(1);
+    expect(value.calls.completed).toEqual([]);
+    expect(value.calls.completionErrors).toEqual([expect.objectContaining({ message: 'database unavailable' })]);
+    expect(lastPayload(value)).toMatchObject({
+      type: 'error',
+      code: 'history-save-failed',
+      commandId: COMMAND_ID
+    });
+    expect(value.room.state).toBe(beforeState);
+    expect([...value.room.clients]).toEqual(beforeClients);
+    expect(serializeRooms(value.rooms, 500)).toEqual(beforeDocument);
+    expect(value.room).toMatchObject({ completedGameId: null, revision: 7, recentCommandIds: [] });
+    expect(value.calls.randomValues).toEqual([]);
+    expect(value.calls.uuidValues).toEqual([]);
+    expect(value.calls.persisted).toBe(0);
+    expect(value.calls.broadcasts).toEqual([]);
+    expect(value.calls.notified).toBe(0);
+    expect(value.calls.snapshots).toEqual([]);
+
+    handler(value.socket, retryable);
+
+    expect(attempts).toBe(2);
+    expect(value.calls.completed).toHaveLength(1);
+    expect(value.calls.completed[0]).toMatchObject({
+      sourceKey: 'multi:completion-session',
+      state: { phase: 'game-over' }
+    });
+    expect(value.room).toMatchObject({
+      completedGameId: 'completed-after-retry',
+      revision: 8,
+      status: 'finished'
+    });
+    expect(value.room.recentCommandIds).toEqual([
+      expect.objectContaining({ commandId: COMMAND_ID, expectedRevision: 7, revision: 8 })
+    ]);
+    expect(value.calls.randomValues).toEqual([]);
+    expect(value.calls.uuidValues).toEqual([]);
+    expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toEqual([value.room]);
+    expect(value.calls.notified).toBe(1);
+    expect(lastPayload(value)).toMatchObject({ type: 'ack', commandId: COMMAND_ID, revision: 8 });
+  });
+
+  it('fails closed without a durable game session identity instead of reusing the room code', () => {
+    const target = completionRoom(2);
+    target.gameSessionId = null;
+    const value = harness(target);
+    const beforeDocument = serializeRooms(value.rooms, 500);
+    const beforeState = value.room.state;
+
+    value.handler(value.socket, command({ type: 'replace-card', cardIndex: 0 }, 7, COMMAND_ID));
+
+    expect(value.room.state).toBe(beforeState);
+    expect(serializeRooms(value.rooms, 500)).toEqual(beforeDocument);
+    expect(value.room).toMatchObject({ completedGameId: null, gameSessionId: null, revision: 7, recentCommandIds: [] });
+    expect(value.calls.completed).toEqual([]);
+    expect(value.calls.completionErrors).toEqual([
+      expect.objectContaining({ message: 'Room ROOM1 is missing a game session id.' })
+    ]);
+    expect(value.calls.randomValues).toEqual([]);
+    expect(value.calls.uuidValues).toEqual([]);
+    expect(value.calls.persisted).toBe(0);
+    expect(value.calls.broadcasts).toEqual([]);
+    expect(value.calls.notified).toBe(0);
+    expect(value.calls.snapshots).toEqual([]);
+    expect(lastPayload(value)).toMatchObject({
+      type: 'error',
+      code: 'history-save-failed',
+      commandId: COMMAND_ID
+    });
+  });
+
+  it('recovers a DB commit after room-file loss and restart without creating a second record', () => {
+    const value = harness(completionRoom(2));
+    const beforeDocument = serializeRooms(value.rooms, 500);
+    const storedGames = new Map<string, { id: string; input: ProtocolV2CompletedGameInput }>();
+    const committedInputs: ProtocolV2CompletedGameInput[] = [];
+    let attempts = 0;
+    const recordCompletedGame = (input: ProtocolV2CompletedGameInput) => {
+      attempts += 1;
+      let stored = storedGames.get(input.sourceKey);
+      if (!stored) {
+        stored = { id: 'completed-idempotent', input };
+        storedGames.set(input.sourceKey, stored);
+        committedInputs.push(input);
+      }
+      if (attempts === 1) throw new Error('connection lost after commit');
+      return {
+        id: stored.id,
+        recovered: JSON.stringify(stored.input.state) !== JSON.stringify(input.state),
+        state: stored.input.state
+      };
+    };
+    value.options.recordCompletedGame = recordCompletedGame;
+    const handler = createProtocolV2MessageHandler(value.options);
+    const retryable = command({ type: 'replace-card', cardIndex: 0 }, 7, COMMAND_ID);
+
+    handler(value.socket, retryable);
+
+    expect(attempts).toBe(1);
+    expect(storedGames.size).toBe(1);
+    expect(committedInputs).toHaveLength(1);
+    expect(storedGames.get('multi:completion-session')?.input).toBe(committedInputs[0]);
+    expect(serializeRooms(value.rooms, 500)).toEqual(beforeDocument);
+    expect(value.room).toMatchObject({ completedGameId: null, revision: 7, recentCommandIds: [] });
+    expect(value.calls.persisted).toBe(0);
+    expect(value.calls.broadcasts).toEqual([]);
+    expect(value.calls.notified).toBe(0);
+    expect(lastPayload(value)).toMatchObject({ code: 'history-save-failed', commandId: COMMAND_ID });
+    const divergentRetryState = replaceCard(value.room.state!, 1);
+    expect(JSON.stringify(divergentRetryState)).not.toBe(JSON.stringify(committedInputs[0].state));
+
+    const restoredRoom = normalizeRoomsDocument(beforeDocument, {
+      now: 500,
+      pruneStale: false
+    }).rooms[0] as ProtocolV2Room;
+    const restarted = harness(restoredRoom);
+    restarted.options.recordCompletedGame = recordCompletedGame;
+    const restartedHandler = createProtocolV2MessageHandler(restarted.options);
+    const differentRetry = command({ type: 'replace-card', cardIndex: 1 }, 7, OTHER_COMMAND_ID);
+    restartedHandler(restarted.socket, differentRetry);
+    restartedHandler(restarted.socket, differentRetry);
+
+    expect(attempts).toBe(2);
+    expect(storedGames.size).toBe(1);
+    expect(committedInputs).toHaveLength(1);
+    expect(value.room).toMatchObject({ completedGameId: null, revision: 7, status: 'playing' });
+    expect(restarted.room).toMatchObject({
+      completedGameId: 'completed-idempotent',
+      recentCommandIds: [],
+      revision: 8,
+      status: 'finished'
+    });
+    expect(restarted.room.state).toEqual(committedInputs[0].state);
+    expect(restarted.room.state).not.toEqual(divergentRetryState);
+    expect(restarted.calls.persisted).toBe(1);
+    expect(restarted.calls.broadcasts).toEqual([restarted.room]);
+    expect(restarted.calls.notified).toBe(0);
+    expect(restarted.calls.json).toEqual([]);
+    expect(restarted.calls.snapshots).toEqual([
+      {
+        socket: restarted.socket,
+        room: restarted.room,
+        options: { type: 'resync', commandId: OTHER_COMMAND_ID, reason: 'completion-recovered' }
+      },
+      {
+        socket: restarted.socket,
+        room: restarted.room,
+        options: { type: 'resync', commandId: OTHER_COMMAND_ID, reason: 'stale-revision' }
+      }
+    ]);
+  });
+
+  it('serializes two sockets racing the same seat and revision without divergent effects', () => {
+    const value = harness(completionRoom(8));
+    const racer = socket(HOST_ID, `${HOST_ID}-account`, 'Host').socket;
+    value.room.clients.add(racer);
+    const finalSnapshots: ReturnType<typeof createRoomSnapshot>[] = [];
+    const resyncSnapshots: ReturnType<typeof createRoomSnapshot>[] = [];
+    value.options.broadcastRoom = (candidate) => {
+      value.calls.broadcasts.push(candidate);
+      for (const client of candidate.clients) {
+        if (client.playerId) finalSnapshots.push(createRoomSnapshot(candidate, client.playerId));
+      }
+    };
+    value.options.sendRoomSnapshot = (client, candidate, snapshotOptions) => {
+      value.calls.snapshots.push({ socket: client, room: candidate, options: snapshotOptions });
+      if (client.playerId) resyncSnapshots.push(createRoomSnapshot(candidate, client.playerId));
+    };
+    const handler = createProtocolV2MessageHandler(value.options);
+    const action: GameCommand = { type: 'replace-card', cardIndex: 0 };
+
+    handler(value.socket, command(action, 7, COMMAND_ID));
+    handler(racer, command(action, 7, OTHER_COMMAND_ID));
+
+    expect(value.room).toMatchObject({ completedGameId: 'completed-1', revision: 8, status: 'finished' });
+    expect(value.room.recentCommandIds).toEqual([
+      expect.objectContaining({ commandId: COMMAND_ID, expectedRevision: 7, revision: 8 })
+    ]);
+    expect(value.calls.completed).toHaveLength(1);
+    expect(value.calls.completed[0].sourceKey).toBe('multi:completion-session');
+    expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toEqual([value.room]);
+    expect(value.calls.notified).toBe(1);
+    expect(value.calls.randomValues).toEqual([]);
+    expect(value.calls.uuidValues).toEqual([]);
+    expect(value.calls.json).toEqual([
+      {
+        socket: value.socket,
+        payload: {
+          type: 'ack',
+          protocolVersion: 2,
+          commandId: COMMAND_ID,
+          revision: 8
+        }
+      }
+    ]);
+    expect(value.calls.snapshots).toEqual([
+      {
+        socket: racer,
+        room: value.room,
+        options: { type: 'resync', commandId: OTHER_COMMAND_ID, reason: 'stale-revision' }
+      }
+    ]);
+    expect(finalSnapshots).toHaveLength(2);
+    expect(resyncSnapshots).toEqual([finalSnapshots[0]]);
+    expect(isMultiplayerRoomSnapshot(resyncSnapshots[0], value.room.code)).toBe(true);
+  });
+
+  it('stops a same-revision racing blind draw before the loser can consume server RNG', () => {
+    const players = [player(HOST_ID, 'Host', true), player(GUEST_ID, 'Guest')];
+    let state = createMultiplayerGame(players, 1, null, () => 0.5);
+    for (let index = 0; index < players.length * 2; index += 1) {
+      const activePlayer = state.players[state.currentPlayerIndex];
+      const cardIndex = activePlayer.grid.findIndex((card) => !card.faceUp && !card.removed);
+      state = revealOpeningCard(state, cardIndex);
+    }
+    state.discardPile = [
+      ...state.discardPile,
+      ...state.drawPile.map((card) => ({ ...card, faceUp: true }))
+    ];
+    state.drawPile = [];
+    state.currentPlayerIndex = 0;
+    const value = harness(room({ players, revision: 3, state, status: 'playing' }));
+    const racer = socket(HOST_ID, `${HOST_ID}-account`, 'Host').socket;
+    value.room.clients.add(racer);
+    const handler = createProtocolV2MessageHandler(value.options);
+    const action: GameCommand = { type: 'draw-blind' };
+
+    handler(value.socket, command(action, 3, COMMAND_ID));
+    const winnerRandomCalls = value.calls.randomValues.length;
+    handler(racer, command(action, 3, OTHER_COMMAND_ID));
+
+    expect(winnerRandomCalls).toBeGreaterThan(0);
+    expect(value.calls.randomValues).toHaveLength(winnerRandomCalls);
+    expect(value.room).toMatchObject({ revision: 4, status: 'playing' });
+    expect(value.room.state).toMatchObject({ phase: 'choose-replacement', selectedSource: 'draw' });
+    expect(value.room.recentCommandIds).toEqual([
+      expect.objectContaining({ commandId: COMMAND_ID, expectedRevision: 3, revision: 4 })
+    ]);
+    expect(value.calls.completed).toEqual([]);
+    expect(value.calls.persisted).toBe(1);
+    expect(value.calls.broadcasts).toEqual([value.room]);
+    expect(value.calls.notified).toBe(1);
+    expect(value.calls.json).toEqual([
+      {
+        socket: value.socket,
+        payload: {
+          type: 'ack',
+          protocolVersion: 2,
+          commandId: COMMAND_ID,
+          revision: 4
+        }
+      }
+    ]);
+    expect(value.calls.snapshots).toEqual([
+      {
+        socket: racer,
+        room: value.room,
+        options: { type: 'resync', commandId: OTHER_COMMAND_ID, reason: 'stale-revision' }
+      }
+    ]);
   });
 });
 

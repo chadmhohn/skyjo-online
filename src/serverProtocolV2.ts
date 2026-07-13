@@ -86,6 +86,12 @@ export interface ProtocolV2CompletedGameInput {
   state: GameState;
 }
 
+export interface ProtocolV2RecordedGame {
+  id: string;
+  recovered: boolean;
+  state: GameState;
+}
+
 export interface ProtocolV2HandlerOptions {
   allPlayersReadyForNextRound: (room: ProtocolV2Room) => boolean;
   appendRoomChatMessage: (room: ProtocolV2Room, player: RoomPlayer, text: string) => unknown;
@@ -106,7 +112,7 @@ export interface ProtocolV2HandlerOptions {
   persistRoomsSoon: () => unknown;
   random: RandomSource;
   randomUuid: () => string;
-  recordCompletedGame: (input: ProtocolV2CompletedGameInput) => { id: string };
+  recordCompletedGame: (input: ProtocolV2CompletedGameInput) => ProtocolV2RecordedGame;
   reportCompletedGameError: (error: unknown) => unknown;
   roomPlayer: (socket: ProtocolV2Socket) => ProtocolV2RoomPlayer | null;
   rooms: Map<string, ProtocolV2Room>;
@@ -482,7 +488,15 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         commandError(sendJson, ws, reduction.message, command.commandId, 'illegal-move');
         return;
       }
+      let committedState = reduction.state;
+      let recoveredCompletion = false;
       if (reduction.state.phase === 'game-over' && !room.completedGameId) {
+        const gameSessionId = room.gameSessionId;
+        if (!gameSessionId) {
+          reportCompletedGameError(new Error(`Room ${room.code} is missing a game session id.`));
+          commandError(sendJson, ws, 'Could not save the completed game history.', command.commandId, 'history-save-failed');
+          return;
+        }
         try {
           const playerAccounts = Object.fromEntries(
             room.players.map((roomPlayerValue) => [roomPlayerValue.id, roomPlayerValue.userId || null])
@@ -493,8 +507,19 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
             roomCode: room.code,
             createdByUserId: player.userId || null,
             playerAccounts,
-            sourceKey: `multi:${room.gameSessionId || room.code}`
+            sourceKey: `multi:${gameSessionId}`
           });
+          const committedPlayerIds = game.state.players.map((committedPlayer) => committedPlayer.id);
+          const roomPlayerIds = room.players.map((roomPlayerValue) => roomPlayerValue.id);
+          if (
+            game.state.phase !== 'game-over' ||
+            committedPlayerIds.length !== roomPlayerIds.length ||
+            committedPlayerIds.some((playerId, index) => playerId !== roomPlayerIds[index])
+          ) {
+            throw new Error('Completed game journal state does not match the room roster.');
+          }
+          recoveredCompletion = game.recovered;
+          committedState = game.state;
           room.completedGameId = game.id;
         } catch (error) {
           reportCompletedGameError(error);
@@ -502,20 +527,30 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
           return;
         }
       }
-      room.state = reduction.state;
+      room.state = committedState;
       room.readyForNextRoundPlayerIds =
-        reduction.state.phase === 'round-over' || reduction.state.phase === 'game-over'
+        committedState.phase === 'round-over' || committedState.phase === 'game-over'
           ? []
           : normalizedReadyIds(room);
-      room.status = reduction.state.phase === 'game-over' ? 'finished' : 'playing';
+      room.status = committedState.phase === 'game-over' ? 'finished' : 'playing';
       room.revision = nextRevision;
       room.updatedAt = timestamp;
       player.lastSeenAt = timestamp;
+      if (recoveredCompletion) {
+        persistRoomsSoon();
+        broadcastRoom(room);
+        sendRoomSnapshot(ws, room, {
+          type: 'resync',
+          commandId: command.commandId,
+          reason: 'completion-recovered'
+        });
+        return;
+      }
       commitReceipt(room, receipt, timestamp);
       persistRoomsSoon();
       broadcastRoom(room);
       acknowledge(ws, receipt);
-      notifyAwayPlayersAfterMove(room, player, reduction.state);
+      notifyAwayPlayersAfterMove(room, player, committedState);
       return;
     }
 

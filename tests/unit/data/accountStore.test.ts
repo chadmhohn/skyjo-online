@@ -128,6 +128,14 @@ describe('account and stats persistence', () => {
     const game = store!.recordCompletedGame(input);
     const duplicate = store!.recordCompletedGame(input);
     expect(duplicate.id).toBe(game.id);
+    expect(store!.getCompletedGameJournalBySourceKey(input.sourceKey)).toEqual({
+      id: game.id,
+      sourceKey: input.sourceKey,
+      roomCode: input.roomCode,
+      completedAt: fixedNow,
+      state: input.state
+    });
+    expect(store!.getCompletedGameJournalBySourceKey('multi:missing')).toBeNull();
     expect(store!.listVisibleGames(ada)).toHaveLength(1);
     expect(store!.getVisibleGame(ada, game.id)?.rounds).toHaveLength(4);
     expect(store!.getVisibleGame(ada, game.id)?.finishedByAi).toBe(false);

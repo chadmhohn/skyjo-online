@@ -19,10 +19,12 @@ import {
   loadRoomsSnapshotFromDisk,
   normalizeRoomsDocument,
   parseRoomsDocument,
+  reconcileCompletedRoomJournals,
   resolveRoomsFilePath,
   saveRoomsToDisk,
   serializeRooms
 } from '../../../server-room-persistence.mjs';
+import { createAccountStore } from '../../../server-account-store.mjs';
 import { createPersistenceHealthTracker } from '../../../server-persistence-health.mjs';
 import {
   createMultiplayerGame,
@@ -71,8 +73,8 @@ function room(updatedAt = fixedNow, code = 'ABCDE') {
     state: null as GameState | null,
     status: 'waiting' as 'waiting' | 'playing' | 'finished',
     updatedAt,
-    completedGameId: 'game-1',
-    gameSessionId: 'session-1',
+    completedGameId: 'game-1' as string | null,
+    gameSessionId: 'session-1' as string | null,
     revision: 0,
     recentCommandIds: [] as Array<{
       commandId: string;
@@ -249,6 +251,226 @@ describe('room persistence', () => {
     expect(restored[0].state).not.toBe(state);
     expect(restored[0].status).toBe(status);
     expect(restored[0].readyForNextRoundPlayerIds).toEqual(value.readyForNextRoundPlayerIds);
+  });
+
+  it('deterministically backfills missing active session ids without assigning one to waiting rooms', () => {
+    const active = roomWithState(activeBlindDrawState(), 'playing');
+    const missingSession = serializeRooms(new Map([[active.code, active]]), fixedNow);
+    delete (missingSession.rooms[0] as { gameSessionId?: unknown }).gameSessionId;
+    for (const persistedPlayer of missingSession.rooms[0].players) {
+      delete (persistedPlayer as { joinedAt?: unknown }).joinedAt;
+    }
+
+    const first = normalizeRoomsDocument(structuredClone(missingSession), { now: fixedNow + 1, pruneStale: false });
+    const second = normalizeRoomsDocument(structuredClone(missingSession), { now: fixedNow + 1, pruneStale: false });
+    const changedRuntimeState = structuredClone(missingSession);
+    changedRuntimeState.rooms[0].updatedAt += 1;
+    changedRuntimeState.rooms[0].status = 'finished';
+    changedRuntimeState.rooms[0].state = completedState(true);
+    const changedRuntime = normalizeRoomsDocument(changedRuntimeState, { now: fixedNow + 1, pruneStale: false });
+    const changedIdentity = structuredClone(missingSession);
+    changedIdentity.rooms[0].players[1].userId = 'different-account';
+    const changedRoom = normalizeRoomsDocument(changedIdentity, { now: fixedNow + 1, pruneStale: false });
+
+    expect(first.legacy).toBe(true);
+    expect(first.rooms[0].gameSessionId).toMatch(/^legacy-[a-f0-9]{64}$/);
+    expect(first.rooms[0].gameSessionId).toHaveLength('legacy-'.length + 64);
+    expect(first.rooms[0].gameSessionId).toBe(second.rooms[0].gameSessionId);
+    expect(changedRuntime.rooms[0].gameSessionId).toBe(first.rooms[0].gameSessionId);
+    expect(changedRoom.rooms[0].gameSessionId).not.toBe(first.rooms[0].gameSessionId);
+
+    const finished = roomWithState(completedState(true), 'finished');
+    const missingFinishedSession = serializeRooms(new Map([[finished.code, finished]]), fixedNow);
+    delete (missingFinishedSession.rooms[0] as { gameSessionId?: unknown }).gameSessionId;
+    const normalizedFinished = normalizeRoomsDocument(missingFinishedSession, { now: fixedNow + 1, pruneStale: false });
+    expect(normalizedFinished.legacy).toBe(true);
+    expect(normalizedFinished.rooms[0].gameSessionId).toBe(first.rooms[0].gameSessionId);
+
+    const waiting = serializeRooms(new Map([['ABCDE', room()]]), fixedNow);
+    delete (waiting.rooms[0] as { gameSessionId?: unknown }).gameSessionId;
+    const normalizedWaiting = normalizeRoomsDocument(waiting, { now: fixedNow + 1, pruneStale: false });
+    expect(normalizedWaiting.legacy).toBe(false);
+    expect(normalizedWaiting.rooms[0].gameSessionId).toBeNull();
+  });
+
+  it('marks a backfilled session for rewrite and restores it as current persistence', async () => {
+    const active = roomWithState(activeBlindDrawState(), 'playing');
+    const missingSession = serializeRooms(new Map([[active.code, active]]), fixedNow);
+    delete (missingSession.rooms[0] as { gameSessionId?: unknown }).gameSessionId;
+    await fs.writeFile(roomsFile, JSON.stringify(missingSession), 'utf8');
+
+    const backfilled = await loadRoomsSnapshotFromDisk(roomsFile, { now: fixedNow + 1 });
+    const gameSessionId = backfilled.rooms[0].gameSessionId;
+    expect(backfilled).toMatchObject({ legacy: true, missing: false });
+    expect(gameSessionId).toMatch(/^legacy-[a-f0-9]{64}$/);
+
+    const restoredRoomMap = new Map(
+      backfilled.rooms.map((restoredRoom: { code: string }) => [restoredRoom.code, restoredRoom])
+    );
+    await saveRoomsToDisk(restoredRoomMap, roomsFile);
+    const rewritten = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
+    expect(rewritten.rooms[0].gameSessionId).toBe(gameSessionId);
+
+    const current = await loadRoomsSnapshotFromDisk(roomsFile, { now: fixedNow + 2 });
+    expect(current).toMatchObject({ legacy: false, missing: false });
+    expect(current.rooms[0].gameSessionId).toBe(gameSessionId);
+  });
+
+  it('recovers an exact SQLite terminal journal before accepting a stale pre-final room', async () => {
+    const active = roomWithState(activeBlindDrawState(), 'playing');
+    active.completedGameId = null;
+    active.gameSessionId = 'crash-session';
+    active.revision = 12;
+    const preFinalDocument = serializeRooms(new Map([[active.code, active]]), fixedNow);
+    const terminalState = completedState(true);
+    const store = await createAccountStore({
+      filePath: path.join(tempDir, 'completion-journal.sqlite'),
+      now: () => fixedNow + 100
+    });
+
+    try {
+      const game = store.recordCompletedGame({
+        mode: 'multi',
+        state: terminalState,
+        roomCode: active.code,
+        playerAccounts: {},
+        sourceKey: 'multi:crash-session'
+      });
+      expect(store.db.prepare('SELECT COUNT(*) AS count FROM games').get().count).toBe(1);
+
+      const restored = normalizeRoomsDocument(preFinalDocument, {
+        now: fixedNow + 101,
+        pruneStale: false
+      }).rooms[0];
+      const restoredRooms = new Map([[restored.code, restored]]);
+      const reconciled = reconcileCompletedRoomJournals(
+        restoredRooms,
+        (sourceKey: string) => store.getCompletedGameJournalBySourceKey(sourceKey)
+      );
+
+      expect(reconciled).toBe(1);
+      expect(restored).toMatchObject({
+        completedGameId: game.id,
+        gameSessionId: 'crash-session',
+        readyForNextRoundPlayerIds: [],
+        revision: 13,
+        status: 'finished',
+        updatedAt: fixedNow + 100
+      });
+      expect(restored.state).toEqual(terminalState);
+      expect(reconcileCompletedRoomJournals(
+        restoredRooms,
+        (sourceKey: string) => store.getCompletedGameJournalBySourceKey(sourceKey)
+      )).toBe(0);
+      expect(restored.revision).toBe(13);
+
+      await saveRoomsToDisk(restoredRooms, roomsFile);
+      const afterRestart = await loadRoomsSnapshotFromDisk(roomsFile, { now: fixedNow + 101 });
+      expect(afterRestart.rooms[0]).toMatchObject({
+        completedGameId: game.id,
+        revision: 13,
+        status: 'finished'
+      });
+      expect(afterRestart.rooms[0].state).toEqual(terminalState);
+
+      const duplicate = store.recordCompletedGame({
+        mode: 'multi',
+        state: completedState(true),
+        roomCode: active.code,
+        playerAccounts: {},
+        sourceKey: 'multi:crash-session'
+      });
+      expect(duplicate.id).toBe(game.id);
+      expect(store.db.prepare('SELECT COUNT(*) AS count FROM games').get().count).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('rejects mismatched or corrupt completion journals without mutating the source room', () => {
+    const active = roomWithState(activeBlindDrawState(), 'playing');
+    active.completedGameId = null;
+    active.gameSessionId = 'crash-session';
+    active.revision = 12;
+    const activeRooms = new Map([[active.code, active]]);
+    const before = serializeRooms(activeRooms, fixedNow);
+    const baseJournal = {
+      id: 'game-from-db',
+      sourceKey: 'multi:crash-session',
+      roomCode: active.code,
+      completedAt: fixedNow + 100,
+      state: completedState(true)
+    };
+
+    expect(() => reconcileCompletedRoomJournals(
+      activeRooms,
+      () => ({ ...baseJournal, roomCode: 'ZZZZZ' })
+    )).toThrow(/identity does not match/i);
+    expect(serializeRooms(activeRooms, fixedNow)).toEqual(before);
+
+    expect(() => reconcileCompletedRoomJournals(
+      activeRooms,
+      () => ({ ...baseJournal, state: active.state })
+    )).toThrow(/journal state is invalid/i);
+    expect(serializeRooms(activeRooms, fixedNow)).toEqual(before);
+
+    const corruptSecondRoom = roomWithState(activeBlindDrawState(), 'playing');
+    corruptSecondRoom.code = 'FGHIJ';
+    corruptSecondRoom.completedGameId = null;
+    corruptSecondRoom.gameSessionId = 'corrupt-session';
+    corruptSecondRoom.revision = 4;
+    const twoRooms = new Map([
+      [active.code, active],
+      [corruptSecondRoom.code, corruptSecondRoom]
+    ]);
+    const beforeTwoRooms = serializeRooms(twoRooms, fixedNow);
+    expect(() => reconcileCompletedRoomJournals(twoRooms, (sourceKey: string) =>
+      sourceKey === 'multi:crash-session'
+        ? baseJournal
+        : {
+            ...baseJournal,
+            id: 'second-game-from-db',
+            sourceKey: 'multi:corrupt-session',
+            roomCode: 'WRONG'
+          }
+    )).toThrow(/identity does not match/i);
+    expect(serializeRooms(twoRooms, fixedNow)).toEqual(beforeTwoRooms);
+  });
+
+  it('preserves a completed room revision, readiness, and timestamp when its journal already matches', () => {
+    const finished = roomWithState(completedState(true), 'finished');
+    finished.completedGameId = 'journal-game';
+    finished.gameSessionId = 'finished-session';
+    finished.readyForNextRoundPlayerIds = ['host-1'];
+    finished.revision = 22;
+    finished.updatedAt = fixedNow + 500;
+    const normalized = normalizeRoomsDocument(
+      serializeRooms(new Map([[finished.code, finished]]), fixedNow + 500),
+      { now: fixedNow + 500, pruneStale: false }
+    ).rooms[0];
+    normalized.state = Object.fromEntries(
+      Object.entries(normalized.state as GameState).reverse()
+    ) as GameState;
+    normalized.state.players = normalized.state.players.map((item: GameState['players'][number]) =>
+      Object.fromEntries(Object.entries(item).reverse()) as typeof item
+    );
+    const normalizedRooms = new Map([[normalized.code, normalized]]);
+    const before = serializeRooms(normalizedRooms, fixedNow + 500);
+
+    expect(reconcileCompletedRoomJournals(normalizedRooms, () => ({
+      id: 'journal-game',
+      sourceKey: 'multi:finished-session',
+      roomCode: normalized.code,
+      completedAt: fixedNow + 100,
+      state: normalized.state
+    }))).toBe(0);
+
+    expect(serializeRooms(normalizedRooms, fixedNow + 500)).toEqual(before);
+    expect(normalized).toMatchObject({
+      readyForNextRoundPlayerIds: ['host-1'],
+      revision: 22,
+      updatedAt: fixedNow + 500
+    });
   });
 
   it('preserves historical chat names after a room player is renamed', async () => {

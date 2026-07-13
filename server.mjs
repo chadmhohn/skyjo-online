@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import webPush from 'web-push';
 import { WebSocketServer } from 'ws';
@@ -27,10 +28,12 @@ import {
 } from './server-dist/protocolV2.js';
 import {
   loadRoomsSnapshotFromDisk,
+  reconcileCompletedRoomJournals,
   resolveRoomsFilePath,
   ROOM_STALE_MS,
   saveRoomsToDisk
 } from './server-room-persistence.mjs';
+import { normalizePersistedGameState } from './server-game-state-validation.mjs';
 import {
   createAccountStore,
   createUniqueRandomCode,
@@ -82,6 +85,7 @@ let nextDatabaseRetryAt = 0;
 let databaseFailureLogged = false;
 let releaseIdentity = null;
 let roomPersistenceLoadAccepted = false;
+let roomCompletionRecoveryPending = false;
 const roomPersistenceHealth = createPersistenceHealthTracker();
 
 const mimeTypes = new Map([
@@ -132,6 +136,17 @@ async function ensureAccountStore({ force = false } = {}) {
       console.log(`Admin account ready for ${bootstrappedAdmin.email}`);
     } else {
       console.warn('No admin account was bootstrapped. Set SKYJO_ADMIN_INITIAL_PASSWORD before first production account setup.');
+    }
+    if (roomPersistenceLoadAccepted) {
+      const reconciled = reconcileCompletedRoomJournals(
+        rooms,
+        (sourceKey) => candidate.getCompletedGameJournalBySourceKey(sourceKey)
+      );
+      if (reconciled > 0) roomCompletionRecoveryPending = true;
+      if (roomCompletionRecoveryPending) {
+        await roomPersistenceHealth.track(() => saveRoomsToDisk(rooms, roomsFile));
+        roomCompletionRecoveryPending = false;
+      }
     }
     accountStore = candidate;
     databaseFailureLogged = false;
@@ -1144,7 +1159,13 @@ try {
     loadRoomsSnapshotFromDisk(roomsFile, { staleMs: ROOM_STALE_MS })
   );
   const restoredRoomMap = new Map(snapshot.rooms.map((room) => [room.code, room]));
-  if (snapshot.missing || snapshot.legacy) {
+  const reconciledCompletions = accountStore
+    ? reconcileCompletedRoomJournals(
+        restoredRoomMap,
+        (sourceKey) => accountStore.getCompletedGameJournalBySourceKey(sourceKey)
+      )
+    : 0;
+  if (snapshot.missing || snapshot.legacy || reconciledCompletions > 0) {
     await roomPersistenceHealth.track(() => saveRoomsToDisk(restoredRoomMap, roomsFile));
   }
   for (const room of snapshot.rooms) {
@@ -1290,7 +1311,33 @@ const handleProtocolV2Message = createProtocolV2MessageHandler({
   persistRoomsSoon,
   random: () => crypto.randomInt(0, 0x1_0000_0000) / 0x1_0000_0000,
   randomUuid: crypto.randomUUID,
-  recordCompletedGame: (input) => accountStore.recordCompletedGame(input),
+  recordCompletedGame: (input) => {
+    const validationContext = {
+      rosterPlayerIds: input.state.players.map((player) => player.id),
+      roomStatus: 'finished',
+      readyForNextRoundPlayerIds: []
+    };
+    const submittedState = normalizePersistedGameState(input.state, validationContext);
+    const game = accountStore.recordCompletedGame({ ...input, state: submittedState });
+    const journal = accountStore.getCompletedGameJournalBySourceKey(input.sourceKey);
+    if (
+      !journal ||
+      journal.id !== game.id ||
+      journal.sourceKey !== input.sourceKey ||
+      journal.roomCode !== input.roomCode
+    ) {
+      throw new Error('Completed game journal identity does not match the recorded game.');
+    }
+    const state = normalizePersistedGameState(journal.state, validationContext);
+    if (state.phase !== 'game-over') {
+      throw new Error('Completed game journal is not terminal.');
+    }
+    return {
+      id: journal.id,
+      recovered: !isDeepStrictEqual(state, submittedState),
+      state
+    };
+  },
   roomPlayer,
   rooms,
   resetAliasIndex,
