@@ -171,10 +171,11 @@ export function useAccount() {
   return value;
 }
 
-export async function saveSinglePlayerGame(state: GameState, clientGameKey: string) {
+export async function saveSinglePlayerGame(state: GameState, clientGameKey: string, signal?: AbortSignal) {
   return apiJson<{ game: StatsGame }>('/api/stats/single-player', {
     method: 'POST',
-    body: JSON.stringify({ state, clientGameKey })
+    body: JSON.stringify({ state, clientGameKey }),
+    signal
   });
 }
 

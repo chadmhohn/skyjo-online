@@ -24,3 +24,48 @@ test('solo opening is playable and exposes stable table geometry anchors', async
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1))
     .toBe(true);
 });
+
+test('solo progress survives refresh and a service-worker update without auto-discarding', async ({ page, skyjoServer }) => {
+  await installSeededBrowserRuntime(page, 68);
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  const openingCards = page.getByRole('button', { name: /Reveal opening card/ }).filter({ visible: true });
+  await openingCards.first().click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          new Promise<number>((resolve, reject) => {
+            const request = indexedDB.open('skyjo-pwa', 1);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const database = request.result;
+              const transaction = database.transaction('soloSessions');
+              const records = transaction.objectStore('soloSessions').index('byOwner').getAll('guest');
+              records.onerror = () => reject(records.error);
+              records.onsuccess = () => {
+                const state = records.result[0]?.state;
+                const human = state?.players?.find((player: { kind?: string }) => player.kind === 'human');
+                resolve(human?.grid?.filter((card: { faceUp?: boolean }) => card.faceUp).length || 0);
+                database.close();
+              };
+            };
+          })
+      )
+    )
+    .toBe(1);
+
+  const serviceWorkerUpdated = await page.evaluate(async () => {
+    if (!('serviceWorker' in navigator)) return false;
+    const registration = await navigator.serviceWorker.ready;
+    await registration.update();
+    return true;
+  });
+  expect(serviceWorkerUpdated).toBe(true);
+
+  await page.reload();
+  await expect(page.getByRole('dialog', { name: 'Continue your solo game?' })).toBeVisible();
+  await page.getByRole('button', { name: 'Continue Game' }).click();
+  await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Reveal opening card/ }).filter({ visible: true })).toHaveCount(11);
+});
