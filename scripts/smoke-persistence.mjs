@@ -38,25 +38,9 @@ try {
         createdAt: now
       }
     ],
-    readyForNextRoundPlayerIds: ['host-1', 'player-2'],
-    state: {
-      players: [],
-      drawPile: [],
-      discardPile: [],
-      currentPlayerIndex: 0,
-      phase: 'choose-source',
-      selectedSource: null,
-      drawnCard: null,
-      round: 1,
-      log: [],
-      winnerId: null,
-      nextStarterId: null,
-      roundCloserId: null,
-      finalTurnPlayerIds: [],
-      openingRevealCounts: {},
-      roundHistory: []
-    },
-    status: 'playing',
+    readyForNextRoundPlayerIds: [],
+    state: null,
+    status: 'waiting',
     updatedAt: now,
     completedGameId: 'game-1',
     gameSessionId: 'session-1',
@@ -72,7 +56,7 @@ try {
   assert.equal(serialized.rooms[0].gameSessionId, 'session-1', 'game session id is serialized');
   assert.equal(serialized.rooms[0].chatMessages.length, 1, 'room chat history is serialized');
   assert.equal(serialized.rooms[0].chatMessages[0].text, 'Ready for the next round?');
-  assert.deepEqual(serialized.rooms[0].readyForNextRoundPlayerIds, ['host-1', 'player-2']);
+  assert.deepEqual(serialized.rooms[0].readyForNextRoundPlayerIds, []);
 
   await saveRoomsToDisk(new Map([[room.code, room]]), roomsFile);
   const saved = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
@@ -83,7 +67,7 @@ try {
   assert.equal('clients' in saved.rooms[0], false, 'saved JSON must not contain clients');
   assert.equal(saved.rooms[0].chatMessages[0].playerName, 'Ada', 'saved room includes chat sender names');
   assert.equal(saved.rooms[0].players[1].userId, 'user-2', 'saved room includes account user ids');
-  assert.deepEqual(saved.rooms[0].readyForNextRoundPlayerIds, ['host-1', 'player-2']);
+  assert.deepEqual(saved.rooms[0].readyForNextRoundPlayerIds, []);
 
   const restored = await loadRoomsFromDisk(roomsFile, { now: now + 1000, staleMs: ROOM_STALE_MS });
   assert.equal(restored.length, 1);
@@ -94,7 +78,7 @@ try {
   assert.equal(restored[0].players.find((player) => player.id === room.hostId)?.userId, 'user-1', 'account user id is restored');
   assert.equal(restored[0].completedGameId, 'game-1', 'completed game id is restored');
   assert.equal(restored[0].chatMessages[0].text, 'Ready for the next round?', 'restored rooms keep chat history');
-  assert.deepEqual(restored[0].readyForNextRoundPlayerIds, ['host-1', 'player-2'], 'restored rooms keep ready confirmations');
+  assert.deepEqual(restored[0].readyForNextRoundPlayerIds, [], 'restored waiting rooms keep empty ready confirmations');
 
   const staleRoom = { ...room, code: 'OLD12', updatedAt: now - ROOM_STALE_MS - 1 };
   await saveRoomsToDisk(new Map([[staleRoom.code, staleRoom]]), roomsFile);
