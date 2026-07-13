@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import App from '../../../src/App';
@@ -31,7 +31,9 @@ class FakeWebSocket {
   readonly url: string;
   readonly sent: unknown[] = [];
   closeCalls = 0;
+  onSend: ((frame: unknown) => void) | null = null;
   readyState = FakeWebSocket.CONNECTING;
+  throwOnSend = false;
   private readonly listeners = new Map<SocketEventName, Set<SocketListener>>();
 
   constructor(url: string | URL) {
@@ -46,7 +48,10 @@ class FakeWebSocket {
   }
 
   send(data: string) {
-    this.sent.push(JSON.parse(data));
+    if (this.throwOnSend) throw new Error('send failed');
+    const frame = JSON.parse(data) as unknown;
+    this.sent.push(frame);
+    this.onSend?.(frame);
   }
 
   close() {
@@ -91,6 +96,7 @@ const accountUser: AccountUser = {
 };
 
 const savedRecoveryPlayerId = '00000000-0000-4000-8000-000000000001';
+const savedRecoveryPeerId = '00000000-0000-4000-8000-000000000002';
 const savedRecoveryCommandId = '10000000-0000-4000-8000-000000000001';
 const validResetRecoveryHint: ResetRecoveryHint = {
   fromCode: 'ABCDE',
@@ -154,6 +160,23 @@ function makeRoom(overrides: Partial<MultiplayerRoom> = {}): MultiplayerRoom {
     revision: 0,
     ...overrides
   };
+}
+
+function makeResetCapableRoom(overrides: Partial<MultiplayerRoom> = {}): MultiplayerRoom {
+  return makeRoom({
+    hostId: savedRecoveryPlayerId,
+    players: [
+      {
+        id: savedRecoveryPlayerId,
+        userId: accountUser.id,
+        name: 'Alice',
+        connected: true,
+        host: true
+      },
+      { id: savedRecoveryPeerId, name: 'Bob', connected: true, host: false }
+    ],
+    ...overrides
+  });
 }
 
 function publicRoom(room: MultiplayerRoom, viewerPlayerId = 'p1'): PublicRoomSnapshot {
@@ -252,6 +275,15 @@ function lastFrame(socket: FakeWebSocket) {
   return socket.sent.at(-1) as Record<string, unknown>;
 }
 
+function deepObjectKeys(value: unknown): string[] {
+  if (!value || typeof value !== 'object') return [];
+  if (Array.isArray(value)) return value.flatMap(deepObjectKeys);
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, nested]) => [
+    key,
+    ...deepObjectKeys(nested)
+  ]);
+}
+
 function lastCommand(socket: FakeWebSocket): ClientCommand {
   const frame = lastFrame(socket);
   expect(frame).toMatchObject({
@@ -310,7 +342,7 @@ async function createJoinedRoom(room = makeRoom()) {
   expect(screen.getByRole('button', { name: 'Join' })).toBeDisabled();
   const socket = openSocket();
   expect(lastFrame(socket)).toEqual({ type: 'create-room', protocolVersion: 2, name: 'Alice' });
-  receiveSnapshot(socket, room);
+  receiveSnapshot(socket, room, room.hostId);
   await screen.findByText(room.code);
   return { room, socket, user };
 }
@@ -362,10 +394,13 @@ describe('multiplayer lobby', () => {
     );
   });
 
-  it('removes a malformed persisted recovery hint before saved-seat boot', async () => {
+  it.each([
+    ['malformed', '{'],
+    ['oversize', 'x'.repeat(RESET_RECOVERY_MAX_SERIALIZED_LENGTH + 1)]
+  ])('removes a %s persisted recovery hint before saved-seat boot', async (_label, rawHint) => {
     window.localStorage.setItem('skyjo-room-code', 'ABCDE');
     window.localStorage.setItem('skyjo-player-id', savedRecoveryPlayerId);
-    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, '{');
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, rawHint);
     await renderLobby();
 
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
@@ -419,6 +454,174 @@ describe('multiplayer lobby', () => {
     expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(serialized);
   });
 
+  it('recovers an advanced reset target after every live reply is lost and a hard reload', async () => {
+    const { socket, user } = await createJoinedRoom(makeResetCapableRoom());
+    await user.click(screen.getByRole('button', { name: 'Reset Room' }));
+    const resetCommand = expectCommand(socket, { type: 'reset-room' }, 0);
+    const rawHint = window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY);
+    expect(rawHint).not.toBeNull();
+    const storedHint = JSON.parse(String(rawHint)) as Record<string, unknown>;
+    expect(deepObjectKeys(storedHint).sort()).toEqual([
+      'commandId',
+      'expectedRevision',
+      'fromCode',
+      'playerId'
+    ]);
+    expect(storedHint).toEqual({
+      fromCode: 'ABCDE',
+      playerId: savedRecoveryPlayerId,
+      commandId: resetCommand.commandId,
+      expectedRevision: 0
+    });
+    expect(rawHint).not.toMatch(/players|state|draw|discard|card|email|name/i);
+
+    cleanup();
+    FakeWebSocket.instances = [];
+    await renderLobby();
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
+    const recovered = openSocket();
+    expect(lastFrame(recovered)).toEqual({
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: savedRecoveryPlayerId,
+      recoveryCommandId: resetCommand.commandId
+    });
+
+    const targetRoom = makeResetCapableRoom({ code: 'FGHIJ', revision: 3, updatedAt: 300 });
+    receive(
+      recovered,
+      resyncFrame(targetRoom, resetCommand.commandId, savedRecoveryPlayerId, 'room-reset')
+    );
+    receiveAck(recovered, resetCommand, 1);
+
+    expect(await screen.findByText('FGHIJ')).toBeInTheDocument();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBe('FGHIJ');
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
+    expect(recovered.sent.filter((frame) =>
+      (frame as ClientCommand).action?.type === 'reset-room'
+    )).toHaveLength(0);
+  });
+
+  it('retains reset recovery through an ordinary reconnect snapshot, replay, and unrelated error', async () => {
+    const originalRoom = makeResetCapableRoom();
+    const { socket, user } = await createJoinedRoom(originalRoom);
+    await user.click(screen.getByRole('button', { name: 'Reset Room' }));
+    const resetCommand = expectCommand(socket, { type: 'reset-room' }, 0);
+    const rawHint = window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY);
+
+    act(() => socket.serverClose());
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1000 });
+    const recovered = openSocket();
+    expect(lastFrame(recovered)).toMatchObject({
+      type: 'join-room',
+      code: 'ABCDE',
+      playerId: savedRecoveryPlayerId,
+      recoveryCommandId: resetCommand.commandId
+    });
+    receiveSnapshot(recovered, makeResetCapableRoom({ updatedAt: 200 }), savedRecoveryPlayerId);
+    expect(lastFrame(recovered)).toEqual(resetCommand);
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(rawHint);
+
+    receive(recovered, {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'presence-warning',
+      message: 'A delayed unrelated warning.'
+    });
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(rawHint);
+
+    receive(recovered, {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'room-code-unavailable',
+      message: 'A room code could not be created. Try again.',
+      commandId: resetCommand.commandId
+    });
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
+  });
+
+  it('removes a newly stored reset hint when the transport rejects the command send', async () => {
+    const { socket, user } = await createJoinedRoom(makeResetCapableRoom());
+    socket.throwOnSend = true;
+    await user.click(screen.getByRole('button', { name: 'Reset Room' }));
+
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent('Room connection is not open.');
+    expect(socket.sent.filter((frame) =>
+      (frame as ClientCommand).action?.type === 'reset-room'
+    )).toHaveLength(0);
+  });
+
+  it('fails closed when durable reset recovery storage is unavailable', async () => {
+    const { socket, user } = await createJoinedRoom(makeResetCapableRoom());
+    const nativeSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function setItem(this: Storage, key, value) {
+      if (key === RESET_RECOVERY_STORAGE_KEY) throw new DOMException('Storage unavailable', 'QuotaExceededError');
+      nativeSetItem.call(this, key, value);
+    });
+    await user.click(screen.getByRole('button', { name: 'Reset Room' }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Skyjo could not save reset recovery data. The room was not reset.'
+    );
+    expect(socket.sent.filter((frame) =>
+      (frame as ClientCommand).action?.type === 'reset-room'
+    )).toHaveLength(0);
+  });
+
+  it('restores the original recovery hint when a rapid second reset is rejected as pending', async () => {
+    const { socket, user } = await createJoinedRoom(makeResetCapableRoom());
+    const firstCommandId = '20000000-0000-4000-8000-000000000001';
+    const secondCommandId = '20000000-0000-4000-8000-000000000002';
+    const randomUuid = vi.spyOn(globalThis.crypto, 'randomUUID')
+      .mockReturnValueOnce(firstCommandId)
+      .mockReturnValueOnce(secondCommandId);
+    const resetButton = screen.getByRole('button', { name: 'Reset Room' });
+    socket.onSend = (frame) => {
+      if ((frame as ClientCommand).action?.type !== 'reset-room') return;
+      socket.onSend = null;
+      resetButton.click();
+    };
+
+    await user.click(resetButton);
+
+    expect(randomUuid).toHaveBeenCalledTimes(2);
+    expect(socket.sent.filter((frame) =>
+      (frame as ClientCommand).action?.type === 'reset-room'
+    )).toEqual([
+      expect.objectContaining({ commandId: firstCommandId, action: { type: 'reset-room' } })
+    ]);
+    expect(parseResetRecoveryHint(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY))).toEqual({
+      fromCode: 'ABCDE',
+      playerId: savedRecoveryPlayerId,
+      commandId: firstCommandId,
+      expectedRevision: 0
+    });
+  });
+
+  it('clears a boot recovery hint after a terminal uncorrelated saved-seat rejection', async () => {
+    window.localStorage.setItem('skyjo-room-code', 'ABCDE');
+    window.localStorage.setItem('skyjo-player-id', savedRecoveryPlayerId);
+    window.localStorage.setItem(
+      RESET_RECOVERY_STORAGE_KEY,
+      serializeResetRecoveryHint({ ...validResetRecoveryHint, expectedRevision: 0 })
+    );
+    await renderLobby();
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
+    const socket = openSocket();
+    receive(socket, {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'stale-room',
+      message: 'That saved room is no longer available.'
+    });
+
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
+    expect(screen.getByText('That saved room is no longer available.')).toBeInTheDocument();
+  });
+
   it('requires an account and preserves a sanitized shared room in the sign-in handoff', async () => {
     await renderLobby(null, '/lobby?room=a-b_c!12-extra');
 
@@ -430,7 +633,7 @@ describe('multiplayer lobby', () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
-  it('creates and runs a waiting room with host, sharing, chat, presence, start, and reset frames', async () => {
+  it('creates and runs a waiting room with host, sharing, chat, presence, and start frames', async () => {
     const { socket, user } = await createJoinedRoom(
       makeRoom({
         players: [{ id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true }]
@@ -496,28 +699,6 @@ describe('multiplayer lobby', () => {
       makeRoom({ state: makeState(), status: 'playing', chatMessages: [bobMessage], revision: 2 }),
       'ack-first'
     );
-
-    await user.click(screen.getByRole('button', { name: 'Reset Room' }));
-    const resetCommand = expectCommand(socket, { type: 'reset-room' }, 2);
-    const resetRoom = makeRoom({
-      code: 'FGHIJ',
-      players: [{ id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true }],
-      revision: 3
-    });
-    receive(socket, resyncFrame(resetRoom, resetCommand.commandId, 'p1', 'room-reset'));
-    receiveAck(socket, resetCommand, 3);
-    expect(await screen.findByText('FGHIJ')).toBeInTheDocument();
-    expect(window.localStorage.getItem('skyjo-room-code')).toBe('FGHIJ');
-
-    receive(socket, {
-      type: 'error',
-      protocolVersion: 2,
-      code: 'room-reset',
-      message: 'The host reset this room. Ask for the new room link to rejoin.'
-    });
-    expect(await screen.findByText('The host reset this room. Ask for the new room link to rejoin.')).toBeInTheDocument();
-    expect(window.localStorage.getItem('skyjo-player-id')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Create Room' })).toBeInTheDocument();
   });
 
   it('joins sanitized codes and surfaces server, closed-socket, and share fallback errors', async () => {
@@ -576,9 +757,16 @@ describe('multiplayer lobby', () => {
   });
 
   it('keeps the old room recoverable after a correlated reset allocation failure', async () => {
-    const { socket, user } = await createJoinedRoom();
+    const originalRoom = makeResetCapableRoom();
+    const { socket, user } = await createJoinedRoom(originalRoom);
     await user.click(screen.getByRole('button', { name: 'Reset Room' }));
     const resetCommand = expectCommand(socket, { type: 'reset-room' }, 0);
+    expect(parseResetRecoveryHint(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY))).toMatchObject({
+      fromCode: 'ABCDE',
+      playerId: savedRecoveryPlayerId,
+      commandId: resetCommand.commandId,
+      expectedRevision: 0
+    });
     receive(socket, {
       type: 'error',
       protocolVersion: 2,
@@ -591,18 +779,21 @@ describe('multiplayer lobby', () => {
     expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
     expect(screen.getByRole('button', { name: 'Reset Room' })).toBeEnabled();
     expect(window.localStorage.getItem('skyjo-room-code')).toBe('ABCDE');
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBeNull();
 
-    act(() => socket.serverClose());
-    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1000 });
+    cleanup();
+    FakeWebSocket.instances = [];
+    await renderLobby();
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
     const recovered = openSocket();
     expect(lastFrame(recovered)).toEqual({
       type: 'join-room',
       protocolVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
-      playerId: 'p1'
+      playerId: savedRecoveryPlayerId
     });
-    receiveSnapshot(recovered, makeRoom({ updatedAt: 200 }));
+    receiveSnapshot(recovered, makeResetCapableRoom({ updatedAt: 200 }), savedRecoveryPlayerId);
     expect(recovered.sent).toHaveLength(1);
     expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
     expect(window.localStorage.getItem('skyjo-room-code')).toBe('ABCDE');
@@ -738,12 +929,11 @@ describe('multiplayer lobby', () => {
   });
 
   it('rejects a new-code reset resync unless it matches the pending reset command', async () => {
-    const { socket, user } = await createJoinedRoom();
+    const { socket, user } = await createJoinedRoom(makeResetCapableRoom());
     await user.click(screen.getByRole('button', { name: 'Reset Room' }));
     expectCommand(socket, { type: 'reset-room' }, 0);
-    const forgedResetRoom = makeRoom({
+    const forgedResetRoom = makeResetCapableRoom({
       code: 'FGHIJ',
-      players: [{ id: 'p1', userId: accountUser.id, name: 'Alice', connected: true, host: true }],
       revision: 1
     });
 
@@ -752,7 +942,7 @@ describe('multiplayer lobby', () => {
       resyncFrame(
         forgedResetRoom,
         '11111111-1111-4111-8111-111111111111',
-        'p1',
+        savedRecoveryPlayerId,
         'room-reset'
       )
     );

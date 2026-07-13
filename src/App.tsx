@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -39,7 +39,12 @@ import {
   type RoomConnectionSocket,
   type RoomConnectionState
 } from './roomConnection';
-import { parseResetRecoveryHint, RESET_RECOVERY_STORAGE_KEY } from './resetRecovery';
+import {
+  parseResetRecoveryHint,
+  RESET_RECOVERY_STORAGE_KEY,
+  serializeResetRecoveryHint,
+  type ResetRecoveryHint
+} from './resetRecovery';
 import {
   MULTIPLAYER_PROTOCOL_VERSION,
   multiplayerRoomForRender,
@@ -2463,6 +2468,16 @@ function Lobby() {
   const shareStatusTimerRef = useRef<number | null>(null);
   const roomCodeRef = useRef(initialLobby.roomCode);
   const playerIdRef = useRef(initialLobby.playerId);
+  const resetRecoveryHintRef = useRef<ResetRecoveryHint | null>(
+    initialLobby.recoveryCommandId && initialLobby.recoveryExpectedRevision !== undefined
+      ? {
+          fromCode: initialLobby.roomCode,
+          playerId: initialLobby.playerId,
+          commandId: initialLobby.recoveryCommandId,
+          expectedRevision: initialLobby.recoveryExpectedRevision
+        }
+      : null
+  );
   const lastSharedRoomCodeRef = useRef(cleanRoomCode(new URLSearchParams(location.search).get('room')));
   const [name, setName] = useState(() => window.localStorage.getItem('skyjo-player-name') || 'Player');
   const [joinCode, setJoinCode] = useState(initialLobby.joinCode);
@@ -2489,6 +2504,20 @@ function Lobby() {
     (count, message, index) => (index > lastSeenChatIndex && message.playerId !== playerId ? count + 1 : count),
     0
   );
+  const clearResetRecoveryHint = useCallback((commandId?: string) => {
+    const currentHint = resetRecoveryHintRef.current;
+    try {
+      const storedHint = parseResetRecoveryHint(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY));
+      if (!commandId || storedHint?.commandId === commandId) {
+        window.localStorage.removeItem(RESET_RECOVERY_STORAGE_KEY);
+      }
+    } catch {
+      // Recovery cleanup is best effort when browser storage is unavailable.
+    }
+    if (!commandId || currentHint?.commandId === commandId) {
+      resetRecoveryHintRef.current = null;
+    }
+  }, []);
   frameHandlerRef.current = handleRoomFrame;
 
   useEffect(
@@ -2533,15 +2562,16 @@ function Lobby() {
     });
     connectionControllerRef.current = controller;
     if (roomCodeRef.current && playerIdRef.current) {
+      const recoveryHint = resetRecoveryHintRef.current;
       controller.recover({
         action: 'join-room',
         code: roomCodeRef.current,
         name: accountUser.displayName,
         playerId: playerIdRef.current,
-        ...(initialLobby.recoveryCommandId && initialLobby.recoveryExpectedRevision !== undefined
+        ...(recoveryHint
           ? {
-              recoveryCommandId: initialLobby.recoveryCommandId,
-              recoveryExpectedRevision: initialLobby.recoveryExpectedRevision
+              recoveryCommandId: recoveryHint.commandId,
+              recoveryExpectedRevision: recoveryHint.expectedRevision
             }
           : {})
       });
@@ -2552,7 +2582,7 @@ function Lobby() {
       if (connectionControllerRef.current === controller) connectionControllerRef.current = null;
       controller.dispose();
     };
-  }, [accountUser, initialLobby.recoveryCommandId, initialLobby.recoveryExpectedRevision]);
+  }, [accountUser]);
 
   useEffect(() => {
     playerIdRef.current = playerId;
@@ -2564,6 +2594,7 @@ function Lobby() {
     lastSharedRoomCodeRef.current = sharedRoomCode;
     if (sharedRoomCode === roomCodeRef.current) return;
 
+    clearResetRecoveryHint();
     connectionControllerRef.current?.disconnect();
     window.localStorage.removeItem('skyjo-player-id');
     window.localStorage.removeItem('skyjo-room-code');
@@ -2575,7 +2606,7 @@ function Lobby() {
     setJoinCode(sharedRoomCode);
     setConnection('idle');
     setError('');
-  }, [location.search]);
+  }, [clearResetRecoveryHint, location.search]);
 
   useEffect(() => {
     if (!roomChatCode) return;
@@ -2609,6 +2640,7 @@ function Lobby() {
       setError('Room connection is still initializing. Try again.');
       return;
     }
+    clearResetRecoveryHint();
     controller.connect(
       action === 'create-room'
         ? { action: 'create-room', name: cleanedName }
@@ -2625,6 +2657,18 @@ function Lobby() {
     if (message.type === 'snapshot' || message.type === 'resync') {
       const joinedPlayerId = message.playerId as string;
       const joinedRoom = multiplayerRoomForRender(message.room as PublicRoomSnapshot);
+      const recoveryHint = resetRecoveryHintRef.current;
+      if (message.type === 'resync' && message.reason === 'room-reset') {
+        clearResetRecoveryHint(typeof message.commandId === 'string' ? message.commandId : undefined);
+      } else if (
+        message.type === 'resync' &&
+        recoveryHint &&
+        message.commandId === recoveryHint.commandId &&
+        joinedRoom.code === recoveryHint.fromCode &&
+        joinedPlayerId === recoveryHint.playerId
+      ) {
+        clearResetRecoveryHint(recoveryHint.commandId);
+      }
       setPlayerId(joinedPlayerId);
       playerIdRef.current = joinedPlayerId;
       window.localStorage.setItem('skyjo-player-id', joinedPlayerId);
@@ -2646,7 +2690,17 @@ function Lobby() {
       return;
     }
     if (message.type === 'error') {
+      const recoveryHint = resetRecoveryHintRef.current;
+      const correlatedResetError = recoveryHint && message.commandId === recoveryHint.commandId;
+      const terminalBootRecoveryError = recoveryHint &&
+        roomCodeRef.current === recoveryHint.fromCode &&
+        playerIdRef.current === recoveryHint.playerId &&
+        ['stale-room', 'seat-forbidden', 'room-not-found', 'game-started'].includes(String(message.code));
+      if (correlatedResetError || terminalBootRecoveryError) {
+        clearResetRecoveryHint(recoveryHint.commandId);
+      }
       if (message.code === 'room-reset') {
+        clearResetRecoveryHint();
         connectionControllerRef.current?.disconnect();
         window.localStorage.removeItem('skyjo-player-id');
         window.localStorage.removeItem('skyjo-room-code');
@@ -2690,10 +2744,12 @@ function Lobby() {
     };
   }, []);
 
-  function send(payload: RoomConnectionFrame) {
-    if (!connectionControllerRef.current?.send(payload)) {
+  function send(payload: RoomConnectionFrame): boolean {
+    const sent = connectionControllerRef.current?.send(payload) === true;
+    if (!sent) {
       setError('Room connection is not open.');
     }
+    return sent;
   }
 
   function sendCommand(action: GameCommand) {
@@ -2715,7 +2771,47 @@ function Lobby() {
       expectedRevision: room.revision,
       action
     };
-    send(command as unknown as RoomConnectionFrame);
+    let resetRecoveryHint: ResetRecoveryHint | null = null;
+    let previousResetRecoveryHint: ResetRecoveryHint | null = null;
+    if (action.type === 'reset-room') {
+      resetRecoveryHint = {
+        fromCode: room.code,
+        playerId: playerIdRef.current || playerId,
+        commandId,
+        expectedRevision: room.revision
+      };
+      try {
+        const previousHint = parseResetRecoveryHint(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY));
+        previousResetRecoveryHint = previousHint &&
+          previousHint.fromCode === room.code &&
+          previousHint.playerId === resetRecoveryHint.playerId
+          ? previousHint
+          : null;
+        window.localStorage.setItem(
+          RESET_RECOVERY_STORAGE_KEY,
+          serializeResetRecoveryHint(resetRecoveryHint)
+        );
+        resetRecoveryHintRef.current = resetRecoveryHint;
+      } catch {
+        setError('Skyjo could not save reset recovery data. The room was not reset.');
+        return;
+      }
+    }
+    if (!send(command as unknown as RoomConnectionFrame) && resetRecoveryHint) {
+      try {
+        if (previousResetRecoveryHint) {
+          window.localStorage.setItem(
+            RESET_RECOVERY_STORAGE_KEY,
+            serializeResetRecoveryHint(previousResetRecoveryHint)
+          );
+        } else {
+          window.localStorage.removeItem(RESET_RECOVERY_STORAGE_KEY);
+        }
+      } catch {
+        // The command was not sent, so the in-memory recovery state can still be retired safely.
+      }
+      resetRecoveryHintRef.current = previousResetRecoveryHint;
+    }
   }
 
   function retrySavedRoom() {
@@ -2726,15 +2822,23 @@ function Lobby() {
       return;
     }
     setError('');
+    const recoveryHint = resetRecoveryHintRef.current;
     connectionControllerRef.current?.recover({
       action: 'join-room',
       code,
       name: accountUser.displayName,
-      playerId: savedPlayerId
+      playerId: savedPlayerId,
+      ...(recoveryHint
+        ? {
+            recoveryCommandId: recoveryHint.commandId,
+            recoveryExpectedRevision: recoveryHint.expectedRevision
+          }
+        : {})
     });
   }
 
   function leaveSavedRoom() {
+    clearResetRecoveryHint();
     connectionControllerRef.current?.disconnect();
     window.localStorage.removeItem('skyjo-player-id');
     window.localStorage.removeItem('skyjo-room-code');
