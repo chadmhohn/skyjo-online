@@ -396,7 +396,8 @@ describe('room connection controller', () => {
       code: 'ABCDE',
       name: 'Alice',
       playerId: 'p1',
-      recoveryCommandId: '10000000-0000-4000-8000-000000000001'
+      recoveryCommandId: '10000000-0000-4000-8000-000000000001',
+      recoveryExpectedRevision: 7
     });
     resetRecovery.runTimer(0);
     resetRecovery.sockets[0].open();
@@ -410,21 +411,27 @@ describe('room connection controller', () => {
         recoveryCommandId: '10000000-0000-4000-8000-000000000001'
       }
     ]);
+    expect(resetRecovery.sockets[0].sent[0]).not.toHaveProperty('recoveryExpectedRevision');
   });
 
   it.each([
-    ['missing player id', undefined, '10000000-0000-4000-8000-000000000001'],
-    ['malformed id', 'p1', 'not-a-uuid'],
-    ['invalid UUID version', 'p1', '10000000-0000-0000-8000-000000000001'],
-    ['invalid UUID variant', 'p1', '10000000-0000-4000-7000-000000000001']
-  ])('omits a reset recovery hint with %s', (_label, playerId, recoveryCommandId) => {
+    ['missing player id', undefined, '10000000-0000-4000-8000-000000000001', 0],
+    ['missing expected revision', 'p1', '10000000-0000-4000-8000-000000000001', undefined],
+    ['negative expected revision', 'p1', '10000000-0000-4000-8000-000000000001', -1],
+    ['fractional expected revision', 'p1', '10000000-0000-4000-8000-000000000001', 1.5],
+    ['maximum expected revision', 'p1', '10000000-0000-4000-8000-000000000001', Number.MAX_SAFE_INTEGER],
+    ['malformed id', 'p1', 'not-a-uuid', 0],
+    ['invalid UUID version', 'p1', '10000000-0000-0000-8000-000000000001', 0],
+    ['invalid UUID variant', 'p1', '10000000-0000-4000-7000-000000000001', 0]
+  ])('omits a reset recovery hint with %s', (_label, playerId, recoveryCommandId, recoveryExpectedRevision) => {
     const harness = createHarness();
     harness.controller.connect({
       action: 'join-room',
       code: 'ABCDE',
       name: 'Alice',
       ...(playerId ? { playerId } : {}),
-      recoveryCommandId
+      recoveryCommandId,
+      recoveryExpectedRevision
     });
     harness.sockets[0].open();
 
@@ -519,6 +526,116 @@ describe('room connection controller', () => {
     harness.runTimer(1);
     harness.sockets[1].open();
     expect(harness.sockets[1].sent[0]).toMatchObject({ type: 'join-room', code: 'FGHIJ', playerId: 'p1' });
+  });
+
+  it('binds reset recovery before transport and never replays it after an advanced target proves application', () => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const first = harness.sockets[0];
+    first.open();
+    first.receive(snapshotFrame());
+    const resetCommand = {
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'reset-room' }
+    };
+    expect(harness.controller.send(resetCommand)).toBe(true);
+
+    first.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+    expect(recovered.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1',
+      recoveryCommandId: resetCommand.commandId
+    }]);
+
+    const advancedReplacement = { ...room('FGHIJ', 300), revision: 3 };
+    recovered.receive({
+      type: 'resync',
+      protocolVersion: 2,
+      playerId: 'p1',
+      revision: 3,
+      room: advancedReplacement,
+      reason: 'room-reset',
+      commandId: resetCommand.commandId
+    });
+    expect(harness.controller.getState()).toBe('connected');
+    expect(harness.frames.at(-1)).toMatchObject({ type: 'resync', room: { code: 'FGHIJ', revision: 3 } });
+
+    recovered.serverClose();
+    harness.runTimer(2);
+    const targetReconnect = harness.sockets[2];
+    targetReconnect.open();
+    expect(targetReconnect.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'FGHIJ',
+      name: 'Alice',
+      playerId: 'p1'
+    }]);
+    targetReconnect.receive(snapshotFrame(advancedReplacement));
+    expect(targetReconnect.sent).toHaveLength(1);
+
+    targetReconnect.serverClose();
+    harness.runTimer(3);
+    const secondTargetReconnect = harness.sockets[3];
+    secondTargetReconnect.open();
+    expect(secondTargetReconnect.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'FGHIJ',
+      name: 'Alice',
+      playerId: 'p1'
+    }]);
+  });
+
+  it('accepts an advanced reset target from a boot recovery session without replaying the reset', () => {
+    const harness = createHarness();
+    const commandId = '10000000-0000-4000-8000-000000000001';
+    harness.controller.recover({
+      action: 'join-room',
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1',
+      recoveryCommandId: commandId,
+      recoveryExpectedRevision: 0
+    });
+    harness.runTimer(0);
+    const socket = harness.sockets[0];
+    socket.open();
+    const advancedReplacement = { ...room('FGHIJ', 300), revision: 4 };
+    socket.receive({
+      type: 'resync',
+      protocolVersion: 2,
+      playerId: 'p1',
+      revision: 4,
+      room: advancedReplacement,
+      reason: 'room-reset',
+      commandId
+    });
+    socket.receive({ type: 'ack', protocolVersion: 2, commandId, revision: 1 });
+
+    expect(harness.controller.getState()).toBe('connected');
+    expect(socket.sent).toHaveLength(1);
+    socket.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+    expect(recovered.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'FGHIJ',
+      name: 'Alice',
+      playerId: 'p1'
+    }]);
   });
 
   it.each([
@@ -952,6 +1069,36 @@ describe('room connection controller', () => {
     recovered.receive(snapshotFrame(room('ABCDE', 200)));
     expect(recovered.sent).toHaveLength(1);
     expect(harness.controller.getState()).toBe('connected');
+  });
+
+  it('rolls back reset recovery state when the initial transport send throws', () => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const first = harness.sockets[0];
+    first.open();
+    first.receive(snapshotFrame());
+    first.throwOnSend = true;
+    expect(harness.controller.send({
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'reset-room' }
+    })).toBe(false);
+
+    first.throwOnSend = false;
+    first.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+    expect(recovered.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1'
+    }]);
   });
 
   it('handles upgrade shutdown, initial join-send failure, and transport close observed offline', () => {

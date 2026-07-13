@@ -87,6 +87,29 @@ interface PendingCommandState {
   sentGeneration: number;
 }
 
+type ResetRecoveryExpectation = {
+  commandId: string;
+  expectedRevision: number;
+};
+
+function resetRecoveryExpectation(
+  value: RoomConnectionSession | null
+): ResetRecoveryExpectation | null {
+  if (
+    value?.action !== 'join-room' ||
+    !value.playerId ||
+    typeof value.recoveryCommandId !== 'string' ||
+    !commandIdPattern.test(value.recoveryCommandId) ||
+    !Number.isSafeInteger(value.recoveryExpectedRevision) ||
+    Number(value.recoveryExpectedRevision) < 0 ||
+    Number(value.recoveryExpectedRevision) >= Number.MAX_SAFE_INTEGER
+  ) return null;
+  return {
+    commandId: value.recoveryCommandId,
+    expectedRevision: Number(value.recoveryExpectedRevision)
+  };
+}
+
 function defaultOnline(): boolean {
   return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
@@ -317,17 +340,30 @@ function isAuthoritativeSnapshot(
   if (typeof frame.playerId !== 'string' || !frame.playerId) return false;
   if (!Number.isSafeInteger(frame.revision) || Number(frame.revision) < 0) return false;
   const establishedPlayerId = currentSession?.action === 'join-room' ? currentSession.playerId : undefined;
+  const recoveryExpectation = resetRecoveryExpectation(currentSession);
   const pendingAction = isRecord(pendingCommand?.frame.action) ? pendingCommand.frame.action : null;
-  const resetTransition =
+  const correlatedResetFrame =
     frame.type === 'resync' &&
     frame.reason === 'room-reset' &&
-    typeof frame.commandId === 'string' &&
+    typeof frame.commandId === 'string';
+  const pendingResetTransition =
+    correlatedResetFrame &&
     pendingCommand !== null &&
     pendingAction?.type === 'reset-room' &&
     frame.commandId === pendingCommand.commandId &&
     Number(frame.revision) === pendingCommand.expectedRevision + 1 &&
     Boolean(establishedPlayerId) &&
     frame.playerId === establishedPlayerId;
+  const recoveryResetTransition =
+    correlatedResetFrame &&
+    !synchronizedOnCurrentSocket &&
+    currentSession?.action === 'join-room' &&
+    Boolean(currentSession.playerId) &&
+    frame.playerId === currentSession.playerId &&
+    recoveryExpectation !== null &&
+    frame.commandId === recoveryExpectation.commandId &&
+    Number(frame.revision) >= recoveryExpectation.expectedRevision + 1;
+  const resetTransition = pendingResetTransition || recoveryResetTransition;
   const expectedCode = currentSession?.action === 'join-room' && !resetTransition ? currentSession.code : null;
   if (!isMultiplayerRoomSnapshot(frame.room, expectedCode)) return false;
   if (
@@ -384,25 +420,25 @@ function sessionWireFrame(currentSession: RoomConnectionSession): RoomConnection
   if (currentSession.action === 'create-room') {
     return { type: 'create-room', protocolVersion: MULTIPLAYER_PROTOCOL_VERSION, name: currentSession.name };
   }
+  const recoveryExpectation = resetRecoveryExpectation(currentSession);
   return {
     type: 'join-room',
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
     code: currentSession.code,
     name: currentSession.name,
     ...(currentSession.playerId ? { playerId: currentSession.playerId } : {}),
-    ...(currentSession.playerId &&
-    currentSession.recoveryCommandId &&
-    commandIdPattern.test(currentSession.recoveryCommandId)
-      ? { recoveryCommandId: currentSession.recoveryCommandId }
+    ...(recoveryExpectation
+      ? { recoveryCommandId: recoveryExpectation.commandId }
       : {})
   };
 }
 
 function sessionKey(value: RoomConnectionSession | null): string {
   if (!value) return '';
+  const recoveryExpectation = resetRecoveryExpectation(value);
   return value.action === 'create-room'
     ? `create-room\u0000${value.name}`
-    : `join-room\u0000${value.code}\u0000${value.name}\u0000${value.playerId || ''}`;
+    : `join-room\u0000${value.code}\u0000${value.name}\u0000${value.playerId || ''}\u0000${recoveryExpectation?.commandId || ''}\u0000${recoveryExpectation?.expectedRevision ?? ''}`;
 }
 
 export function createRoomConnection(options: RoomConnectionOptions): RoomConnectionController {
@@ -444,6 +480,32 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
     if (changed) options.onPendingCommandChange?.(Boolean(nextPending));
   }
 
+  function bindResetRecovery(pending: PendingCommandState): RoomConnectionSession | null {
+    const action = isRecord(pending.frame.action) ? pending.frame.action : null;
+    if (action?.type !== 'reset-room' || session?.action !== 'join-room' || !session.playerId) return null;
+    const previousSession = session;
+    session = {
+      ...session,
+      recoveryCommandId: pending.commandId,
+      recoveryExpectedRevision: pending.expectedRevision
+    };
+    return previousSession;
+  }
+
+  function clearResetRecovery(commandId: unknown): void {
+    if (
+      session?.action !== 'join-room' ||
+      typeof commandId !== 'string' ||
+      session.recoveryCommandId !== commandId
+    ) return;
+    session = {
+      action: 'join-room',
+      code: session.code,
+      name: session.name,
+      ...(session.playerId ? { playerId: session.playerId } : {})
+    };
+  }
+
   function completePendingIfConverged(): void {
     const pending = pendingCommand;
     if (
@@ -458,10 +520,12 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
   function replayPendingCommand(socket: RoomConnectionSocket, socketGeneration: number): void {
     const pending = pendingCommand;
     if (!pending || pending.sentGeneration === socketGeneration || pending.acknowledgedRevision !== null) return;
+    const previousSession = bindResetRecovery(pending);
     try {
       socket.send(JSON.stringify(pending.frame));
       pending.sentGeneration = socketGeneration;
     } catch {
+      if (previousSession) session = previousSession;
       // The pending command remains ambiguous and will retry after transport recovery.
     }
   }
@@ -643,6 +707,10 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
         handleMalformedServerFrame(socket);
         return;
       }
+      if (resetTransitionFrame && pendingCommand) {
+        pendingCommand.acknowledgedRevision = pendingCommand.expectedRevision + 1;
+        pendingCommand.sentGeneration = socketGeneration;
+      }
 
       const recoveredSession = joinSessionFromFrame(frame, session);
       if (recoveredSession) {
@@ -668,6 +736,7 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
           frame.commandId === pendingCommand.commandId &&
           !resetTransitionFrame
         ) {
+          clearResetRecovery(frame.commandId);
           setPendingCommand(null);
           options.onError?.('The room changed before that action was accepted. Review the synchronized table and try again.');
         } else {
@@ -694,6 +763,7 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
         }
         transition('error');
       } else if (frame.type === 'error' && pendingCommand && frame.commandId === pendingCommand.commandId) {
+        clearResetRecovery(frame.commandId);
         setPendingCommand(null);
       }
 
@@ -794,20 +864,26 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
     if (disposed || state !== 'connected' || !socket || socket.readyState !== socketOpen) return false;
     const parsedCommand = frame.type === 'command' ? parseClientCommand(frame) : null;
     if (frame.type === 'command' && (!parsedCommand || !parsedCommand.ok || pendingCommand)) return false;
+    let previousSession: RoomConnectionSession | null = null;
     try {
       if (parsedCommand?.ok) {
-        setPendingCommand({
+        const nextPending = {
           frame: parsedCommand.command as unknown as RoomConnectionFrame,
           commandId: parsedCommand.command.commandId,
           expectedRevision: parsedCommand.command.expectedRevision,
           acknowledgedRevision: null,
           sentGeneration: generation
-        });
+        } satisfies PendingCommandState;
+        setPendingCommand(nextPending);
+        previousSession = bindResetRecovery(nextPending);
       }
       socket.send(JSON.stringify(frame));
       return true;
     } catch {
-      if (parsedCommand?.ok) setPendingCommand(null);
+      if (parsedCommand?.ok) {
+        if (previousSession) session = previousSession;
+        setPendingCommand(null);
+      }
       return false;
     }
   }
