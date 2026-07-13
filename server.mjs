@@ -248,12 +248,11 @@ function makeRoomCode(randomInt = crypto.randomInt) {
   });
 }
 
-function makeRoomCodeForSocket(ws) {
+function makeRoomCodeForSocket() {
   try {
     return makeRoomCode();
   } catch {
     console.error('Secure room code allocation failed.');
-    sendJson(ws, { type: 'error', message: 'A room code could not be created. Try again.' });
     return null;
   }
 }

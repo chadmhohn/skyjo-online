@@ -455,6 +455,57 @@ describe('multiplayer lobby', () => {
     expect(await screen.findByText('Invite service unavailable. Room code copied instead.')).toBeInTheDocument();
   });
 
+  it('surfaces an exact create allocation failure and retires the pending room request', async () => {
+    const user = userEvent.setup();
+    await renderLobby();
+    await user.click(screen.getByRole('button', { name: 'Create Room' }));
+    const socket = openSocket();
+    receive(socket, {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'room-code-unavailable',
+      message: 'A room code could not be created. Try again.'
+    });
+
+    expect(screen.getByText('A room code could not be created. Try again.')).toBeInTheDocument();
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'error');
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeEnabled();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBeNull();
+  });
+
+  it('keeps the old room recoverable after a correlated reset allocation failure', async () => {
+    const { socket, user } = await createJoinedRoom();
+    await user.click(screen.getByRole('button', { name: 'Reset Room' }));
+    const resetCommand = expectCommand(socket, { type: 'reset-room' }, 0);
+    receive(socket, {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'room-code-unavailable',
+      message: 'A room code could not be created. Try again.',
+      commandId: resetCommand.commandId
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('A room code could not be created. Try again.');
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
+    expect(screen.getByRole('button', { name: 'Reset Room' })).toBeEnabled();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBe('ABCDE');
+
+    act(() => socket.serverClose());
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1000 });
+    const recovered = openSocket();
+    expect(lastFrame(recovered)).toEqual({
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1'
+    });
+    receiveSnapshot(recovered, makeRoom({ updatedAt: 200 }));
+    expect(recovered.sent).toHaveLength(1);
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
+    expect(window.localStorage.getItem('skyjo-room-code')).toBe('ABCDE');
+  });
+
   it('preserves a healthy socket on focus and autonomously rejoins the same seat after disconnect', async () => {
     window.localStorage.setItem('skyjo-room-code', 'ABCDE');
     window.localStorage.setItem('skyjo-player-id', 'p1');

@@ -917,6 +917,43 @@ describe('room connection controller', () => {
     }
   });
 
+  it('clears a rejected reset and reconnects the unchanged seat without a recovery hint or replay', () => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const first = harness.sockets[0];
+    first.open();
+    first.receive(snapshotFrame());
+    const resetCommand = {
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'reset-room' }
+    };
+    expect(harness.controller.send(resetCommand)).toBe(true);
+
+    first.receive({
+      type: 'error',
+      protocolVersion: 2,
+      code: 'room-code-unavailable',
+      message: 'A room code could not be created. Try again.',
+      commandId: resetCommand.commandId
+    });
+    expect(harness.controller.getState()).toBe('connected');
+    first.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+
+    expect(recovered.sent).toEqual([
+      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+    ]);
+    recovered.receive(snapshotFrame(room('ABCDE', 200)));
+    expect(recovered.sent).toHaveLength(1);
+    expect(harness.controller.getState()).toBe('connected');
+  });
+
   it('handles upgrade shutdown, initial join-send failure, and transport close observed offline', () => {
     const upgrade = createHarness();
     upgrade.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });

@@ -136,7 +136,8 @@ function harness(roomValue = room()) {
     notified: 0,
     completed: [] as unknown[],
     completionErrors: [] as unknown[],
-    randomValues: [] as number[]
+    randomValues: [] as number[],
+    uuidValues: [] as string[]
   };
   let uuidIndex = 0;
   const uuids = [NEW_ID, '00000000-0000-4000-8000-000000000004'];
@@ -173,7 +174,11 @@ function harness(roomValue = room()) {
       calls.randomValues.push(0.25);
       return 0.25;
     },
-    randomUuid: () => uuids[uuidIndex++] || `00000000-0000-4000-8000-${String(uuidIndex).padStart(12, '0')}`,
+    randomUuid: () => {
+      const value = uuids[uuidIndex++] || `00000000-0000-4000-8000-${String(uuidIndex).padStart(12, '0')}`;
+      calls.uuidValues.push(value);
+      return value;
+    },
     recordCompletedGame: (input) => {
       calls.completed.push(input);
       return { id: 'completed-1' };
@@ -227,12 +232,28 @@ describe('protocol v2 room admission', () => {
     expect(value.calls.snapshots).toHaveLength(1);
   });
 
-  it('returns without mutating when room-code allocation is unavailable', () => {
+  it('emits an exact v2 create error without mutation or RNG when room-code allocation is unavailable', () => {
     const value = harness();
     value.options.makeRoomCodeForSocket = () => null;
     const handler = createProtocolV2MessageHandler(value.options);
     handler(value.socket, { type: 'create-room', protocolVersion: 2, name: 'Host' });
+
+    expect(value.calls.json).toEqual([{
+      socket: value.socket,
+      payload: {
+        type: 'error',
+        protocolVersion: 2,
+        code: 'room-code-unavailable',
+        message: 'A room code could not be created. Try again.'
+      }
+    }]);
+    expect([...value.rooms.keys()]).toEqual(['ROOM1']);
+    expect(value.socket).toMatchObject({ roomCode: 'ROOM1', playerId: HOST_ID });
     expect(value.calls.persisted).toBe(0);
+    expect(value.calls.snapshots).toEqual([]);
+    expect(value.calls.broadcasts).toEqual([]);
+    expect(value.calls.randomValues).toEqual([]);
+    expect(value.calls.uuidValues).toEqual([]);
   });
 
   it.each([
@@ -637,17 +658,38 @@ describe('protocol v2 gameplay and lifecycle commands', () => {
     expect(lastPayload(value)).toMatchObject({ code: 'invalid-phase' });
   });
 
-  it('enforces reset host authorization and handles allocation failure without mutation', () => {
+  it('enforces reset host authorization', () => {
     const value = harness();
     const guest = socket(GUEST_ID).socket;
     value.room.clients.add(guest);
     value.handler(guest, command({ type: 'reset-room' }));
     expect(lastPayload(value)).toMatchObject({ code: 'host-required' });
+  });
 
+  it('emits a correlated v2 reset error without mutation, receipt, or RNG when allocation fails', () => {
+    const value = harness();
     value.options.makeRoomCodeForSocket = () => null;
     createProtocolV2MessageHandler(value.options)(value.socket, command({ type: 'reset-room' }));
+
+    expect(value.calls.json).toEqual([{
+      socket: value.socket,
+      payload: {
+        type: 'error',
+        protocolVersion: 2,
+        code: 'room-code-unavailable',
+        message: 'A room code could not be created. Try again.',
+        commandId: COMMAND_ID
+      }
+    }]);
     expect(value.rooms.has('ROOM1')).toBe(true);
+    expect(value.rooms.size).toBe(1);
+    expect(value.room).toMatchObject({ code: 'ROOM1', revision: 0, recentCommandIds: [], resetAliases: [] });
+    expect(value.socket).toMatchObject({ roomCode: 'ROOM1', playerId: HOST_ID });
     expect(value.calls.persisted).toBe(0);
+    expect(value.calls.snapshots).toEqual([]);
+    expect(value.calls.broadcasts).toEqual([]);
+    expect(value.calls.randomValues).toEqual([]);
+    expect(value.calls.uuidValues).toEqual([]);
   });
 
   it('emits an authenticated reset resync before ack while detaching guests', () => {

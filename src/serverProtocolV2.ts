@@ -250,7 +250,16 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       const accountUser = ws.accountUser as ProtocolV2AccountUser;
       if (isCreate) {
         const code = makeRoomCodeForSocket(ws);
-        if (!code) return;
+        if (!code) {
+          commandError(
+            sendJson,
+            ws,
+            'A room code could not be created. Try again.',
+            undefined,
+            'room-code-unavailable'
+          );
+          return;
+        }
         const playerId = randomUuid();
         const room = createWaitingRoom({
           code,
@@ -547,7 +556,16 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       }
       const oldRoom = room;
       const newCode = makeRoomCodeForSocket(ws);
-      if (!newCode) return;
+      if (!newCode) {
+        commandError(
+          sendJson,
+          ws,
+          'A room code could not be created. Try again.',
+          command.commandId,
+          'room-code-unavailable'
+        );
+        return;
+      }
       const newRoom = createWaitingRoom({ code: newCode, hostPlayer: player, ws });
       newRoom.revision = nextRevision;
       const inheritedAliases = oldRoom.resetAliases
