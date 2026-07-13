@@ -101,6 +101,7 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   const serviceWorkerSource = await serviceWorker.text();
   expect(serviceWorkerSource).toContain("addEventListener('push'");
   expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
+  expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
 });
 
 test('single-player stats deduplicate one UUID without collapsing an equal-score game', async ({ page, skyjoServer }) => {

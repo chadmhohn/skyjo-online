@@ -133,10 +133,15 @@ self.addEventListener('fetch', (event) => {
 
   if (request.mode === 'navigate') {
     if ((url.pathname !== '/' && url.pathname !== '/single-player') || url.search) return;
-    event.respondWith(fetch(request).catch(async () => {
-      const cached = await caches.open(cacheName).then((cache) => cache.match(offlineShellPath));
-      return cached || Response.error();
-    }));
+    event.respondWith(fetch(request)
+      .then((response) => {
+        if (!response.ok) throw new Error('Navigation request was unavailable.');
+        return response;
+      })
+      .catch(async () => {
+        const cached = await caches.open(cacheName).then((cache) => cache.match(offlineShellPath));
+        return cached || Response.error();
+      }));
     return;
   }
 

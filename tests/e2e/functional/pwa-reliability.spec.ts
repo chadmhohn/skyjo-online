@@ -20,30 +20,13 @@ async function waitForServiceWorkerControl(page: Page) {
 
 async function workerVersion(page: Page): Promise<string | null> {
   return page.evaluate(async () => {
-    const worker = navigator.serviceWorker.controller;
-    if (!worker) return null;
-    return new Promise<string | null>((resolve) => {
-      const channel = new MessageChannel();
-      let settled = false;
-      const finish = (version: string | null) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timeout);
-        channel.port1.close();
-        resolve(version);
-      };
-      const timeout = window.setTimeout(() => finish(null), 500);
-      channel.port1.onmessage = (event) => {
-        finish(String(event.data));
-      };
-      channel.port1.onmessageerror = () => finish(null);
-      channel.port1.start();
-      try {
-        worker.postMessage({ type: 'SKYJO_TEST_VERSION' }, [channel.port2]);
-      } catch {
-        finish(null);
-      }
-    });
+    if (!navigator.serviceWorker.controller) return null;
+    const prefix = 'skyjo-test-active-worker-';
+    const versions = (await caches.keys())
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length))
+      .filter((version) => version === 'A' || version === 'B');
+    return versions.length === 1 ? versions[0] : null;
   }).catch(() => null);
 }
 
@@ -209,12 +192,18 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, false);
     const sensitiveNavigation = await context.newPage();
     await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, true);
-    await expect(
-      sensitiveNavigation.goto(`${skyjoServer.baseURL}/?invite=must-not-use-offline-shell`, {
+    const sensitiveUrl = `${skyjoServer.baseURL}/?invite=must-not-use-offline-shell`;
+    if (injectedNetworkFault) {
+      const sensitiveResponse = await sensitiveNavigation.goto(sensitiveUrl, { waitUntil: 'domcontentloaded' });
+      expect(sensitiveResponse?.status()).toBe(503);
+      expect(sensitiveResponse?.headers()['cache-control']).toBe('no-store');
+      await expect(sensitiveNavigation.getByRole('heading', { name: 'Skyjo' })).toHaveCount(0);
+    } else {
+      await expect(sensitiveNavigation.goto(sensitiveUrl, {
         waitUntil: 'domcontentloaded',
         timeout: 5_000
-      })
-    ).rejects.toThrow();
+      })).rejects.toThrow();
+    }
   } finally {
     await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, false).catch(() => undefined);
     await context.close();
@@ -258,7 +247,10 @@ test('a cold offline solo restore stays partitioned across owner A, owner B, and
   await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, true);
   await ownerAOffline.goto(`${skyjoServer.baseURL}/single-player`, { waitUntil: 'domcontentloaded' });
   await expect(ownerAOffline.getByRole('dialog', { name: 'Continue your solo game?' })).toBeVisible();
-  expect(await ownerAOffline.evaluate(async () => fetch('/api/account/me').then(() => 'live', () => 'offline'))).toBe('offline');
+  expect(await ownerAOffline.evaluate(async () => fetch('/api/account/me').then(
+    (response) => response.ok ? 'live' : 'offline',
+    () => 'offline'
+  ))).toBe('offline');
   await ownerAOffline.close();
 
   await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, false);

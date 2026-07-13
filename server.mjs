@@ -297,10 +297,15 @@ function sendJsonResponse(res, status, payload, headers = {}) {
 
 function testPwaWorkerSource(variant) {
   return `const version=${JSON.stringify(variant)};
+const activeVersionCachePrefix='skyjo-test-active-worker-';
 self.addEventListener('install', () => {});
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('activate', (event) => event.waitUntil((async () => {
+  const keys=await caches.keys();
+  await Promise.all(keys.filter((key) => key.startsWith(activeVersionCachePrefix)).map((key) => caches.delete(key)));
+  await caches.open(activeVersionCachePrefix+version);
+  await self.clients.claim();
+})()));
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SKYJO_TEST_VERSION') event.ports[0]?.postMessage(version);
   if (event.data?.type === 'SKYJO_ACTIVATE_UPDATE' && event.source) event.waitUntil(self.skipWaiting());
 });\n`;
 }
@@ -1373,10 +1378,13 @@ const server = http.createServer(async (req, res) => {
         req.method === 'GET' && (url.pathname === '/' || url.pathname === '/single-player')
       ))
     ) {
-      if (typeof req.socket.resetAndDestroy === 'function') {
-        req.socket.resetAndDestroy();
+      if (url.pathname.startsWith('/api/')) {
+        sendJsonResponse(res, 503, { error: 'Service unavailable.' }, { 'Retry-After': '1' });
       } else {
-        req.socket.destroy();
+        send(res, 503, 'Service unavailable.', {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Retry-After': '1'
+        });
       }
       return;
     }
