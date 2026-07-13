@@ -26,6 +26,7 @@ export default defineConfig({
       include: [
         'src/App.tsx',
         'src/GameTableLayout.tsx',
+        'src/accessibility.ts',
         'src/account.tsx',
         'src/audio.ts',
         'src/gamePresentation.ts',
@@ -39,6 +40,7 @@ export default defineConfig({
         ...uiThresholds,
         'src/App.tsx': uiThresholds,
         'src/GameTableLayout.tsx': uiThresholds,
+        'src/accessibility.ts': uiThresholds,
         'src/account.tsx': uiThresholds,
         'src/audio.ts': uiThresholds,
         'src/gamePresentation.ts': uiThresholds,

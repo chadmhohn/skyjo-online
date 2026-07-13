@@ -18,6 +18,7 @@ import {
   type PublicRoomSnapshot
 } from '../../../src/protocolV2';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from '../../../src/types';
+import { setMediaQueryMatches } from '../../setup/dom';
 
 type SocketEventName = 'open' | 'message' | 'error' | 'close';
 type SocketListener = (event: Event | MessageEvent<string>) => void;
@@ -1485,6 +1486,7 @@ describe('multiplayer game table', () => {
   });
 
   it('renders one shared four-player table with opponent waits, final-lap states, and completed-round readiness controls', async () => {
+    setMediaQueryMatches('(max-width: 640px)', true);
     const fourPlayers = [
       makePlayer('p1', 'Alice'),
       makePlayer('p2', 'Bob'),
@@ -1554,7 +1556,8 @@ describe('multiplayer game table', () => {
     );
 
     await user.click(await screen.findByRole('button', { name: /Round scoring.*2\/4 ready.*Open/ }));
-    expect(screen.getByRole('heading', { name: 'Round complete.' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Round complete.' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Round complete.' })).toHaveFocus();
     expect(screen.getByText('Round two scored.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next Round' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: "I'm Ready" }));
@@ -1598,7 +1601,9 @@ describe('multiplayer game table', () => {
       })
     );
     await user.click(screen.getByRole('button', { name: 'Minimize' }));
-    expect(screen.getByRole('button', { name: /Round scoring.*4\/4 ready.*Open/ })).toBeInTheDocument();
+    const summaryRestore = screen.getByRole('button', { name: /Round scoring.*4\/4 ready.*Open/ });
+    expect(summaryRestore).toBeInTheDocument();
+    await waitFor(() => expect(summaryRestore).toHaveFocus());
 
     const gameOver = { ...roundOver, phase: 'game-over' as const, winnerId: 'p1' };
     receiveSnapshot(
