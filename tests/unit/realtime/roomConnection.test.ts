@@ -389,6 +389,54 @@ describe('room connection controller', () => {
     expect(recovered.sockets[0].sent).toEqual([
       { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
     ]);
+
+    const resetRecovery = createHarness();
+    resetRecovery.controller.recover({
+      action: 'join-room',
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1',
+      recoveryCommandId: '10000000-0000-4000-8000-000000000001'
+    });
+    resetRecovery.runTimer(0);
+    resetRecovery.sockets[0].open();
+    expect(resetRecovery.sockets[0].sent).toEqual([
+      {
+        type: 'join-room',
+        protocolVersion: 2,
+        code: 'ABCDE',
+        name: 'Alice',
+        playerId: 'p1',
+        recoveryCommandId: '10000000-0000-4000-8000-000000000001'
+      }
+    ]);
+  });
+
+  it.each([
+    ['missing player id', undefined, '10000000-0000-4000-8000-000000000001'],
+    ['malformed id', 'p1', 'not-a-uuid'],
+    ['invalid UUID version', 'p1', '10000000-0000-0000-8000-000000000001'],
+    ['invalid UUID variant', 'p1', '10000000-0000-4000-7000-000000000001']
+  ])('omits a reset recovery hint with %s', (_label, playerId, recoveryCommandId) => {
+    const harness = createHarness();
+    harness.controller.connect({
+      action: 'join-room',
+      code: 'ABCDE',
+      name: 'Alice',
+      ...(playerId ? { playerId } : {}),
+      recoveryCommandId
+    });
+    harness.sockets[0].open();
+
+    expect(harness.sockets[0].sent).toEqual([
+      {
+        type: 'join-room',
+        protocolVersion: 2,
+        code: 'ABCDE',
+        name: 'Alice',
+        ...(playerId ? { playerId } : {})
+      }
+    ]);
   });
 
   it('enables commands and resets backoff only after a structurally valid authoritative snapshot', () => {

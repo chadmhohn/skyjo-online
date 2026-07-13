@@ -13,7 +13,7 @@ export type RoomConnectionFrame = Record<string, unknown>;
 
 export type RoomConnectionSession =
   | { action: 'create-room'; name: string }
-  | { action: 'join-room'; code: string; name: string; playerId?: string };
+  | { action: 'join-room'; code: string; name: string; playerId?: string; recoveryCommandId?: string };
 
 export type SavedRoomConnectionSession = Extract<RoomConnectionSession, { action: 'join-room' }> & {
   playerId: string;
@@ -70,6 +70,7 @@ const socketConnecting = 0;
 const socketOpen = 1;
 const resumeCoalesceMs = 250;
 const maximumDeckCards = 150;
+const commandIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
 interface PendingCommandState {
   frame: RoomConnectionFrame;
@@ -381,7 +382,12 @@ function sessionWireFrame(currentSession: RoomConnectionSession): RoomConnection
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
     code: currentSession.code,
     name: currentSession.name,
-    ...(currentSession.playerId ? { playerId: currentSession.playerId } : {})
+    ...(currentSession.playerId ? { playerId: currentSession.playerId } : {}),
+    ...(currentSession.playerId &&
+    currentSession.recoveryCommandId &&
+    commandIdPattern.test(currentSession.recoveryCommandId)
+      ? { recoveryCommandId: currentSession.recoveryCommandId }
+      : {})
   };
 }
 
