@@ -5,7 +5,7 @@ import App from '../../../src/App';
 import type { AccountUser } from '../../../src/account';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from '../../../src/types';
 
-type SocketEventName = 'open' | 'message' | 'close';
+type SocketEventName = 'open' | 'message' | 'error' | 'close';
 type SocketListener = (event: Event | MessageEvent<string>) => void;
 
 class FakeWebSocket {
@@ -17,6 +17,7 @@ class FakeWebSocket {
 
   readonly url: string;
   readonly sent: unknown[] = [];
+  closeCalls = 0;
   readyState = FakeWebSocket.CONNECTING;
   private readonly listeners = new Map<SocketEventName, Set<SocketListener>>();
 
@@ -36,6 +37,7 @@ class FakeWebSocket {
   }
 
   close() {
+    this.closeCalls += 1;
     if (this.readyState === FakeWebSocket.CLOSED) return;
     this.readyState = FakeWebSocket.CLOSED;
     this.dispatch('close', new Event('close'));
@@ -53,6 +55,10 @@ class FakeWebSocket {
   serverClose() {
     this.readyState = FakeWebSocket.CLOSED;
     this.dispatch('close', new Event('close'));
+  }
+
+  fail() {
+    this.dispatch('error', new Event('error'));
   }
 
   private dispatch(type: SocketEventName, event: Event | MessageEvent<string>) {
@@ -177,7 +183,11 @@ function lastFrame(socket: FakeWebSocket) {
 async function createJoinedRoom(room = makeRoom()) {
   const user = userEvent.setup();
   await renderLobby();
+  expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'idle');
   await user.click(screen.getByRole('button', { name: 'Create Room' }));
+  expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connecting');
+  expect(screen.getByRole('button', { name: 'Create Room' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Join' })).toBeDisabled();
   const socket = openSocket();
   expect(lastFrame(socket)).toEqual({ type: 'create-room', name: 'Alice' });
   receive(socket, { type: 'joined', playerId: 'p1', room });
@@ -189,6 +199,7 @@ beforeEach(() => {
   FakeWebSocket.instances = [];
   vi.stubGlobal('WebSocket', FakeWebSocket);
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
   Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() });
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
@@ -294,8 +305,8 @@ describe('multiplayer lobby', () => {
     expect(lastFrame(socket)).toEqual({ type: 'join-room', code: 'ABC12', name: 'Alice' });
     receive(socket, { type: 'error' });
     expect(await screen.findByText('Room error.')).toBeInTheDocument();
-    act(() => socket.serverClose());
-    expect(await screen.findByText('Room connection closed. Rejoin to continue.')).toBeInTheDocument();
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'error');
+    expect(screen.getByRole('button', { name: 'Join' })).toBeEnabled();
 
     await user.clear(screen.getByRole('textbox'));
     await user.click(screen.getByRole('button', { name: 'Join' }));
@@ -304,18 +315,18 @@ describe('multiplayer lobby', () => {
     await user.type(screen.getByRole('textbox'), 'a1-b2-c3');
     await user.click(screen.getByRole('button', { name: 'Join' }));
     const joinedSocket = openSocket();
-    receive(joinedSocket, { type: 'joined', playerId: 'p1', room: makeRoom() });
+    receive(joinedSocket, { type: 'joined', playerId: 'p1', room: makeRoom({ code: 'A1B2C' }) });
 
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/rooms/invite') return response({ error: 'Invite service unavailable.' }, 503);
       return response({ user: accountUser });
     });
     await user.click(screen.getByRole('button', { name: 'Share' }));
-    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith('Skyjo room code: ABCDE'));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith('Skyjo room code: A1B2C'));
     expect(await screen.findByText('Invite service unavailable. Room code copied instead.')).toBeInTheDocument();
   });
 
-  it('rejoins the same seat after a stored-session disconnect and active-tab resume', async () => {
+  it('preserves a healthy socket on focus and autonomously rejoins the same seat after disconnect', async () => {
     window.localStorage.setItem('skyjo-room-code', 'ABCDE');
     window.localStorage.setItem('skyjo-player-id', 'p1');
     window.localStorage.setItem('skyjo-player-name', 'Old name');
@@ -327,16 +338,137 @@ describe('multiplayer lobby', () => {
     receive(first, { type: 'joined', playerId: 'p1', room: makeRoom() });
     expect(window.localStorage.getItem('skyjo-player-name')).toBe('Alice');
 
+    act(() => window.dispatchEvent(new Event('focus')));
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(first.closeCalls).toBe(0);
+    expect(lastFrame(first)).toEqual({ type: 'set-presence', visible: true });
+
     act(() => first.serverClose());
-    expect(screen.queryByText('Room connection closed. Rejoin to continue.')).not.toBeInTheDocument();
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'reconnecting');
     expect(screen.getByText('ABCDE')).toBeInTheDocument();
 
     act(() => window.dispatchEvent(new Event('focus')));
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1000 });
     const resumed = openSocket();
     expect(lastFrame(resumed)).toEqual({ type: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
-    receive(resumed, { type: 'room', room: makeRoom({ updatedAt: 200 }) });
+    receive(resumed, { type: 'joined', playerId: 'p1', room: makeRoom({ updatedAt: 200 }) });
     expect(screen.getByText(/Bob online/)).toBeInTheDocument();
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
+  });
+
+  it('shows an initially offline lobby and disables room requests until online', async () => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+    await renderLobby();
+    await waitFor(() =>
+      expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'offline')
+    );
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Join' })).toBeDisabled();
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+    act(() => window.dispatchEvent(new Event('online')));
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'idle');
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Join' })).toBeEnabled();
+  });
+
+  it('keeps application errors announced while an established transport remains connected', async () => {
+    const { socket } = await createJoinedRoom();
+    receive(socket, { type: 'error', message: 'That move is not legal.' });
+
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
+    expect(screen.getByRole('alert')).toHaveTextContent('That move is not legal.');
+    expect(socket.closeCalls).toBe(0);
+  });
+
+  it('offers retry and leave actions when a saved-seat recovery is rejected', async () => {
+    const { socket, user } = await createJoinedRoom();
+    act(() => socket.serverClose());
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1000 });
+    const rejected = openSocket();
+    receive(rejected, { type: 'error', message: 'Room not found.' });
+
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'error');
+    expect(screen.getByText('ABCDE')).toBeInTheDocument();
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+    act(() => window.dispatchEvent(new Event('offline')));
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+    act(() => window.dispatchEvent(new Event('online')));
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'idle');
+    expect(screen.getByRole('button', { name: 'Retry Saved Seat' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Leave Room' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Retry Saved Seat' }));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3), { timeout: 1000 });
+    const retried = openSocket();
+    expect(lastFrame(retried)).toEqual({ type: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    receive(retried, { type: 'error', message: 'Room not found.' });
+
+    await user.click(screen.getByRole('button', { name: 'Leave Room' }));
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'idle');
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeEnabled();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBeNull();
+    expect(screen.queryByText('ABCDE')).not.toBeInTheDocument();
+  });
+
+  it('shows offline immediately, retains the last room read-only, and hard-disables multiplayer commands', async () => {
+    const selectedDiscard = makeState({
+      phase: 'choose-replacement',
+      selectedSource: 'discard',
+      openingRevealCounts: { p1: 2, p2: 2 }
+    });
+    const { socket, user } = await createJoinedRoom(makeRoom({ state: selectedDiscard, status: 'playing' }));
+
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+    act(() => window.dispatchEvent(new Event('offline')));
+
+    expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'offline');
+    expect(screen.getByText('ABCDE')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Put the discard card back.' })[0]).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reset Room' })).toBeDisabled();
+    expect(screen.getAllByRole('button', { name: /Replace card 1 with the discard card/ })[0]).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: /Table Chat/ }));
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(socket.sent.filter((frame) => (frame as { type?: string }).type === 'update-state')).toHaveLength(0);
+  });
+
+  it('disables waiting-room host mutations until synchronization returns', async () => {
+    await createJoinedRoom();
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+    act(() => window.dispatchEvent(new Event('offline')));
+    expect(screen.getByRole('button', { name: 'Start Game' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reset Room' })).toBeDisabled();
+  });
+
+  it('disables completed-round ready and next-round commands until synchronization returns', async () => {
+    const user = userEvent.setup();
+    const scoring = makeState({
+      phase: 'round-over',
+      openingRevealCounts: { p1: 2, p2: 2 }
+    });
+    await createJoinedRoom(
+      makeRoom({ state: scoring, status: 'playing', readyForNextRoundPlayerIds: ['p1', 'p2'] })
+    );
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+    act(() => window.dispatchEvent(new Event('offline')));
+    await user.click(screen.getByRole('button', { name: /Round scoring.*Open/ }));
+    expect(screen.getByRole('button', { name: 'Ready' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Next Round' })).toBeDisabled();
+  });
+
+  it('retains initial hidden visibility and publishes it immediately after the reconnect snapshot', async () => {
+    window.localStorage.setItem('skyjo-room-code', 'ABCDE');
+    window.localStorage.setItem('skyjo-player-id', 'p1');
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    await renderLobby();
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
+    const socket = openSocket();
+    receive(socket, { type: 'joined', playerId: 'p1', room: makeRoom() });
+    expect(socket.sent).toEqual([
+      { type: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      { type: 'set-presence', visible: false }
+    ]);
   });
 });
 

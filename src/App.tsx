@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -32,6 +32,13 @@ import {
 } from './account';
 import { playAudioCue, playAudioTestCue, primeAudio, useAudioSettings, useGameAudio, type AudioSettings } from './audio';
 import { disablePushNotifications, enablePushNotifications, loadPushNotificationStatus, type PushUiStatus } from './push';
+import {
+  createRoomConnection,
+  type RoomConnectionController,
+  type RoomConnectionFrame,
+  type RoomConnectionSocket,
+  type RoomConnectionState
+} from './roomConnection';
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from './types';
 
 const rows = [0, 1, 2];
@@ -1369,18 +1376,30 @@ interface GridProps {
   isLocal: boolean;
   state: GameState;
   drawIntent?: DrawIntent;
+  interactionDisabledReason?: string;
   onCardClick?: (index: number) => void;
 }
 
-function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', onCardClick }: GridProps) {
+function PlayerGrid({
+  player,
+  isCurrent,
+  isLocal,
+  state,
+  drawIntent = 'place',
+  interactionDisabledReason,
+  onCardClick
+}: GridProps) {
   const canSelectOpening =
-    isLocal && isCurrent && state.phase === 'opening-reveal' && (state.openingRevealCounts[player.id] ?? 0) < 2;
+    isLocal &&
+    isCurrent &&
+    state.phase === 'opening-reveal' &&
+    (state.openingRevealCounts[player.id] ?? 0) < 2;
   const canSelectReplacement =
     isLocal &&
     isCurrent &&
     state.phase === 'choose-replacement' &&
     (state.selectedSource === 'discard' || state.selectedSource === 'draw');
-  const selectionMode = canSelectOpening || canSelectReplacement;
+  const selectionMode = !interactionDisabledReason && (canSelectOpening || canSelectReplacement);
   const playerRole = player.kind === 'ai' ? 'AI opponent' : isLocal ? 'You' : 'Player';
   const playerStatus = isCurrent ? (isLocal ? 'Your move now' : 'Current turn') : isLocal ? 'Waiting for your turn' : 'Waiting';
   const openingRemaining = Math.max(0, 2 - openingRevealCount(state, player));
@@ -1437,10 +1456,11 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
               const index = row * 4 + column;
               const card = player.grid[index];
               const revealAfterDiscard = state.selectedSource === 'draw' && state.drawnCard && drawIntent === 'discard';
-              const selectable = Boolean(
+              const domainSelectable = Boolean(
                 !card.removed &&
                   ((canSelectOpening && !card.faceUp) || (canSelectReplacement && (!revealAfterDiscard || !card.faceUp)))
               );
+              const selectable = !interactionDisabledReason && domainSelectable;
               const dimDuringSelection = selectionMode && !selectable && !card.removed;
               const affordanceLabel = cardAffordanceLabel({
                 card,
@@ -1451,7 +1471,7 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
                 isCurrent,
                 isLocal,
                 player,
-                selectable,
+                selectable: domainSelectable,
                 state
               });
               return (
@@ -1463,7 +1483,7 @@ function PlayerGrid({ player, isCurrent, isLocal, state, drawIntent = 'place', o
                   disabled={!selectable}
                   key={card.id}
                   onClick={() => onCardClick?.(index)}
-                  title={affordanceLabel}
+                  title={interactionDisabledReason || affordanceLabel}
                   type="button"
                 >
                   {cardLabel(card)}
@@ -1482,10 +1502,18 @@ interface PlayerBoardGridProps {
   state: GameState;
   drawIntent: DrawIntent;
   className?: string;
+  interactionDisabledReason?: string;
   onCardClick: (index: number) => void;
 }
 
-function PlayerBoardGrid({ entries, state, drawIntent, className = responsiveBoardGridClass, onCardClick }: PlayerBoardGridProps) {
+function PlayerBoardGrid({
+  entries,
+  state,
+  drawIntent,
+  className = responsiveBoardGridClass,
+  interactionDisabledReason,
+  onCardClick
+}: PlayerBoardGridProps) {
   const boardRef = useRef<HTMLDivElement | null>(null);
   const userScrollPausedUntilRef = useRef(0);
   const isOpponentStack = className.includes('skyjo-opponent-stack');
@@ -1542,6 +1570,7 @@ function PlayerBoardGrid({ entries, state, drawIntent, className = responsiveBoa
         return (
           <PlayerGrid
             drawIntent={drawIntent}
+            interactionDisabledReason={interactionDisabledReason}
             isCurrent={index === state.currentPlayerIndex}
             isLocal={isLocal}
             key={player.id}
@@ -1559,6 +1588,7 @@ interface TableControlsProps {
   state: GameState;
   localTurn: boolean;
   drawIntent: DrawIntent;
+  interactionDisabledReason?: string;
   localPlayerId?: string;
   onChooseDiscard: () => void;
   onCancelDiscard: () => void;
@@ -1570,6 +1600,7 @@ function TableControls({
   state,
   localTurn,
   drawIntent,
+  interactionDisabledReason,
   localPlayerId,
   onChooseDiscard,
   onCancelDiscard,
@@ -1580,13 +1611,13 @@ function TableControls({
   const activePlayer = state.players[state.currentPlayerIndex];
   const hasHiddenCard = hiddenCardCount(activePlayer) > 0;
   const status = getTurnStatus(state, localTurn);
-  const deckDisabledReason = sourceDisabledReason(state, localTurn, 'deck');
-  const discardDisabledReason = sourceDisabledReason(state, localTurn, 'discard');
+  const deckDisabledReason = interactionDisabledReason || sourceDisabledReason(state, localTurn, 'deck');
+  const discardDisabledReason = interactionDisabledReason || sourceDisabledReason(state, localTurn, 'discard');
   const commonDisabledReason =
     deckDisabledReason && discardDisabledReason && deckDisabledReason === discardDisabledReason ? deckDisabledReason : '';
   const selectedDiscard = localTurn && state.phase === 'choose-replacement' && state.selectedSource === 'discard';
   const hasLocalDrawnDecision = Boolean(state.drawnCard && localTurn);
-  const discardButtonDisabled = Boolean(discardDisabledReason && !selectedDiscard);
+  const discardButtonDisabled = Boolean(interactionDisabledReason || (discardDisabledReason && !selectedDiscard));
   const discardButtonTitle = selectedDiscard
     ? 'Put the discard card back.'
     : discardDisabledReason || 'Take the top discard card.';
@@ -1690,7 +1721,9 @@ function TableControls({
             <button
               aria-pressed={drawIntent === 'place'}
               className={`skyjo-choice-button ${drawIntent === 'place' ? 'skyjo-choice-button-active' : ''}`}
+              disabled={Boolean(interactionDisabledReason)}
               onClick={() => onSetDrawIntent('place')}
+              title={interactionDisabledReason || 'Replace a card with the drawn card.'}
               type="button"
             >
               <span>Place drawn card</span>
@@ -1699,9 +1732,12 @@ function TableControls({
             <button
               aria-pressed={drawIntent === 'discard'}
               className={`skyjo-choice-button ${drawIntent === 'discard' ? 'skyjo-choice-button-active' : ''}`}
-              disabled={!hasHiddenCard}
+              disabled={Boolean(interactionDisabledReason) || !hasHiddenCard}
               onClick={() => onSetDrawIntent('discard')}
-              title={hasHiddenCard ? 'Discard the drawn card and reveal a hidden card.' : 'No hidden cards remain to reveal.'}
+              title={
+                interactionDisabledReason ||
+                (hasHiddenCard ? 'Discard the drawn card and reveal a hidden card.' : 'No hidden cards remain to reveal.')
+              }
               type="button"
             >
               <span>Discard + reveal</span>
@@ -1729,6 +1765,7 @@ interface MobilePlaySurfaceProps {
   state: GameState;
   localEntries: BoardGridEntry[];
   drawIntent: DrawIntent;
+  interactionDisabledReason?: string;
   localPlayerId?: string;
   localTurn: boolean;
   onCardClick: (index: number) => void;
@@ -1742,6 +1779,7 @@ function MobilePlaySurface({
   state,
   localEntries,
   drawIntent,
+  interactionDisabledReason,
   localPlayerId,
   localTurn,
   onCardClick,
@@ -1756,12 +1794,14 @@ function MobilePlaySurface({
         className="skyjo-mobile-local-board"
         drawIntent={drawIntent}
         entries={localEntries}
+        interactionDisabledReason={interactionDisabledReason}
         onCardClick={onCardClick}
         state={state}
       />
       <div className="skyjo-mobile-table-rail">
         <TableControls
           drawIntent={drawIntent}
+          interactionDisabledReason={interactionDisabledReason}
           localPlayerId={localPlayerId}
           localTurn={localTurn}
           onCancelDiscard={onCancelDiscard}
@@ -1842,11 +1882,21 @@ interface RoomChatProps {
   isOpen: boolean;
   state?: GameState | null;
   unreadCount: number;
+  interactionDisabledReason?: string;
   onToggle: () => void;
   onSend: (text: string) => void;
 }
 
-function RoomChat({ messages, playerId, isOpen, state, unreadCount, onToggle, onSend }: RoomChatProps) {
+function RoomChat({
+  messages,
+  playerId,
+  isOpen,
+  state,
+  unreadCount,
+  interactionDisabledReason,
+  onToggle,
+  onSend
+}: RoomChatProps) {
   const [draft, setDraft] = useState('');
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
@@ -1859,6 +1909,7 @@ function RoomChat({ messages, playerId, isOpen, state, unreadCount, onToggle, on
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (interactionDisabledReason) return;
     const text = draft.trim();
     if (!text) return;
     onSend(text);
@@ -1951,13 +2002,20 @@ function RoomChat({ messages, playerId, isOpen, state, unreadCount, onToggle, on
             <input
               aria-label="Message"
               className="skyjo-input min-w-0 flex-1 px-3 py-2 text-sm"
+              disabled={Boolean(interactionDisabledReason)}
               maxLength={280}
               onChange={(event) => setDraft(event.target.value)}
               onFocus={handleInputFocus}
               placeholder="Message players"
+              title={interactionDisabledReason || 'Message players'}
               value={draft}
             />
-            <button className="skyjo-button skyjo-button-primary px-4 py-2 text-sm" disabled={!draft.trim()} type="submit">
+            <button
+              className="skyjo-button skyjo-button-primary px-4 py-2 text-sm"
+              disabled={Boolean(interactionDisabledReason) || !draft.trim()}
+              title={interactionDisabledReason || 'Send message'}
+              type="submit"
+            >
               Send
             </button>
           </form>
@@ -2286,7 +2344,38 @@ function SinglePlayer() {
   );
 }
 
-type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error';
+const multiplayerConnectionCopy: Record<RoomConnectionState, { label: string; detail: string }> = {
+  idle: { label: 'Not connected', detail: 'Create a room or join with a code.' },
+  connecting: { label: 'Connecting', detail: 'Opening a secure room connection.' },
+  connected: { label: 'Connected', detail: 'Room state is synchronized.' },
+  reconnecting: { label: 'Reconnecting', detail: 'Game controls are paused while room state catches up.' },
+  offline: { label: 'Offline', detail: 'Game controls are paused until your network returns.' },
+  error: { label: 'Connection error', detail: 'Choose an available recovery action before multiplayer resumes.' }
+};
+
+function MultiplayerConnectionStatus({ state, roomActive }: { state: RoomConnectionState; roomActive: boolean }) {
+  const copy =
+    state === 'idle' && roomActive
+      ? { label: 'Not connected', detail: 'Retry your saved seat or leave the room to start over.' }
+      : multiplayerConnectionCopy[state];
+  return (
+    <div
+      aria-live={state === 'error' ? 'assertive' : 'polite'}
+      className={`rounded-xl border px-4 py-3 text-sm ${
+        state === 'connected'
+          ? 'border-emerald-300/30 bg-emerald-950/55 text-emerald-100'
+          : state === 'offline' || state === 'error'
+            ? 'border-red-400/40 bg-red-950/70 text-red-100'
+            : 'border-amber-200/25 bg-amber-950/45 text-amber-50'
+      }`}
+      data-connection-state={state}
+      data-testid="connection-status"
+      role={state === 'error' ? 'alert' : 'status'}
+    >
+      <span className="font-black">{copy.label}.</span> {copy.detail}
+    </div>
+  );
+}
 
 type InitialLobbySession = {
   joinCode: string;
@@ -2330,10 +2419,9 @@ function Lobby() {
   const initialLobbyRef = useRef<InitialLobbySession | null>(null);
   if (!initialLobbyRef.current) initialLobbyRef.current = getInitialLobbySession();
   const initialLobby = initialLobbyRef.current;
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
+  const connectionControllerRef = useRef<RoomConnectionController | null>(null);
+  const frameHandlerRef = useRef<(frame: RoomConnectionFrame) => void>(() => {});
   const shareStatusTimerRef = useRef<number | null>(null);
-  const mountedRef = useRef(true);
   const roomCodeRef = useRef(initialLobby.roomCode);
   const playerIdRef = useRef(initialLobby.playerId);
   const lastSharedRoomCodeRef = useRef(cleanRoomCode(new URLSearchParams(location.search).get('room')));
@@ -2342,7 +2430,7 @@ function Lobby() {
   const [roomCode, setRoomCode] = useState(initialLobby.roomCode);
   const [playerId, setPlayerId] = useState(initialLobby.playerId);
   const [room, setRoom] = useState<MultiplayerRoom | null>(null);
-  const [connection, setConnection] = useState<ConnectionState>('idle');
+  const [connection, setConnection] = useState<RoomConnectionState>('idle');
   const [error, setError] = useState('');
   const [shareStatus, setShareStatus] = useState('');
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
@@ -2350,7 +2438,6 @@ function Lobby() {
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
   const [lastSeenChatMessageId, setLastSeenChatMessageId] = useState('');
   const lastSeenChatRoomCodeRef = useRef('');
-  const lastResumeSyncRef = useRef(0);
   const hasPendingDrawDecision = Boolean(
     room?.state && room.state.phase === 'choose-replacement' && room.state.selectedSource === 'draw' && room.state.drawnCard
   );
@@ -2362,19 +2449,14 @@ function Lobby() {
     (count, message, index) => (index > lastSeenChatIndex && message.playerId !== playerId ? count + 1 : count),
     0
   );
+  frameHandlerRef.current = handleRoomFrame;
 
   useEffect(
     () => () => {
-      mountedRef.current = false;
-      if (reconnectTimerRef.current !== null) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
       if (shareStatusTimerRef.current !== null) {
         window.clearTimeout(shareStatusTimerRef.current);
         shareStatusTimerRef.current = null;
       }
-      wsRef.current?.close();
     },
     []
   );
@@ -2400,6 +2482,32 @@ function Lobby() {
   }, [accountUser]);
 
   useEffect(() => {
+    if (!accountUser) return;
+    const controller = createRoomConnection({
+      url: roomSocketUrl(),
+      createSocket: (url) => new WebSocket(url) as unknown as RoomConnectionSocket,
+      onFrame: (frame) => frameHandlerRef.current(frame),
+      onStateChange: (state) => setConnection(state),
+      onError: (message) => setError(message)
+    });
+    connectionControllerRef.current = controller;
+    if (roomCodeRef.current && playerIdRef.current) {
+      controller.recover({
+        action: 'join-room',
+        code: roomCodeRef.current,
+        name: accountUser.displayName,
+        playerId: playerIdRef.current
+      });
+    }
+    controller.setOnline(navigator.onLine !== false);
+    controller.setVisible(document.visibilityState === 'visible');
+    return () => {
+      if (connectionControllerRef.current === controller) connectionControllerRef.current = null;
+      controller.dispose();
+    };
+  }, [accountUser]);
+
+  useEffect(() => {
     playerIdRef.current = playerId;
   }, [playerId]);
 
@@ -2409,9 +2517,7 @@ function Lobby() {
     lastSharedRoomCodeRef.current = sharedRoomCode;
     if (sharedRoomCode === roomCodeRef.current) return;
 
-    const currentWs = wsRef.current;
-    wsRef.current = null;
-    currentWs?.close();
+    connectionControllerRef.current?.disconnect();
     window.localStorage.removeItem('skyjo-player-id');
     window.localStorage.removeItem('skyjo-room-code');
     playerIdRef.current = '';
@@ -2437,19 +2543,6 @@ function Lobby() {
     }
   }, [chatOpen, latestChatMessage?.id, latestChatMessage?.playerId, playerId, roomChatCode]);
 
-  function clearReconnectTimer() {
-    if (reconnectTimerRef.current !== null) {
-      window.clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-  }
-
-  const sendPresence = useCallback((visible: boolean) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: 'set-presence', visible }));
-  }, []);
-
   function connect(action: 'create-room' | 'join-room', codeOverride?: string) {
     if (!accountUser) {
       setError('Sign in to your Skyjo account before joining multiplayer.');
@@ -2461,152 +2554,129 @@ function Lobby() {
       setError('Enter a room code.');
       return;
     }
-    clearReconnectTimer();
     window.localStorage.setItem('skyjo-player-name', cleanedName);
-    setConnection('connecting');
     setError('');
-    wsRef.current?.close();
-    const ws = new WebSocket(roomSocketUrl());
-    wsRef.current = ws;
-
-    ws.addEventListener('open', () => {
-      ws.send(
-        JSON.stringify(
-          action === 'create-room'
-            ? { type: 'create-room', name: cleanedName }
-            : {
-                type: 'join-room',
-                code: cleanedCode,
-                name: cleanedName,
-                playerId: cleanedCode === roomCodeRef.current ? playerIdRef.current || playerId || undefined : undefined
-              }
-        )
-      );
-    });
-
-    ws.addEventListener('message', (event) => {
-      const message = JSON.parse(String(event.data));
-      if (message.type === 'joined') {
-        setPlayerId(message.playerId);
-        playerIdRef.current = message.playerId;
-        window.localStorage.setItem('skyjo-player-id', message.playerId);
-        setRoomCode(message.room.code);
-        roomCodeRef.current = message.room.code;
-        window.localStorage.setItem('skyjo-room-code', message.room.code);
-        setJoinCode(message.room.code);
-        setRoom(message.room);
-        setConnection('connected');
-        setError('');
-        return;
-      }
-      if (message.type === 'room') {
-        setRoom(message.room);
-        setConnection('connected');
-        setError('');
-        return;
-      }
-      if (message.type === 'error') {
-        setError(message.message || 'Room error.');
-        setConnection('error');
-      }
-      if (message.type === 'room-reset') {
-        wsRef.current = null;
-        ws.close();
-        window.localStorage.removeItem('skyjo-player-id');
-        window.localStorage.removeItem('skyjo-room-code');
-        playerIdRef.current = '';
-        roomCodeRef.current = '';
-        setPlayerId('');
-        setRoomCode('');
-        setRoom(null);
-        setConnection('idle');
-        setError(message.message || 'The host reset this room. Ask for the new room link to rejoin.');
-      }
-    });
-
-    ws.addEventListener('close', () => {
-      if (!mountedRef.current) return;
-      if (wsRef.current !== ws) return;
-      wsRef.current = null;
-      setConnection('idle');
-      if (roomCodeRef.current && playerIdRef.current) {
-        setError('');
-        return;
-      }
-      setError('Room connection closed. Rejoin to continue.');
-    });
+    const controller = connectionControllerRef.current;
+    if (!controller) {
+      setConnection('error');
+      setError('Room connection is still initializing. Try again.');
+      return;
+    }
+    controller.connect(
+      action === 'create-room'
+        ? { action: 'create-room', name: cleanedName }
+        : {
+            action: 'join-room',
+            code: cleanedCode,
+            name: cleanedName,
+            playerId: cleanedCode === roomCodeRef.current ? playerIdRef.current || playerId || undefined : undefined
+          }
+    );
   }
 
-  const connectRef = useRef<((action: 'create-room' | 'join-room', codeOverride?: string) => void) | null>(null);
-  connectRef.current = connect;
+  function handleRoomFrame(message: RoomConnectionFrame) {
+    if (message.type === 'joined') {
+      const joinedPlayerId = message.playerId as string;
+      const joinedRoom = message.room as MultiplayerRoom;
+      setPlayerId(joinedPlayerId);
+      playerIdRef.current = joinedPlayerId;
+      window.localStorage.setItem('skyjo-player-id', joinedPlayerId);
+      setRoomCode(joinedRoom.code);
+      roomCodeRef.current = joinedRoom.code;
+      window.localStorage.setItem('skyjo-room-code', joinedRoom.code);
+      setJoinCode(joinedRoom.code);
+      setRoom(joinedRoom);
+      setError('');
+      return;
+    }
+    if (message.type === 'room') {
+      setRoom(message.room as MultiplayerRoom);
+      setError('');
+      return;
+    }
+    if (message.type === 'error') {
+      setError(typeof message.message === 'string' ? message.message : 'Room error.');
+      return;
+    }
+    if (message.type === 'room-reset') {
+      connectionControllerRef.current?.disconnect();
+      window.localStorage.removeItem('skyjo-player-id');
+      window.localStorage.removeItem('skyjo-room-code');
+      playerIdRef.current = '';
+      roomCodeRef.current = '';
+      setPlayerId('');
+      setRoomCode('');
+      setRoom(null);
+      setError(
+        typeof message.message === 'string'
+          ? message.message
+          : 'The host reset this room. Ask for the new room link to rejoin.'
+      );
+    }
+  }
 
   useEffect(() => {
-    function reconnectRoom(force = false) {
-      const savedRoomCode = roomCodeRef.current;
-      const savedPlayerId = playerIdRef.current;
-      if (!savedRoomCode || !savedPlayerId) return;
-      const ws = wsRef.current;
-      if (!force && ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-      if (reconnectTimerRef.current !== null) return;
-
-      reconnectTimerRef.current = window.setTimeout(() => {
-        reconnectTimerRef.current = null;
-        if (!mountedRef.current) return;
-        const currentWs = wsRef.current;
-        if (!force && currentWs && (currentWs.readyState === WebSocket.OPEN || currentWs.readyState === WebSocket.CONNECTING)) return;
-        connectRef.current?.('join-room', roomCodeRef.current);
-      }, force ? 50 : 250);
-    }
-
     const handleResume = () => {
-      if (!mountedRef.current) return;
       if (document.visibilityState !== 'visible') return;
-      sendPresence(true);
-      const now = Date.now();
-      if (now - lastResumeSyncRef.current < 750) return;
-      lastResumeSyncRef.current = now;
-      reconnectRoom(true);
+      connectionControllerRef.current?.resume();
     };
+    const handleVisibilityChange = () =>
+      connectionControllerRef.current?.setVisible(document.visibilityState === 'visible');
+    const handlePageHide = () => connectionControllerRef.current?.setVisible(false);
+    const handlePageShow = () => connectionControllerRef.current?.setVisible(true);
+    const handleOffline = () => connectionControllerRef.current?.setOnline(false);
+    const handleOnline = () => connectionControllerRef.current?.setOnline(true);
 
     window.addEventListener('focus', handleResume);
-    window.addEventListener('pageshow', handleResume);
-    document.addEventListener('visibilitychange', handleResume);
-
-    reconnectRoom();
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('focus', handleResume);
-      window.removeEventListener('pageshow', handleResume);
-      document.removeEventListener('visibilitychange', handleResume);
-    };
-    // Reconnect when the saved room session changes or the tab becomes active again.
-  }, [playerId, roomCode, sendPresence]);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      sendPresence(document.visibilityState === 'visible');
-    };
-    const handlePageHide = () => sendPresence(false);
-    const handlePageShow = () => sendPresence(true);
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('pagehide', handlePageHide);
-    window.addEventListener('pageshow', handlePageShow);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pagehide', handlePageHide);
       window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [sendPresence]);
+  }, []);
 
-  function send(payload: unknown) {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+  function send(payload: RoomConnectionFrame) {
+    if (!connectionControllerRef.current?.send(payload)) {
       setError('Room connection is not open.');
+    }
+  }
+
+  function retrySavedRoom() {
+    const code = roomCodeRef.current;
+    const savedPlayerId = playerIdRef.current;
+    if (!code || !savedPlayerId || !accountUser) {
+      setError('No saved room seat is available to retry.');
       return;
     }
-    ws.send(JSON.stringify(payload));
+    setError('');
+    connectionControllerRef.current?.recover({
+      action: 'join-room',
+      code,
+      name: accountUser.displayName,
+      playerId: savedPlayerId
+    });
+  }
+
+  function leaveSavedRoom() {
+    connectionControllerRef.current?.disconnect();
+    window.localStorage.removeItem('skyjo-player-id');
+    window.localStorage.removeItem('skyjo-room-code');
+    playerIdRef.current = '';
+    roomCodeRef.current = '';
+    setPlayerId('');
+    setRoomCode('');
+    setJoinCode('');
+    setRoom(null);
+    setError('');
   }
 
   function startRoomGame() {
@@ -2712,7 +2782,16 @@ function Lobby() {
   const roomOpponentBoardEntries = roomOpponentPlayers.map((player) => ({ player, isLocal: false }));
   const hasFourPlayerRoomDesktopGrid = roomState?.players.length === 4;
   const fourPlayerRoomBoardEntries = [...roomOpponentBoardEntries, ...roomLocalBoardEntries];
-  const startGameDisabledReason = room && room.players.length < 2 ? 'Need at least two players to start.' : '';
+  const roomInteractionDisabledReason =
+    room && connection !== 'connected'
+      ? connection === 'offline'
+        ? 'Multiplayer actions are unavailable while offline.'
+        : 'Multiplayer actions are paused until the room is synchronized.'
+      : '';
+  const connectionRequestDisabled =
+    connection === 'connecting' || connection === 'reconnecting' || connection === 'offline';
+  const startGameDisabledReason =
+    roomInteractionDisabledReason || (room && room.players.length < 2 ? 'Need at least two players to start.' : '');
   const roomScoringPhase = roomState?.phase === 'round-over' || roomState?.phase === 'game-over';
   const readyForNextRoundPlayerIds = room?.readyForNextRoundPlayerIds ?? [];
   const roundReadyPlayerIds = roomState?.players.map((player) => player.id) ?? [];
@@ -2768,6 +2847,22 @@ function Lobby() {
           </div>
         </div>
 
+        <MultiplayerConnectionStatus roomActive={Boolean(room)} state={connection} />
+
+        {room && (connection === 'error' || connection === 'idle') ? (
+          <section className="skyjo-panel flex flex-wrap items-center justify-between gap-3 p-4" aria-label="Room recovery actions">
+            <p className="text-sm font-bold text-[#f5e6c8]/72">Your last synchronized room is still visible and read-only.</p>
+            <div className="flex flex-wrap gap-2">
+              <button className="skyjo-button skyjo-button-primary px-4 py-2" onClick={retrySavedRoom} type="button">
+                Retry Saved Seat
+              </button>
+              <button className="skyjo-button px-4 py-2" onClick={leaveSavedRoom} type="button">
+                Leave Room
+              </button>
+            </div>
+          </section>
+        ) : null}
+
         {!room ? (
           <section className="skyjo-panel grid gap-4 p-5 md:grid-cols-[1fr_1fr_auto]">
             <div className="grid gap-2 text-sm font-semibold text-[#f5e6c8]/75">
@@ -2786,18 +2881,18 @@ function Lobby() {
             <div className="flex flex-wrap items-end gap-2">
               <button
                 className="skyjo-button skyjo-button-primary px-4 py-2"
-                disabled={connection === 'connecting'}
+                disabled={connectionRequestDisabled}
                 onClick={() => connect('create-room')}
-                title={connection === 'connecting' ? 'Connecting to the room server.' : 'Create a private room.'}
+                title={connectionRequestDisabled ? multiplayerConnectionCopy[connection].detail : 'Create a private room.'}
                 type="button"
               >
                 Create Room
               </button>
               <button
                 className="skyjo-button px-4 py-2"
-                disabled={connection === 'connecting'}
+                disabled={connectionRequestDisabled}
                 onClick={() => connect('join-room')}
-                title={connection === 'connecting' ? 'Connecting to the room server.' : 'Join the room code.'}
+                title={connectionRequestDisabled ? multiplayerConnectionCopy[connection].detail : 'Join the room code.'}
                 type="button"
               >
                 Join
@@ -2806,7 +2901,15 @@ function Lobby() {
           </section>
         ) : null}
 
-        {error ? <div className="rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-3 text-red-100">{error}</div> : null}
+        {error ? (
+          <div
+            aria-live="assertive"
+            className="rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-3 text-red-100"
+            role="alert"
+          >
+            {error}
+          </div>
+        ) : null}
 
         {room ? (
           <div className="skyjo-active-room-grid grid gap-5 lg:grid-cols-[1fr_330px]">
@@ -2842,7 +2945,13 @@ function Lobby() {
                       </button>
                     ) : null}
                     {localPlayer?.host ? (
-                      <button className="skyjo-button px-4 py-2" onClick={() => send({ type: 'reset-room' })} type="button">
+                      <button
+                        className="skyjo-button px-4 py-2"
+                        disabled={Boolean(roomInteractionDisabledReason)}
+                        onClick={() => send({ type: 'reset-room' })}
+                        title={roomInteractionDisabledReason || 'Reset this room.'}
+                        type="button"
+                      >
                         Reset Room
                       </button>
                     ) : null}
@@ -2874,6 +2983,7 @@ function Lobby() {
                       className={fourPlayerDesktopBoardGridClass}
                       drawIntent={drawIntent}
                       entries={fourPlayerRoomBoardEntries}
+                      interactionDisabledReason={roomInteractionDisabledReason}
                       onCardClick={handleCard}
                       state={roomState}
                     />
@@ -2881,6 +2991,7 @@ function Lobby() {
 
                   <MobilePlaySurface
                     drawIntent={drawIntent}
+                    interactionDisabledReason={roomInteractionDisabledReason}
                     localEntries={roomLocalBoardEntries}
                     localPlayerId={playerId}
                     localTurn={localTurn}
@@ -2896,6 +3007,7 @@ function Lobby() {
                     className={`${opponentBoardClass(roomOpponentBoardEntries.length, hasFourPlayerRoomDesktopGrid)} skyjo-main-opponent-stack`}
                     drawIntent={drawIntent}
                     entries={roomOpponentBoardEntries}
+                    interactionDisabledReason={roomInteractionDisabledReason}
                     onCardClick={handleCard}
                     state={roomState}
                   />
@@ -2917,6 +3029,7 @@ function Lobby() {
                   <FinalTurnCallout localPlayerId={playerId} state={roomState} />
                   <TableControls
                     drawIntent={drawIntent}
+                    interactionDisabledReason={roomInteractionDisabledReason}
                     localPlayerId={playerId}
                     localTurn={localTurn}
                     onCancelDiscard={cancelDiscardForRoom}
@@ -2938,6 +3051,7 @@ function Lobby() {
                     className={responsiveBoardGridClass}
                     drawIntent={drawIntent}
                     entries={roomLocalBoardEntries}
+                    interactionDisabledReason={roomInteractionDisabledReason}
                     onCardClick={handleCard}
                     state={roomState}
                   />
@@ -2950,6 +3064,7 @@ function Lobby() {
                 >
                   <RoomChat
                     isOpen={chatOpen}
+                    interactionDisabledReason={roomInteractionDisabledReason}
                     messages={chatMessages}
                     onSend={sendChatMessage}
                     onToggle={() => setChatOpen((current) => !current)}
@@ -2960,7 +3075,8 @@ function Lobby() {
                   {roomScoringPhase && roundSummaryOpen ? (
                     <RoundSummary
                       actionDisabledReason={
-                        localPlayer?.host
+                        roomInteractionDisabledReason ||
+                        (localPlayer?.host
                           ? allPlayersReadyForNextRound
                             ? undefined
                             : `Waiting for ${roundReadyPlayerIds.length - readyForNextRoundCount} player${
@@ -2968,7 +3084,7 @@ function Lobby() {
                               } to confirm.`
                           : roomState.phase === 'game-over'
                             ? 'Only the host can restart the game.'
-                            : 'Only the host can start the next round.'
+                            : 'Only the host can start the next round.')
                       }
                       actionLabel={roomState.phase === 'game-over' ? 'Restart Game' : 'Next Round'}
                       onMinimize={() => setRoundSummaryOpen(false)}
@@ -2985,7 +3101,9 @@ function Lobby() {
                         </div>
                         <button
                           className={`skyjo-button ${localReadyForNextRound ? 'skyjo-button-primary' : ''} px-3 py-2 text-sm`}
+                          disabled={Boolean(roomInteractionDisabledReason)}
                           onClick={toggleNextRoundReady}
+                          title={roomInteractionDisabledReason || (localReadyForNextRound ? 'Mark not ready.' : 'Mark ready.')}
                           type="button"
                         >
                           {localReadyForNextRound ? 'Ready' : "I'm Ready"}
@@ -3000,6 +3118,7 @@ function Lobby() {
                 <section className="skyjo-panel skyjo-waiting-note-panel text-sm text-[#f5e6c8]/70">Keep this tab open while friends join.</section>
                 <RoomChat
                   isOpen={chatOpen}
+                  interactionDisabledReason={roomInteractionDisabledReason}
                   messages={chatMessages}
                   onSend={sendChatMessage}
                   onToggle={() => setChatOpen((current) => !current)}
