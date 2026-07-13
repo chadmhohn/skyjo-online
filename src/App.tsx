@@ -2531,13 +2531,33 @@ function Lobby() {
   const retireTerminalRoomSession = useCallback((message = '') => {
     if (terminalSessionRetiredRef.current) return;
     terminalSessionRetiredRef.current = true;
-    clearResetRecoveryHint();
+    const retiringRoomCode = roomCodeRef.current;
+    const retiringPlayerId = playerIdRef.current;
     try {
-      window.localStorage.removeItem('skyjo-player-id');
-      window.localStorage.removeItem('skyjo-room-code');
+      const storedRoomCode = window.localStorage.getItem('skyjo-room-code');
+      const storedPlayerId = window.localStorage.getItem('skyjo-player-id');
+      if (
+        retiringRoomCode &&
+        retiringPlayerId &&
+        storedRoomCode === retiringRoomCode &&
+        storedPlayerId === retiringPlayerId
+      ) {
+        window.localStorage.removeItem('skyjo-player-id');
+        window.localStorage.removeItem('skyjo-room-code');
+      }
+      const storedRecoveryHint = parseResetRecoveryHint(
+        window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)
+      );
+      if (
+        storedRecoveryHint?.fromCode === retiringRoomCode &&
+        storedRecoveryHint.playerId === retiringPlayerId
+      ) {
+        window.localStorage.removeItem(RESET_RECOVERY_STORAGE_KEY);
+      }
     } catch {
       // The in-memory terminal state must still retire when browser storage is unavailable.
     }
+    resetRecoveryHintRef.current = null;
     playerIdRef.current = '';
     roomCodeRef.current = '';
     setPlayerId('');
@@ -2545,7 +2565,7 @@ function Lobby() {
     setJoinCode('');
     setRoom(null);
     setError(message);
-  }, [clearResetRecoveryHint]);
+  }, []);
   frameHandlerRef.current = handleRoomFrame;
 
   useEffect(

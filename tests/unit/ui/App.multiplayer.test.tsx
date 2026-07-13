@@ -98,6 +98,8 @@ const accountUser: AccountUser = {
 const savedRecoveryPlayerId = '00000000-0000-4000-8000-000000000001';
 const savedRecoveryPeerId = '00000000-0000-4000-8000-000000000002';
 const savedRecoveryCommandId = '10000000-0000-4000-8000-000000000001';
+const newerTabPlayerId = '00000000-0000-4000-8000-000000000009';
+const newerTabCommandId = '10000000-0000-4000-8000-000000000009';
 const validResetRecoveryHint: ResetRecoveryHint = {
   fromCode: 'ABCDE',
   playerId: savedRecoveryPlayerId,
@@ -767,7 +769,7 @@ describe('multiplayer lobby', () => {
   });
 
   it('retires a removed seat once without leaving recovery data that can resurrect it', async () => {
-    const { socket } = await createJoinedRoom();
+    const { socket } = await createJoinedRoom(makeResetCapableRoom(), savedRecoveryPlayerId);
     window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serializeResetRecoveryHint(validResetRecoveryHint));
     const removeItem = vi.spyOn(Storage.prototype, 'removeItem');
     const terminalFrame = {
@@ -787,6 +789,62 @@ describe('multiplayer lobby', () => {
     expect(removeItem.mock.calls.filter(([key]) => key === 'skyjo-player-id')).toHaveLength(1);
     expect(removeItem.mock.calls.filter(([key]) => key === 'skyjo-room-code')).toHaveLength(1);
     expect(removeItem.mock.calls.filter(([key]) => key === RESET_RECOVERY_STORAGE_KEY)).toHaveLength(1);
+  });
+
+  it('keeps a newer tab session in shared storage when an older tab receives a late leave acknowledgement', async () => {
+    const { socket, user } = await createJoinedRoom();
+    await user.click(screen.getByRole('button', { name: 'Leave Room' }));
+    const leaveCommand = expectCommand(socket, { type: 'leave-room' }, 0);
+    const newerHint: ResetRecoveryHint = {
+      fromCode: 'FGHIJ',
+      playerId: newerTabPlayerId,
+      commandId: newerTabCommandId,
+      expectedRevision: 4
+    };
+    window.localStorage.setItem('skyjo-room-code', newerHint.fromCode);
+    window.localStorage.setItem('skyjo-player-id', newerHint.playerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serializeResetRecoveryHint(newerHint));
+
+    receive(socket, {
+      type: 'ack',
+      protocolVersion: 2,
+      commandId: leaveCommand.commandId,
+      revision: 1,
+      result: 'room-left'
+    });
+
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeEnabled();
+    expect(screen.queryByText('ABCDE')).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBe(newerHint.fromCode);
+    expect(window.localStorage.getItem('skyjo-player-id')).toBe(newerHint.playerId);
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(serializeResetRecoveryHint(newerHint));
+  });
+
+  it('keeps a newer tab session in shared storage when an older tab receives a late seat removal', async () => {
+    const { socket } = await createJoinedRoom();
+    const newerHint: ResetRecoveryHint = {
+      fromCode: 'FGHIJ',
+      playerId: newerTabPlayerId,
+      commandId: newerTabCommandId,
+      expectedRevision: 4
+    };
+    window.localStorage.setItem('skyjo-room-code', newerHint.fromCode);
+    window.localStorage.setItem('skyjo-player-id', newerHint.playerId);
+    window.localStorage.setItem(RESET_RECOVERY_STORAGE_KEY, serializeResetRecoveryHint(newerHint));
+
+    receive(socket, {
+      type: 'error',
+      protocolVersion: 2,
+      code: 'seat-removed',
+      message: 'The host removed this seat.'
+    });
+
+    expect(screen.getByText('The host removed this seat.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create Room' })).toBeEnabled();
+    expect(screen.queryByText('ABCDE')).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('skyjo-room-code')).toBe(newerHint.fromCode);
+    expect(window.localStorage.getItem('skyjo-player-id')).toBe(newerHint.playerId);
+    expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(serializeResetRecoveryHint(newerHint));
   });
 
   it('retires a stale saved seat but keeps non-terminal recovery failures retryable', async () => {
