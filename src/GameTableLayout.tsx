@@ -504,7 +504,12 @@ function TableControls({
 
   return (
     <section className="skyjo-panel skyjo-table-controls skyjo-table-glow" data-testid="table-center">
-      <div className="skyjo-table-band-side skyjo-table-band-side-start">
+      <div
+        aria-label="Turn status and opening progress"
+        className="skyjo-table-band-side skyjo-table-band-side-start"
+        role="region"
+        tabIndex={0}
+      >
         <FinalTurnCallout localPlayerId={localPlayerId} state={state} />
         <div className="skyjo-table-header flex items-center justify-between gap-3">
           <h2 className="skyjo-serif text-xl font-semibold">Table</h2>
@@ -563,7 +568,12 @@ function TableControls({
         </button>
       </div>
 
-      <div className="skyjo-table-band-side skyjo-table-band-side-end">
+      <div
+        aria-label="Action guidance"
+        className="skyjo-table-band-side skyjo-table-band-side-end"
+        role="region"
+        tabIndex={0}
+      >
         {hasLocalDrawnDecision && state.drawnCard ? (
           <div className="skyjo-drawn-decision">
             <div className="flex flex-wrap items-start justify-between gap-3">
