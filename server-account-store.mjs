@@ -7,6 +7,10 @@ import { DatabaseSync } from 'node:sqlite';
 const scryptAsync = promisify(crypto.scrypt);
 const defaultDbFile = path.join('.data', 'skyjo.sqlite');
 const validRoles = new Set(['admin', 'player']);
+const inviteCodeHashPattern = /^[0-9a-f]{64}$/;
+const roomCodePattern = /^[A-Z0-9]{5}$/;
+const roomInstanceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const defaultRedeemedInviteRetentionMs = 24 * 60 * 60 * 1000;
 const publicApiErrors = new Map([
   ['INVALID_EMAIL', Object.freeze({ status: 400, message: 'Enter a valid email address.' })],
   ['WEAK_PASSWORD', Object.freeze({ status: 400, message: 'Use a password with at least 8 characters.' })],
@@ -27,7 +31,8 @@ const publicApiErrors = new Map([
   ['REQUEST_TOO_LARGE', Object.freeze({ status: 413, message: 'Request body too large.' })],
   ['INVALID_JSON', Object.freeze({ status: 400, message: 'Request body must be valid JSON.' })],
   ['EXPECTED_JSON_OBJECT', Object.freeze({ status: 400, message: 'Expected a JSON object.' })],
-  ['CODE_ALLOCATION_FAILED', Object.freeze({ status: 503, message: 'A secure code could not be created. Try again.' })]
+  ['CODE_ALLOCATION_FAILED', Object.freeze({ status: 503, message: 'A secure code could not be created. Try again.' })],
+  ['INVITE_CODE_LIMIT', Object.freeze({ status: 429, message: 'Too many active invite codes. Try again later.' })]
 ]);
 const unknownApiError = Object.freeze({ status: 500, message: 'Request failed.' });
 
@@ -263,7 +268,14 @@ function validateCurrentSchema(db) {
   }
   const inviteColumns = tableColumns(db, 'invite_codes');
   const inviteColumnNames = inviteColumns.map((column) => column.name);
-  const expectedInviteColumns = ['code_lookup_hash', 'room_code', 'created_at', 'expires_at', 'redeemed_at'];
+  const expectedInviteColumns = [
+    'code_lookup_hash',
+    'room_code',
+    'created_at',
+    'expires_at',
+    'redeemed_at',
+    'room_instance_id'
+  ];
   if (
     expectedInviteColumns.some((column) => !inviteColumnNames.includes(column)) ||
     inviteColumnNames.includes('code') ||
@@ -340,6 +352,25 @@ function normalizeBool(value) {
 
 function placeholders(values) {
   return values.map(() => '?').join(', ');
+}
+
+function validatedInviteCodeInput({ codeLookupHash, roomCode, roomInstanceId, expiresAt, maxActive }) {
+  const normalizedHash = stringValue(codeLookupHash).trim().toLowerCase();
+  const normalizedRoomCode = stringValue(roomCode).trim().toUpperCase();
+  const normalizedRoomInstanceId = stringValue(roomInstanceId).trim().toLowerCase();
+  if (!inviteCodeHashPattern.test(normalizedHash)) throw new TypeError('Invite code lookup hash is invalid.');
+  if (!roomCodePattern.test(normalizedRoomCode)) throw new TypeError('Invite room code is invalid.');
+  if (!roomInstanceIdPattern.test(normalizedRoomInstanceId)) throw new TypeError('Invite room instance is invalid.');
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new TypeError('Invite code expiry is invalid.');
+  if (!Number.isSafeInteger(maxActive) || maxActive < 1 || maxActive > 256) {
+    throw new TypeError('Invite code active limit is invalid.');
+  }
+  return {
+    codeLookupHash: normalizedHash,
+    roomCode: normalizedRoomCode,
+    roomInstanceId: normalizedRoomInstanceId,
+    expiresAt
+  };
 }
 
 export function resolveAccountDatabasePath(env = process.env) {
@@ -426,6 +457,15 @@ export class AccountStore {
         rows.push({ ...migration, applied_at: this.now() });
       }
 
+      const inviteColumns = tableColumns(this.db, 'invite_codes');
+      if (!inviteColumns.some((column) => column.name === 'room_instance_id')) {
+        this.db.exec('ALTER TABLE invite_codes ADD COLUMN room_instance_id TEXT');
+      }
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_invite_codes_room_instance
+         ON invite_codes(room_code, room_instance_id, expires_at)`
+      );
+
       validateMigrationRows(rows);
       if (rows.length !== CURRENT_SCHEMA_VERSION) throw new Error('Database schema is not current.');
       validateCurrentSchema(this.db);
@@ -444,6 +484,7 @@ export class AccountStore {
   checkReadiness() {
     try {
       if (!this.db || this.getSchemaVersion() !== CURRENT_SCHEMA_VERSION) return false;
+      if (!tableColumns(this.db, 'invite_codes').some((column) => column.name === 'room_instance_id')) return false;
       if (this.db.prepare('SELECT 1 AS ready').get()?.ready !== 1) return false;
       return this.db.prepare('PRAGMA quick_check').all().every((row) => row.quick_check === 'ok');
     } catch {
@@ -596,6 +637,89 @@ export class AccountStore {
       .prepare('UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ? WHERE id = ?')
       .run(nextName, nextRole, nextDisabled, this.now(), userId);
     return publicUser(this.getUserRowById(userId));
+  }
+
+  pruneInviteCodes({ redeemedRetentionMs = defaultRedeemedInviteRetentionMs } = {}) {
+    if (!Number.isSafeInteger(redeemedRetentionMs) || redeemedRetentionMs < 0) {
+      throw new TypeError('Invite code retention is invalid.');
+    }
+    const timestamp = this.now();
+    const redeemedBefore = timestamp - redeemedRetentionMs;
+    return this.db
+      .prepare(
+        `DELETE FROM invite_codes
+         WHERE expires_at <= ? OR (redeemed_at IS NOT NULL AND redeemed_at <= ?)`
+      )
+      .run(timestamp, redeemedBefore).changes;
+  }
+
+  createInviteCode({ codeLookupHash, roomCode, roomInstanceId, expiresAt, maxActive = 32 }) {
+    const input = validatedInviteCodeInput({ codeLookupHash, roomCode, roomInstanceId, expiresAt, maxActive });
+    const timestamp = this.now();
+    if (input.expiresAt <= timestamp) throw new TypeError('Invite code expiry must be in the future.');
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db
+        .prepare(
+          `DELETE FROM invite_codes
+           WHERE expires_at <= ? OR (redeemed_at IS NOT NULL AND redeemed_at <= ?)`
+        )
+        .run(timestamp, timestamp - defaultRedeemedInviteRetentionMs);
+      const active = Number(
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM invite_codes
+             WHERE room_code = ? AND room_instance_id = ? AND redeemed_at IS NULL AND expires_at > ?`
+          )
+          .get(input.roomCode, input.roomInstanceId, timestamp)?.count || 0
+      );
+      if (active >= maxActive) {
+        this.db.exec('COMMIT');
+        return { status: 'limit' };
+      }
+      this.db
+        .prepare(
+          `INSERT INTO invite_codes (
+             code_lookup_hash, room_code, room_instance_id, created_at, expires_at, redeemed_at
+           ) VALUES (?, ?, ?, ?, ?, NULL)`
+        )
+        .run(input.codeLookupHash, input.roomCode, input.roomInstanceId, timestamp, input.expiresAt);
+      this.db.exec('COMMIT');
+      return { status: 'created', createdAt: timestamp, expiresAt: input.expiresAt };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      if (String(error?.message || '').includes('UNIQUE')) return { status: 'collision' };
+      throw error;
+    }
+  }
+
+  consumeInviteCode(codeLookupHash) {
+    const normalizedHash = stringValue(codeLookupHash).trim().toLowerCase();
+    if (!inviteCodeHashPattern.test(normalizedHash)) throw new TypeError('Invite code lookup hash is invalid.');
+    const timestamp = this.now();
+    const row = this.db
+      .prepare(
+        `UPDATE invite_codes
+         SET redeemed_at = ?
+         WHERE code_lookup_hash = ?
+           AND redeemed_at IS NULL
+           AND expires_at > ?
+           AND room_instance_id IS NOT NULL
+           AND length(room_instance_id) = 36
+         RETURNING room_code, room_instance_id, created_at, expires_at, redeemed_at`
+      )
+      .get(timestamp, normalizedHash, timestamp);
+    if (!row) return null;
+    if (!roomCodePattern.test(String(row.room_code)) || !roomInstanceIdPattern.test(String(row.room_instance_id))) return null;
+    return {
+      roomCode: row.room_code,
+      roomInstanceId: row.room_instance_id,
+      createdAt: Number(row.created_at),
+      expiresAt: Number(row.expires_at),
+      redeemedAt: Number(row.redeemed_at)
+    };
   }
 
   savePushSubscription(userId, subscription, userAgent = '') {

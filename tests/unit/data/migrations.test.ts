@@ -73,7 +73,8 @@ describe('transactional database migrations', () => {
         'room_code',
         'created_at',
         'expires_at',
-        'redeemed_at'
+        'redeemed_at',
+        'room_instance_id'
       ]);
       expect(columnNames(db, 'invite_codes')).not.toEqual(expect.arrayContaining(['code', 'invite_token']));
     } finally {

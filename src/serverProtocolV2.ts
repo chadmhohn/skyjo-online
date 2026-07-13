@@ -81,6 +81,7 @@ export interface ProtocolV2Room {
   recentCommandIds: CommandReceipt[];
   resetAliases: ProtocolV2ResetAlias[];
   revision: number;
+  roomInstanceId: string;
   roomVersion: 2;
   state: GameState | null;
   status: 'waiting' | 'playing' | 'finished';

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +51,17 @@ import {
   publicApiErrorResponse,
   resolveAccountDatabasePath
 } from './server-account-store.mjs';
+import {
+  cleanInviteInstallCode,
+  createInviteRedemptionRateLimiter,
+  createPersistentInviteInstallCode,
+  hashInviteInstallCode
+} from './server-invite-codes.mjs';
+import {
+  createRoomInviteToken as createSignedRoomInviteToken,
+  inviteMatchesRoom,
+  parseRoomInviteToken
+} from './server-room-invites.mjs';
 import { createPersistenceHealthTracker } from './server-persistence-health.mjs';
 import { createReadinessResult, createVersionResult } from './server-readiness.mjs';
 import { loadReleaseIdentity, releaseValidationOptionsForEnvironment } from './server-release.mjs';
@@ -70,6 +82,7 @@ const accountSessionTtlMs = Number(process.env.SKYJO_ACCOUNT_SESSION_TTL_HOURS |
 const adminEmail = process.env.SKYJO_ADMIN_EMAIL || 'chad.hohn@groundworkrevops.com';
 const adminInitialPassword = process.env.SKYJO_ADMIN_INITIAL_PASSWORD || '';
 const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
+const trustProxyClientIp = process.env.SKYJO_TRUST_PROXY_CLIENT_IP === 'true';
 const vapidPublicKey = process.env.SKYJO_VAPID_PUBLIC_KEY || '';
 const vapidPrivateKey = process.env.SKYJO_VAPID_PRIVATE_KEY || '';
 const vapidSubject = process.env.SKYJO_VAPID_SUBJECT || `mailto:${adminEmail}`;
@@ -82,7 +95,6 @@ const roomsSaveDebounceMs = 250;
 const maxRoomChatMessages = 80;
 const maxRoomChatMessageLength = 280;
 const inviteCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const inviteCodeLength = 7;
 const roomCodeLength = 5;
 const secureCodeMaxAttempts = 128;
 const lifecyclePolicy = Object.freeze({
@@ -91,7 +103,7 @@ const lifecyclePolicy = Object.freeze({
 });
 const lifecycleTickMs = positiveDurationFromEnvironment('SKYJO_LIFECYCLE_TICK_MS', 250);
 const aiActionDelayMs = positiveDurationFromEnvironment('SKYJO_AI_ACTION_DELAY_MS', 650, true);
-const inviteInstallCodes = new Map();
+const inviteRedemptionRateLimiter = createInviteRedemptionRateLimiter();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
 let shuttingDown = false;
@@ -200,10 +212,6 @@ function sign(value) {
   return crypto.createHmac('sha256', sessionSecret).update(value).digest('base64url');
 }
 
-function signInvite(value) {
-  return crypto.createHmac('sha256', inviteSecret).update(value).digest('base64url');
-}
-
 function createSessionCookie() {
   const expiresAt = Date.now() + sessionTtlMs;
   const nonce = crypto.randomBytes(16).toString('base64url');
@@ -266,6 +274,7 @@ function currentAccountUser(req) {
 function send(res, status, body, headers = {}) {
   res.writeHead(status, {
     'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     ...headers
   });
@@ -306,74 +315,28 @@ function cleanServerRoomCode(value) {
     .slice(0, 5);
 }
 
-function cleanInviteInstallCode(value) {
-  return String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '')
-    .slice(0, inviteCodeLength);
-}
-
-function pruneInviteInstallCodes(timestamp = Date.now()) {
-  for (const [code, invite] of inviteInstallCodes) {
-    if (invite.expiresAt <= timestamp) inviteInstallCodes.delete(code);
-  }
-}
-
-function createRoomInviteToken(roomCode) {
-  const cleanRoom = cleanServerRoomCode(roomCode);
+function createRoomInviteToken(room) {
+  const cleanRoom = cleanServerRoomCode(room?.code);
   if (cleanRoom.length !== roomCodeLength) throw new PublicApiError('INVALID_ROOM_CODE');
-  const expiresAt = Date.now() + inviteTtlMs;
-  const payload = Buffer.from(
-    JSON.stringify({
-      v: 1,
-      room: cleanRoom,
-      exp: expiresAt,
-      nonce: crypto.randomBytes(16).toString('base64url')
-    })
-  ).toString('base64url');
-  return {
-    token: `${payload}.${signInvite(payload)}`,
-    expiresAt
-  };
-}
-
-function parseRoomInvitePayload(token, { verifySignature }) {
-  const parts = String(token || '').split('.');
-  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
-  const [payload, signature] = parts;
-  if (verifySignature && !timingSafeEqualString(signature, signInvite(payload))) return null;
-
-  try {
-    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    const room = cleanServerRoomCode(parsed?.room);
-    const expiresAt = Number(parsed?.exp);
-    if (room.length !== 5 || !Number.isFinite(expiresAt)) return null;
-    if (verifySignature && expiresAt < Date.now()) return null;
-    return { room, expiresAt };
-  } catch {
-    return null;
-  }
-}
-
-function createInviteInstallCode(token, invite, randomInt = crypto.randomInt) {
-  const timestamp = Date.now();
-  pruneInviteInstallCodes(timestamp);
-  const expiresAt = Math.min(invite.expiresAt, timestamp + inviteCodeTtlMs);
-  const code = createUniqueRandomCode({
-    alphabet: inviteCodeAlphabet,
-    length: inviteCodeLength,
-    isTaken: (candidate) => inviteInstallCodes.has(candidate),
-    randomInt,
-    maxAttempts: secureCodeMaxAttempts
+  return createSignedRoomInviteToken({
+    roomCode: cleanRoom,
+    roomInstanceId: room?.roomInstanceId,
+    secret: inviteSecret,
+    ttlMs: inviteTtlMs
   });
-  inviteInstallCodes.set(code, { token, room: invite.room, expiresAt });
-  return { code, expiresAt };
 }
 
 function roomInviteTokenFromUrl(url) {
-  if (url.pathname.startsWith('/invite/')) return decodeURIComponent(url.pathname.slice('/invite/'.length));
-  return url.searchParams.get('invite') || '';
+  const token = url.pathname.startsWith('/invite/')
+    ? url.pathname.slice('/invite/'.length)
+    : url.searchParams.get('invite');
+  if (token === null) return null;
+  return token.length <= 2048 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token) ? token : '';
+}
+
+function roomForInvite(invite) {
+  const room = rooms.get(invite.room);
+  return inviteMatchesRoom(invite, room) ? room : null;
 }
 
 function sendInviteRoomAccess(res, roomCode) {
@@ -383,23 +346,39 @@ function sendInviteRoomAccess(res, roomCode) {
   });
 }
 
-function handleRoomInviteAccess(res, url, { landing = false } = {}) {
+async function handleRoomInviteAccess(res, url, { landing = false } = {}) {
   const token = roomInviteTokenFromUrl(url);
-  if (!token) return false;
+  if (token === null) return false;
+  if (!token) {
+    sendInviteUnavailable(res, 'This invite is invalid or has expired.');
+    return true;
+  }
 
-  const invite = parseRoomInvitePayload(token, { verifySignature: true });
+  const invite = parseRoomInviteToken(token, { secret: inviteSecret });
   if (!invite) {
-    const untrustedInvite = parseRoomInvitePayload(token, { verifySignature: false });
-    const next = untrustedInvite?.room ? `/lobby?room=${encodeURIComponent(untrustedInvite.room)}` : '/';
-    send(res, 302, '', { Location: `/login?next=${encodeURIComponent(next)}` });
+    sendInviteUnavailable(res, 'This invite is invalid or has expired.');
+    return true;
+  }
+
+  if (!roomForInvite(invite)) {
+    sendInviteUnavailable(res, 'That room is no longer available. Ask the host for a new invite.');
     return true;
   }
 
   if (landing && url.searchParams.get('open') !== 'browser') {
-    const installCode = createInviteInstallCode(token, invite);
-    send(res, 200, renderInviteLanding({ token, invite, installCode }), {
-      'Content-Type': 'text/html; charset=utf-8'
+    if (!(await ensureAccountStore())) {
+      send(res, 503, 'Invite service is temporarily unavailable.', { 'Content-Type': 'text/plain; charset=utf-8' });
+      return true;
+    }
+    const installCode = createPersistentInviteInstallCode({
+      store: accountStore,
+      roomCode: invite.room,
+      roomInstanceId: invite.roomInstanceId,
+      expiresAt: Math.min(invite.expiresAt, Date.now() + inviteCodeTtlMs),
+      secret: inviteSecret
     });
+    const nonce = htmlNonce();
+    send(res, 200, renderInviteLanding({ token, invite, installCode, nonce }), htmlSecurityHeaders(nonce));
     return true;
   }
 
@@ -521,6 +500,7 @@ function createWaitingRoom({ code, hostPlayer, ws }) {
   const timestamp = Date.now();
   return {
     roomVersion: 2,
+    roomInstanceId: crypto.randomUUID(),
     code,
     hostId: hostPlayer.id,
     players: [{
@@ -654,23 +634,91 @@ function safeRedirectPath(value) {
   return path;
 }
 
+function htmlNonce() {
+  return crypto.randomBytes(18).toString('base64');
+}
+
+function htmlSecurityHeaders(nonce) {
+  return {
+    'Content-Security-Policy': [
+      "default-src 'self'",
+      `script-src 'self' 'nonce-${nonce}'`,
+      `style-src 'self' 'nonce-${nonce}'`,
+      "img-src 'self' data:",
+      "connect-src 'self' ws: wss:",
+      "manifest-src 'self'",
+      "worker-src 'self'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "form-action 'self'",
+      "frame-ancestors 'none'"
+    ].join('; '),
+    'Content-Type': 'text/html; charset=utf-8'
+  };
+}
+
+function renderPwaHead(title) {
+  return `<meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a1410" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Skyjo" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/skyjo-icon-v2.svg" />
+    <link rel="apple-touch-icon" href="/skyjo-icon-v2-180.png" />
+    <title>${escapeHtml(title)}</title>`;
+}
+
+function renderInviteUnavailable(message, nonce) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    ${renderPwaHead('Skyjo invite unavailable')}
+    <style nonce="${nonce}">
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; background: #060c0a; color: #f5e6c8; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { width: min(100%, 480px); border: 1px solid rgba(245, 230, 200, 0.16); border-radius: 12px; padding: 24px; background: rgba(255, 255, 255, 0.035); }
+      h1 { margin: 0 0 12px; font-size: clamp(32px, 10vw, 52px); }
+      p { margin: 0 0 20px; color: rgba(245, 230, 200, 0.76); line-height: 1.5; }
+      a { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; border-radius: 8px; padding: 0 16px; color: #0a1410; background: #f5e6c8; font-weight: 900; text-decoration: none; }
+    </style>
+  </head>
+  <body><main><h1>Invite unavailable</h1><p>${escapeHtml(message)}</p><a href="/login">Open Skyjo</a></main></body>
+</html>`;
+}
+
+function sendInviteUnavailable(res, message) {
+  const nonce = htmlNonce();
+  send(res, 410, renderInviteUnavailable(message, nonce), htmlSecurityHeaders(nonce));
+}
+
+function inviteRedemptionClientKey(req) {
+  const remoteAddress = typeof req.socket.remoteAddress === 'string' && isIP(req.socket.remoteAddress)
+    ? req.socket.remoteAddress
+    : 'unknown';
+  if (!trustProxyClientIp) return remoteAddress;
+  const forwarded = typeof req.headers['cf-connecting-ip'] === 'string'
+    ? req.headers['cf-connecting-ip'].trim()
+    : '';
+  return isIP(forwarded) ? forwarded : remoteAddress;
+}
+
 function formatInviteCodeMinutes(expiresAt) {
   const minutes = Math.max(1, Math.ceil((expiresAt - Date.now()) / 60000));
   return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
-function renderInviteLanding({ token, invite, installCode }) {
-  const safeToken = encodeURIComponent(token);
+function renderInviteLanding({ token, invite, installCode, nonce }) {
   const safeRoom = escapeHtml(invite.room);
   const safeCode = escapeHtml(installCode.code);
   const safeMinutes = escapeHtml(formatInviteCodeMinutes(installCode.expiresAt));
   return `<!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Join Skyjo</title>
-    <style>
+    ${renderPwaHead('Join Skyjo')}
+    <style nonce="${nonce}">
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
       body {
@@ -766,11 +814,11 @@ function renderInviteLanding({ token, invite, installCode }) {
         <h2>Open in browser</h2>
         <p>Continue in this browser now. This still bypasses the shared Skyjo password for this invite.</p>
         <div class="actions">
-          <a class="button secondary" href="/invite/${safeToken}?open=browser">Open in Browser</a>
+          <a class="button secondary" href="?open=browser">Open in Browser</a>
         </div>
       </section>
     </main>
-    <script>
+    <script nonce="${nonce}">
       const codeInput = document.getElementById('invite-code');
       const copyButton = document.getElementById('copy-code');
       const status = document.getElementById('copy-status');
@@ -940,7 +988,7 @@ async function handleApiRequest(req, res, url) {
         sendApiError(res, 403, 'Join the room before sharing it.');
         return true;
       }
-      const invite = createRoomInviteToken(roomCode);
+      const invite = createRoomInviteToken(room);
       sendJsonResponse(res, 200, {
         roomCode,
         path: `/invite/${invite.token}`,
@@ -1075,15 +1123,13 @@ async function handleApiRequest(req, res, url) {
   }
 }
 
-function renderLogin(error = false, next = '/', inviteCodeError = false) {
+function renderLogin(error = false, next = '/', inviteCodeError = false, inviteRateLimited = false, nonce = htmlNonce()) {
   const safeNext = safeRedirectPath(next);
   return `<!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Skyjo Online</title>
-    <style>
+    ${renderPwaHead('Skyjo Online')}
+    <style nonce="${nonce}">
       :root { color-scheme: dark; }
       body {
         margin: 0;
@@ -1133,6 +1179,7 @@ function renderLogin(error = false, next = '/', inviteCodeError = false) {
           <button type="submit">Open Invite</button>
         </form>
         ${inviteCodeError ? '<div class="error">That invite code expired or did not match.</div>' : ''}
+        ${inviteRateLimited ? '<div class="error">Too many attempts. Wait a few minutes and try again.</div>' : ''}
       </section>
     </main>
   </body>
@@ -1140,26 +1187,35 @@ function renderLogin(error = false, next = '/', inviteCodeError = false) {
 }
 
 async function handleInviteCodeRedeem(req, res) {
+  const rate = inviteRedemptionRateLimiter.consume(inviteRedemptionClientKey(req));
+  if (!rate.allowed) {
+    const nonce = htmlNonce();
+    send(res, 429, renderLogin(false, '/', false, true, nonce), {
+      ...htmlSecurityHeaders(nonce),
+      'Retry-After': String(rate.retryAfterSeconds)
+    });
+    return;
+  }
   const body = await readRequestBody(req);
   const form = new URLSearchParams(body);
   const code = cleanInviteInstallCode(form.get('code'));
-  pruneInviteInstallCodes();
-  const savedInvite = inviteInstallCodes.get(code);
-  if (!savedInvite || savedInvite.expiresAt <= Date.now()) {
-    inviteInstallCodes.delete(code);
+  if (!code || !(await ensureAccountStore())) {
     send(res, 303, '', { Location: '/login?inviteError=1' });
     return;
   }
 
-  const invite = parseRoomInvitePayload(savedInvite.token, { verifySignature: true });
-  if (!invite || invite.room !== savedInvite.room) {
-    inviteInstallCodes.delete(code);
+  const invite = accountStore.consumeInviteCode(hashInviteInstallCode(code, inviteSecret));
+  if (!invite) {
     send(res, 303, '', { Location: '/login?inviteError=1' });
     return;
   }
 
-  inviteInstallCodes.delete(code);
-  sendInviteRoomAccess(res, invite.room);
+  if (!roomForInvite({ room: invite.roomCode, roomInstanceId: invite.roomInstanceId })) {
+    sendInviteUnavailable(res, 'That room is no longer available. Ask the host for a new invite.');
+    return;
+  }
+
+  sendInviteRoomAccess(res, invite.roomCode);
 }
 
 async function readRequestBody(req) {
@@ -1292,7 +1348,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith('/invite/')) {
-      if (handleRoomInviteAccess(res, url, { landing: true })) return;
+      if (await handleRoomInviteAccess(res, url, { landing: true })) return;
     }
 
     if (url.pathname === '/invite-code' && req.method === 'POST') {
@@ -1301,17 +1357,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/login' && req.method === 'GET') {
+      const nonce = htmlNonce();
       send(
         res,
         200,
         renderLogin(
           url.searchParams.get('error') === '1',
           url.searchParams.get('next') || '/',
-          url.searchParams.get('inviteError') === '1'
+          url.searchParams.get('inviteError') === '1',
+          false,
+          nonce
         ),
-        {
-          'Content-Type': 'text/html; charset=utf-8'
-        }
+        htmlSecurityHeaders(nonce)
       );
       return;
     }
@@ -1333,7 +1390,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (!hasValidSession(req)) {
-      if (url.searchParams.has('invite') && handleRoomInviteAccess(res, url)) return;
+      if (url.searchParams.has('invite') && (await handleRoomInviteAccess(res, url))) return;
       const next = safeRedirectPath(`${url.pathname}${url.search}`);
       send(res, 302, '', { Location: `/login?next=${encodeURIComponent(next)}` });
       return;

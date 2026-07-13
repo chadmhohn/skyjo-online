@@ -15,6 +15,8 @@ export default defineConfig({
       include: [
         'server-game-state-validation.mjs',
         'server-account-store.mjs',
+        'server-invite-codes.mjs',
+        'server-room-invites.mjs',
         'server-persistence-health.mjs',
         'server-room-persistence.mjs',
         'server-readiness.mjs',
