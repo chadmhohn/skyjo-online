@@ -1,9 +1,10 @@
 import { createReadinessResult, createVersionResult } from '../../../server-readiness.mjs';
+import { CURRENT_PROTOCOL_VERSION } from '../../../server-release.mjs';
 
 const releaseIdentity = {
   releaseSha: '0123456789abcdef0123456789abcdef01234567',
   buildTimestamp: '2026-07-11T12:00:00.000Z',
-  protocolVersion: 1
+  protocolVersion: CURRENT_PROTOCOL_VERSION
 };
 
 describe('sanitized public service metadata', () => {
@@ -16,7 +17,7 @@ describe('sanitized public service metadata', () => {
         status: 'ready',
         releaseSha: releaseIdentity.releaseSha,
         schemaVersion: 2,
-        protocolVersion: 1,
+        protocolVersion: CURRENT_PROTOCOL_VERSION,
         checks: { database: 'ok', roomState: 'ok', lastPersist: 'ok' }
       }
     });
@@ -35,7 +36,7 @@ describe('sanitized public service metadata', () => {
         status: 'not_ready',
         releaseSha: null,
         schemaVersion: 2,
-        protocolVersion: 1,
+        protocolVersion: CURRENT_PROTOCOL_VERSION,
         checks: { database: 'error', roomState: 'error', lastPersist: 'error' }
       }
     });

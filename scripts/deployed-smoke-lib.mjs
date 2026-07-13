@@ -13,7 +13,7 @@ function assertNoStore(response, label) {
   assert.match(response.headers.get('cache-control') || '', /(?:^|,)\s*no-store(?:,|$)/i, `${label} must be no-store`);
 }
 
-async function openAuthenticatedSocket(baseUrl, cookies) {
+async function openAuthenticatedSocket(baseUrl, cookies, expectedProtocolVersion) {
   const socketUrl = new URL('/rooms', baseUrl);
   socketUrl.protocol = socketUrl.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(socketUrl, { headers: { Cookie: cookies } });
@@ -44,7 +44,12 @@ async function openAuthenticatedSocket(baseUrl, cookies) {
     });
     socket.send(JSON.stringify({ type: 'set-presence', visible: true }));
   });
-  assert.deepEqual(response, { type: 'error', message: 'Join or create a room first.' });
+  assert.deepEqual(response, {
+    type: 'error',
+    protocolVersion: expectedProtocolVersion,
+    code: 'room-required',
+    message: 'Join or create a room first.'
+  });
   await new Promise((resolve) => {
     socket.once('close', resolve);
     socket.close(1000, 'Smoke complete');
@@ -135,6 +140,6 @@ export async function runDeployedSmoke({
   const account = await accountResponse.json();
   assert.equal(account.user?.email, accountEmail.trim().toLowerCase(), 'smoke account identity did not match');
 
-  await openAuthenticatedSocket(root, cookies);
+  await openAuthenticatedSocket(root, cookies, expectedProtocolVersion);
   return { releaseSha: version.releaseSha, buildTimestamp: version.buildTimestamp, protocolVersion: version.protocolVersion };
 }

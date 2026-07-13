@@ -30,6 +30,9 @@ export interface RoomPlayer {
   name: string;
   connected: boolean;
   host: boolean;
+  joinedAt?: number;
+  lastSeenAt?: number;
+  controller?: 'human' | 'ai';
 }
 
 export interface RoomChatMessage {
@@ -50,6 +53,7 @@ export interface MultiplayerRoom {
   status: 'waiting' | 'playing' | 'finished';
   updatedAt: number;
   completedGameId?: string | null;
+  revision: number;
 }
 
 export interface RoundScoreResult {

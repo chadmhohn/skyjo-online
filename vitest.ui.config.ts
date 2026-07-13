@@ -23,13 +23,14 @@ export default defineConfig({
       provider: 'v8',
       reportsDirectory: './coverage/ui',
       reporter: ['text', 'json-summary', 'lcov'],
-      include: ['src/App.tsx', 'src/account.tsx', 'src/audio.ts', 'src/push.ts'],
+      include: ['src/App.tsx', 'src/account.tsx', 'src/audio.ts', 'src/push.ts', 'src/resetRecovery.ts'],
       thresholds: {
         ...uiThresholds,
         'src/App.tsx': uiThresholds,
         'src/account.tsx': uiThresholds,
         'src/audio.ts': uiThresholds,
-        'src/push.ts': uiThresholds
+        'src/push.ts': uiThresholds,
+        'src/resetRecovery.ts': uiThresholds
       }
     }
   }

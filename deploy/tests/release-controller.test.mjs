@@ -95,7 +95,24 @@ test('path and archive validation reject traversal, links, duplicates, and forbi
   assert.equal(normalizeArchiveEntry('node_modules/minimist/.github-actions/config.yml'), 'node_modules/minimist/.github-actions/config.yml');
   assert.throws(() => resolveWithin('/srv/releases', '..', 'etc'), /escapes/);
   const verbose = required.map((entry) => entry === './' ? 'drwxr-xr-x 0/0 0 2026-07-11 00:00:00 ./' : regularLine);
-  assert.equal(validateArchiveListing(required, verbose).entries.has('server.mjs'), true);
+  const validated = validateArchiveListing(required, verbose);
+  assert.equal(validated.entries.has('server.mjs'), true);
+  assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server-game-state-validation.mjs'), true);
+  assert.equal(validated.entries.has('server-game-state-validation.mjs'), true);
+  const missingValidatorIndex = required.indexOf('server-game-state-validation.mjs');
+  const missingValidator = required.filter((_, index) => index !== missingValidatorIndex);
+  const missingValidatorVerbose = verbose.filter((_, index) => index !== missingValidatorIndex);
+  assert.throws(
+    () => validateArchiveListing(missingValidator, missingValidatorVerbose),
+    /missing required runtime entry: server-game-state-validation\.mjs/
+  );
+  assert.throws(
+    () => validateArchiveListing(
+      [...required, 'server-game-state-validation.mjs.bak'],
+      [...verbose, regularLine]
+    ),
+    /unexpected runtime entry: server-game-state-validation\.mjs\.bak/
+  );
   const linked = [...verbose];
   linked[1] = 'lrwxrwxrwx 0/0 0 2026-07-11 00:00 release.json -> /etc/passwd';
   assert.throws(() => validateArchiveListing(required, linked), /not a regular file/);

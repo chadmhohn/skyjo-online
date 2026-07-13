@@ -8,9 +8,11 @@ import {
   normalizeRoomsDocument,
   parseRoomsDocument,
   ROOMS_FILE_VERSION,
+  ROOMS_PROTOCOL_VERSION,
   SUPPORTED_ROOMS_PROTOCOL_VERSIONS
 } from './server-room-persistence.mjs';
 import {
+  CURRENT_PROTOCOL_VERSION,
   loadReleaseIdentity,
   RELEASE_FILE_NAME,
   validateReleaseIdentity
@@ -256,7 +258,7 @@ export function validateReleaseBackupDocument(value) {
       allowDevelopment: false,
       requireFullSha: true,
       allowedSchemaVersions: SCHEMA_MIGRATIONS.map((migration) => migration.version),
-      allowedProtocolVersions: [...SUPPORTED_ROOMS_PROTOCOL_VERSIONS]
+      allowedProtocolVersions: [...new Set([1, CURRENT_PROTOCOL_VERSION])]
     });
     return true;
   } catch {
@@ -374,8 +376,7 @@ function normalizeManifestMetadata(value) {
     typeof value.rooms.format !== 'string' ||
     value.rooms.format.trim() === '' ||
     ![1, 2].includes(value.rooms.version) ||
-    !Number.isSafeInteger(value.rooms.protocolVersion) ||
-    value.rooms.protocolVersion < 1 ||
+    !SUPPORTED_ROOMS_PROTOCOL_VERSIONS.includes(value.rooms.protocolVersion) ||
     !Number.isSafeInteger(value.rooms.count) ||
     value.rooms.count < 0
   ) {
@@ -451,12 +452,12 @@ async function assertExactDirectoryEntries(directoryPath, expectedNames) {
   }
 }
 
-function roomMetadata(document, releaseProtocolVersion) {
+function roomMetadata(document) {
   const parsed = parseRoomsDocument(document);
   return {
     format: parsed.version < ROOMS_FILE_VERSION ? `legacy-v${parsed.version}` : parsed.format,
     version: parsed.version,
-    protocolVersion: parsed.version < ROOMS_FILE_VERSION ? releaseProtocolVersion : parsed.protocolVersion,
+    protocolVersion: parsed.version < ROOMS_FILE_VERSION ? ROOMS_PROTOCOL_VERSION : parsed.protocolVersion,
     count: parsed.rooms.length
   };
 }
@@ -465,10 +466,7 @@ function semanticMetadata(databaseState, roomsDocument, releaseDocument) {
   if (databaseState.schemaVersion !== releaseDocument.schemaVersion) {
     throw errorWithCode('Release identity schema version does not match the SQLite migration history.');
   }
-  const rooms = roomMetadata(roomsDocument, releaseDocument.protocolVersion);
-  if (rooms.protocolVersion !== releaseDocument.protocolVersion) {
-    throw errorWithCode('Room-state protocol version does not match the release identity.');
-  }
+  const rooms = roomMetadata(roomsDocument);
   return {
     schemaVersion: databaseState.schemaVersion,
     releaseSha: releaseDocument.releaseSha.toLowerCase(),
@@ -614,7 +612,11 @@ export async function createStateBackup(options = {}) {
   if (path.basename(releasePath) !== RELEASE_FILE_NAME) {
     throw errorWithCode(`Release-identity source must be named ${RELEASE_FILE_NAME}.`);
   }
-  await loadReleaseIdentity(path.dirname(releasePath), { allowDevelopment: false, requireFullSha: true });
+  await loadReleaseIdentity(path.dirname(releasePath), {
+    allowDevelopment: false,
+    requireFullSha: true,
+    allowedProtocolVersions: [...new Set([1, CURRENT_PROTOCOL_VERSION])]
+  });
   await validateJsonFile(releasePath, 'Source release identity', options.validateRelease || validateReleaseBackupDocument);
 
   const { stagingDirectory } = await prepareFreshStagingDirectory(destinationDirectory);

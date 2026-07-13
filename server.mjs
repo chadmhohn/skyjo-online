@@ -2,27 +2,38 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import webPush from 'web-push';
 import { WebSocketServer } from 'ws';
 import {
   createInitialRoomState,
-  createNextRoundRoomState,
-  validateMultiplayerStateUpdate
+  createNextRoundRoomState
 } from './server-dist/serverValidation.js';
 import {
   hasVisibleLiveClient,
+  REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES,
   registerRealtimeServer,
   sendRealtimeJson,
   syncPlayerPresence
 } from './server-dist/serverRealtime.js';
-import { createProtocolV1MessageHandler } from './server-dist/serverProtocolV1.js';
+import {
+  createProtocolV2MessageHandler,
+  createResetAliasIndex,
+  isResetAliasCodeReserved
+} from './server-dist/serverProtocolV2.js';
+import {
+  createRoomSnapshot,
+  MULTIPLAYER_PROTOCOL_VERSION
+} from './server-dist/protocolV2.js';
 import {
   loadRoomsSnapshotFromDisk,
+  reconcileCompletedRoomJournals,
   resolveRoomsFilePath,
   ROOM_STALE_MS,
   saveRoomsToDisk
 } from './server-room-persistence.mjs';
+import { normalizePersistedGameState } from './server-game-state-validation.mjs';
 import {
   createAccountStore,
   createUniqueRandomCode,
@@ -74,6 +85,7 @@ let nextDatabaseRetryAt = 0;
 let databaseFailureLogged = false;
 let releaseIdentity = null;
 let roomPersistenceLoadAccepted = false;
+let roomCompletionRecoveryPending = false;
 const roomPersistenceHealth = createPersistenceHealthTracker();
 
 const mimeTypes = new Map([
@@ -124,6 +136,17 @@ async function ensureAccountStore({ force = false } = {}) {
       console.log(`Admin account ready for ${bootstrappedAdmin.email}`);
     } else {
       console.warn('No admin account was bootstrapped. Set SKYJO_ADMIN_INITIAL_PASSWORD before first production account setup.');
+    }
+    if (roomPersistenceLoadAccepted) {
+      const reconciled = reconcileCompletedRoomJournals(
+        rooms,
+        (sourceKey) => candidate.getCompletedGameJournalBySourceKey(sourceKey)
+      );
+      if (reconciled > 0) roomCompletionRecoveryPending = true;
+      if (roomCompletionRecoveryPending) {
+        await roomPersistenceHealth.track(() => saveRoomsToDisk(rooms, roomsFile));
+        roomCompletionRecoveryPending = false;
+      }
     }
     accountStore = candidate;
     databaseFailureLogged = false;
@@ -234,18 +257,17 @@ function makeRoomCode(randomInt = crypto.randomInt) {
   return createUniqueRandomCode({
     alphabet: inviteCodeAlphabet,
     length: roomCodeLength,
-    isTaken: (code) => rooms.has(code),
+    isTaken: (code) => rooms.has(code) || isResetAliasCodeReserved(resetAliasIndex, code, Date.now()),
     randomInt,
     maxAttempts: secureCodeMaxAttempts
   });
 }
 
-function makeRoomCodeForSocket(ws) {
+function makeRoomCodeForSocket() {
   try {
     return makeRoomCode();
   } catch {
     console.error('Secure room code allocation failed.');
-    sendJson(ws, { type: 'error', message: 'A room code could not be created. Try again.' });
     return null;
   }
 }
@@ -359,20 +381,6 @@ function handleRoomInviteAccess(res, url, { landing = false } = {}) {
   return true;
 }
 
-function publicRoom(room) {
-  return {
-    code: room.code,
-    hostId: room.hostId,
-    players: room.players,
-    chatMessages: room.chatMessages || [],
-    readyForNextRoundPlayerIds: Array.isArray(room.readyForNextRoundPlayerIds) ? room.readyForNextRoundPlayerIds : [],
-    state: room.state,
-    status: room.status,
-    updatedAt: room.updatedAt,
-    completedGameId: room.completedGameId || null
-  };
-}
-
 function gamePlayerIds(room) {
   const players = Array.isArray(room.state?.players) && room.state.players.length > 0 ? room.state.players : room.players;
   return players.map((player) => player.id);
@@ -402,14 +410,32 @@ function sendJson(ws, payload) {
 }
 
 function broadcastRoom(room) {
-  const payload = JSON.stringify({ type: 'room', room: publicRoom(room) });
   for (const client of room.clients) {
-    if (client.readyState === client.OPEN) client.send(payload);
+    sendRoomSnapshot(client, room);
   }
 }
 
 function sendCurrentRoom(ws, room) {
-  sendJson(ws, { type: 'room', room: publicRoom(room) });
+  sendRoomSnapshot(ws, room);
+}
+
+function sendRoomSnapshot(ws, room, options = {}) {
+  if (!ws.playerId || !room.players.some((player) => player.id === ws.playerId)) return false;
+  const type = options.type === 'resync' ? 'resync' : 'snapshot';
+  const payload = {
+    type,
+    protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    playerId: ws.playerId,
+    revision: room.revision,
+    room: createRoomSnapshot(room, ws.playerId),
+    ...(type === 'resync'
+      ? {
+          reason: options.reason || 'revision-mismatch',
+          ...(options.commandId ? { commandId: options.commandId } : {})
+        }
+      : {})
+  };
+  return sendJson(ws, payload);
 }
 
 function queueRoomsSave() {
@@ -467,17 +493,31 @@ function roomPlayer(ws) {
 }
 
 function createWaitingRoom({ code, hostPlayer, ws }) {
+  const timestamp = Date.now();
   return {
+    roomVersion: 2,
     code,
     hostId: hostPlayer.id,
-    players: [{ id: hostPlayer.id, userId: hostPlayer.userId, name: hostPlayer.name, connected: true, host: true }],
+    players: [{
+      id: hostPlayer.id,
+      userId: hostPlayer.userId,
+      name: hostPlayer.name,
+      connected: true,
+      host: true,
+      joinedAt: timestamp,
+      lastSeenAt: timestamp,
+      controller: 'human'
+    }],
     chatMessages: [],
     readyForNextRoundPlayerIds: [],
     state: null,
     status: 'waiting',
-    updatedAt: Date.now(),
+    updatedAt: timestamp,
     completedGameId: null,
     gameSessionId: null,
+    revision: 0,
+    recentCommandIds: [],
+    resetAliases: [],
     clients: new Set([ws])
   };
 }
@@ -1119,7 +1159,13 @@ try {
     loadRoomsSnapshotFromDisk(roomsFile, { staleMs: ROOM_STALE_MS })
   );
   const restoredRoomMap = new Map(snapshot.rooms.map((room) => [room.code, room]));
-  if (snapshot.missing || snapshot.legacy) {
+  const reconciledCompletions = accountStore
+    ? reconcileCompletedRoomJournals(
+        restoredRoomMap,
+        (sourceKey) => accountStore.getCompletedGameJournalBySourceKey(sourceKey)
+      )
+    : 0;
+  if (snapshot.missing || snapshot.legacy || reconciledCompletions > 0) {
     await roomPersistenceHealth.track(() => saveRoomsToDisk(restoredRoomMap, roomsFile));
   }
   for (const room of snapshot.rooms) {
@@ -1132,6 +1178,8 @@ try {
 } catch {
   console.error('Persisted room state was rejected; room writes are disabled to protect the source file.');
 }
+
+const resetAliasIndex = createResetAliasIndex(rooms);
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -1245,9 +1293,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES });
 
-const handleProtocolV1Message = createProtocolV1MessageHandler({
+const handleProtocolV2Message = createProtocolV2MessageHandler({
   allPlayersReadyForNextRound,
   appendRoomChatMessage,
   broadcastRoom,
@@ -1255,20 +1303,48 @@ const handleProtocolV1Message = createProtocolV1MessageHandler({
   createInitialRoomState,
   createNextRoundRoomState,
   createWaitingRoom,
+  digestAction: (canonicalAction) => crypto.createHash('sha256').update(canonicalAction).digest('hex'),
   makeRoomCodeForSocket,
   normalizedReadyIds,
   notifyAwayPlayersAfterMove,
   now: Date.now,
   persistRoomsSoon,
-  publicRoom,
+  random: () => crypto.randomInt(0, 0x1_0000_0000) / 0x1_0000_0000,
   randomUuid: crypto.randomUUID,
-  recordCompletedGame: (input) => accountStore.recordCompletedGame(input),
+  recordCompletedGame: (input) => {
+    const validationContext = {
+      rosterPlayerIds: input.state.players.map((player) => player.id),
+      roomStatus: 'finished',
+      readyForNextRoundPlayerIds: []
+    };
+    const submittedState = normalizePersistedGameState(input.state, validationContext);
+    const game = accountStore.recordCompletedGame({ ...input, state: submittedState });
+    const journal = accountStore.getCompletedGameJournalBySourceKey(input.sourceKey);
+    if (
+      !journal ||
+      journal.id !== game.id ||
+      journal.sourceKey !== input.sourceKey ||
+      journal.roomCode !== input.roomCode
+    ) {
+      throw new Error('Completed game journal identity does not match the recorded game.');
+    }
+    const state = normalizePersistedGameState(journal.state, validationContext);
+    if (state.phase !== 'game-over') {
+      throw new Error('Completed game journal is not terminal.');
+    }
+    return {
+      id: journal.id,
+      recovered: !isDeepStrictEqual(state, submittedState),
+      state
+    };
+  },
   roomPlayer,
   rooms,
+  resetAliasIndex,
   sendJson,
+  sendRoomSnapshot,
   setPlayerReadyForNextRound,
   syncPlayerPresence,
-  validateMultiplayerStateUpdate,
   reportCompletedGameError: (error) => console.error('Failed to record multiplayer game:', error)
 });
 
@@ -1283,7 +1359,7 @@ const disposeRealtimeServer = registerRealtimeServer({
   sendCurrentRoom,
   now: Date.now,
   isShuttingDown: () => shuttingDown,
-  onProtocolV1Message: handleProtocolV1Message
+  onProtocolMessage: handleProtocolV2Message
 });
 
 setInterval(() => {

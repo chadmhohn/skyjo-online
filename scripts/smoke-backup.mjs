@@ -16,7 +16,11 @@ const backupScript = path.join(root, 'scripts', 'backup-state.mjs');
 const verifyScript = path.join(root, 'scripts', 'verify-state-backup.mjs');
 const restoreScript = path.join(root, 'scripts', 'restore-state.mjs');
 const releasePath = path.join(root, 'dist', 'release.json');
-const releaseIdentity = await loadReleaseIdentity(path.dirname(releasePath), { allowDevelopment: false, requireFullSha: true });
+const releaseIdentity = await loadReleaseIdentity(path.dirname(releasePath), {
+  allowDevelopment: false,
+  requireFullSha: true,
+  allowedProtocolVersions: [1, 2]
+});
 const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo backup smoke with spaces '));
 
 try {

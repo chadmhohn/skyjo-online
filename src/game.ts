@@ -652,7 +652,7 @@ export function drawBlind(state: GameState, random: RandomSource = systemRandom)
       selectedSource: 'draw',
       phase: 'choose-replacement'
     },
-    `${currentPlayer(state).name} drew a ${result.card.value}.`
+    `${currentPlayer(state).name} drew a blind card.`
   );
 }
 

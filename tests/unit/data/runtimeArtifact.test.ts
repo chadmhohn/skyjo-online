@@ -18,7 +18,7 @@ import {
   validateRuntimeEntries,
   verifyRuntimeArtifact
 } from '../../../scripts/runtime-artifact-lib.mjs';
-import { sha256 } from '../../../server-release.mjs';
+import { CURRENT_PROTOCOL_VERSION, sha256 } from '../../../server-release.mjs';
 
 const releaseSha = '0123456789abcdef0123456789abcdef01234567';
 const releaseIdentity = {
@@ -26,7 +26,7 @@ const releaseIdentity = {
   releaseSha,
   buildTimestamp: '2026-07-11T12:00:00.000Z',
   schemaVersion: 2,
-  protocolVersion: 1
+  protocolVersion: CURRENT_PROTOCOL_VERSION
 };
 const releaseData = Buffer.from(`${JSON.stringify(releaseIdentity, null, 2)}\n`);
 const releaseChecksum = Buffer.from(`${sha256(releaseData)}  release.json\n`);
@@ -258,6 +258,7 @@ describe('runtime artifact safety contract', () => {
   test('allows only compiled output, production dependencies, metadata, and exact runtime scripts', () => {
     expect(isAllowedRuntimePath('./dist/assets/app.js')).toBe(true);
     expect(isAllowedRuntimePath('node_modules/ws/index.js')).toBe(true);
+    expect(isAllowedRuntimePath('server-game-state-validation.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-deployed.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-chat.mjs')).toBe(false);
     expect(isAllowedRuntimePath('src/game.ts')).toBe(false);
@@ -324,7 +325,9 @@ describe('runtime artifact safety contract', () => {
   test('validates the complete allowlisted runtime and byte-identical release identities', () => {
     const result = validateRuntimeEntries(fixtureEntries(), releaseSha);
     expect(result.releaseIdentity.releaseSha).toBe(releaseSha);
-    expect(result.files.has('server-dist/serverProtocolV1.js')).toBe(true);
+    expect(result.files.has('server-game-state-validation.mjs')).toBe(true);
+    expect(result.files.has('server-dist/protocolV2.js')).toBe(true);
+    expect(result.files.has('server-dist/serverProtocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverRealtime.js')).toBe(true);
     expect(result.files.has('src/game.ts')).toBe(false);
   });
@@ -442,12 +445,19 @@ describe('runtime artifact safety contract', () => {
     disallowed.push({ ...disallowed[0], rawPath: 'src/secret.ts' });
     expect(() => validateRuntimeEntries(disallowed, releaseSha)).toThrow('not allowlisted');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server.mjs'), releaseSha)).toThrow('missing required');
+    expect(() => validateRuntimeEntries(
+      fixtureEntries().filter((entry) => entry.rawPath !== 'server-game-state-validation.mjs'),
+      releaseSha
+    )).toThrow('missing required');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverRealtime.js'), releaseSha)).toThrow(
       'missing required'
     );
-    expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverProtocolV1.js'), releaseSha)).toThrow(
+    expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverProtocolV2.js'), releaseSha)).toThrow(
       'missing required'
     );
+    const retiredProtocol = fixtureEntries();
+    retiredProtocol.push({ ...retiredProtocol[0], rawPath: 'server-dist/serverProtocolV1.js' });
+    expect(() => validateRuntimeEntries(retiredProtocol, releaseSha)).toThrow('retired protocol-v1');
     const unequalIdentity = replaceFile(fixtureEntries(), 'dist/release.json', Buffer.from('{}'));
     expect(() => validateRuntimeEntries(unequalIdentity, releaseSha)).toThrow('byte-identical');
     const badChecksum = replaceFile(fixtureEntries(), 'release.json.sha256', Buffer.from(`${'0'.repeat(64)}  release.json\n`));
@@ -460,6 +470,35 @@ describe('runtime artifact safety contract', () => {
     replaceFile(malformed, 'release.json.sha256', malformedChecksum);
     replaceFile(malformed, 'dist/release.json.sha256', malformedChecksum);
     expect(() => validateRuntimeEntries(malformed, releaseSha)).toThrow('Invalid runtime release identity');
+  });
+
+  test.each([
+    'validateMultiplayerStateUpdate',
+    'legalMultiplayerStateUpdates',
+    'deepEqual',
+    'isLegalRecycledDrawUpdate',
+    'unorderedCardsEqual',
+    'proposedState'
+  ])('rejects retired whole-state validation symbol %s from the runtime', (symbol) => {
+    const entries = replaceFile(
+      fixtureEntries(),
+      'server-dist/serverValidation.js',
+      Buffer.from(`export function ${symbol}() { return true; }\n`)
+    );
+    expect(() => validateRuntimeEntries(entries, releaseSha)).toThrow(
+      `retired whole-state validation symbol: ${symbol}`
+    );
+  });
+
+  test('scans every first-party compiled server module for retired whole-state validation code', () => {
+    const entries = replaceFile(
+      fixtureEntries(),
+      'server-dist/serverProtocolV2.js',
+      Buffer.from('export const proposedState = {}\n')
+    );
+    expect(() => validateRuntimeEntries(entries, releaseSha)).toThrow(
+      'retired whole-state validation symbol: proposedState'
+    );
   });
 
   test('rejects oversized entries and noncanonical owner, mode, or mtime metadata', () => {

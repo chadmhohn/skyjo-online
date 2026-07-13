@@ -13,6 +13,7 @@ export default defineConfig({
       reportsDirectory: './coverage/data',
       reporter: ['text', 'json-summary', 'lcov'],
       include: [
+        'server-game-state-validation.mjs',
         'server-account-store.mjs',
         'server-persistence-health.mjs',
         'server-room-persistence.mjs',
@@ -26,6 +27,12 @@ export default defineConfig({
         functions: 90,
         statements: 80,
         'server-account-store.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-game-state-validation.mjs': {
           lines: 90,
           branches: 85,
           functions: 95,

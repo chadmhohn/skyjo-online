@@ -22,10 +22,20 @@ export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRIES = 4096;
 export const RUNTIME_SBOM_NAME = 'skyjo-runtime.cdx.json';
 
+const RETIRED_WHOLE_STATE_VALIDATION_SYMBOLS = Object.freeze([
+  'validateMultiplayerStateUpdate',
+  'legalMultiplayerStateUpdates',
+  'deepEqual',
+  'isLegalRecycledDrawUpdate',
+  'unorderedCardsEqual',
+  'proposedState'
+]);
+
 export const RUNTIME_ROOT_FILES = Object.freeze([
   'package-lock.json',
   'package.json',
   'server-account-store.mjs',
+  'server-game-state-validation.mjs',
   'server-persistence-health.mjs',
   'server-readiness.mjs',
   'server-release.mjs',
@@ -53,8 +63,9 @@ export const REQUIRED_ARCHIVE_FILES = Object.freeze([
   'dist/release.json.sha256',
   'dist/index.html',
   'server-dist/game.js',
+  'server-dist/protocolV2.js',
   'server-dist/runtime.js',
-  'server-dist/serverProtocolV1.js',
+  'server-dist/serverProtocolV2.js',
   'server-dist/serverRealtime.js',
   'server-dist/serverValidation.js',
   'server-dist/types.js',
@@ -405,6 +416,9 @@ export function validateRuntimeEntries(entries, expectedReleaseSha) {
     }
     const normalized = normalizeArchivePath(entry.rawPath, { allowRoot: isDirectory });
     if (normalized === '') continue;
+    if (normalized === 'server-dist/serverProtocolV1.js') {
+      throw new Error('Runtime archive contains the retired protocol-v1 state mutation handler.');
+    }
     if (!isAllowedRuntimePath(normalized, isDirectory)) throw new Error(`Runtime archive path is not allowlisted: ${normalized}.`);
     if (seen.has(normalized)) throw new Error(`Runtime archive contains duplicate path: ${normalized}.`);
     seen.add(normalized);
@@ -414,6 +428,16 @@ export function validateRuntimeEntries(entries, expectedReleaseSha) {
   }
   for (const requiredPath of REQUIRED_ARCHIVE_FILES) {
     if (!files.has(requiredPath)) throw new Error(`Runtime archive is missing required file: ${requiredPath}.`);
+  }
+
+  for (const [runtimePath, contents] of files) {
+    if (runtimePath !== 'server.mjs' && !/^server-dist\/[^/]+\.js$/.test(runtimePath)) continue;
+    const source = contents.toString('utf8');
+    for (const symbol of RETIRED_WHOLE_STATE_VALIDATION_SYMBOLS) {
+      if (source.includes(symbol)) {
+        throw new Error(`Runtime archive contains retired whole-state validation symbol: ${symbol}.`);
+      }
+    }
   }
 
   const rootRelease = files.get('release.json');

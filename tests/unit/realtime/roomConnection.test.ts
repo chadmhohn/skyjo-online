@@ -9,6 +9,7 @@ import {
   type RoomConnectionSocket,
   type RoomConnectionState
 } from '../../../src/roomConnection';
+import { PUBLIC_SNAPSHOT_LIMITS } from '../../../src/protocolV2';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -80,20 +81,22 @@ function room(code = 'ABCDE', updatedAt = 100) {
     readyForNextRoundPlayerIds: [],
     status: 'waiting',
     state: null,
-    updatedAt
+    updatedAt,
+    completedGameId: null,
+    revision: 0
   };
 }
 
-function validCard(id: string, value = 1) {
-  return { id, value, faceUp: false, removed: false };
+function validCard(id: string, value: number | null = null, faceUp = false) {
+  return { id, value, faceUp, removed: false };
 }
 
-function validGamePlayer(id: string) {
+function validGamePlayer(id: string, playerIndex = id === 'p1' ? 0 : 1) {
   return {
     id,
     name: id === 'p1' ? 'Alice' : 'Bob',
     kind: 'human',
-    grid: Array.from({ length: 12 }, (_, index) => validCard(`${id}-${index}`, index - 2)),
+    grid: Array.from({ length: 12 }, (_, index) => validCard(`grid-${playerIndex}-${index}`)),
     totalScore: 0,
     roundScore: 0
   };
@@ -102,11 +105,12 @@ function validGamePlayer(id: string) {
 function validGameState() {
   return {
     players: [validGamePlayer('p1'), validGamePlayer('p2')],
-    drawPile: [validCard('draw')],
-    discardPile: [validCard('discard', 4)],
+    drawPileCount: 125,
+    discardPile: { count: 1, top: validCard('discard-top', 4, true) },
     currentPlayerIndex: 0,
     phase: 'choose-source',
     selectedSource: null,
+    hasDrawnCard: false,
     drawnCard: null,
     round: 1,
     log: ['Alice starts.'],
@@ -128,6 +132,10 @@ function validGameState() {
 function validActiveRoom() {
   return {
     ...room(),
+    players: [
+      { id: 'p1', name: 'Alice', connected: true, host: true },
+      { id: 'p2', name: 'Bob', connected: true, host: false }
+    ],
     chatMessages: [
       { id: 'chat-1', playerId: 'p1', playerName: 'Alice', text: 'Hello', createdAt: Date.UTC(2026, 0, 1) }
     ],
@@ -136,6 +144,20 @@ function validActiveRoom() {
     status: 'playing',
     completedGameId: null
   };
+}
+
+function snapshotFrame(roomValue = room(), playerId = 'p1') {
+  return {
+    type: 'snapshot',
+    protocolVersion: 2,
+    playerId,
+    revision: roomValue.revision,
+    room: roomValue
+  };
+}
+
+function errorFrame(message: string, code = 'room-error') {
+  return { type: 'error', protocolVersion: 2, code, message };
 }
 
 function createHarness({ initiallyOnline = true, randomValue = 0.5 } = {}) {
@@ -321,6 +343,58 @@ describe('room connection controller', () => {
     for (const invalid of invalidRooms) expect(isMultiplayerRoomSnapshot(invalid, 'ABCDE')).toBe(false);
   });
 
+  it('enforces every shared public snapshot string and collection boundary', () => {
+    type MutableGameStateFixture = Omit<
+      ReturnType<typeof validGameState>,
+      'winnerId' | 'finalTurnPlayerIds' | 'openingRevealCounts'
+    > & {
+      winnerId: string | null;
+      finalTurnPlayerIds: string[];
+      openingRevealCounts: Record<string, number>;
+    };
+    type MutableRoomFixture = Omit<ReturnType<typeof validActiveRoom>, 'completedGameId' | 'state'> & {
+      completedGameId: string | null;
+      state: MutableGameStateFixture;
+    };
+    const overIdentifier = 'i'.repeat(PUBLIC_SNAPSHOT_LIMITS.identifierLength + 1);
+    const overName = 'n'.repeat(PUBLIC_SNAPSHOT_LIMITS.nameLength + 1);
+    const overLog = 'l'.repeat(PUBLIC_SNAPSHOT_LIMITS.logEntryLength + 1);
+    const overChat = 'c'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength + 1);
+    const mutations: Array<(candidate: MutableRoomFixture) => void> = [
+      (candidate) => { candidate.code = 'ABCDEF'; },
+      (candidate) => { candidate.hostId = overIdentifier; },
+      (candidate) => { candidate.players[0].id = overIdentifier; },
+      (candidate) => { candidate.players[0].name = overName; },
+      (candidate) => { candidate.chatMessages[0].id = overIdentifier; },
+      (candidate) => { candidate.chatMessages[0].playerId = overIdentifier; },
+      (candidate) => { candidate.chatMessages[0].playerName = overName; },
+      (candidate) => { candidate.chatMessages[0].text = overChat; },
+      (candidate) => { candidate.completedGameId = overIdentifier; },
+      (candidate) => { candidate.readyForNextRoundPlayerIds = [overIdentifier]; },
+      (candidate) => { candidate.state.players[0].id = overIdentifier; },
+      (candidate) => { candidate.state.players[0].name = overName; },
+      (candidate) => { candidate.state.log = [overLog]; },
+      (candidate) => { candidate.state.winnerId = overIdentifier; },
+      (candidate) => { candidate.state.finalTurnPlayerIds = [overIdentifier]; },
+      (candidate) => { candidate.state.openingRevealCounts = { [overIdentifier]: 2 }; },
+      (candidate) => { candidate.state.roundHistory[0].closerId = overIdentifier; },
+      (candidate) => { candidate.state.roundHistory[0].scores[0].playerId = overIdentifier; },
+      (candidate) => { candidate.state.roundHistory[0].scores[0].name = overName; },
+      (candidate) => {
+        candidate.state.roundHistory = Array.from(
+          { length: PUBLIC_SNAPSHOT_LIMITS.historyEntries + 1 },
+          () => structuredClone(candidate.state.roundHistory[0])
+        );
+      }
+    ];
+
+    for (const mutate of mutations) {
+      const candidate = structuredClone(validActiveRoom()) as MutableRoomFixture;
+      mutate(candidate);
+      expect(isMultiplayerRoomSnapshot(candidate)).toBe(false);
+    }
+  });
+
   it('uses the production WebSocket and timer defaults behind a deterministic fake-time boundary', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
@@ -349,24 +423,79 @@ describe('room connection controller', () => {
     }
   });
 
-  it('maps internal create and join sessions to exact protocol-v1 wire frames', () => {
+  it('maps internal create and join sessions to exact protocol-v2 wire frames', () => {
     const created = createHarness();
     created.controller.connect({ action: 'create-room', name: 'Alice' });
     created.sockets[0].open();
-    expect(created.sockets[0].sent).toEqual([{ type: 'create-room', name: 'Alice' }]);
+    expect(created.sockets[0].sent).toEqual([{ type: 'create-room', protocolVersion: 2, name: 'Alice' }]);
     expect(created.sockets[0].sent[0]).not.toHaveProperty('action');
 
     const joined = createHarness();
     joined.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice' });
     joined.sockets[0].open();
-    expect(joined.sockets[0].sent).toEqual([{ type: 'join-room', code: 'ABCDE', name: 'Alice' }]);
+    expect(joined.sockets[0].sent).toEqual([{ type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice' }]);
 
     const recovered = createHarness();
     recovered.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
     recovered.runTimer(0);
     recovered.sockets[0].open();
     expect(recovered.sockets[0].sent).toEqual([
-      { type: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+    ]);
+
+    const resetRecovery = createHarness();
+    resetRecovery.controller.recover({
+      action: 'join-room',
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1',
+      recoveryCommandId: '10000000-0000-4000-8000-000000000001',
+      recoveryExpectedRevision: 7
+    });
+    resetRecovery.runTimer(0);
+    resetRecovery.sockets[0].open();
+    expect(resetRecovery.sockets[0].sent).toEqual([
+      {
+        type: 'join-room',
+        protocolVersion: 2,
+        code: 'ABCDE',
+        name: 'Alice',
+        playerId: 'p1',
+        recoveryCommandId: '10000000-0000-4000-8000-000000000001'
+      }
+    ]);
+    expect(resetRecovery.sockets[0].sent[0]).not.toHaveProperty('recoveryExpectedRevision');
+  });
+
+  it.each([
+    ['missing player id', undefined, '10000000-0000-4000-8000-000000000001', 0],
+    ['missing expected revision', 'p1', '10000000-0000-4000-8000-000000000001', undefined],
+    ['negative expected revision', 'p1', '10000000-0000-4000-8000-000000000001', -1],
+    ['fractional expected revision', 'p1', '10000000-0000-4000-8000-000000000001', 1.5],
+    ['maximum expected revision', 'p1', '10000000-0000-4000-8000-000000000001', Number.MAX_SAFE_INTEGER],
+    ['malformed id', 'p1', 'not-a-uuid', 0],
+    ['invalid UUID version', 'p1', '10000000-0000-0000-8000-000000000001', 0],
+    ['invalid UUID variant', 'p1', '10000000-0000-4000-7000-000000000001', 0]
+  ])('omits a reset recovery hint with %s', (_label, playerId, recoveryCommandId, recoveryExpectedRevision) => {
+    const harness = createHarness();
+    harness.controller.connect({
+      action: 'join-room',
+      code: 'ABCDE',
+      name: 'Alice',
+      ...(playerId ? { playerId } : {}),
+      recoveryCommandId,
+      recoveryExpectedRevision
+    });
+    harness.sockets[0].open();
+
+    expect(harness.sockets[0].sent).toEqual([
+      {
+        type: 'join-room',
+        protocolVersion: 2,
+        code: 'ABCDE',
+        name: 'Alice',
+        ...(playerId ? { playerId } : {})
+      }
     ]);
   });
 
@@ -379,7 +508,7 @@ describe('room connection controller', () => {
     socket.open();
     expect(harness.controller.send({ type: 'send-chat-message', text: 'blocked' })).toBe(false);
 
-    socket.receive({ type: 'joined', playerId: 'p1', room: room() });
+    socket.receive(snapshotFrame());
     expect(harness.controller.getState()).toBe('connected');
     expect(harness.controller.send({ type: 'send-chat-message', text: 'ready' })).toBe(true);
     expect(socket.sent.at(-1)).toEqual({ type: 'send-chat-message', text: 'ready' });
@@ -392,11 +521,11 @@ describe('room connection controller', () => {
     for (const frame of [
       '{',
       { type: 'room' },
-      { type: 'joined', playerId: 'p1', room: room('OTHER') },
-      { type: 'joined', room: room() },
-      { type: 'joined', playerId: 'p1', room: { ...room(), players: [null] } },
-      { type: 'joined', playerId: 'p1', room: { ...room(), chatMessages: [null] } },
-      { type: 'joined', playerId: 'p1', room: { ...room(), state: { players: [null] } } }
+      snapshotFrame(room('OTHER')),
+      { ...snapshotFrame(), playerId: undefined },
+      snapshotFrame({ ...room(), players: [null] } as never),
+      snapshotFrame({ ...room(), chatMessages: [null] } as never),
+      snapshotFrame({ ...room(), state: { players: [null] } } as never)
     ]) {
       const harness = createHarness();
       harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
@@ -409,6 +538,195 @@ describe('room connection controller', () => {
       expect(socket.closes.at(-1)?.code).toBe(1002);
       expect(harness.frames).toHaveLength(0);
     }
+  });
+
+  it('accepts a fresh room code only for the matching in-memory reset command and converges on ack', () => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const socket = harness.sockets[0];
+    socket.open();
+    socket.receive(snapshotFrame());
+    const resetCommand = {
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'reset-room' }
+    };
+    expect(harness.controller.send(resetCommand)).toBe(true);
+    const replacement = { ...room('FGHIJ'), revision: 1 };
+    socket.receive({
+      type: 'resync',
+      protocolVersion: 2,
+      playerId: 'p1',
+      revision: 1,
+      room: replacement,
+      reason: 'room-reset',
+      commandId: resetCommand.commandId
+    });
+    expect(harness.controller.getState()).toBe('connected');
+    expect(harness.frames.at(-1)).toMatchObject({ type: 'resync', room: { code: 'FGHIJ' } });
+    socket.receive({ type: 'ack', protocolVersion: 2, commandId: resetCommand.commandId, revision: 1 });
+    expect(harness.controller.send({
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000002',
+      expectedRevision: 1,
+      action: { type: 'send-chat-message', text: 'new room' }
+    })).toBe(true);
+    socket.serverClose();
+    harness.runTimer(1);
+    harness.sockets[1].open();
+    expect(harness.sockets[1].sent[0]).toMatchObject({ type: 'join-room', code: 'FGHIJ', playerId: 'p1' });
+  });
+
+  it('binds reset recovery before transport and never replays it after an advanced target proves application', () => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const first = harness.sockets[0];
+    first.open();
+    first.receive(snapshotFrame());
+    const resetCommand = {
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'reset-room' }
+    };
+    expect(harness.controller.send(resetCommand)).toBe(true);
+
+    first.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+    expect(recovered.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1',
+      recoveryCommandId: resetCommand.commandId
+    }]);
+
+    const advancedReplacement = { ...room('FGHIJ', 300), revision: 3 };
+    recovered.receive({
+      type: 'resync',
+      protocolVersion: 2,
+      playerId: 'p1',
+      revision: 3,
+      room: advancedReplacement,
+      reason: 'room-reset',
+      commandId: resetCommand.commandId
+    });
+    expect(harness.controller.getState()).toBe('connected');
+    expect(harness.frames.at(-1)).toMatchObject({ type: 'resync', room: { code: 'FGHIJ', revision: 3 } });
+
+    recovered.serverClose();
+    harness.runTimer(2);
+    const targetReconnect = harness.sockets[2];
+    targetReconnect.open();
+    expect(targetReconnect.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'FGHIJ',
+      name: 'Alice',
+      playerId: 'p1'
+    }]);
+    targetReconnect.receive(snapshotFrame(advancedReplacement));
+    expect(targetReconnect.sent).toHaveLength(1);
+
+    targetReconnect.serverClose();
+    harness.runTimer(3);
+    const secondTargetReconnect = harness.sockets[3];
+    secondTargetReconnect.open();
+    expect(secondTargetReconnect.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'FGHIJ',
+      name: 'Alice',
+      playerId: 'p1'
+    }]);
+  });
+
+  it('accepts an advanced reset target from a boot recovery session without replaying the reset', () => {
+    const harness = createHarness();
+    const commandId = '10000000-0000-4000-8000-000000000001';
+    harness.controller.recover({
+      action: 'join-room',
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1',
+      recoveryCommandId: commandId,
+      recoveryExpectedRevision: 0
+    });
+    harness.runTimer(0);
+    const socket = harness.sockets[0];
+    socket.open();
+    const advancedReplacement = { ...room('FGHIJ', 300), revision: 4 };
+    socket.receive({
+      type: 'resync',
+      protocolVersion: 2,
+      playerId: 'p1',
+      revision: 4,
+      room: advancedReplacement,
+      reason: 'room-reset',
+      commandId
+    });
+    socket.receive({ type: 'ack', protocolVersion: 2, commandId, revision: 1 });
+
+    expect(harness.controller.getState()).toBe('connected');
+    expect(socket.sent).toHaveLength(1);
+    socket.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+    expect(recovered.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'FGHIJ',
+      name: 'Alice',
+      playerId: 'p1'
+    }]);
+  });
+
+  it.each([
+    ['unsolicited', null, '10000000-0000-4000-8000-000000000001', 'p1', 1, 'room-reset', 'FGHIJ'],
+    ['different action', 'start-game', '10000000-0000-4000-8000-000000000001', 'p1', 1, 'room-reset', 'FGHIJ'],
+    ['wrong command id', 'reset-room', '10000000-0000-4000-8000-000000000099', 'p1', 1, 'room-reset', 'FGHIJ'],
+    ['wrong player', 'reset-room', '10000000-0000-4000-8000-000000000001', 'p2', 1, 'room-reset', 'FGHIJ'],
+    ['wrong revision', 'reset-room', '10000000-0000-4000-8000-000000000001', 'p1', 2, 'room-reset', 'FGHIJ'],
+    ['wrong reason', 'reset-room', '10000000-0000-4000-8000-000000000001', 'p1', 1, 'stale-revision', 'FGHIJ'],
+    ['unchanged code', 'reset-room', '10000000-0000-4000-8000-000000000001', 'p1', 1, 'room-reset', 'ABCDE']
+  ])('rejects an unsafe reset code transition: %s', (_name, actionType, commandId, playerId, revision, reason, code) => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const socket = harness.sockets[0];
+    socket.open();
+    socket.receive(snapshotFrame());
+    if (actionType) {
+      expect(harness.controller.send({
+        type: 'command',
+        protocolVersion: 2,
+        commandId: '10000000-0000-4000-8000-000000000001',
+        expectedRevision: 0,
+        action: { type: actionType }
+      })).toBe(true);
+    }
+    socket.receive({
+      type: 'resync',
+      protocolVersion: 2,
+      playerId,
+      revision,
+      room: { ...room(code), revision },
+      reason,
+      commandId
+    });
+    expect(socket.closes.at(-1)?.code).toBe(1002);
+    expect(harness.frames.at(-1)).toMatchObject({ type: 'snapshot', room: { code: 'ABCDE' } });
+    expect(harness.controller.getState()).toBe('reconnecting');
   });
 
   it('fails terminally when a create-room socket receives a malformed frame and has no seat to recover', () => {
@@ -428,11 +746,11 @@ describe('room connection controller', () => {
     const socket = harness.sockets[0];
     socket.deferClose = true;
     socket.open();
-    socket.receive({ type: 'room', room: room() });
+    socket.receive({ ...snapshotFrame(), extra: true });
     expect(harness.controller.getState()).toBe('reconnecting');
     expect(harness.timers).toHaveLength(2);
 
-    socket.receive({ type: 'joined', playerId: 'p1', room: room() });
+    socket.receive(snapshotFrame());
     socket.flushClose();
     expect(harness.controller.getState()).toBe('reconnecting');
     expect(harness.frames).toHaveLength(0);
@@ -485,7 +803,7 @@ describe('room connection controller', () => {
     timely.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
     timely.runTimer(0);
     timely.sockets[0].open();
-    timely.sockets[0].receive({ type: 'joined', playerId: 'p1', room: room() });
+    timely.sockets[0].receive(snapshotFrame());
     expect(timely.syncTimers[0].canceled).toBe(true);
     timely.runSyncTimer(0, true);
     expect(timely.controller.getState()).toBe('connected');
@@ -543,7 +861,7 @@ describe('room connection controller', () => {
     harness.runTimer(0);
     const socket = harness.sockets[0];
     socket.open();
-    socket.receive({ type: 'joined', playerId: 'p1', room: room() });
+    socket.receive(snapshotFrame());
     harness.controller.recover({ ...first });
     expect(socket.closes).toHaveLength(0);
     expect(harness.sockets).toHaveLength(1);
@@ -563,7 +881,7 @@ describe('room connection controller', () => {
     harness.sockets[0].open();
     expect(harness.sockets[0].sent[0]).toMatchObject({ type: 'join-room', code: 'FGHIJ', playerId: 'p2' });
 
-    harness.sockets[0].receive({ type: 'joined', playerId: 'p2', room: room('FGHIJ') });
+    harness.sockets[0].receive(snapshotFrame({ ...room('FGHIJ'), hostId: 'p2', players: [{ id: 'p2', name: 'Alice', connected: true, host: true }] }, 'p2'));
     expect(harness.controller.getState()).toBe('connected');
 
     const replaced = createHarness();
@@ -573,7 +891,7 @@ describe('room connection controller', () => {
     oldSocket.deferClose = true;
     oldSocket.open();
     replaced.controller.recover({ action: 'join-room', code: 'FGHIJ', name: 'Alice', playerId: 'p2' });
-    oldSocket.receive({ type: 'joined', playerId: 'p1', room: room() });
+    oldSocket.receive(snapshotFrame());
     oldSocket.flushClose();
     expect(replaced.controller.getState()).toBe('reconnecting');
     expect(replaced.frames).toHaveLength(0);
@@ -593,7 +911,7 @@ describe('room connection controller', () => {
     connected.runTimer(0);
     const socket = connected.sockets[0];
     socket.open();
-    socket.receive({ type: 'joined', playerId: 'p1', room: room() });
+    socket.receive(snapshotFrame());
     connected.controller.resume();
     connected.controller.resume();
     expect(socket.closes).toHaveLength(0);
@@ -646,7 +964,7 @@ describe('room connection controller', () => {
     harness.runTimer(0);
     const socket = harness.sockets[0];
     socket.open();
-    socket.receive({ type: 'joined', playerId: 'p1', room: room() });
+    socket.receive(snapshotFrame());
 
     harness.setOnlineValue(false);
     harness.controller.resume();
@@ -670,7 +988,7 @@ describe('room connection controller', () => {
     socket.open();
     harness.controller.setVisible(false);
     expect(socket.sent.filter((frame) => frame.type === 'set-presence')).toHaveLength(0);
-    socket.receive({ type: 'joined', playerId: 'p1', room: room() });
+    socket.receive(snapshotFrame());
     expect(socket.sent.filter((frame) => frame.type === 'set-presence')).toEqual([
       { type: 'set-presence', visible: false }
     ]);
@@ -685,25 +1003,193 @@ describe('room connection controller', () => {
     harness.runTimer(0);
     const first = harness.sockets[0];
     first.open();
-    first.receive({ type: 'joined', playerId: 'p1', room: room() });
+    first.receive(snapshotFrame());
     harness.controller.setVisible(false);
     first.serverClose();
 
     harness.runTimer(1);
     const recovered = harness.sockets[1];
     recovered.open();
-    recovered.receive({ type: 'joined', playerId: 'p1', room: room('ABCDE', 200) });
+    recovered.receive(snapshotFrame(room('ABCDE', 200)));
     expect(recovered.sent).toEqual([
-      { type: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
       { type: 'set-presence', visible: false }
     ]);
+  });
+
+  it('replays an ambiguous command when ack arrived before a lower persisted reconnect snapshot', () => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const first = harness.sockets[0];
+    first.open();
+    first.receive(snapshotFrame());
+    const pending = {
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'send-chat-message', text: 'once' }
+    };
+    expect(harness.controller.send(pending)).toBe(true);
+    first.receive({ type: 'ack', protocolVersion: 2, commandId: pending.commandId, revision: 1 });
+    first.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+    recovered.receive(snapshotFrame());
+    expect(recovered.sent).toEqual([
+      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      pending
+    ]);
+  });
+
+  it('clears matching pending commands on stale resync or application error', () => {
+    for (const terminalFrame of [
+      {
+        type: 'resync',
+        protocolVersion: 2,
+        playerId: 'p1',
+        revision: 0,
+        room: room(),
+        reason: 'stale-revision',
+        commandId: '10000000-0000-4000-8000-000000000001'
+      },
+      {
+        type: 'error',
+        protocolVersion: 2,
+        code: 'illegal-move',
+        message: 'No.',
+        commandId: '10000000-0000-4000-8000-000000000001'
+      }
+    ]) {
+      const harness = createHarness();
+      harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+      harness.runTimer(0);
+      const socket = harness.sockets[0];
+      socket.open();
+      socket.receive(snapshotFrame());
+      expect(harness.controller.send({
+        type: 'command',
+        protocolVersion: 2,
+        commandId: '10000000-0000-4000-8000-000000000001',
+        expectedRevision: 0,
+        action: { type: 'start-game' }
+      })).toBe(true);
+      socket.receive(terminalFrame);
+      expect(harness.controller.send({
+        type: 'command',
+        protocolVersion: 2,
+        commandId: '10000000-0000-4000-8000-000000000002',
+        expectedRevision: 0,
+        action: { type: 'start-game' }
+      })).toBe(true);
+    }
+  });
+
+  it('clears a rejected reset and reconnects the unchanged seat without a recovery hint or replay', () => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const first = harness.sockets[0];
+    first.open();
+    first.receive(snapshotFrame());
+    const resetCommand = {
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'reset-room' }
+    };
+    expect(harness.controller.send(resetCommand)).toBe(true);
+
+    first.receive({
+      type: 'error',
+      protocolVersion: 2,
+      code: 'room-code-unavailable',
+      message: 'A room code could not be created. Try again.',
+      commandId: resetCommand.commandId
+    });
+    expect(harness.controller.getState()).toBe('connected');
+    first.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+
+    expect(recovered.sent).toEqual([
+      { type: 'join-room', protocolVersion: 2, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+    ]);
+    recovered.receive(snapshotFrame(room('ABCDE', 200)));
+    expect(recovered.sent).toHaveLength(1);
+    expect(harness.controller.getState()).toBe('connected');
+  });
+
+  it('rolls back reset recovery state when the initial transport send throws', () => {
+    const harness = createHarness();
+    harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    harness.runTimer(0);
+    const first = harness.sockets[0];
+    first.open();
+    first.receive(snapshotFrame());
+    first.throwOnSend = true;
+    expect(harness.controller.send({
+      type: 'command',
+      protocolVersion: 2,
+      commandId: '10000000-0000-4000-8000-000000000001',
+      expectedRevision: 0,
+      action: { type: 'reset-room' }
+    })).toBe(false);
+
+    first.throwOnSend = false;
+    first.serverClose();
+    harness.runTimer(1);
+    const recovered = harness.sockets[1];
+    recovered.open();
+    expect(recovered.sent).toEqual([{
+      type: 'join-room',
+      protocolVersion: 2,
+      code: 'ABCDE',
+      name: 'Alice',
+      playerId: 'p1'
+    }]);
+  });
+
+  it('handles upgrade shutdown, initial join-send failure, and transport close observed offline', () => {
+    const upgrade = createHarness();
+    upgrade.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    upgrade.runTimer(0);
+    upgrade.sockets[0].open();
+    upgrade.sockets[0].receive({
+      type: 'upgrade-required',
+      protocolVersion: 2,
+      message: 'Refresh.',
+      commandId: '10000000-0000-4000-8000-000000000001'
+    });
+    expect(upgrade.controller.getState()).toBe('error');
+    expect(upgrade.sockets[0].closes.at(-1)?.code).toBe(1002);
+
+    const sendFailure = createHarness();
+    sendFailure.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    sendFailure.runTimer(0);
+    sendFailure.sockets[0].throwOnSend = true;
+    expect(() => sendFailure.sockets[0].open()).not.toThrow();
+    expect(sendFailure.sockets[0].closes.at(-1)?.code).toBe(1011);
+
+    const offlineClose = createHarness();
+    offlineClose.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    offlineClose.runTimer(0);
+    offlineClose.sockets[0].open();
+    offlineClose.sockets[0].receive(snapshotFrame());
+    offlineClose.setOnlineValue(false);
+    offlineClose.sockets[0].serverClose();
+    expect(offlineClose.controller.getState()).toBe('offline');
   });
 
   it('retires a rejected pending session but keeps established-room application errors connected', () => {
     const pending = createHarness();
     pending.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice' });
     pending.sockets[0].open();
-    pending.sockets[0].receive({ type: 'error', message: 'Room not found.' });
+    pending.sockets[0].receive(errorFrame('Room not found.', 'room-not-found'));
     expect(pending.controller.getState()).toBe('error');
     expect(pending.sockets[0].closes.at(-1)).toEqual({ code: 1000, reason: 'Pending room request rejected' });
     expect(pending.frames.at(-1)).toMatchObject({ type: 'error', message: 'Room not found.' });
@@ -712,8 +1198,8 @@ describe('room connection controller', () => {
     established.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
     const socket = established.sockets[0];
     socket.open();
-    socket.receive({ type: 'joined', playerId: 'p1', room: room() });
-    socket.receive({ type: 'error', message: 'That move is not legal.' });
+    socket.receive(snapshotFrame());
+    socket.receive(errorFrame('That move is not legal.', 'illegal-move'));
     expect(established.controller.getState()).toBe('connected');
     expect(socket.closes).toHaveLength(0);
     expect(established.controller.send({ type: 'send-chat-message', text: 'still connected' })).toBe(true);
@@ -751,7 +1237,7 @@ describe('room connection controller', () => {
     throwingSend.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
     const sendSocket = throwingSend.sockets[0];
     sendSocket.open();
-    sendSocket.receive({ type: 'joined', playerId: 'p1', room: room() });
+    sendSocket.receive(snapshotFrame());
     sendSocket.throwOnSend = true;
     expect(throwingSend.controller.send({ type: 'start-game' })).toBe(false);
 

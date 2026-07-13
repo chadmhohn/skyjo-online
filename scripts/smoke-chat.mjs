@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
-import { chooseDiscard, drawBlind, replaceCard, revealOpeningCard } from '../server-dist/game.js';
+
+const MULTIPLAYER_PROTOCOL_VERSION = 2;
+const socketStates = new WeakMap();
+const privacyEvidence = { snapshots: 0, drawerBlindFrames: 0, nonDrawerBlindFrames: 0 };
+let commandSequence = 0;
 
 async function getOpenPort() {
   const server = net.createServer();
@@ -108,8 +114,120 @@ async function getJson(url, cookie, path) {
   return payload;
 }
 
-function openSocket(url, cookie) {
+function publicSnapshotFrame(message) {
+  return message?.type === 'snapshot' || message?.type === 'resync';
+}
+
+function assertNoPrivateKeys(value, pathLabel = 'snapshot') {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoPrivateKeys(item, `${pathLabel}[${index}]`));
+    return;
+  }
+  const forbiddenKeys = new Set(['userId', 'gameSessionId', 'recentCommandIds', 'resetAliases', 'clients', 'drawPile']);
+  for (const [key, item] of Object.entries(value)) {
+    assert.equal(forbiddenKeys.has(key), false, `${pathLabel}.${key} must not be public`);
+    assertNoPrivateKeys(item, `${pathLabel}.${key}`);
+  }
+}
+
+function inspectPublicSnapshot(frame, socketLabel) {
+  privacyEvidence.snapshots += 1;
+  assert.equal(frame.protocolVersion, MULTIPLAYER_PROTOCOL_VERSION, `${socketLabel} snapshot uses protocol v2`);
+  assert.equal(frame.revision, frame.room?.revision, `${socketLabel} frame and room revisions match`);
+  assert.equal(typeof frame.playerId, 'string', `${socketLabel} snapshot identifies its viewer`);
+  assertNoPrivateKeys(frame);
+  const encoded = JSON.stringify(frame);
+  assert.doesNotMatch(encoded, /card-\d+--?\d+/, `${socketLabel} snapshot hides internal card ids`);
+
+  const state = frame.room?.state;
+  if (!state) return;
+  assert.equal(Number.isSafeInteger(state.drawPileCount), true, `${socketLabel} receives only a draw count`);
+  state.players.forEach((player, playerIndex) => {
+    player.grid.forEach((card, cardIndex) => {
+      assert.equal(card.id, `grid-${playerIndex}-${cardIndex}`, `${socketLabel} receives positional grid ids`);
+      if (!card.faceUp) assert.equal(card.value, null, `${socketLabel} face-down cards are redacted`);
+    });
+  });
+  if (state.discardPile.top) assert.equal(state.discardPile.top.id, 'discard-top');
+  if (state.drawnCard) assert.equal(state.drawnCard.id, 'drawn-card');
+  assert.equal(
+    state.log.some((entry) => / drew a -?\d+\.$/.test(entry)),
+    false,
+    `${socketLabel} log hides blind values`
+  );
+
+  if (state.hasDrawnCard) {
+    assert.equal(state.selectedSource, 'draw', `${socketLabel} blind draw metadata is coherent`);
+    const drawerId = state.players[state.currentPlayerIndex]?.id;
+    if (frame.playerId === drawerId) {
+      privacyEvidence.drawerBlindFrames += 1;
+      assert.ok(state.drawnCard, `${socketLabel} drawer receives its blind card`);
+      assert.equal(Number.isInteger(state.drawnCard.value), true, `${socketLabel} drawer receives the blind value`);
+    } else {
+      privacyEvidence.nonDrawerBlindFrames += 1;
+      assert.equal(state.drawnCard, null, `${socketLabel} non-drawer cannot see the blind value`);
+    }
+  } else {
+    assert.equal(state.drawnCard, null, `${socketLabel} has no stray drawn-card value`);
+  }
+}
+
+function trackSocket(ws, label) {
+  const state = {
+    label,
+    frames: [],
+    received: [],
+    waiters: [],
+    revision: null,
+    playerId: null,
+    room: null,
+    error: null
+  };
+  socketStates.set(ws, state);
+  ws.on('message', (raw) => {
+    let message;
+    try {
+      message = JSON.parse(String(raw));
+      if (publicSnapshotFrame(message)) {
+        inspectPublicSnapshot(message, label);
+        state.revision = message.revision;
+        state.playerId = message.playerId;
+        state.room = message.room;
+      } else if (message.type === 'ack' && Number.isSafeInteger(message.revision)) {
+        state.revision = message.revision;
+      }
+    } catch (error) {
+      state.error = error;
+      for (const waiter of state.waiters.splice(0)) {
+        clearTimeout(waiter.timeout);
+        waiter.reject(error);
+      }
+      return;
+    }
+    state.received.push(message);
+    const waiterIndex = state.waiters.findIndex((waiter) => waiter.predicate(message));
+    if (waiterIndex >= 0) {
+      const [waiter] = state.waiters.splice(waiterIndex, 1);
+      clearTimeout(waiter.timeout);
+      waiter.resolve(message);
+    } else {
+      state.frames.push(message);
+      if (state.frames.length > 512) state.frames.shift();
+    }
+  });
+}
+
+function socketState(ws) {
+  const state = socketStates.get(ws);
+  assert.ok(state, 'socket must be tracked');
+  if (state.error) throw state.error;
+  return state;
+}
+
+function openSocket(url, cookie, label = 'socket') {
   const ws = new WebSocket(`${url.replace('http:', 'ws:')}/rooms`, { headers: { Cookie: cookie } });
+  trackSocket(ws, label);
   return new Promise((resolve, reject) => {
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
@@ -122,22 +240,88 @@ function waitForServerClose(serverProcess) {
 }
 
 function waitForMessage(ws, predicate, label) {
+  const state = socketState(ws);
+  const queuedIndex = state.frames.findIndex(predicate);
+  if (queuedIndex >= 0) return Promise.resolve(state.frames.splice(queuedIndex, 1)[0]);
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      ws.off('message', handleMessage);
+      const waiterIndex = state.waiters.findIndex((waiter) => waiter.resolve === resolve);
+      if (waiterIndex >= 0) state.waiters.splice(waiterIndex, 1);
       reject(new Error(`timed out waiting for ${label}`));
     }, 5000);
-
-    function handleMessage(raw) {
-      const message = JSON.parse(String(raw));
-      if (!predicate(message)) return;
-      clearTimeout(timeout);
-      ws.off('message', handleMessage);
-      resolve(message);
-    }
-
-    ws.on('message', handleMessage);
+    state.waiters.push({ predicate, resolve, reject, timeout });
   });
+}
+
+function nextCommandId() {
+  commandSequence += 1;
+  return `70000000-0000-4000-8000-${String(commandSequence).padStart(12, '0')}`;
+}
+
+function sendAdmission(ws, message, label) {
+  const snapshot = waitForMessage(ws, publicSnapshotFrame, label);
+  ws.send(JSON.stringify({ ...message, protocolVersion: MULTIPLAYER_PROTOCOL_VERSION }));
+  return snapshot;
+}
+
+async function sendCommand(ws, action, label = action.type) {
+  const client = socketState(ws);
+  assert.equal(Number.isSafeInteger(client.revision), true, `${client.label} has an authoritative revision`);
+  const expectedRevision = client.revision;
+  const commandId = nextCommandId();
+  const nextRevision = expectedRevision + 1;
+  const snapshotPromise = waitForMessage(
+    ws,
+    (message) => publicSnapshotFrame(message) && message.revision === nextRevision,
+    `${label} snapshot`
+  );
+  const ackPromise = waitForMessage(
+    ws,
+    (message) => message.type === 'ack' && message.commandId === commandId,
+    `${label} ack`
+  );
+  ws.send(JSON.stringify({
+    type: 'command',
+    protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    commandId,
+    expectedRevision,
+    action
+  }));
+  const [snapshot, ack] = await Promise.all([snapshotPromise, ackPromise]);
+  assert.equal(ack.revision, nextRevision, `${label} ack advances exactly one revision`);
+  assert.equal(snapshot.room.revision, nextRevision, `${label} snapshot advances exactly one revision`);
+  return { snapshot, ack, commandId };
+}
+
+async function sendCommandExpectError(ws, action, label = action.type) {
+  const client = socketState(ws);
+  const expectedRevision = client.revision;
+  const commandId = nextCommandId();
+  const errorPromise = waitForMessage(
+    ws,
+    (message) => message.type === 'error' && message.commandId === commandId,
+    `${label} error`
+  );
+  ws.send(JSON.stringify({
+    type: 'command',
+    protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    commandId,
+    expectedRevision,
+    action
+  }));
+  const error = await errorPromise;
+  assert.equal(socketState(ws).revision, expectedRevision, `${label} rejection does not mutate revision`);
+  return error;
+}
+
+async function waitForSocketRevision(ws, revision, label) {
+  if (socketState(ws).revision >= revision) return socketState(ws).room;
+  const frame = await waitForMessage(
+    ws,
+    (message) => publicSnapshotFrame(message) && message.revision >= revision,
+    label
+  );
+  return frame.room;
 }
 
 function firstHiddenCardIndex(player) {
@@ -150,12 +334,24 @@ function firstReplacementIndex(player) {
   return player.grid.findIndex((card) => !card.removed);
 }
 
-function nextFastMove(state) {
+function nextFastAction(state) {
   const activePlayer = state.players[state.currentPlayerIndex];
-  if (state.phase === 'opening-reveal') return revealOpeningCard(state, firstHiddenCardIndex(activePlayer));
-  if (state.phase === 'choose-source') return state.discardPile.length > 0 ? chooseDiscard(state) : drawBlind(state);
-  if (state.phase === 'choose-replacement') return replaceCard(state, firstReplacementIndex(activePlayer));
-  return state;
+  if (state.phase === 'opening-reveal') {
+    const cardIndex = firstHiddenCardIndex(activePlayer);
+    assert.ok(cardIndex >= 0, 'opening reveal requires a hidden card');
+    return { type: 'reveal-opening-card', cardIndex };
+  }
+  if (state.phase === 'choose-source') {
+    if (state.drawPileCount > 0) return { type: 'draw-blind' };
+    assert.ok(state.discardPile.count > 0, 'discard pile is available when draw pile is empty');
+    return { type: 'choose-discard' };
+  }
+  if (state.phase === 'choose-replacement') {
+    const cardIndex = firstReplacementIndex(activePlayer);
+    assert.ok(cardIndex >= 0, 'replacement requires a grid card');
+    return { type: 'replace-card', cardIndex };
+  }
+  throw new Error(`no scripted action for phase ${state.phase}`);
 }
 
 function completedSoloState() {
@@ -212,30 +408,25 @@ function completedSoloState() {
   };
 }
 
-async function sendMoveAndWait(socketsByPlayerId, state) {
-  const activePlayer = state.players[state.currentPlayerIndex];
+async function sendMoveAndWait(socketsByPlayerId, room) {
+  const activePlayer = room.state.players[room.state.currentPlayerIndex];
   const socket = socketsByPlayerId.get(activePlayer.id);
   assert.ok(socket, `expected socket for ${activePlayer.name}`);
-  const nextState = nextFastMove(state);
-  socket.send(JSON.stringify({ type: 'update-state', state: nextState }));
-  const message = await waitForMessage(
-    socket,
-    (payload) =>
-      payload.type === 'room' &&
-      payload.room.state?.phase === nextState.phase &&
-      payload.room.state?.log?.[0] === nextState.log[0],
-    'game move broadcast'
-  );
-  return message.room.state;
+  await waitForSocketRevision(socket, room.revision, `${activePlayer.name} catches up before moving`);
+  const actorState = socketState(socket).room?.state;
+  assert.ok(actorState, 'active player receives an authoritative state');
+  assert.equal(actorState.players[actorState.currentPlayerIndex]?.id, activePlayer.id);
+  const action = nextFastAction(actorState);
+  return (await sendCommand(socket, action, `game ${action.type}`)).snapshot.room;
 }
 
-async function playUntilScoring(socketsByPlayerId, state) {
-  let roomState = state;
-  for (let turn = 0; turn < 100 && roomState.phase !== 'round-over' && roomState.phase !== 'game-over'; turn += 1) {
-    roomState = await sendMoveAndWait(socketsByPlayerId, roomState);
+async function playUntilScoring(socketsByPlayerId, initialRoom) {
+  let room = initialRoom;
+  for (let turn = 0; turn < 200 && room.state.phase !== 'round-over' && room.state.phase !== 'game-over'; turn += 1) {
+    room = await sendMoveAndWait(socketsByPlayerId, room);
   }
-  assert.ok(['round-over', 'game-over'].includes(roomState.phase), 'fast scripted game should reach scoring');
-  return roomState;
+  assert.ok(['round-over', 'game-over'].includes(room.state.phase), 'fast scripted game should reach scoring');
+  return room;
 }
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-chat-'));
@@ -393,9 +584,12 @@ try {
   assert.equal(internalFailure.response.headers.get('x-content-type-options'), 'nosniff');
   assert.doesNotMatch(JSON.stringify(internalFailure.payload), /sqlite|constraint|script|internal-sqlite-marker/i);
 
-  parkingHostSocket = await openSocket(baseUrl, hostAccount.cookie);
-  parkingHostSocket.send(JSON.stringify({ type: 'create-room', name: 'Offline Host' }));
-  const parkingHostJoined = await waitForMessage(parkingHostSocket, (message) => message.type === 'joined', 'parking host join');
+  parkingHostSocket = await openSocket(baseUrl, hostAccount.cookie, 'parking host');
+  const parkingHostJoined = await sendAdmission(
+    parkingHostSocket,
+    { type: 'create-room', name: 'Offline Host' },
+    'parking host snapshot'
+  );
   const parkingRoomCode = parkingHostJoined.room.code;
   assert.match(parkingRoomCode, /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$/, 'room codes use the secure unambiguous alphabet');
   const unauthenticatedInvite = await accountRequest(baseUrl, cookie, '/api/rooms/invite', { roomCode: parkingRoomCode });
@@ -475,138 +669,191 @@ try {
   await new Promise((resolve) => parkingHostSocket.once('close', resolve));
   parkingHostSocket = null;
 
-  parkingGuestSocket = await openSocket(baseUrl, guestAccount.cookie);
-  parkingGuestSocket.send(JSON.stringify({ type: 'join-room', code: parkingRoomCode, name: 'Early Guest' }));
-  const parkingGuestJoined = await waitForMessage(parkingGuestSocket, (message) => message.type === 'joined', 'guest joins hostless room');
+  parkingGuestSocket = await openSocket(baseUrl, guestAccount.cookie, 'parking guest');
+  const parkingGuestJoined = await sendAdmission(
+    parkingGuestSocket,
+    { type: 'join-room', code: parkingRoomCode, name: 'Early Guest' },
+    'guest joins hostless room'
+  );
   assert.equal(parkingGuestJoined.room.code, parkingRoomCode);
   assert.equal(parkingGuestJoined.room.players.find((player) => player.host)?.connected, false);
   assert.equal(parkingGuestJoined.room.players.find((player) => player.name === 'Grace')?.connected, true);
 
-  resetHostSocket = await openSocket(baseUrl, hostAccount.cookie);
-  resetHostSocket.send(JSON.stringify({ type: 'create-room', name: 'Reset Host' }));
-  const resetHostJoined = await waitForMessage(resetHostSocket, (message) => message.type === 'joined', 'reset host join');
+  resetHostSocket = await openSocket(baseUrl, hostAccount.cookie, 'reset host');
+  const resetHostJoined = await sendAdmission(
+    resetHostSocket,
+    { type: 'create-room', name: 'Reset Host' },
+    'reset host snapshot'
+  );
   const resetOldRoomCode = resetHostJoined.room.code;
-  resetGuestSocket = await openSocket(baseUrl, guestAccount.cookie);
-  resetGuestSocket.send(JSON.stringify({ type: 'join-room', code: resetOldRoomCode, name: 'Reset Guest' }));
-  await waitForMessage(resetGuestSocket, (message) => message.type === 'joined', 'reset guest join');
-  const resetNewHostRoomPromise = waitForMessage(resetHostSocket, (message) => message.type === 'joined', 'host reset to new room');
-  const resetGuestNoticePromise = waitForMessage(resetGuestSocket, (message) => message.type === 'room-reset', 'guest reset notice');
-  resetHostSocket.send(JSON.stringify({ type: 'reset-room' }));
-  const [resetNewHostRoom, resetGuestNotice] = await Promise.all([resetNewHostRoomPromise, resetGuestNoticePromise]);
+  resetGuestSocket = await openSocket(baseUrl, guestAccount.cookie, 'reset guest');
+  await sendAdmission(
+    resetGuestSocket,
+    { type: 'join-room', code: resetOldRoomCode, name: 'Reset Guest' },
+    'reset guest snapshot'
+  );
+  const resetGuestNoticePromise = waitForMessage(
+    resetGuestSocket,
+    (message) => message.type === 'error' && message.code === 'room-reset',
+    'guest reset notice'
+  );
+  const resetNewHostRoom = (await sendCommand(resetHostSocket, { type: 'reset-room' }, 'room reset')).snapshot;
+  const resetGuestNotice = await resetGuestNoticePromise;
   assert.notEqual(resetNewHostRoom.room.code, resetOldRoomCode, 'reset creates a fresh room code');
   assert.equal(resetNewHostRoom.room.status, 'waiting');
   assert.equal(resetNewHostRoom.room.players.length, 1, 'fresh reset room starts with the host only');
   assert.match(resetGuestNotice.message, /new room link/i);
-  resetShareGuestSocket = await openSocket(baseUrl, guestAccount.cookie);
-  resetShareGuestSocket.send(JSON.stringify({ type: 'join-room', code: resetNewHostRoom.room.code, name: 'Shared Link Guest' }));
-  const resetShareGuestJoined = await waitForMessage(
+  resetShareGuestSocket = await openSocket(baseUrl, guestAccount.cookie, 'reset share guest');
+  const resetShareGuestJoined = await sendAdmission(
     resetShareGuestSocket,
-    (message) => message.type === 'joined',
+    { type: 'join-room', code: resetNewHostRoom.room.code, name: 'Shared Link Guest' },
     'share guest joins reset room'
   );
   assert.equal(resetShareGuestJoined.room.code, resetNewHostRoom.room.code);
   assert.equal(resetShareGuestJoined.room.players.find((player) => player.name === 'Grace')?.connected, true);
 
-  hostSocket = await openSocket(baseUrl, hostAccount.cookie);
-  hostSocket.send(JSON.stringify({ type: 'create-room', name: 'Ada' }));
-  const hostJoined = await waitForMessage(hostSocket, (message) => message.type === 'joined', 'host join');
+  hostSocket = await openSocket(baseUrl, hostAccount.cookie, 'main host');
+  const hostJoined = await sendAdmission(
+    hostSocket,
+    { type: 'create-room', name: 'Ada' },
+    'host room snapshot'
+  );
   const roomCode = hostJoined.room.code;
   assert.deepEqual(hostJoined.room.chatMessages, []);
 
-  guestSocket = await openSocket(baseUrl, guestAccount.cookie);
-  guestSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Grace' }));
-  const guestJoined = await waitForMessage(guestSocket, (message) => message.type === 'joined', 'guest join');
+  guestSocket = await openSocket(baseUrl, guestAccount.cookie, 'main guest');
+  const guestJoined = await sendAdmission(
+    guestSocket,
+    { type: 'join-room', code: roomCode, name: 'Grace' },
+    'guest room snapshot'
+  );
+  await waitForSocketRevision(hostSocket, guestJoined.revision, 'host sees guest admission');
+
+  const hostBeforeLegacy = socketState(hostSocket);
+  const legacyRevision = hostBeforeLegacy.revision;
+  const legacyRoomBytes = JSON.stringify(hostBeforeLegacy.room);
+  const legacyFrameStart = hostBeforeLegacy.received.length;
+  const upgradePromise = waitForMessage(
+    hostSocket,
+    (message) => message.type === 'upgrade-required',
+    'legacy update-state rejection'
+  );
+  hostSocket.send(JSON.stringify({
+    type: 'update-state',
+    state: { status: 'forged', revision: legacyRevision + 100 }
+  }));
+  const upgradeRequired = await upgradePromise;
+  assert.equal(upgradeRequired.protocolVersion, MULTIPLAYER_PROTOCOL_VERSION);
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  const legacyFrames = socketState(hostSocket).received.slice(legacyFrameStart);
+  assert.equal(legacyFrames.filter((message) => message.type === 'upgrade-required').length, 1);
+  assert.equal(legacyFrames.some((message) => publicSnapshotFrame(message) || message.type === 'ack'), false);
+  assert.equal(socketState(hostSocket).revision, legacyRevision, 'legacy state write cannot mutate revision');
+  assert.equal(JSON.stringify(socketState(hostSocket).room), legacyRoomBytes, 'legacy state write cannot mutate room');
 
   const guestAwayPromise = waitForMessage(
     hostSocket,
-    (message) => message.type === 'room' && message.room.players.find((player) => player.id === guestJoined.playerId)?.connected === false,
+    (message) => publicSnapshotFrame(message) && message.room.players.find((player) => player.id === guestJoined.playerId)?.connected === false,
     'guest away presence'
   );
-  guestSocket.send(JSON.stringify({ type: 'set-presence', visible: false }));
+  guestSocket.send(JSON.stringify({ type: 'set-presence', protocolVersion: MULTIPLAYER_PROTOCOL_VERSION, visible: false }));
   const guestAwayRoom = await guestAwayPromise;
   assert.equal(guestAwayRoom.room.players.find((player) => player.id === guestJoined.playerId)?.connected, false);
 
   const guestOnlinePromise = waitForMessage(
     hostSocket,
-    (message) => message.type === 'room' && message.room.players.find((player) => player.id === guestJoined.playerId)?.connected === true,
+    (message) => publicSnapshotFrame(message) && message.room.players.find((player) => player.id === guestJoined.playerId)?.connected === true,
     'guest online presence'
   );
-  guestSocket.send(JSON.stringify({ type: 'set-presence', visible: true }));
+  guestSocket.send(JSON.stringify({ type: 'set-presence', protocolVersion: MULTIPLAYER_PROTOCOL_VERSION, visible: true }));
   const guestOnlineRoom = await guestOnlinePromise;
   assert.equal(guestOnlineRoom.room.players.find((player) => player.id === guestJoined.playerId)?.connected, true);
 
-  const hostRoomPromise = waitForMessage(
-    hostSocket,
-    (message) => message.type === 'room' && message.room.chatMessages?.length === 1,
-    'host chat broadcast'
-  );
+  await waitForSocketRevision(guestSocket, socketState(hostSocket).revision, 'guest catches up before chat');
+  const chatRevision = socketState(hostSocket).revision + 1;
   const guestRoomPromise = waitForMessage(
     guestSocket,
-    (message) => message.type === 'room' && message.room.chatMessages?.length === 1,
+    (message) => publicSnapshotFrame(message) && message.revision === chatRevision && message.room.chatMessages?.length === 1,
     'guest chat broadcast'
   );
-  hostSocket.send(JSON.stringify({ type: 'send-chat-message', text: '  Good luck   everyone  ' }));
-  const [hostRoom, guestRoom] = await Promise.all([hostRoomPromise, guestRoomPromise]);
+  const hostRoom = (
+    await sendCommand(
+      hostSocket,
+      { type: 'send-chat-message', text: '  Good luck   everyone  ' },
+      'room chat'
+    )
+  ).snapshot;
+  const guestRoom = await guestRoomPromise;
   const chatMessage = hostRoom.room.chatMessages[0];
   assert.equal(chatMessage.playerId, hostJoined.playerId);
   assert.equal(chatMessage.playerName, 'Ada Prime');
   assert.equal(chatMessage.text, 'Good luck everyone');
   assert.equal(guestRoom.room.chatMessages[0].id, chatMessage.id);
 
-  reconnectSocket = await openSocket(baseUrl, hostAccount.cookie);
-  reconnectSocket.send(JSON.stringify({ type: 'join-room', code: roomCode, name: 'Ada Prime', playerId: hostJoined.playerId }));
-  const reconnectJoined = await waitForMessage(reconnectSocket, (message) => message.type === 'joined', 'reconnect join');
+  reconnectSocket = await openSocket(baseUrl, hostAccount.cookie, 'reconnected host');
+  const reconnectJoined = await sendAdmission(
+    reconnectSocket,
+    { type: 'join-room', code: roomCode, name: 'Ada Prime', playerId: hostJoined.playerId },
+    'reconnect snapshot'
+  );
   assert.equal(reconnectJoined.playerId, hostJoined.playerId);
   assert.equal(reconnectJoined.room.chatMessages[0].text, 'Good luck everyone');
 
-  hostSocket.send(JSON.stringify({ type: 'start-game' }));
-  let roomState = (await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.state, 'started game')).room.state;
+  let gameRoom = (await sendCommand(hostSocket, { type: 'start-game' }, 'start game')).snapshot.room;
+  assert.ok(gameRoom.state, 'start-game returns authoritative game state');
   const socketsByPlayerId = new Map([
     [hostJoined.playerId, hostSocket],
     [guestJoined.playerId, guestSocket]
   ]);
-  roomState = await playUntilScoring(socketsByPlayerId, roomState);
-  const expectedNewRound = roomState.phase === 'round-over' ? roomState.round + 1 : 1;
+  gameRoom = await playUntilScoring(socketsByPlayerId, gameRoom);
+  await waitForSocketRevision(hostSocket, gameRoom.revision, 'host sees scoring state');
+  const expectedNewRound = gameRoom.state.phase === 'round-over' ? gameRoom.state.round + 1 : 1;
 
-  hostSocket.send(JSON.stringify({ type: 'start-game' }));
-  const unreadyError = await waitForMessage(hostSocket, (message) => message.type === 'error', 'unready next round rejection');
+  const unreadyError = await sendCommandExpectError(hostSocket, { type: 'start-game' }, 'unready next round');
   assert.match(unreadyError.message, /everyone must confirm/i);
 
-  hostSocket.send(JSON.stringify({ type: 'set-next-round-ready', ready: true }));
-  await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.readyForNextRoundPlayerIds?.length === 1, 'host ready');
-  hostSocket.send(JSON.stringify({ type: 'start-game' }));
-  const partiallyReadyError = await waitForMessage(hostSocket, (message) => message.type === 'error', 'partially ready next round rejection');
+  gameRoom = (
+    await sendCommand(hostSocket, { type: 'set-next-round-ready', ready: true }, 'host ready')
+  ).snapshot.room;
+  assert.deepEqual(gameRoom.readyForNextRoundPlayerIds, [hostJoined.playerId]);
+  const partiallyReadyError = await sendCommandExpectError(hostSocket, { type: 'start-game' }, 'partially ready next round');
   assert.match(partiallyReadyError.message, /everyone must confirm/i);
 
-  guestSocket.send(JSON.stringify({ type: 'set-next-round-ready', ready: true }));
-  await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.readyForNextRoundPlayerIds?.length === 2, 'all ready');
-  hostSocket.send(JSON.stringify({ type: 'start-game' }));
-  const nextRound = await waitForMessage(
-    hostSocket,
-    (message) => message.type === 'room' && message.room.state?.round === expectedNewRound,
-    'next round after ready'
-  );
+  await waitForSocketRevision(guestSocket, gameRoom.revision, 'guest sees host ready');
+  const guestReady = await sendCommand(guestSocket, { type: 'set-next-round-ready', ready: true }, 'guest ready');
+  await waitForSocketRevision(hostSocket, guestReady.snapshot.revision, 'host sees all ready');
+  assert.equal(socketState(hostSocket).room.readyForNextRoundPlayerIds.length, 2);
+  const nextRound = (await sendCommand(hostSocket, { type: 'start-game' }, 'next round after ready')).snapshot;
+  assert.equal(nextRound.room.state?.round, expectedNewRound);
   assert.equal(nextRound.room.readyForNextRoundPlayerIds.length, 0);
-  roomState = nextRound.room.state;
+  gameRoom = nextRound.room;
 
-  for (let round = 0; round < 12 && roomState.phase !== 'game-over'; round += 1) {
-    roomState = await playUntilScoring(socketsByPlayerId, roomState);
-    if (roomState.phase === 'game-over') break;
-    const nextExpectedRound = roomState.round + 1;
-    hostSocket.send(JSON.stringify({ type: 'set-next-round-ready', ready: true }));
-    await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.readyForNextRoundPlayerIds?.includes(hostJoined.playerId), 'host ready for stats loop');
-    guestSocket.send(JSON.stringify({ type: 'set-next-round-ready', ready: true }));
-    await waitForMessage(hostSocket, (message) => message.type === 'room' && message.room.readyForNextRoundPlayerIds?.length === 2, 'all ready for stats loop');
-    hostSocket.send(JSON.stringify({ type: 'start-game' }));
-    roomState = (
-      await waitForMessage(
-        hostSocket,
-        (message) => message.type === 'room' && message.room.state?.round === nextExpectedRound,
-        'next round in stats loop'
-      )
-    ).room.state;
+  for (let round = 0; round < 12 && gameRoom.state.phase !== 'game-over'; round += 1) {
+    gameRoom = await playUntilScoring(socketsByPlayerId, gameRoom);
+    if (gameRoom.state.phase === 'game-over') break;
+    const nextExpectedRound = gameRoom.state.round + 1;
+    await waitForSocketRevision(hostSocket, gameRoom.revision, 'host sees round scoring');
+    const hostReady = await sendCommand(
+      hostSocket,
+      { type: 'set-next-round-ready', ready: true },
+      'host ready for stats loop'
+    );
+    await waitForSocketRevision(guestSocket, hostReady.snapshot.revision, 'guest sees host ready for stats loop');
+    const allReady = await sendCommand(
+      guestSocket,
+      { type: 'set-next-round-ready', ready: true },
+      'all ready for stats loop'
+    );
+    await waitForSocketRevision(hostSocket, allReady.snapshot.revision, 'host sees all ready for stats loop');
+    gameRoom = (
+      await sendCommand(hostSocket, { type: 'start-game' }, 'next round in stats loop')
+    ).snapshot.room;
+    assert.equal(gameRoom.state?.round, nextExpectedRound);
   }
-  assert.equal(roomState.phase, 'game-over', 'scripted multiplayer should eventually save a completed game');
+  assert.equal(gameRoom.state.phase, 'game-over', 'scripted multiplayer should eventually save a completed game');
+  assert.ok(privacyEvidence.snapshots > 0, 'the smoke inspects authoritative public snapshots');
+  assert.ok(privacyEvidence.drawerBlindFrames > 0, 'the smoke observes drawer-only blind values');
+  assert.ok(privacyEvidence.nonDrawerBlindFrames > 0, 'the smoke proves blind values are absent for non-drawers');
 
   const hostStats = await getJson(baseUrl, hostAccount.cookie, '/api/stats/summary');
   assert.equal(hostStats.self.singlePlayerGames >= 1, true, 'logged-in single-player stats are saved');
