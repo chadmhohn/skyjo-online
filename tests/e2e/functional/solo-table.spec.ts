@@ -1,6 +1,342 @@
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
 import type { Page } from '@playwright/test';
 
+type Viewport = { width: number; height: number };
+
+type ResponsiveGeometrySnapshot = {
+  centerBandCenterY: number;
+  centerBandHeight: number;
+  centerBandTop: number;
+  centerDeltaX: number;
+  centerDeltaY: number;
+  compactMediaMatches: boolean;
+  compactViewportFits: boolean;
+  firstSeatCenterDelta: number;
+  fontStatus: string;
+  headerNoOverlap: boolean;
+  headingNotClipped: boolean;
+  headingText: string;
+  localBottom: number;
+  narrowMediaMatches: boolean;
+  noOverlap: boolean;
+  opponentClientWidth: number;
+  opponentOuterGapDelta: number;
+  opponentScrollWidth: number;
+  opponentTop: number;
+  pageScrollWidth: number;
+  phoneGuidanceVisible: boolean;
+  phoneMediaMatches: boolean;
+  pilesCenterX: number;
+  playerCount?: string;
+  seatWidthSpread: number;
+  seatWidths: number[];
+  statusOwnRow: boolean;
+  tableCenterY: number;
+  tableHeight: number;
+  tableWidth: number;
+  viewportHeight: number;
+  viewportWidth: number;
+};
+
+type ResponsiveGeometryCriterion = {
+  id: string;
+  message: string;
+  passes: boolean;
+};
+
+async function readResponsiveGeometry(page: Page): Promise<ResponsiveGeometrySnapshot> {
+  return page.getByTestId('shared-game-table').evaluate((tableElement): ResponsiveGeometrySnapshot => {
+    const centerBand = tableElement.querySelector<HTMLElement>('[data-testid="table-center-band"]');
+    const opponentRail = tableElement.querySelector<HTMLElement>('[data-testid="opponent-rail"]');
+    const localBoard = tableElement.querySelector<HTMLElement>('[data-testid="local-board"]');
+    const tablePiles = tableElement.querySelector<HTMLElement>('[data-testid="table-piles"]');
+    const heading = document.querySelector<HTMLElement>('.skyjo-game-title');
+    const headerControls = document.querySelector<HTMLElement>('.skyjo-header-controls');
+    const gameStatus = document.querySelector<HTMLElement>('.skyjo-game-status');
+    if (!centerBand || !opponentRail || !localBoard || !tablePiles || !heading || !headerControls) {
+      throw new Error('Missing responsive table geometry anchor.');
+    }
+
+    const rounded = (value: number) => Math.round(value * 100) / 100;
+    const rect = (element: Element) => {
+      const value = element.getBoundingClientRect();
+      return {
+        bottom: rounded(value.bottom),
+        height: rounded(value.height),
+        left: rounded(value.left),
+        right: rounded(value.right),
+        top: rounded(value.top),
+        width: rounded(value.width)
+      };
+    };
+    const tableRect = rect(tableElement);
+    const centerBandRect = rect(centerBand);
+    const opponentRect = rect(opponentRail);
+    const localRect = rect(localBoard);
+    const pilesRect = rect(tablePiles);
+    const headingRect = rect(heading);
+    const headerControlsRect = rect(headerControls);
+    const gameStatusRect = gameStatus ? rect(gameStatus) : null;
+    const seats = Array.from(opponentRail.querySelectorAll('[data-player-role="opponent"]')).map(rect);
+    const seatWidths = seats.map((seat) => seat.width);
+    const firstSeat = seats[0];
+    const lastSeat = seats.at(-1);
+
+    return {
+      centerBandCenterY: rounded(centerBandRect.top + centerBandRect.height / 2),
+      centerBandHeight: centerBandRect.height,
+      centerBandTop: centerBandRect.top,
+      centerDeltaX: rounded(
+        Math.abs(pilesRect.left + pilesRect.width / 2 - (tableRect.left + tableRect.width / 2))
+      ),
+      centerDeltaY: rounded(
+        Math.abs(centerBandRect.top + centerBandRect.height / 2 - (tableRect.top + tableRect.height / 2))
+      ),
+      compactMediaMatches: window.matchMedia('(min-width: 641px) and (max-height: 900px)').matches,
+      compactViewportFits: opponentRect.top >= -0.5 && localRect.bottom <= window.innerHeight + 1,
+      firstSeatCenterDelta: firstSeat
+        ? rounded(Math.abs(firstSeat.left + firstSeat.width / 2 - (opponentRect.left + opponentRect.width / 2)))
+        : 0,
+      fontStatus: document.fonts.status,
+      headerNoOverlap:
+        headingRect.right <= headerControlsRect.left + 0.5 ||
+        headingRect.bottom <= headerControlsRect.top + 0.5 ||
+        headerControlsRect.bottom <= headingRect.top + 0.5,
+      headingNotClipped: heading.scrollWidth <= heading.clientWidth + 1,
+      headingText: heading.textContent?.trim() || '',
+      localBottom: localRect.bottom,
+      narrowMediaMatches: window.matchMedia('(max-width: 900px)').matches,
+      noOverlap: opponentRect.bottom <= centerBandRect.top + 0.5 && centerBandRect.bottom <= localRect.top + 0.5,
+      opponentClientWidth: opponentRail.clientWidth,
+      opponentOuterGapDelta:
+        firstSeat && lastSeat
+          ? rounded(Math.abs(firstSeat.left - opponentRect.left - (opponentRect.right - lastSeat.right)))
+          : 0,
+      opponentScrollWidth: opponentRail.scrollWidth,
+      opponentTop: opponentRect.top,
+      pageScrollWidth: document.documentElement.scrollWidth,
+      phoneGuidanceVisible: Boolean(document.querySelector('.skyjo-phone-action-guidance')),
+      phoneMediaMatches: window.matchMedia('(max-width: 640px)').matches,
+      pilesCenterX: rounded(pilesRect.left + pilesRect.width / 2),
+      playerCount: tableElement.dataset.playerCount,
+      seatWidthSpread: seatWidths.length > 1 ? rounded(Math.max(...seatWidths) - Math.min(...seatWidths)) : 0,
+      seatWidths,
+      statusOwnRow:
+        !gameStatusRect || gameStatusRect.top >= Math.max(headingRect.bottom, headerControlsRect.bottom) - 0.5,
+      tableCenterY: rounded(tableRect.top + tableRect.height / 2),
+      tableHeight: tableRect.height,
+      tableWidth: tableRect.width,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  });
+}
+
+function responsiveGeometryCriteria(
+  geometry: ResponsiveGeometrySnapshot,
+  viewport: Viewport,
+  playerCount: number
+): ResponsiveGeometryCriterion[] {
+  const expectedPhone = viewport.width <= 640;
+  const expectedNarrow = viewport.width <= 900;
+  const expectedCompact = viewport.width >= 641 && viewport.height <= 900;
+  const expectedCenterBandHeight = expectedPhone ? 100 : expectedCompact ? 150 : null;
+  const centerTolerance = expectedPhone ? 8 : 16;
+  const details = JSON.stringify(geometry);
+  const criteria: ResponsiveGeometryCriterion[] = [
+    {
+      id: 'viewport-width',
+      message: `${playerCount} players should settle at ${viewport.width}px wide: ${details}`,
+      passes: geometry.viewportWidth === viewport.width
+    },
+    {
+      id: 'viewport-height',
+      message: `${playerCount} players should settle at ${viewport.height}px high: ${details}`,
+      passes: geometry.viewportHeight === viewport.height
+    },
+    {
+      id: 'phone-media',
+      message: `${viewport.width}px phone media state should settle: ${details}`,
+      passes: geometry.phoneMediaMatches === expectedPhone
+    },
+    {
+      id: 'narrow-media',
+      message: `${viewport.width}px narrow media state should settle: ${details}`,
+      passes: geometry.narrowMediaMatches === expectedNarrow
+    },
+    {
+      id: 'compact-media',
+      message: `${viewport.width}x${viewport.height} compact media state should settle: ${details}`,
+      passes: geometry.compactMediaMatches === expectedCompact
+    },
+    {
+      id: 'phone-guidance',
+      message: `${viewport.width}px phone guidance state should settle: ${details}`,
+      passes: geometry.phoneGuidanceVisible === expectedPhone
+    },
+    {
+      id: 'player-count',
+      message: `${playerCount}-player roster should settle: ${details}`,
+      passes: geometry.playerCount === String(playerCount)
+    },
+    {
+      id: 'fonts-loaded',
+      message: `fonts should finish loading before geometry is accepted: ${details}`,
+      passes: geometry.fontStatus === 'loaded'
+    },
+    {
+      id: 'center-x',
+      message: `${playerCount} players at ${viewport.width}px center x should be <= ${centerTolerance}: ${details}`,
+      passes: geometry.centerDeltaX <= centerTolerance
+    },
+    {
+      id: 'center-y',
+      message: `${playerCount} players at ${viewport.width}px center y should be <= ${centerTolerance}: ${details}`,
+      passes: geometry.centerDeltaY <= centerTolerance
+    },
+    {
+      id: 'rail-band-board-overlap',
+      message: `${playerCount} players at ${viewport.width}px should not overlap: ${details}`,
+      passes: geometry.noOverlap
+    },
+    {
+      id: 'heading-text',
+      message: `the game heading should remain intact at ${viewport.width}px: ${details}`,
+      passes: geometry.headingText === 'Single Player'
+    },
+    {
+      id: 'heading-clipping',
+      message: `the game heading should not clip at ${viewport.width}px: ${details}`,
+      passes: geometry.headingNotClipped
+    },
+    {
+      id: 'header-overlap',
+      message: `the heading and controls should not overlap at ${viewport.width}px: ${details}`,
+      passes: geometry.headerNoOverlap
+    },
+    {
+      id: 'status-row',
+      message: `the status should remain on its own row at ${viewport.width}px: ${details}`,
+      passes: geometry.statusOwnRow
+    },
+    {
+      id: 'page-containment',
+      message: `${playerCount} players at ${viewport.width}px should not cause horizontal page scroll: ${details}`,
+      passes: geometry.pageScrollWidth <= geometry.viewportWidth + 1
+    },
+    {
+      id: 'seat-width-symmetry',
+      message: `${playerCount} players at ${viewport.width}px should use symmetric seat widths: ${details}`,
+      passes: geometry.seatWidthSpread <= 2
+    }
+  ];
+
+  if (expectedCenterBandHeight !== null) {
+    criteria.push({
+      id: 'settled-center-band-height',
+      message: `${playerCount} players at ${viewport.width}x${viewport.height} should settle to a ${expectedCenterBandHeight}px center band: ${details}`,
+      passes: Math.abs(geometry.centerBandHeight - expectedCenterBandHeight) <= 0.05
+    });
+  }
+  if (expectedPhone) {
+    criteria.push(
+      {
+        id: 'phone-center-band-minimum',
+        message: `${playerCount} players at ${viewport.width}x${viewport.height} should keep at least a 90px center band: ${details}`,
+        passes: geometry.centerBandHeight >= 90
+      },
+      {
+        id: 'phone-center-band-maximum',
+        message: `${playerCount} players at ${viewport.width}x${viewport.height} should keep at most a 110px center band: ${details}`,
+        passes: geometry.centerBandHeight <= 110
+      }
+    );
+  }
+  if (expectedCompact) {
+    criteria.push({
+      id: 'compact-viewport-fit',
+      message: `${playerCount} players at ${viewport.width}x${viewport.height} should fit vertically: ${details}`,
+      passes: geometry.compactViewportFits
+    });
+  }
+  if (playerCount === 2) {
+    criteria.push({
+      id: 'single-opponent-centering',
+      message: `the single opponent should remain centered at ${viewport.width}px: ${details}`,
+      passes: geometry.firstSeatCenterDelta <= 2
+    });
+  }
+  if (playerCount === 3) {
+    criteria.push({
+      id: 'opponent-outer-gap-symmetry',
+      message: `the opponent outer gaps should remain symmetric at ${viewport.width}px: ${details}`,
+      passes: geometry.opponentOuterGapDelta <= 2
+    });
+  }
+  if (playerCount === 8 || (playerCount === 4 && expectedNarrow)) {
+    criteria.push({
+      id: 'opponent-rail-scroll',
+      message: `${playerCount} players at ${viewport.width}px should retain opponent-rail scrolling: ${details}`,
+      passes: geometry.opponentScrollWidth > geometry.opponentClientWidth + 1
+    });
+  }
+
+  return criteria;
+}
+
+function assertResponsiveGeometry(geometry: ResponsiveGeometrySnapshot, viewport: Viewport, playerCount: number) {
+  for (const criterion of responsiveGeometryCriteria(geometry, viewport, playerCount)) {
+    expect(criterion.passes, criterion.message).toBe(true);
+  }
+}
+
+async function settleResponsiveTable(
+  page: Page,
+  viewport: Viewport,
+  playerCount: number
+): Promise<ResponsiveGeometrySnapshot> {
+  await page.setViewportSize(viewport);
+  const table = page.getByTestId('shared-game-table');
+  await expect(table).toHaveAttribute('data-player-count', String(playerCount));
+  const requiredStableSamples = 4;
+  let lastSample: ResponsiveGeometrySnapshot | undefined;
+  let previousSignature = '';
+  let stableSamples = 0;
+
+  await expect
+    .poll(
+      async () => {
+        const current = await readResponsiveGeometry(page);
+        lastSample = current;
+        const criteria = responsiveGeometryCriteria(current, viewport, playerCount);
+        const failedCriteria = criteria.filter((criterion) => !criterion.passes).map((criterion) => criterion.id);
+        const responsiveGeometryAccepted = failedCriteria.length === 0;
+        const signature = JSON.stringify(current);
+        stableSamples = responsiveGeometryAccepted
+          ? signature === previousSignature
+            ? Math.min(stableSamples + 1, requiredStableSamples)
+            : 1
+          : 0;
+        previousSignature = signature;
+        return { failedCriteria, responsiveGeometryAccepted, stableSamples, sample: current };
+      },
+      {
+        intervals: [25, 50, 100, 250],
+        message: `responsive table should settle at ${viewport.width}x${viewport.height}`,
+        timeout: 7_500
+      }
+    )
+    .toMatchObject({
+      failedCriteria: [],
+      responsiveGeometryAccepted: true,
+      stableSamples: requiredStableSamples
+    });
+
+  if (!lastSample) throw new Error('Responsive table settlement produced no sample.');
+  assertResponsiveGeometry(lastSample, viewport, playerCount);
+  return lastSample;
+}
+
 async function configureSoloRoster(page: Page, playerCount: number) {
   await page.getByRole('button', { name: 'Open game settings' }).click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
@@ -228,100 +564,39 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
     await configureSoloRoster(page, playerCount);
 
     for (const viewport of viewports) {
-      await page.setViewportSize(viewport);
-      await page.evaluate(
-        () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
-      );
-      const geometry = await page.getByTestId('shared-game-table').evaluate((table) => {
-        const rect = (element: Element | null) => {
-          if (!element) throw new Error('Missing centered-table geometry anchor.');
-          const value = element.getBoundingClientRect();
-          return { x: value.x, y: value.y, width: value.width, height: value.height, top: value.top, right: value.right, bottom: value.bottom, left: value.left };
-        };
-        const opponentRail = table.querySelector('[data-testid="opponent-rail"]');
-        const centerBand = table.querySelector('[data-testid="table-center-band"]');
-        const tablePiles = table.querySelector('[data-testid="table-piles"]');
-        const localBoard = table.querySelector('[data-testid="local-board"]');
-        const heading = document.querySelector('.skyjo-game-title') as HTMLElement | null;
-        const headerControls = document.querySelector('.skyjo-header-controls');
-        const gameStatus = document.querySelector('.skyjo-game-status');
-        const seats = Array.from(opponentRail?.querySelectorAll('[data-player-role="opponent"]') || []).map(rect);
-        const tableRect = rect(table);
-        const opponentRect = rect(opponentRail);
-        const centerBandRect = rect(centerBand);
-        const pilesRect = rect(tablePiles);
-        const localRect = rect(localBoard);
-        const headingRect = rect(heading);
-        const headerControlsRect = rect(headerControls);
-        const gameStatusRect = gameStatus ? rect(gameStatus) : null;
-        const firstSeat = seats[0];
-        const lastSeat = seats.at(-1);
-        return {
-          centerDeltaX: Math.abs(pilesRect.left + pilesRect.width / 2 - (tableRect.left + tableRect.width / 2)),
-          centerDeltaY: Math.abs(centerBandRect.top + centerBandRect.height / 2 - (tableRect.top + tableRect.height / 2)),
-          centerBandHeight: centerBandRect.height,
-          compactViewportFits: opponentRect.top >= -0.5 && localRect.bottom <= window.innerHeight + 1,
-          localBottom: localRect.bottom,
-          opponentTop: opponentRect.top,
-          firstSeatCenterDelta: firstSeat
-            ? Math.abs(firstSeat.left + firstSeat.width / 2 - (opponentRect.left + opponentRect.width / 2))
-            : 0,
-          opponentOuterGapDelta:
-            firstSeat && lastSeat
-              ? Math.abs(firstSeat.left - opponentRect.left - (opponentRect.right - lastSeat.right))
-              : 0,
-          noOverlap: opponentRect.bottom <= centerBandRect.top + 0.5 && centerBandRect.bottom <= localRect.top + 0.5,
-          headingText: heading?.textContent?.trim(),
-          headingNotClipped: Boolean(heading && heading.scrollWidth <= heading.clientWidth + 1),
-          headerNoOverlap:
-            headingRect.right <= headerControlsRect.left + 0.5 ||
-            headingRect.bottom <= headerControlsRect.top + 0.5 ||
-            headerControlsRect.bottom <= headingRect.top + 0.5,
-          statusOwnRow:
-            !gameStatusRect || gameStatusRect.top >= Math.max(headingRect.bottom, headerControlsRect.bottom) - 0.5,
-          opponentClientWidth: (opponentRail as HTMLElement).clientWidth,
-          opponentScrollWidth: (opponentRail as HTMLElement).scrollWidth,
-          pageScrollWidth: document.documentElement.scrollWidth,
-          seatWidths: seats.map((seat) => seat.width),
-          viewportHeight: window.innerHeight,
-          viewportWidth: window.innerWidth
-        };
-      });
-
-      const tolerance = viewport.width <= 640 ? 8 : 16;
-      expect(geometry.centerDeltaX, `${playerCount} players at ${viewport.width}px center x`).toBeLessThanOrEqual(tolerance);
-      expect(geometry.centerDeltaY, `${playerCount} players at ${viewport.width}px center y`).toBeLessThanOrEqual(tolerance);
-      expect(geometry.noOverlap, `${playerCount} players at ${viewport.width}px overlap`).toBe(true);
-      expect(geometry.headingText).toBe('Single Player');
-      expect(geometry.headingNotClipped, `${viewport.width}px heading clipping`).toBe(true);
-      expect(geometry.headerNoOverlap, `${viewport.width}px header overlap`).toBe(true);
-      expect(geometry.statusOwnRow, `${viewport.width}px status row`).toBe(true);
-      expect(geometry.pageScrollWidth, `${playerCount} players at ${viewport.width}px page scroll`).toBeLessThanOrEqual(
-        geometry.viewportWidth + 1
-      );
-      expect(Math.max(...geometry.seatWidths) - Math.min(...geometry.seatWidths)).toBeLessThanOrEqual(2);
-
-      if (viewport.width <= 640) {
-        expect(
-          geometry.centerBandHeight,
-          `${playerCount} players at ${viewport.width}x${viewport.height} center band: ${JSON.stringify(geometry)}`
-        ).toBeGreaterThanOrEqual(90);
-        expect(
-          geometry.centerBandHeight,
-          `${playerCount} players at ${viewport.width}x${viewport.height} center band: ${JSON.stringify(geometry)}`
-        ).toBeLessThanOrEqual(110);
-      }
-      if (viewport.width > 640 && viewport.height <= 900) {
-        expect(
-          geometry.compactViewportFits,
-          `${playerCount} players at ${viewport.width}x${viewport.height}: opponentTop=${geometry.opponentTop}, localBottom=${geometry.localBottom}, viewportHeight=${geometry.viewportHeight}`
-        ).toBe(true);
-      }
-      if (playerCount === 2) expect(geometry.firstSeatCenterDelta).toBeLessThanOrEqual(2);
-      if (playerCount === 3) expect(geometry.opponentOuterGapDelta).toBeLessThanOrEqual(2);
-      if (playerCount === 8 || (playerCount === 4 && viewport.width <= 900)) {
-        expect(geometry.opponentScrollWidth).toBeGreaterThan(geometry.opponentClientWidth + 1);
-      }
+      await settleResponsiveTable(page, viewport, playerCount);
     }
   }
+});
+
+test.describe('responsive table settlement stress', () => {
+  test.describe.configure({ retries: 0 });
+
+  test('repeated desktop and phone transitions converge for every supported roster', async ({ page, skyjoServer }) => {
+    test.setTimeout(90_000);
+    await installSeededBrowserRuntime(page, 72);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.goto(`${skyjoServer.baseURL}/single-player`);
+    await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+
+    const compactDesktop = { width: 1180, height: 820 };
+    const phone = { width: 390, height: 844 };
+    const transitions = [compactDesktop, phone, compactDesktop, phone, compactDesktop];
+
+    for (const playerCount of [2, 3, 4, 8]) {
+      await configureSoloRoster(page, playerCount);
+      const samples = [];
+      for (const viewport of transitions) {
+        samples.push(await settleResponsiveTable(page, viewport, playerCount));
+      }
+
+      expect(samples.map((sample) => sample.centerBandHeight)).toEqual([150, 100, 150, 100, 150]);
+      expect(samples.map((sample) => sample.phoneMediaMatches)).toEqual([false, true, false, true, false]);
+      expect(samples.map((sample) => sample.compactMediaMatches)).toEqual([true, false, true, false, true]);
+      expect(samples.map((sample) => sample.phoneGuidanceVisible)).toEqual([false, true, false, true, false]);
+      expect(samples.map(({ viewportWidth, viewportHeight }) => [viewportWidth, viewportHeight])).toEqual(
+        transitions.map(({ width, height }) => [width, height])
+      );
+    }
+  });
 });
