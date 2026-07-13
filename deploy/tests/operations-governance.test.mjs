@@ -212,11 +212,20 @@ test('resolved readiness execution replaces the symlinked false-success with tru
     const launcher = await fs.readFile(path.join(deployRoot, 'skyjo-ops-launch'), 'utf8');
     const fixture = await createReadinessLauncherFixture(root, launcher);
     const symlinkedEntry = path.join(root, 'symlinked-monitor-readiness.mjs');
+    const falseOutput = path.join(root, 'false-success-evidence.json');
     await fs.symlink(path.join(repoRoot, 'scripts', 'monitor-readiness.mjs'), symlinkedEntry);
-    const falseSuccess = await execFileAsync(process.execPath, [symlinkedEntry, '--invalid-monitor-argument']);
+    const falseSuccess = await execFileAsync(process.execPath, [
+      symlinkedEntry,
+      '--monitor', 'local',
+      '--base-url', 'http://127.0.0.1:4180',
+      '--attempts', '1',
+      '--timeout-ms', '100',
+      '--output', falseOutput,
+      '--fail-unhealthy'
+    ]);
     assert.equal(falseSuccess.stdout, '');
     assert.equal(falseSuccess.stderr, '');
-    await assert.rejects(fs.stat(fixture.output), { code: 'ENOENT' });
+    await assert.rejects(fs.readFile(falseOutput, 'utf8'), { code: 'ENOENT' });
 
     const payload = {
       status: 'ready',
