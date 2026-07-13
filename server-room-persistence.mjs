@@ -86,7 +86,7 @@ function optionalTimestamp(value, fieldName) {
   return value;
 }
 
-function normalizePlayer(value, roomIndex, fallbackTimestamp) {
+function normalizePlayer(value, roomIndex, fallbackTimestamp, restoredAt = fallbackTimestamp) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} contains an invalid player.`);
   }
@@ -109,6 +109,10 @@ function normalizePlayer(value, roomIndex, fallbackTimestamp) {
     : boundedIdentifier(value.userId, `Room ${roomIndex} player user id`);
   const joinedAt = value.joinedAt === undefined ? fallbackTimestamp : optionalTimestamp(value.joinedAt, `Room ${roomIndex} player joinedAt`);
   const lastSeenAt = value.lastSeenAt === undefined ? fallbackTimestamp : optionalTimestamp(value.lastSeenAt, `Room ${roomIndex} player lastSeenAt`);
+  if (value.disconnectedAt !== undefined && value.disconnectedAt !== null &&
+      (!Number.isFinite(value.disconnectedAt) || value.disconnectedAt < 0)) {
+    throw formatError(`Room ${roomIndex} contains an invalid player disconnectedAt.`);
+  }
   if (value.controller !== undefined && value.controller !== 'human' && value.controller !== 'ai') {
     throw formatError(`Room ${roomIndex} contains an invalid player controller.`);
   }
@@ -120,6 +124,9 @@ function normalizePlayer(value, roomIndex, fallbackTimestamp) {
     host: value.host === true,
     joinedAt,
     lastSeenAt,
+    disconnectedAt: value.connected === true
+      ? restoredAt
+      : value.disconnectedAt ?? restoredAt,
     controller: value.controller || 'human'
   };
 }
@@ -263,7 +270,7 @@ function deriveLegacyGameSessionId({ code, hostId, players }) {
   return `legacy-${createHash('sha256').update(canonicalRoomIdentity).digest('hex')}`;
 }
 
-function normalizeRoom(value, roomIndex) {
+function normalizeRoom(value, roomIndex, restoredAt) {
   if (!isRecord(value)) {
     throw formatError(`Room ${roomIndex} must be an object.`);
   }
@@ -286,7 +293,7 @@ function normalizeRoom(value, roomIndex) {
     throw formatError(`Room ${roomIndex} has an invalid revision.`);
   }
 
-  const players = value.players.map((player) => normalizePlayer(player, roomIndex, updatedAt));
+  const players = value.players.map((player) => normalizePlayer(player, roomIndex, updatedAt, restoredAt));
   const playerIds = new Set(players.map((player) => player.id));
   const playersById = new Map(players.map((player) => [player.id, player]));
   if (playerIds.size !== players.length) {
@@ -345,6 +352,9 @@ function normalizeRoom(value, roomIndex) {
   }
 
   const state = normalizeRoomGameState(value.state, roomIndex, status, players, readyForNextRoundPlayerIds);
+  if (status === 'waiting' && players.some((player) => player.controller === 'ai')) {
+    throw formatError(`Room ${roomIndex} waiting room cannot contain an AI-controlled seat.`);
+  }
   if (value.completedGameId !== undefined && value.completedGameId !== null && typeof value.completedGameId !== 'string') {
     throw formatError(`Room ${roomIndex} completed game id must be a string or null.`);
   }
@@ -360,6 +370,9 @@ function normalizeRoom(value, roomIndex) {
       ? deriveLegacyGameSessionId({ code, hostId, players })
       : null
   );
+  if (value.finishedByAi !== undefined && typeof value.finishedByAi !== 'boolean') {
+    throw formatError(`Room ${roomIndex} contains an invalid finishedByAi state.`);
+  }
 
   return {
     roomVersion: 2,
@@ -376,6 +389,7 @@ function normalizeRoom(value, roomIndex) {
     updatedAt,
     completedGameId: optionalBoundedIdentifier(value.completedGameId, `Room ${roomIndex} completed game id`),
     gameSessionId,
+    finishedByAi: value.finishedByAi === true,
     revision,
     recentCommandIds,
     resetAliases,
@@ -505,7 +519,7 @@ export function normalizeRoomsDocument(value, options = {}) {
     throw formatError(`Room persistence document exceeds ${maxPersistedRooms} rooms.`);
   }
 
-  const normalizedRooms = document.rooms.map((room, index) => normalizeRoom(room, index));
+  const normalizedRooms = document.rooms.map((room, index) => normalizeRoom(room, index, now));
   const backfilledGameSessionId = normalizedRooms.some((room, index) => {
     const persistedGameSessionId = optionalBoundedIdentifier(
       document.rooms[index].gameSessionId,
@@ -513,6 +527,11 @@ export function normalizeRoomsDocument(value, options = {}) {
     );
     return room.gameSessionId !== persistedGameSessionId;
   });
+  const backfilledLifecycleAnchor = document.rooms.some((room) =>
+    Array.isArray(room.players) && room.players.some((player) =>
+      player.connected === true || player.disconnectedAt === undefined || player.disconnectedAt === null
+    )
+  );
   const roomCodes = new Set();
   for (const room of normalizedRooms) {
     if (roomCodes.has(room.code)) {
@@ -536,7 +555,7 @@ export function normalizeRoomsDocument(value, options = {}) {
 
   return {
     ...document,
-    legacy: document.legacy || backfilledGameSessionId,
+    legacy: document.legacy || backfilledGameSessionId || backfilledLifecycleAnchor,
     rooms: pruneStale ? normalizedRooms.filter((room) => room.updatedAt >= now - staleMs) : normalizedRooms
   };
 }
@@ -566,6 +585,9 @@ export function reconcileCompletedRoomJournals(rooms, findJournalBySourceKey) {
     if (completedAt === null) {
       throw formatError(`Room ${room.code} completion journal timestamp is missing.`, 'INVALID_COMPLETION_JOURNAL');
     }
+    if (typeof journal.finishedByAi !== 'boolean') {
+      throw formatError(`Room ${room.code} completion journal AI attribution is invalid.`, 'INVALID_COMPLETION_JOURNAL');
+    }
     let state;
     try {
       state = normalizePersistedGameState(journal.state, {
@@ -588,7 +610,7 @@ export function reconcileCompletedRoomJournals(rooms, findJournalBySourceKey) {
     }
 
     if (room.completedGameId === gameId) {
-      if (room.status !== 'finished' || !isDeepStrictEqual(room.state, state)) {
+      if (room.status !== 'finished' || !isDeepStrictEqual(room.state, state) || room.finishedByAi !== journal.finishedByAi) {
         throw formatError(`Room ${room.code} completed state conflicts with its journal.`, 'INVALID_COMPLETION_JOURNAL');
       }
       continue;
@@ -600,7 +622,8 @@ export function reconcileCompletedRoomJournals(rooms, findJournalBySourceKey) {
       room,
       state,
       gameId,
-      completedAt
+      completedAt,
+      finishedByAi: journal.finishedByAi
     });
   }
 
@@ -609,6 +632,7 @@ export function reconcileCompletedRoomJournals(rooms, findJournalBySourceKey) {
     plan.room.state = plan.state;
     plan.room.status = 'finished';
     plan.room.completedGameId = plan.gameId;
+    plan.room.finishedByAi = plan.finishedByAi;
     plan.room.readyForNextRoundPlayerIds = [];
     plan.room.updatedAt = Math.max(plan.room.updatedAt, plan.completedAt);
   }
@@ -632,9 +656,14 @@ export function serializeRoom(room) {
   }
   const resetAliasesForRetention = Array.isArray(room.resetAliases) ? room.resetAliases : [];
   const serializedPlayers = room.players.map((player) => ({
-    ...normalizePlayer(player, code, room.updatedAt),
+    ...normalizePlayer(player, code, room.updatedAt, room.updatedAt),
     connected: player.connected === true,
-    host: player.host === true
+    host: player.host === true,
+    disconnectedAt: player.connected === true
+      ? null
+      : player.disconnectedAt === undefined || player.disconnectedAt === null
+        ? player.lastSeenAt ?? room.updatedAt
+        : optionalTimestamp(player.disconnectedAt, `Room ${code} player disconnectedAt`)
   }));
   const playerIds = new Set(serializedPlayers.map((player) => player.id));
   if (playerIds.size !== serializedPlayers.length) throw formatError(`Room ${code} contains duplicate player ids.`);
@@ -682,6 +711,7 @@ export function serializeRoom(room) {
     updatedAt: room.updatedAt,
     completedGameId: optionalBoundedIdentifier(room.completedGameId, `Room ${code} completed game id`),
     gameSessionId: optionalBoundedIdentifier(room.gameSessionId, `Room ${code} game session id`),
+    finishedByAi: room.finishedByAi === true,
     revision: Number.isSafeInteger(room.revision) && room.revision >= 0 ? room.revision : 0,
     recentCommandIds,
     resetAliases: resetAliasesForRetention.length > 0

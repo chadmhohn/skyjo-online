@@ -133,6 +133,7 @@ describe('account and stats persistence', () => {
       sourceKey: input.sourceKey,
       roomCode: input.roomCode,
       completedAt: fixedNow,
+      finishedByAi: false,
       state: input.state
     });
     expect(store!.getCompletedGameJournalBySourceKey('multi:missing')).toBeNull();

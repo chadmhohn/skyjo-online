@@ -638,6 +638,104 @@ describe('protocol v2 room admission', () => {
   });
 });
 
+describe('protocol v2 resilient seat lifecycle commands', () => {
+  it('removes a waiting player terminally and never recreates a supplied stale seat', () => {
+    const value = harness();
+    const guest = socket(GUEST_ID, `${GUEST_ID}-account`, 'Guest');
+    value.room.clients.add(guest.socket);
+    value.room.chatMessages = [{ id: 'guest-chat', playerId: GUEST_ID, playerName: 'Guest', text: 'bye', createdAt: 100 }];
+    value.room.readyForNextRoundPlayerIds = [GUEST_ID];
+
+    value.handler(guest.socket, command({ type: 'leave-room' }));
+
+    expect(value.room.players.map((candidate) => candidate.id)).toEqual([HOST_ID]);
+    expect(value.room.chatMessages).toEqual([]);
+    expect(value.room.readyForNextRoundPlayerIds).toEqual([]);
+    expect(guest.socket).toMatchObject({ roomCode: null, playerId: null });
+    expect(value.calls.json.at(-1)).toMatchObject({
+      socket: guest.socket,
+      payload: { type: 'ack', commandId: COMMAND_ID, revision: 1, result: 'room-left' }
+    });
+
+    const reconnect = socket(GUEST_ID, `${GUEST_ID}-account`, 'Guest');
+    value.handler(reconnect.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      code: value.room.code,
+      name: 'Guest',
+      playerId: GUEST_ID
+    });
+    expect(value.room.players).toHaveLength(1);
+    expect(value.calls.json.at(-1)?.payload).toMatchObject({ code: 'stale-seat' });
+  });
+
+  it('lets the canonical host remove a non-host and purges every owned reference', () => {
+    const guestReceipt = receipt(
+      { type: 'send-chat-message', text: 'guest' },
+      { playerId: GUEST_ID, commandId: OTHER_COMMAND_ID }
+    );
+    const value = harness(room({
+      chatMessages: [{ id: 'guest-chat', playerId: GUEST_ID, playerName: 'Guest', text: 'guest', createdAt: 100 }],
+      readyForNextRoundPlayerIds: [GUEST_ID],
+      recentCommandIds: [guestReceipt],
+      resetAliases: [{ fromCode: 'OLD01', commandId: OTHER_COMMAND_ID, playerId: GUEST_ID, expiresAt: 900 }]
+    }));
+    const guest = socket(GUEST_ID, `${GUEST_ID}-account`, 'Guest');
+    value.room.clients.add(guest.socket);
+
+    value.handler(value.socket, command({ type: 'remove-player', playerId: GUEST_ID }));
+
+    expect(value.room.players.map((candidate) => candidate.id)).toEqual([HOST_ID]);
+    expect(value.room.chatMessages).toEqual([]);
+    expect(value.room.readyForNextRoundPlayerIds).toEqual([]);
+    expect(value.room.resetAliases).toEqual([]);
+    expect(value.room.recentCommandIds).toEqual([expect.objectContaining({ commandId: COMMAND_ID, playerId: HOST_ID })]);
+    expect(value.room.revision).toBe(1);
+    expect(value.calls.json).toEqual(expect.arrayContaining([
+      expect.objectContaining({ socket: guest.socket, payload: expect.objectContaining({ code: 'seat-removed' }) }),
+      expect.objectContaining({ socket: value.socket, payload: expect.objectContaining({ type: 'ack', commandId: COMMAND_ID }) })
+    ]));
+  });
+
+  it('starts with connected humans only and rejects an aggregate-away host command', () => {
+    const awayId = NEW_ID;
+    const value = harness(room({
+      players: [
+        player(HOST_ID, 'Host', true),
+        player(GUEST_ID, 'Guest'),
+        player(awayId, 'Away', false, `${awayId}-account`)
+      ]
+    }));
+    value.room.players[2].connected = false;
+    value.room.players[2].disconnectedAt = 100;
+    value.handler(value.socket, command({ type: 'start-game' }));
+    expect(value.room.players.map((candidate) => candidate.id)).toEqual([HOST_ID, GUEST_ID]);
+    expect(value.room.state?.players.map((candidate) => candidate.id)).toEqual([HOST_ID, GUEST_ID]);
+    expect(value.room.players.filter((candidate) => candidate.host).map((candidate) => candidate.id)).toEqual([HOST_ID]);
+
+    const hiddenHost = harness(room({
+      players: [player(HOST_ID, 'Host', true), player(GUEST_ID, 'Guest'), player(NEW_ID, 'Other')]
+    }));
+    hiddenHost.room.players[0].connected = false;
+    hiddenHost.room.players[0].disconnectedAt = 100;
+    hiddenHost.handler(hiddenHost.socket, command({ type: 'start-game' }));
+    expect(lastPayload(hiddenHost)).toMatchObject({ code: 'player-away' });
+    expect(hiddenHost.room.status).toBe('waiting');
+    expect(hiddenHost.room.players.filter((candidate) => candidate.host).map((candidate) => candidate.id)).toEqual([HOST_ID]);
+  });
+
+  it('rejects a second room admission from a socket already admitted by this handler', () => {
+    const empty = harness();
+    const fresh = socket(HOST_ID, `${HOST_ID}-account`, 'Host');
+    fresh.socket.roomCode = null;
+    fresh.socket.playerId = null;
+    empty.handler(fresh.socket, { type: 'create-room', protocolVersion: 2, name: 'Host' });
+    expect(fresh.socket.admittedRoomCode).toBe('NEW01');
+    empty.handler(fresh.socket, { type: 'create-room', protocolVersion: 2, name: 'Host' });
+    expect(empty.calls.json.at(-1)?.payload).toMatchObject({ code: 'already-in-room' });
+  });
+});
+
 describe('protocol v2 command ordering and receipts', () => {
   it('keeps every alias-pinned receipt and fills the remaining total window with newest unpinned receipts', () => {
     const aliases = Array.from({ length: MAX_RESET_ALIASES }, (_, index) => ({
@@ -692,6 +790,8 @@ describe('protocol v2 command ordering and receipts', () => {
       }]
     });
     const value = harness(target);
+    target.players[0].connected = true;
+    target.players[0].disconnectedAt = null;
     value.socket.roomCode = target.code;
     const aliasIndex = createResetAliasIndex(value.rooms);
     const handler = createProtocolV2MessageHandler({ ...value.options, resetAliasIndex: aliasIndex });
@@ -1076,6 +1176,8 @@ describe('protocol v2 completed-game atomicity', () => {
       now: 500,
       pruneStale: false
     }).rooms[0] as ProtocolV2Room;
+    restoredRoom.players[0].connected = true;
+    restoredRoom.players[0].disconnectedAt = null;
     const restarted = harness(restoredRoom);
     restarted.options.recordCompletedGame = recordCompletedGame;
     const restartedHandler = createProtocolV2MessageHandler(restarted.options);

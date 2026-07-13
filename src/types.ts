@@ -32,6 +32,7 @@ export interface RoomPlayer {
   host: boolean;
   joinedAt?: number;
   lastSeenAt?: number;
+  disconnectedAt?: number | null;
   controller?: 'human' | 'ai';
 }
 
@@ -53,6 +54,7 @@ export interface MultiplayerRoom {
   status: 'waiting' | 'playing' | 'finished';
   updatedAt: number;
   completedGameId?: string | null;
+  finishedByAi?: boolean;
   revision: number;
 }
 

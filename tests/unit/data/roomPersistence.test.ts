@@ -215,7 +215,7 @@ describe('room persistence', () => {
       format: 'skyjo-rooms',
       version: 2,
       protocolVersion: 1,
-      legacy: false,
+      legacy: true,
       missing: false
     }));
     expect(snapshot.rooms).toHaveLength(1);
@@ -289,7 +289,7 @@ describe('room persistence', () => {
     const waiting = serializeRooms(new Map([['ABCDE', room()]]), fixedNow);
     delete (waiting.rooms[0] as { gameSessionId?: unknown }).gameSessionId;
     const normalizedWaiting = normalizeRoomsDocument(waiting, { now: fixedNow + 1, pruneStale: false });
-    expect(normalizedWaiting.legacy).toBe(false);
+    expect(normalizedWaiting.legacy).toBe(true);
     expect(normalizedWaiting.rooms[0].gameSessionId).toBeNull();
   });
 
@@ -399,6 +399,7 @@ describe('room persistence', () => {
       sourceKey: 'multi:crash-session',
       roomCode: active.code,
       completedAt: fixedNow + 100,
+      finishedByAi: false,
       state: completedState(true)
     };
 
@@ -462,6 +463,7 @@ describe('room persistence', () => {
       sourceKey: 'multi:finished-session',
       roomCode: normalized.code,
       completedAt: fixedNow + 100,
+      finishedByAi: false,
       state: normalized.state
     }))).toBe(0);
 
@@ -1011,5 +1013,33 @@ describe('room persistence', () => {
       failureCode: 'EIO'
     }));
     expect(JSON.parse(await fs.readFile(roomsFile, 'utf8'))).toEqual({ durable: true });
+  });
+
+  it('anchors restored disconnects to startup time and rewrites the lifecycle backfill once', () => {
+    const runtimeRoom = room();
+    const liveDocument = serializeRooms(new Map([[runtimeRoom.code, runtimeRoom]]), fixedNow);
+    const first = normalizeRoomsDocument(liveDocument, { now: fixedNow + 500, pruneStale: false });
+    expect(first.legacy).toBe(true);
+    expect(first.rooms[0].players).toEqual(expect.arrayContaining([
+      expect.objectContaining({ connected: false, disconnectedAt: fixedNow + 500 })
+    ]));
+
+    const rewritten = serializeRooms(new Map([[first.rooms[0].code, first.rooms[0]]]), fixedNow + 500);
+    const second = normalizeRoomsDocument(rewritten, { now: fixedNow + 900, pruneStale: false });
+    expect(second.legacy).toBe(false);
+    expect(second.rooms[0].players[0].disconnectedAt).toBe(fixedNow + 500);
+    expect(second.rooms[0].finishedByAi).toBe(false);
+
+    const missingAnchor = structuredClone(rewritten);
+    missingAnchor.rooms[0].players[0].disconnectedAt = null;
+    const anchored = normalizeRoomsDocument(missingAnchor, { now: fixedNow + 1_200, pruneStale: false });
+    expect(anchored.legacy).toBe(true);
+    expect(anchored.rooms[0].players[0]).toMatchObject({ disconnectedAt: fixedNow + 1_200 });
+  });
+
+  it('rejects an AI controller in a waiting-room persistence document', () => {
+    const waiting = serializeRooms(new Map([['ABCDE', room()]]), fixedNow);
+    waiting.rooms[0].players[0].controller = 'ai';
+    expect(() => normalizeRoomsDocument(waiting, { now: fixedNow, pruneStale: false })).toThrow(/waiting room.*AI-controlled/i);
   });
 });

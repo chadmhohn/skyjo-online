@@ -1334,6 +1334,7 @@ const handleProtocolV2Message = createProtocolV2MessageHandler({
     }
     return {
       id: journal.id,
+      finishedByAi: journal.finishedByAi,
       recovered: !isDeepStrictEqual(state, submittedState),
       state
     };

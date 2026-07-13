@@ -72,6 +72,9 @@ describe('protocol v2 command schema and reducer', () => {
       { type: 'set-next-round-ready', ready: true },
       { type: 'start-game' },
       { type: 'reset-room' },
+      { type: 'leave-room' },
+      { type: 'remove-player', playerId: 'p2' },
+      { type: 'takeover-player-with-ai', playerId: 'p2' },
       { type: 'send-chat-message', text: 'hello' }
     ];
     actions.forEach((action, index) => {
@@ -101,6 +104,10 @@ describe('protocol v2 command schema and reducer', () => {
       command({ type: 'replace-card', cardIndex: 12 }),
       command({ type: 'replace-card', cardIndex: 0, value: 9 } as never),
       command({ type: 'set-next-round-ready', ready: 'yes' } as never),
+      command({ type: 'leave-room', playerId: 'p2' } as never),
+      command({ type: 'remove-player', playerId: '' }),
+      command({ type: 'remove-player', playerId: 'x'.repeat(129) }),
+      command({ type: 'takeover-player-with-ai', playerId: 'p2', extra: true } as never),
       command({ type: 'send-chat-message', text: 'x'.repeat(281) }),
       command({ type: 'unknown' } as never)
     ];

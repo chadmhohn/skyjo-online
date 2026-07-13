@@ -1,4 +1,5 @@
 import { MAX_INBOUND_CLIENT_FRAME_BYTES } from './protocolV2.js';
+import { presenceFields } from './serverRoomLifecycle.js';
 
 export type RealtimeClientMessage = Record<string, unknown>;
 
@@ -6,6 +7,7 @@ export interface RealtimeSocket {
   readonly OPEN: number;
   readonly readyState: number;
   accountUser?: unknown;
+  admittedRoomCode?: string | null;
   playerId?: string | null;
   roomCode?: string | null;
   visible?: boolean;
@@ -19,7 +21,9 @@ export interface RealtimeSocket {
 
 export interface RealtimePlayer {
   connected: boolean;
+  disconnectedAt?: number | null;
   id: string;
+  lastSeenAt?: number;
 }
 
 export interface RealtimeRoom {
@@ -169,8 +173,15 @@ export function hasVisibleLiveClient(
   return false;
 }
 
-export function syncPlayerPresence(room: RealtimeRoom, player: RealtimePlayer): void {
-  player.connected = hasVisibleLiveClient(room, player.id);
+export function syncPlayerPresence(room: RealtimeRoom, player: RealtimePlayer, now = Date.now()): void {
+  Object.assign(player, presenceFields(player, hasVisibleLiveClient(room, player.id), now));
+}
+
+export function detachRealtimeSocket(room: RealtimeRoom, socket: RealtimeSocket): void {
+  room.clients.delete(socket);
+  socket.roomCode = null;
+  socket.playerId = null;
+  socket.admittedRoomCode = null;
 }
 
 function rejectUpgrade(socket: RealtimeUpgradeSocket): void {
@@ -250,7 +261,7 @@ export function registerRealtimeServer({
         }
         const wasConnected = context.player.connected;
         socket.visible = message.visible !== false;
-        syncPlayerPresence(context.room, context.player);
+        syncPlayerPresence(context.room, context.player, now());
         if (context.player.connected !== wasConnected) {
           context.room.updatedAt = now();
           persistRoomsSoon();
@@ -269,9 +280,9 @@ export function registerRealtimeServer({
       if (isShuttingDown()) return;
       const context = roomPlayer(socket);
       if (!context) return;
-      context.room.clients.delete(socket);
+      detachRealtimeSocket(context.room, socket);
       const wasConnected = context.player.connected;
-      syncPlayerPresence(context.room, context.player);
+      syncPlayerPresence(context.room, context.player, now());
       if (context.player.connected !== wasConnected) {
         context.room.updatedAt = now();
         persistRoomsSoon();

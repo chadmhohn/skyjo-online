@@ -2,12 +2,22 @@ import {
   MAX_RECENT_COMMAND_RECEIPTS,
   MULTIPLAYER_PROTOCOL_VERSION,
   parseClientCommand,
+  reduceAuthoritativeAiAction,
   reduceAuthoritativeGameCommand,
   type CommandReceipt,
   type GameCommand
 } from './protocolV2.js';
+import {
+  canTakeOverWithAi,
+  connectedWaitingPlayerIds,
+  hostFlags,
+  oldestConnectedHuman,
+  removePlayerReferences,
+  shouldAutoReady,
+  shouldRunAiAction
+} from './serverRoomLifecycle.js';
 import type { RandomSource } from './runtime.js';
-import type { RealtimeClientMessage, RealtimeSocket } from './serverRealtime';
+import { detachRealtimeSocket, type RealtimeClientMessage, type RealtimeSocket } from './serverRealtime';
 import type { GameState, RoomChatMessage, RoomPlayer } from './types';
 
 export interface ProtocolV2AccountUser {
@@ -17,6 +27,7 @@ export interface ProtocolV2AccountUser {
 
 export interface ProtocolV2Socket extends RealtimeSocket {
   accountUser?: ProtocolV2AccountUser;
+  automated?: boolean;
 }
 
 export const MAX_RESET_ALIASES = 8;
@@ -59,6 +70,7 @@ export interface ProtocolV2Room {
   clients: Set<RealtimeSocket>;
   code: string;
   completedGameId: string | null;
+  finishedByAi?: boolean;
   gameSessionId: string | null;
   hostId: string;
   players: RoomPlayer[];
@@ -84,9 +96,11 @@ export interface ProtocolV2CompletedGameInput {
   roomCode: string;
   sourceKey: string;
   state: GameState;
+  finishedByAi: boolean;
 }
 
 export interface ProtocolV2RecordedGame {
+  finishedByAi?: boolean;
   id: string;
   recovered: boolean;
   state: GameState;
@@ -124,7 +138,19 @@ export interface ProtocolV2HandlerOptions {
     options?: { type?: 'snapshot' | 'resync'; commandId?: string; reason?: string }
   ) => unknown;
   setPlayerReadyForNextRound: (room: ProtocolV2Room, playerId: string, ready: boolean) => unknown;
-  syncPlayerPresence: (room: ProtocolV2Room, player: RoomPlayer) => unknown;
+  syncPlayerPresence: (room: ProtocolV2Room, player: RoomPlayer, now?: number) => unknown;
+}
+
+export interface AutomatedActionFence {
+  commandId: string;
+  expectedRevision: number;
+  playerId: string;
+  roomCode: string;
+}
+
+export interface ProtocolV2MessageHandler {
+  (socket: ProtocolV2Socket, message: RealtimeClientMessage): void;
+  executeAutomatedAction(fence: AutomatedActionFence): boolean;
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -244,7 +270,120 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     if (aliasesPruned) rebuildResetAliasIndex(resetAliasIndex, rooms);
   }
 
-  return (ws: ProtocolV2Socket, message: RealtimeClientMessage): void => {
+  function detachSeatSockets(
+    room: ProtocolV2Room,
+    playerId: string,
+    options: { except?: ProtocolV2Socket; notify?: boolean } = {}
+  ): void {
+    for (const client of [...room.clients]) {
+      if (client.playerId !== playerId || client === options.except) continue;
+      if (options.notify !== false) {
+        commandError(
+          sendJson,
+          client as ProtocolV2Socket,
+          'This room seat was removed.',
+          undefined,
+          'seat-removed'
+        );
+      }
+      detachRealtimeSocket(room, client);
+    }
+  }
+
+  function applyRemovedPlayerReferences(room: ProtocolV2Room, playerId: string): void {
+    const next = removePlayerReferences(room, playerId);
+    room.players = next.players;
+    room.chatMessages = next.chatMessages;
+    room.readyForNextRoundPlayerIds = next.readyForNextRoundPlayerIds;
+    room.recentCommandIds = next.recentCommandIds;
+    room.resetAliases = next.resetAliases;
+    rebuildResetAliasIndex(resetAliasIndex, rooms);
+  }
+
+  function commitGameplayState(input: {
+    automated: boolean;
+    commandId: string;
+    nextState: GameState;
+    player: RoomPlayer;
+    receipt: CommandReceipt;
+    room: ProtocolV2Room;
+    timestamp: number;
+    ws?: ProtocolV2Socket;
+  }): boolean {
+    const { automated, commandId, player, receipt, room, timestamp, ws } = input;
+    let committedState = input.nextState;
+    let recoveredCompletion = false;
+    const finishedByAi = committedState.phase === 'game-over' &&
+      room.players.some((roomPlayerValue) => roomPlayerValue.controller === 'ai');
+    if (committedState.phase === 'game-over' && !room.completedGameId) {
+      const gameSessionId = room.gameSessionId;
+      if (!gameSessionId) {
+        reportCompletedGameError(new Error(`Room ${room.code} is missing a game session id.`));
+        if (ws) commandError(sendJson, ws, 'Could not save the completed game history.', commandId, 'history-save-failed');
+        return false;
+      }
+      try {
+        const playerAccounts = Object.fromEntries(
+          room.players.map((roomPlayerValue) => [roomPlayerValue.id, roomPlayerValue.userId || null])
+        );
+        const game = recordCompletedGame({
+          mode: 'multi',
+          state: committedState,
+          roomCode: room.code,
+          createdByUserId: player.userId || null,
+          playerAccounts,
+          sourceKey: `multi:${gameSessionId}`,
+          finishedByAi
+        });
+        const committedPlayerIds = game.state.players.map((committedPlayer) => committedPlayer.id);
+        const roomPlayerIds = room.players.map((roomPlayerValue) => roomPlayerValue.id);
+        if (
+          game.state.phase !== 'game-over' ||
+          committedPlayerIds.length !== roomPlayerIds.length ||
+          committedPlayerIds.some((playerId, index) => playerId !== roomPlayerIds[index])
+        ) {
+          throw new Error('Completed game journal state does not match the room roster.');
+        }
+        recoveredCompletion = game.recovered;
+        committedState = game.state;
+        room.completedGameId = game.id;
+        if (game.recovered && typeof game.finishedByAi === 'boolean' && game.finishedByAi !== finishedByAi) {
+          throw new Error('Completed game journal AI attribution does not match the room controller state.');
+        }
+      } catch (error) {
+        reportCompletedGameError(error);
+        if (ws) commandError(sendJson, ws, 'Could not save the completed game history.', commandId, 'history-save-failed');
+        return false;
+      }
+    }
+
+    room.state = committedState;
+    room.readyForNextRoundPlayerIds =
+      committedState.phase === 'round-over' || committedState.phase === 'game-over'
+        ? room.players.filter((roomPlayerValue) => roomPlayerValue.controller === 'ai').map((roomPlayerValue) => roomPlayerValue.id)
+        : normalizedReadyIds(room);
+    room.status = committedState.phase === 'game-over' ? 'finished' : 'playing';
+    room.finishedByAi = committedState.phase === 'game-over' ? finishedByAi : false;
+    room.revision = receipt.revision;
+    room.updatedAt = timestamp;
+    if (!automated) player.lastSeenAt = timestamp;
+    if (!recoveredCompletion) commitReceipt(room, receipt, timestamp);
+    persistRoomsSoon();
+    broadcastRoom(room);
+    if (recoveredCompletion && ws) {
+      sendRoomSnapshot(ws, room, {
+        type: 'resync',
+        commandId,
+        reason: 'completion-recovered'
+      });
+    } else if (ws) {
+      acknowledge(ws, receipt);
+    }
+    if (!recoveredCompletion) notifyAwayPlayersAfterMove(room, player, committedState);
+    return true;
+  }
+
+  function handleMessage(ws: ProtocolV2Socket, message: RealtimeClientMessage): void {
     if (message.type === 'update-state') {
       sendUpgradeRequired(ws);
       return;
@@ -277,6 +416,10 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         commandError(sendJson, ws, 'Invalid room request.');
         return;
       }
+      if (ws.admittedRoomCode) {
+        commandError(sendJson, ws, 'This connection already belongs to a room.', undefined, 'already-in-room');
+        return;
+      }
 
       const accountUser = ws.accountUser as ProtocolV2AccountUser;
       if (isCreate) {
@@ -300,6 +443,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         rooms.set(code, room);
         ws.roomCode = code;
         ws.playerId = playerId;
+        ws.admittedRoomCode = code;
         persistRoomsSoon();
         sendRoomSnapshot(ws, room);
         return;
@@ -360,6 +504,10 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         return;
       }
       if (!player) player = room.players.find((item) => item.userId === accountUser.id) || null;
+      if (requestedPlayerId && !player) {
+        commandError(sendJson, ws, 'That saved room seat is no longer available.', undefined, 'stale-seat');
+        return;
+      }
       if (room.status !== 'waiting' && !player) {
         commandError(sendJson, ws, 'That game has already started.', undefined, 'game-started');
         return;
@@ -399,8 +547,9 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       ws.visible = true;
       ws.roomCode = room.code;
       ws.playerId = player.id;
+      ws.admittedRoomCode = room.code;
       room.clients.add(ws);
-      syncPlayerPresence(room, player);
+      syncPlayerPresence(room, player, timestamp);
       if (createdPlayer) {
         room.revision += 1;
       }
@@ -439,6 +588,14 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     }
     const { room, player } = context;
     const command = parsed.command;
+    if (player.controller === 'ai') {
+      commandError(sendJson, ws, 'AI control is still completing an action for this seat.', command.commandId, 'ai-controls-seat');
+      return;
+    }
+    if (!player.connected) {
+      commandError(sendJson, ws, 'Return to the active room before sending an action.', command.commandId, 'player-away');
+      return;
+    }
     const actionDigest = digestAction(parsed.canonicalAction);
     const priorReceipt = room.recentCommandIds.find((receipt) => receipt.commandId === command.commandId);
     if (priorReceipt) {
@@ -488,73 +645,92 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         commandError(sendJson, ws, reduction.message, command.commandId, 'illegal-move');
         return;
       }
-      let committedState = reduction.state;
-      let recoveredCompletion = false;
-      if (reduction.state.phase === 'game-over' && !room.completedGameId) {
-        const gameSessionId = room.gameSessionId;
-        if (!gameSessionId) {
-          reportCompletedGameError(new Error(`Room ${room.code} is missing a game session id.`));
-          commandError(sendJson, ws, 'Could not save the completed game history.', command.commandId, 'history-save-failed');
-          return;
-        }
-        try {
-          const playerAccounts = Object.fromEntries(
-            room.players.map((roomPlayerValue) => [roomPlayerValue.id, roomPlayerValue.userId || null])
-          );
-          const game = recordCompletedGame({
-            mode: 'multi',
-            state: reduction.state,
-            roomCode: room.code,
-            createdByUserId: player.userId || null,
-            playerAccounts,
-            sourceKey: `multi:${gameSessionId}`
-          });
-          const committedPlayerIds = game.state.players.map((committedPlayer) => committedPlayer.id);
-          const roomPlayerIds = room.players.map((roomPlayerValue) => roomPlayerValue.id);
-          if (
-            game.state.phase !== 'game-over' ||
-            committedPlayerIds.length !== roomPlayerIds.length ||
-            committedPlayerIds.some((playerId, index) => playerId !== roomPlayerIds[index])
-          ) {
-            throw new Error('Completed game journal state does not match the room roster.');
-          }
-          recoveredCompletion = game.recovered;
-          committedState = game.state;
-          room.completedGameId = game.id;
-        } catch (error) {
-          reportCompletedGameError(error);
-          commandError(sendJson, ws, 'Could not save the completed game history.', command.commandId, 'history-save-failed');
-          return;
-        }
-      }
-      room.state = committedState;
-      room.readyForNextRoundPlayerIds =
-        committedState.phase === 'round-over' || committedState.phase === 'game-over'
-          ? []
-          : normalizedReadyIds(room);
-      room.status = committedState.phase === 'game-over' ? 'finished' : 'playing';
-      room.revision = nextRevision;
-      room.updatedAt = timestamp;
-      player.lastSeenAt = timestamp;
-      if (recoveredCompletion) {
-        persistRoomsSoon();
-        broadcastRoom(room);
-        sendRoomSnapshot(ws, room, {
-          type: 'resync',
-          commandId: command.commandId,
-          reason: 'completion-recovered'
-        });
-        return;
-      }
-      commitReceipt(room, receipt, timestamp);
-      persistRoomsSoon();
-      broadcastRoom(room);
-      acknowledge(ws, receipt);
-      notifyAwayPlayersAfterMove(room, player, committedState);
+      commitGameplayState({
+        automated: false,
+        commandId: command.commandId,
+        nextState: reduction.state,
+        player,
+        receipt,
+        room,
+        timestamp,
+        ws
+      });
       return;
     }
 
-    if (command.action.type === 'send-chat-message') {
+    if (command.action.type === 'leave-room') {
+      if (room.status !== 'waiting') {
+        commandError(sendJson, ws, 'Active game seats remain reserved for reconnecting players.', command.commandId, 'active-seat-reserved');
+        return;
+      }
+      const replacementHost = player.id === room.hostId
+        ? oldestConnectedHuman(room.players, player.id)
+        : null;
+      if (player.id === room.hostId && room.players.length > 1 && !replacementHost) {
+        commandError(sendJson, ws, 'The host cannot leave until another player is connected.', command.commandId, 'host-transfer-unavailable');
+        return;
+      }
+      detachSeatSockets(room, player.id, { except: ws });
+      detachRealtimeSocket(room, ws);
+      applyRemovedPlayerReferences(room, player.id);
+      room.revision = nextRevision;
+      room.updatedAt = timestamp;
+      if (room.players.length === 0) {
+        rooms.delete(room.code);
+        rebuildResetAliasIndex(resetAliasIndex, rooms);
+      } else if (replacementHost) {
+        room.hostId = replacementHost.id;
+        room.players = hostFlags(room.players, replacementHost.id);
+      }
+      persistRoomsSoon();
+      if (room.players.length > 0) broadcastRoom(room);
+      sendJson(ws, {
+        type: 'ack',
+        protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+        commandId: command.commandId,
+        revision: nextRevision,
+        result: 'room-left'
+      });
+      return;
+    }
+
+    if (command.action.type === 'remove-player') {
+      if (room.status !== 'waiting') {
+        commandError(sendJson, ws, 'Players can only be removed before the game starts.', command.commandId, 'waiting-room-required');
+        return;
+      }
+      if (player.id !== room.hostId) {
+        commandError(sendJson, ws, 'Only the host can remove a player.', command.commandId, 'host-required');
+        return;
+      }
+      const targetPlayerId = command.action.playerId;
+      const target = room.players.find((candidate) => candidate.id === targetPlayerId);
+      if (!target || target.id === room.hostId) {
+        commandError(sendJson, ws, 'Choose a non-host room player.', command.commandId, 'invalid-player');
+        return;
+      }
+      detachSeatSockets(room, target.id);
+      applyRemovedPlayerReferences(room, target.id);
+    } else if (command.action.type === 'takeover-player-with-ai') {
+      if (room.status === 'waiting') {
+        commandError(sendJson, ws, 'AI takeover is only available after the game starts.', command.commandId, 'active-game-required');
+        return;
+      }
+      if (player.id !== room.hostId) {
+        commandError(sendJson, ws, 'Only the host can hand a seat to AI.', command.commandId, 'host-required');
+        return;
+      }
+      const targetPlayerId = command.action.playerId;
+      const target = room.players.find((candidate) => candidate.id === targetPlayerId);
+      if (!target || !canTakeOverWithAi(room, target, timestamp)) {
+        commandError(sendJson, ws, 'That seat is not eligible for AI takeover yet.', command.commandId, 'takeover-unavailable');
+        return;
+      }
+      target.controller = 'ai';
+      if (room.state?.phase === 'round-over' || room.state?.phase === 'game-over') {
+        setPlayerReadyForNextRound(room, target.id, true);
+      }
+    } else if (command.action.type === 'send-chat-message') {
       const text = cleanChatText(command.action.text);
       if (!text) {
         commandError(sendJson, ws, 'Enter a message before sending.', command.commandId, 'empty-chat');
@@ -573,20 +749,27 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       }
       setPlayerReadyForNextRound(room, player.id, command.action.ready);
     } else if (command.action.type === 'start-game') {
-      if (!player.host) {
+      if (player.id !== room.hostId) {
         commandError(sendJson, ws, 'Only the host can start the game.', command.commandId, 'host-required');
         return;
       }
       if (room.status === 'waiting') {
-        if (room.players.length < 2) {
-          commandError(sendJson, ws, 'Need at least two players.', command.commandId, 'players-required');
+        const connectedPlayerIds = new Set(connectedWaitingPlayerIds(room));
+        if (connectedPlayerIds.size < 2) {
+          commandError(sendJson, ws, 'Need at least two connected players.', command.commandId, 'players-required');
           return;
         }
+        for (const disconnectedPlayer of room.players.filter((candidate) => !connectedPlayerIds.has(candidate.id))) {
+          detachSeatSockets(room, disconnectedPlayer.id);
+          applyRemovedPlayerReferences(room, disconnectedPlayer.id);
+        }
+        room.players = hostFlags(room.players, room.hostId);
         room.state = createInitialRoomState(room.players, random);
         room.readyForNextRoundPlayerIds = [];
         room.status = 'playing';
         room.completedGameId = null;
         room.gameSessionId = randomUuid();
+        room.finishedByAi = false;
       } else if (room.state?.phase === 'round-over') {
         if (!allPlayersReadyForNextRound(room)) {
           commandError(sendJson, ws, 'Everyone must confirm they are ready before the next round starts.', command.commandId, 'players-not-ready');
@@ -605,12 +788,13 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         room.status = 'playing';
         room.completedGameId = null;
         room.gameSessionId = randomUuid();
+        room.finishedByAi = false;
       } else {
         commandError(sendJson, ws, 'The current game is not ready for a new round.', command.commandId, 'invalid-phase');
         return;
       }
     } else if (command.action.type === 'reset-room') {
-      if (!player.host) {
+      if (player.id !== room.hostId) {
         commandError(sendJson, ws, 'Only the host can reset the room.', command.commandId, 'host-required');
         return;
       }
@@ -645,7 +829,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         }
       ];
       commitReceipt(newRoom, receipt, timestamp);
-      for (const client of oldRoom.clients) {
+      for (const client of [...oldRoom.clients]) {
         if (client === ws) continue;
         sendJson(client as ProtocolV2Socket, {
           type: 'error',
@@ -653,14 +837,14 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
           code: 'room-reset',
           message: 'The host reset this room. Ask for the new room link to rejoin.'
         });
-        client.roomCode = null;
-        client.playerId = null;
+        detachRealtimeSocket(oldRoom, client);
       }
       rooms.delete(oldRoom.code);
       rooms.set(newCode, newRoom);
       rebuildResetAliasIndex(resetAliasIndex, rooms);
       ws.roomCode = newCode;
       ws.playerId = player.id;
+      ws.admittedRoomCode = newCode;
       persistRoomsSoon();
       sendRoomSnapshot(ws, newRoom, {
         type: 'resync',
@@ -681,5 +865,44 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     persistRoomsSoon();
     broadcastRoom(room);
     acknowledge(ws, receipt);
-  };
+  }
+
+  function executeAutomatedAction(fence: AutomatedActionFence): boolean {
+    const room = rooms.get(fence.roomCode);
+    if (!room || room.revision !== fence.expectedRevision || room.revision >= Number.MAX_SAFE_INTEGER) return false;
+    const player = room.players.find((candidate) => candidate.id === fence.playerId);
+    if (!player || player.controller !== 'ai') return false;
+    const timestamp = now();
+    const receipt: CommandReceipt = {
+      commandId: fence.commandId,
+      playerId: player.id,
+      expectedRevision: fence.expectedRevision,
+      revision: fence.expectedRevision + 1,
+      actionDigest: digestAction(JSON.stringify({ type: 'server-ai-action' }))
+    };
+
+    if (shouldAutoReady(room, player)) {
+      setPlayerReadyForNextRound(room, player.id, true);
+      room.revision = receipt.revision;
+      room.updatedAt = timestamp;
+      commitReceipt(room, receipt, timestamp);
+      persistRoomsSoon();
+      broadcastRoom(room);
+      return true;
+    }
+    if (!shouldRunAiAction(room, player)) return false;
+    const reduction = reduceAuthoritativeAiAction(room.state, player.id, random);
+    if (!reduction.ok) return false;
+    return commitGameplayState({
+      automated: true,
+      commandId: fence.commandId,
+      nextState: reduction.state,
+      player,
+      receipt,
+      room,
+      timestamp
+    });
+  }
+
+  return Object.assign(handleMessage, { executeAutomatedAction }) satisfies ProtocolV2MessageHandler;
 }
