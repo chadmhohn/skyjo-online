@@ -547,6 +547,91 @@ describe('room connection controller', () => {
     }
   });
 
+  it('accepts identity-free public snapshots only after personalized socket sync and retains the seat identity', () => {
+    const anonymousBeforeSync = createHarness();
+    anonymousBeforeSync.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    anonymousBeforeSync.runTimer(0);
+    anonymousBeforeSync.sockets[0].open();
+    const firstSharedRoom = { ...room(), revision: 1, updatedAt: 101, serverNow: 101 };
+    anonymousBeforeSync.sockets[0].receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1, room: firstSharedRoom
+    });
+    expect(anonymousBeforeSync.sockets[0].closes.at(-1)).toEqual({
+      code: 1002, reason: 'Invalid server response'
+    });
+    expect(anonymousBeforeSync.frames).toHaveLength(0);
+
+    const established = createHarness();
+    established.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    established.runTimer(0);
+    const socket = established.sockets[0];
+    socket.open();
+    socket.receive(snapshotFrame());
+    socket.receive({ type: 'snapshot', protocolVersion: 2, revision: 1, room: firstSharedRoom });
+
+    expect(established.controller.getState()).toBe('connected');
+    expect(established.frames.at(-1)).toMatchObject({
+      type: 'snapshot', playerId: 'p1', revision: 1, room: { code: 'ABCDE', revision: 1 }
+    });
+    expect(established.frames.at(-1)).toHaveProperty('playerId', 'p1');
+    expect(socket.closes).toEqual([]);
+  });
+
+  it('rejects stale identity-free revisions, missing seat membership, and anonymous private-draw views', () => {
+    function synchronizedHarness(playerId: string, revision = 0) {
+      const harness = createHarness();
+      harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: playerId, playerId });
+      harness.runTimer(0);
+      const socket = harness.sockets[0];
+      socket.open();
+      socket.receive(snapshotFrame({ ...validActiveRoom(), revision } as never, playerId));
+      return { harness, socket };
+    }
+
+    const stale = synchronizedHarness('p2', 2);
+    stale.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1,
+      room: { ...validActiveRoom(), revision: 1 }
+    });
+    expect(stale.socket.closes.at(-1)?.code).toBe(1002);
+
+    const wrongRevision = synchronizedHarness('p2');
+    wrongRevision.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 2,
+      room: { ...validActiveRoom(), revision: 1 }
+    });
+    expect(wrongRevision.socket.closes.at(-1)?.code).toBe(1002);
+
+    const missingSeat = synchronizedHarness('p2');
+    missingSeat.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1,
+      room: { ...room(), revision: 1 }
+    });
+    expect(missingSeat.socket.closes.at(-1)?.code).toBe(1002);
+
+    const privateDrawer = synchronizedHarness('p1');
+    const privateState = {
+      ...validGameState(),
+      phase: 'choose-replacement',
+      selectedSource: 'draw',
+      hasDrawnCard: true,
+      drawnCard: validCard('drawn-card', 9, true)
+    };
+    privateDrawer.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1,
+      room: { ...validActiveRoom(), revision: 1, state: privateState }
+    });
+    expect(privateDrawer.socket.closes.at(-1)?.code).toBe(1002);
+
+    const publicNonDrawer = synchronizedHarness('p2');
+    publicNonDrawer.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1,
+      room: { ...validActiveRoom(), revision: 1, state: { ...privateState, drawnCard: null } }
+    });
+    expect(publicNonDrawer.socket.closes).toEqual([]);
+    expect(publicNonDrawer.harness.frames.at(-1)).toMatchObject({ playerId: 'p2', revision: 1 });
+  });
+
   it('accepts a fresh room code only for the matching in-memory reset command and converges on ack', () => {
     const harness = createHarness();
     harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });

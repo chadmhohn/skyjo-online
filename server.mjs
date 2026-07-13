@@ -12,6 +12,7 @@ import {
   createNextRoundRoomState
 } from './server-dist/serverValidation.js';
 import {
+  broadcastRealtimeSnapshots,
   hasVisibleLiveClient,
   REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES,
   registerRealtimeServer,
@@ -34,7 +35,6 @@ import {
 } from './server-dist/serverRoomLifecycle.js';
 import {
   createRoomSnapshot,
-  hasPrivateDrawnCardVisibility,
   MULTIPLAYER_PROTOCOL_VERSION
 } from './server-dist/protocolV2.js';
 import {
@@ -439,28 +439,17 @@ function setPlayerReadyForNextRound(room, playerId, ready) {
 }
 
 function sendJson(ws, payload) {
-  sendRealtimeJson(ws, payload);
-}
-
-function roomSnapshotVisibility(room, playerId) {
-  return hasPrivateDrawnCardVisibility(room.state, playerId)
-    ? `private:${playerId}`
-    : 'public';
+  return sendRealtimeJson(ws, payload);
 }
 
 function broadcastRoom(room) {
-  const snapshots = new Map();
-  const serverNow = Date.now();
-  for (const client of room.clients) {
-    if (!client.playerId) continue;
-    const visibility = roomSnapshotVisibility(room, client.playerId);
-    let snapshot = snapshots.get(visibility);
-    if (!snapshot) {
-      snapshot = createRoomSnapshot(room, client.playerId, serverNow, lifecyclePolicy);
-      snapshots.set(visibility, snapshot);
-    }
-    sendRoomSnapshot(client, room, {}, snapshot);
-  }
+  broadcastRealtimeSnapshots({
+    room,
+    createSnapshot: (candidate, playerId, serverNow) =>
+      createRoomSnapshot(candidate, playerId, serverNow, lifecyclePolicy),
+    sendPersonalized: (client, candidate, snapshot) =>
+      sendRoomSnapshot(client, candidate, {}, snapshot)
+  });
 }
 
 function sendCurrentRoom(ws, room) {
@@ -483,7 +472,9 @@ function sendRoomSnapshot(ws, room, options = {}, preparedSnapshot = null) {
         }
       : {})
   };
-  return sendJson(ws, payload);
+  const sent = sendJson(ws, payload);
+  if (sent) ws.snapshotRoomCode = room.code;
+  return sent;
 }
 
 function queueRoomsSave() {

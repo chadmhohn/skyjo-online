@@ -1,8 +1,11 @@
 import { Buffer } from 'node:buffer';
 import {
+  hasPrivateDrawnCardVisibility,
   MAX_INBOUND_CLIENT_FRAME_BYTES,
-  MULTIPLAYER_PROTOCOL_VERSION
+  MULTIPLAYER_PROTOCOL_VERSION,
+  type PublicRoomSnapshot
 } from './protocolV2.js';
+import type { GameState } from './types.js';
 import { presenceFields } from './serverRoomLifecycle.js';
 
 export type RealtimeClientMessage = Record<string, unknown>;
@@ -14,12 +17,13 @@ export interface RealtimeSocket {
   admittedRoomCode?: string | null;
   playerId?: string | null;
   roomCode?: string | null;
+  snapshotRoomCode?: string | null;
   visible?: boolean;
   heartbeatAwaitingPong?: boolean;
   on(event: 'message' | 'close' | 'pong', listener: (...args: unknown[]) => void): unknown;
   close?(code?: number, reason?: string): unknown;
   ping(): unknown;
-  send(payload: string): unknown;
+  send(payload: string | Uint8Array, options?: { binary?: boolean }): unknown;
   terminate(): unknown;
 }
 
@@ -96,6 +100,131 @@ export const REALTIME_HEARTBEAT_INTERVAL_MS = 15_000;
 export const REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES = MAX_INBOUND_CLIENT_FRAME_BYTES;
 export const REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES = 1_024 * 1_024;
 export const REALTIME_OVERSIZED_CLOSE_CODE = 1_009;
+
+export interface RealtimeSnapshotRoom extends RealtimeRoom {
+  revision: number;
+  state: GameState | null;
+}
+
+export interface RealtimeSnapshotBroadcastResult {
+  personalizedRecipients: number;
+  sharedEncodings: number;
+  sharedRecipients: number;
+}
+
+interface RealtimeSnapshotBroadcastOptions<TRoom extends RealtimeSnapshotRoom> {
+  createSnapshot: (room: TRoom, viewerPlayerId: string, serverNow: number) => PublicRoomSnapshot;
+  now?: () => number;
+  room: TRoom;
+  sendPersonalized: (
+    socket: RealtimeSocket,
+    room: TRoom,
+    snapshot: PublicRoomSnapshot
+  ) => boolean;
+}
+
+export function encodeRealtimeJson(
+  payload: unknown,
+  maxPayloadBytes = REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES
+): Buffer | null {
+  if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes <= 0) return null;
+  try {
+    const serialized = JSON.stringify(payload);
+    if (typeof serialized !== 'string') return null;
+    if (Buffer.byteLength(serialized, 'utf8') > maxPayloadBytes) return null;
+    return Buffer.from(serialized, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+export function sendRealtimeEncodedJson(
+  socket: RealtimeSocket,
+  encoded: Uint8Array,
+  maxPayloadBytes = REALTIME_MAX_OUTBOUND_PUBLIC_FRAME_BYTES
+): boolean {
+  if (socket.readyState !== socket.OPEN) return false;
+  if (!Number.isSafeInteger(maxPayloadBytes) || maxPayloadBytes <= 0) return false;
+  if (!(encoded instanceof Uint8Array) || encoded.byteLength > maxPayloadBytes) {
+    closeOversizedSocket(socket);
+    return false;
+  }
+  try {
+    // ws otherwise marks Buffer input as a binary WebSocket message. Explicitly
+    // keep the shared encoded JSON on the text-frame contract browsers expect.
+    socket.send(encoded, { binary: false });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Broadcast one encoded public snapshot to already synchronized sockets while
+ * preserving personalized identity on first sync, reconnect, room reset, and
+ * the active player's private blind-draw view.
+ */
+export function broadcastRealtimeSnapshots<TRoom extends RealtimeSnapshotRoom>(
+  options: RealtimeSnapshotBroadcastOptions<TRoom>
+): RealtimeSnapshotBroadcastResult {
+  const { room, createSnapshot, sendPersonalized } = options;
+  const serverNow = (options.now ?? Date.now)();
+  const snapshots = new Map<string, PublicRoomSnapshot>();
+  const sharedRecipients: RealtimeSocket[] = [];
+  let personalizedRecipients = 0;
+
+  function snapshotFor(playerId: string): { snapshot: PublicRoomSnapshot; visibility: string } {
+    const visibility = hasPrivateDrawnCardVisibility(room.state, playerId)
+      ? `private:${playerId}`
+      : 'public';
+    let snapshot = snapshots.get(visibility);
+    if (!snapshot) {
+      snapshot = createSnapshot(room, playerId, serverNow);
+      snapshots.set(visibility, snapshot);
+    }
+    return { snapshot, visibility };
+  }
+
+  for (const client of room.clients) {
+    if (!client.playerId) continue;
+    const { snapshot, visibility } = snapshotFor(client.playerId);
+    if (visibility === 'public' && client.snapshotRoomCode === room.code) {
+      sharedRecipients.push(client);
+      continue;
+    }
+    personalizedRecipients += 1;
+    sendPersonalized(client, room, snapshot);
+  }
+
+  if (sharedRecipients.length === 0) {
+    return { personalizedRecipients, sharedEncodings: 0, sharedRecipients: 0 };
+  }
+
+  const publicSnapshot = snapshots.get('public');
+  if (!publicSnapshot) {
+    return { personalizedRecipients, sharedEncodings: 0, sharedRecipients: 0 };
+  }
+  const encoded = encodeRealtimeJson({
+    type: 'snapshot',
+    protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    revision: room.revision,
+    room: publicSnapshot
+  });
+  if (!encoded) {
+    for (const client of sharedRecipients) {
+      if (!client.playerId) continue;
+      personalizedRecipients += 1;
+      sendPersonalized(client, room, publicSnapshot);
+    }
+    return { personalizedRecipients, sharedEncodings: 0, sharedRecipients: 0 };
+  }
+
+  let delivered = 0;
+  for (const client of sharedRecipients) {
+    if (sendRealtimeEncodedJson(client, encoded)) delivered += 1;
+  }
+  return { personalizedRecipients, sharedEncodings: 1, sharedRecipients: delivered };
+}
 
 export function sendRealtimeJson(
   socket: RealtimeSocket,
@@ -187,6 +316,7 @@ export function detachRealtimeSocket(room: RealtimeRoom, socket: RealtimeSocket)
   socket.roomCode = null;
   socket.playerId = null;
   socket.admittedRoomCode = null;
+  socket.snapshotRoomCode = null;
 }
 
 function rejectUpgrade(socket: RealtimeUpgradeSocket): void {
@@ -235,6 +365,7 @@ export function registerRealtimeServer({
 
   webSocketServer.on('connection', (socket, request) => {
     socket.accountUser = request.accountUser;
+    socket.snapshotRoomCode = null;
     // Presence is established explicitly after the first authoritative snapshot.
     // This prevents a hidden reconnect from resetting grace timers or reclaiming AI.
     socket.visible = false;

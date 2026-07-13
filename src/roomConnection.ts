@@ -355,13 +355,25 @@ function isAuthoritativeSnapshot(
   frame: RoomConnectionFrame,
   currentSession: RoomConnectionSession | null,
   synchronizedOnCurrentSocket: boolean,
-  pendingCommand: PendingCommandState | null
+  pendingCommand: PendingCommandState | null,
+  lastAcceptedRevision: number
 ): boolean {
   if (frame.type !== 'snapshot' && frame.type !== 'resync') return false;
   if (frame.protocolVersion !== MULTIPLAYER_PROTOCOL_VERSION) return false;
-  if (!isPublicIdentifier(frame.playerId)) return false;
   if (!Number.isSafeInteger(frame.revision) || Number(frame.revision) < 0) return false;
   const establishedPlayerId = currentSession?.action === 'join-room' ? currentSession.playerId : undefined;
+  const sharedPublicFrame =
+    frame.type === 'snapshot' &&
+    !('playerId' in frame) &&
+    synchronizedOnCurrentSocket &&
+    isPublicIdentifier(establishedPlayerId);
+  const viewerPlayerId = isPublicIdentifier(frame.playerId)
+    ? frame.playerId
+    : sharedPublicFrame
+      ? establishedPlayerId
+      : null;
+  if (!viewerPlayerId) return false;
+  if (sharedPublicFrame && Number(frame.revision) < lastAcceptedRevision) return false;
   const recoveryExpectation = resetRecoveryExpectation(currentSession);
   const pendingAction = isRecord(pendingCommand?.frame.action) ? pendingCommand.frame.action : null;
   const correlatedResetFrame =
@@ -375,13 +387,13 @@ function isAuthoritativeSnapshot(
     frame.commandId === pendingCommand.commandId &&
     Number(frame.revision) === pendingCommand.expectedRevision + 1 &&
     Boolean(establishedPlayerId) &&
-    frame.playerId === establishedPlayerId;
+    viewerPlayerId === establishedPlayerId;
   const recoveryResetTransition =
     correlatedResetFrame &&
     !synchronizedOnCurrentSocket &&
     currentSession?.action === 'join-room' &&
     Boolean(currentSession.playerId) &&
-    frame.playerId === currentSession.playerId &&
+    viewerPlayerId === currentSession.playerId &&
     recoveryExpectation !== null &&
     frame.commandId === recoveryExpectation.commandId &&
     Number(frame.revision) >= recoveryExpectation.expectedRevision + 1;
@@ -393,16 +405,22 @@ function isAuthoritativeSnapshot(
     currentSession?.action === 'join-room' &&
     frame.room.code === currentSession.code
   ) return false;
-  if (!frame.room.players.some((player) => player.id === frame.playerId)) return false;
-  if (establishedPlayerId && frame.playerId !== establishedPlayerId) return false;
+  if (!frame.room.players.some((player) => player.id === viewerPlayerId)) return false;
+  if (establishedPlayerId && viewerPlayerId !== establishedPlayerId) return false;
   if (frame.revision !== frame.room.revision) return false;
   if (frame.room.state) {
     const activePlayerId = frame.room.state.players[frame.room.state.currentPlayerIndex]?.id;
-    const viewerIsDrawer = frame.room.state.selectedSource === 'draw' && frame.room.state.hasDrawnCard && activePlayerId === frame.playerId;
+    const viewerIsDrawer = frame.room.state.selectedSource === 'draw' && frame.room.state.hasDrawnCard && activePlayerId === viewerPlayerId;
+    if (sharedPublicFrame && viewerIsDrawer) return false;
     if (Boolean(frame.room.state.drawnCard) !== viewerIsDrawer) return false;
   }
   if (frame.type === 'snapshot') {
-    return hasExactKeys(frame, ['type', 'protocolVersion', 'playerId', 'revision', 'room']);
+    return hasExactKeys(
+      frame,
+      sharedPublicFrame
+        ? ['type', 'protocolVersion', 'revision', 'room']
+        : ['type', 'protocolVersion', 'playerId', 'revision', 'room']
+    );
   }
   const keys = ['type', 'protocolVersion', 'playerId', 'revision', 'room', 'reason'];
   if ('commandId' in frame) keys.push('commandId');
@@ -410,6 +428,21 @@ function isAuthoritativeSnapshot(
     hasExactKeys(frame, keys) &&
     typeof frame.reason === 'string' &&
     (frame.commandId === undefined || typeof frame.commandId === 'string');
+}
+
+function hydrateSharedSnapshotViewer(
+  frame: RoomConnectionFrame,
+  currentSession: RoomConnectionSession | null,
+  synchronizedOnCurrentSocket: boolean
+): RoomConnectionFrame {
+  if (
+    frame.type !== 'snapshot' ||
+    'playerId' in frame ||
+    !synchronizedOnCurrentSocket ||
+    currentSession?.action !== 'join-room' ||
+    !currentSession.playerId
+  ) return frame;
+  return { ...frame, playerId: currentSession.playerId };
 }
 
 function isAuxiliaryServerFrame(
@@ -726,27 +759,36 @@ export function createRoomConnection(options: RoomConnectionOptions): RoomConnec
     socket.addEventListener('message', (event) => {
       if (!isCurrent()) return;
       const raw = event && typeof event === 'object' && 'data' in event ? (event as { data: unknown }).data : event;
-      const frame = parseRoomConnectionFrame(raw);
-      if (!frame) {
+      const incomingFrame = parseRoomConnectionFrame(raw);
+      if (!incomingFrame) {
         handleMalformedServerFrame(socket);
         return;
       }
 
-      const snapshotFrame = frame.type === 'snapshot' || frame.type === 'resync';
+      const snapshotFrame = incomingFrame.type === 'snapshot' || incomingFrame.type === 'resync';
       const pendingAction = isRecord(pendingCommand?.frame.action) ? pendingCommand.frame.action : null;
       const resetTransitionFrame =
-        frame.type === 'resync' &&
-        frame.reason === 'room-reset' &&
+        incomingFrame.type === 'resync' &&
+        incomingFrame.reason === 'room-reset' &&
         pendingCommand !== null &&
         pendingAction?.type === 'reset-room' &&
-        frame.commandId === pendingCommand.commandId;
+        incomingFrame.commandId === pendingCommand.commandId;
       if (
-        (snapshotFrame && !isAuthoritativeSnapshot(frame, session, synchronizedOnCurrentSocket, pendingCommand)) ||
-        (!snapshotFrame && !isAuxiliaryServerFrame(frame, pendingCommand))
+        (snapshotFrame && !isAuthoritativeSnapshot(
+          incomingFrame,
+          session,
+          synchronizedOnCurrentSocket,
+          pendingCommand,
+          lastSnapshotRevision
+        )) ||
+        (!snapshotFrame && !isAuxiliaryServerFrame(incomingFrame, pendingCommand))
       ) {
         handleMalformedServerFrame(socket);
         return;
       }
+      const frame = snapshotFrame
+        ? hydrateSharedSnapshotViewer(incomingFrame, session, synchronizedOnCurrentSocket)
+        : incomingFrame;
       if (resetTransitionFrame && pendingCommand) {
         pendingCommand.acknowledgedRevision = pendingCommand.expectedRevision + 1;
         pendingCommand.sentGeneration = socketGeneration;

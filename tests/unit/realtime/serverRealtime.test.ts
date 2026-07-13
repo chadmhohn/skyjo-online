@@ -1,4 +1,7 @@
 import {
+  broadcastRealtimeSnapshots,
+  detachRealtimeSocket,
+  encodeRealtimeJson,
   hasVisibleLiveClient,
   parseRealtimeMessage,
   REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES,
@@ -6,6 +9,7 @@ import {
   REALTIME_OVERSIZED_CLOSE_CODE,
   registerRealtimeServer,
   sendRealtimeJson,
+  sendRealtimeEncodedJson,
   syncPlayerPresence,
   type RealtimeClientMessage,
   type RealtimeHttpServer,
@@ -26,9 +30,11 @@ class FakeSocket implements RealtimeSocket {
   accountUser?: unknown;
   playerId?: string | null;
   roomCode?: string | null;
+  snapshotRoomCode?: string | null;
   visible?: boolean;
   heartbeatAwaitingPong?: boolean;
   readonly sent: string[] = [];
+  readonly rawSent: Array<{ payload: string | Uint8Array; options?: { binary?: boolean } }> = [];
   pingCount = 0;
   pingAttempts = 0;
   terminateCount = 0;
@@ -37,6 +43,7 @@ class FakeSocket implements RealtimeSocket {
   closeCode?: number;
   closeReason?: string;
   throwOnPing = false;
+  throwOnSend = false;
   throwOnTerminate = false;
   private readonly listeners = new Map<SocketEvent | 'pong', Array<(...args: unknown[]) => void>>();
 
@@ -45,8 +52,10 @@ class FakeSocket implements RealtimeSocket {
     this.listeners.set(event, [...current, listener]);
   }
 
-  send(payload: string): void {
-    this.sent.push(payload);
+  send(payload: string | Uint8Array, options?: { binary?: boolean }): void {
+    if (this.throwOnSend) throw new Error('send raced closed');
+    this.rawSent.push({ payload, ...(options ? { options } : {}) });
+    this.sent.push(typeof payload === 'string' ? payload : Buffer.from(payload).toString('utf8'));
   }
 
   close(code?: number, reason?: string): void {
@@ -256,6 +265,194 @@ describe('serverRealtime transport seam', () => {
     expect(socket.sent).toHaveLength(1);
     expect(socket.closeCount).toBe(1);
     expect(socket.closeCode).toBe(REALTIME_OVERSIZED_CLOSE_CODE);
+  });
+
+  it('encodes one byte-identical public text frame for seven synchronized non-drawers', () => {
+    const playerIds = ['drawer', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'];
+    const sockets = playerIds.map((playerId) => {
+      const socket = new FakeSocket();
+      socket.playerId = playerId;
+      socket.roomCode = 'ABCDE';
+      socket.snapshotRoomCode = 'ABCDE';
+      return socket;
+    });
+    const privateCard = { id: 'private-drawn-card-sentinel', value: 999, faceUp: true, removed: false };
+    const state = {
+      currentPlayerIndex: 0,
+      drawnCard: privateCard,
+      players: playerIds.map((id) => ({ id })),
+      selectedSource: 'draw'
+    } as never;
+    const createSnapshot = vi.fn((_room, viewerPlayerId: string, serverNow: number) => ({
+      code: 'ABCDE',
+      hostId: 'drawer',
+      players: playerIds.map((id, index) => ({
+        id,
+        name: id,
+        connected: true,
+        host: index === 0,
+        controller: 'human',
+        disconnectedAt: null,
+        aiTakeoverAt: null
+      })),
+      chatMessages: [],
+      readyForNextRoundPlayerIds: [],
+      state: {
+        players: playerIds.map((id) => ({ id, name: id, kind: 'human', grid: [], totalScore: 0, roundScore: 0 })),
+        drawPileCount: 100,
+        discardPile: { count: 1, top: null },
+        currentPlayerIndex: 0,
+        phase: 'choose-replacement',
+        selectedSource: 'draw',
+        hasDrawnCard: true,
+        drawnCard: viewerPlayerId === 'drawer' ? privateCard : null,
+        round: 1,
+        log: [],
+        winnerId: null,
+        nextStarterId: null,
+        roundCloserId: null,
+        finalTurnPlayerIds: [],
+        openingRevealCounts: {},
+        roundHistory: []
+      },
+      status: 'playing',
+      updatedAt: 1_000,
+      completedGameId: null,
+      finishedByAi: false,
+      hostTransferAt: null,
+      revision: 12,
+      serverNow
+    }) as never);
+    const room = {
+      clients: new Set(sockets),
+      code: 'ABCDE',
+      revision: 12,
+      state,
+      updatedAt: 1_000
+    };
+    const sendPersonalized = vi.fn((socket: RealtimeSocket, _room, snapshot) => sendRealtimeJson(socket, {
+      type: 'snapshot',
+      protocolVersion: 2,
+      playerId: socket.playerId,
+      revision: room.revision,
+      room: snapshot
+    }));
+
+    const result = broadcastRealtimeSnapshots({ room, createSnapshot, sendPersonalized, now: () => 1_001 });
+
+    expect(result).toEqual({ personalizedRecipients: 1, sharedEncodings: 1, sharedRecipients: 7 });
+    expect(createSnapshot).toHaveBeenCalledTimes(2);
+    expect(sendPersonalized).toHaveBeenCalledOnce();
+    const drawerFrame = JSON.parse(sockets[0].sent[0]);
+    expect(drawerFrame).toMatchObject({ playerId: 'drawer', room: { state: { drawnCard: privateCard } } });
+    const publicPayloads = sockets.slice(1).map((socket) => socket.rawSent[0]);
+    expect(publicPayloads).toHaveLength(7);
+    for (const sent of publicPayloads) {
+      expect(sent.payload).toBe(publicPayloads[0].payload);
+      expect(sent.options).toEqual({ binary: false });
+      const frame = JSON.parse(Buffer.from(sent.payload).toString('utf8'));
+      expect(frame).not.toHaveProperty('playerId');
+      expect(frame.room.state.drawnCard).toBeNull();
+      expect(JSON.stringify(frame)).not.toContain('private-drawn-card-sentinel');
+      expect(JSON.stringify(frame)).not.toContain('999');
+    }
+  });
+
+  it('personalizes first sync and room-mismatched reconnects before sharing later updates', () => {
+    const established = new FakeSocket();
+    const firstSync = new FakeSocket();
+    const rejoining = new FakeSocket();
+    for (const [index, socket] of [established, firstSync, rejoining].entries()) {
+      socket.playerId = `p${index + 1}`;
+      socket.roomCode = 'ABCDE';
+    }
+    established.snapshotRoomCode = 'ABCDE';
+    rejoining.snapshotRoomCode = 'OLD01';
+    const room = {
+      clients: new Set<RealtimeSocket>([established, firstSync, rejoining]),
+      code: 'ABCDE',
+      revision: 3,
+      state: null,
+      updatedAt: 1_000
+    };
+    const createSnapshot = vi.fn((_room, _viewerPlayerId: string, serverNow: number) => ({
+      code: 'ABCDE', hostId: 'p1', players: [], chatMessages: [], readyForNextRoundPlayerIds: [],
+      state: null, status: 'waiting', updatedAt: 1_000, completedGameId: null, finishedByAi: false,
+      hostTransferAt: null, revision: 3, serverNow
+    }) as never);
+    const sendPersonalized = vi.fn((socket: RealtimeSocket, _room, snapshot) => {
+      const sent = sendRealtimeJson(socket, {
+        type: 'snapshot', protocolVersion: 2, playerId: socket.playerId, revision: 3, room: snapshot
+      });
+      if (sent) socket.snapshotRoomCode = room.code;
+      return sent;
+    });
+
+    expect(broadcastRealtimeSnapshots({ room, createSnapshot, sendPersonalized, now: () => 1_001 })).toEqual({
+      personalizedRecipients: 2,
+      sharedEncodings: 1,
+      sharedRecipients: 1
+    });
+    expect(JSON.parse(firstSync.sent[0]).playerId).toBe('p2');
+    expect(JSON.parse(rejoining.sent[0]).playerId).toBe('p3');
+    expect(JSON.parse(established.sent[0])).not.toHaveProperty('playerId');
+    expect(firstSync.snapshotRoomCode).toBe('ABCDE');
+    expect(rejoining.snapshotRoomCode).toBe('ABCDE');
+
+    const resync = { type: 'resync', protocolVersion: 2, playerId: 'p2', revision: 3, room: {}, reason: 'stale-revision' };
+    expect(sendRealtimeJson(firstSync, resync)).toBe(true);
+    expect(JSON.parse(firstSync.sent.at(-1) || '{}')).toEqual(resync);
+  });
+
+  it('clears personalized sync on detach so a same-code rejoin cannot receive an anonymous first frame', () => {
+    const socket = new FakeSocket();
+    socket.playerId = 'p1';
+    socket.roomCode = 'ABCDE';
+    socket.snapshotRoomCode = 'ABCDE';
+    const detachedRoom: RealtimeRoom = { clients: new Set([socket]), code: 'ABCDE', updatedAt: 1_000 };
+    detachRealtimeSocket(detachedRoom, socket);
+    expect(socket.snapshotRoomCode).toBeNull();
+
+    socket.playerId = 'p1';
+    socket.roomCode = 'ABCDE';
+    const rejoinedRoom = {
+      clients: new Set<RealtimeSocket>([socket]),
+      code: 'ABCDE',
+      revision: 1,
+      state: null,
+      updatedAt: 1_001
+    };
+    const sendPersonalized = vi.fn((target: RealtimeSocket) => sendRealtimeJson(target, {
+      type: 'snapshot', protocolVersion: 2, playerId: target.playerId, revision: 1, room: { code: 'ABCDE' }
+    }));
+    expect(broadcastRealtimeSnapshots({
+      room: rejoinedRoom,
+      createSnapshot: () => ({ code: 'ABCDE' }) as never,
+      sendPersonalized,
+      now: () => 1_001
+    })).toEqual({ personalizedRecipients: 1, sharedEncodings: 0, sharedRecipients: 0 });
+    expect(sendPersonalized).toHaveBeenCalledOnce();
+    expect(JSON.parse(socket.sent[0]).playerId).toBe('p1');
+  });
+
+  it('sends encoded JSON as a text frame and preserves the outbound size fence', () => {
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+    const encoded = encodeRealtimeJson({ type: 'snapshot', revision: 4 });
+    expect(encoded).not.toBeNull();
+    expect(sendRealtimeEncodedJson(first, encoded!)).toBe(true);
+    expect(sendRealtimeEncodedJson(second, encoded!)).toBe(true);
+    expect(first.rawSent[0].payload).toBe(second.rawSent[0].payload);
+    expect(first.rawSent[0].options).toEqual({ binary: false });
+
+    expect(sendRealtimeEncodedJson(first, new Uint8Array(5), 4)).toBe(false);
+    expect(first.closeCode).toBe(REALTIME_OVERSIZED_CLOSE_CODE);
+    expect(encodeRealtimeJson({ tooLarge: 'x'.repeat(10) }, 4)).toBeNull();
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    expect(encodeRealtimeJson(circular)).toBeNull();
+    second.throwOnSend = true;
+    expect(sendRealtimeEncodedJson(second, encoded!)).toBe(false);
   });
 
   it('rejects wrong-path and invalid-session upgrades before account lookup', () => {
@@ -486,10 +683,12 @@ describe('serverRealtime transport seam', () => {
     finalHarness.now.mockReturnValue(2_002);
     const finalConnection = finalHarness.connect();
     const finalContext = roomContext(finalConnection.socket);
+    finalConnection.socket.snapshotRoomCode = 'ABCDE';
     finalHarness.contexts.set(finalConnection.socket, finalContext);
     finalConnection.socket.emit('close');
 
     expect(finalContext.player.connected).toBe(false);
+    expect(finalConnection.socket.snapshotRoomCode).toBeNull();
     expect(finalContext.room.updatedAt).toBe(2_002);
     expect(finalHarness.persistRoomsSoon).toHaveBeenCalledOnce();
     expect(finalHarness.broadcastRoom).toHaveBeenCalledWith(finalContext.room);
