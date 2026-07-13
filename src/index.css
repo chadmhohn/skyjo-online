@@ -13,6 +13,7 @@ body {
 .skyjo-update-banner {
   position: fixed;
   z-index: 80;
+  pointer-events: none;
   right: max(1rem, env(safe-area-inset-right));
   bottom: max(1rem, env(safe-area-inset-bottom));
   left: max(1rem, env(safe-area-inset-left));
@@ -29,6 +30,10 @@ body {
   background: rgba(6, 12, 10, 0.97);
   color: #f5e6c8;
   box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.42);
+}
+
+.skyjo-update-banner button {
+  pointer-events: auto;
 }
 
 .skyjo-update-banner strong,

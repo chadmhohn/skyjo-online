@@ -102,6 +102,12 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   expect(serviceWorkerSource).toContain("addEventListener('push'");
   expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
   expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
+  const activationIndex = serviceWorkerSource.indexOf("event.data?.type === 'SKYJO_ACTIVATE_UPDATE'");
+  const sourceGuardIndex = serviceWorkerSource.indexOf('if (!event.source) return;');
+  const sanitizerIndex = serviceWorkerSource.indexOf("event.data?.type === 'SKYJO_SANITIZE_CACHE'");
+  expect(activationIndex).toBeGreaterThan(-1);
+  expect(sourceGuardIndex).toBeGreaterThan(activationIndex);
+  expect(sanitizerIndex).toBeGreaterThan(sourceGuardIndex);
 });
 
 test('single-player stats deduplicate one UUID without collapsing an equal-score game', async ({ page, skyjoServer }) => {

@@ -101,11 +101,11 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (!event.source) return;
   if (event.data?.type === 'SKYJO_ACTIVATE_UPDATE') {
     event.waitUntil(self.skipWaiting());
     return;
   }
+  if (!event.source) return;
   if (event.data?.type === 'SKYJO_SANITIZE_CACHE') {
     event.waitUntil(caches.open(cacheName).then(sanitizeCache).then(() => event.ports[0]?.postMessage('ok')));
   }
