@@ -26,6 +26,7 @@ export const REQUIRED_ARCHIVE_ENTRIES = new Set([
   'package-lock.json',
   'server.mjs',
   'server-account-store.mjs',
+  'server-game-state-validation.mjs',
   'server-persistence-health.mjs',
   'server-readiness.mjs',
   'server-release.mjs',
