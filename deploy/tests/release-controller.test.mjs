@@ -13,6 +13,7 @@ import {
   MAX_ARCHIVE_ENTRIES,
   MAX_EXTRACTED_BYTES,
   MAX_FILE_BYTES,
+  isAllowedServerRuntimeModule,
   normalizeArchiveEntry,
   REQUIRED_ARCHIVE_ENTRIES,
   readLinkWithin,
@@ -97,28 +98,14 @@ test('path and archive validation reject traversal, links, duplicates, and forbi
   const verbose = required.map((entry) => entry === './' ? 'drwxr-xr-x 0/0 0 2026-07-11 00:00:00 ./' : regularLine);
   const validated = validateArchiveListing(required, verbose);
   assert.equal(validated.entries.has('server.mjs'), true);
-  assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server-game-state-validation.mjs'), true);
-  assert.equal(validated.entries.has('server-game-state-validation.mjs'), true);
-  assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server-invite-codes.mjs'), true);
-  assert.equal(validated.entries.has('server-invite-codes.mjs'), true);
-  assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server-room-invites.mjs'), true);
-  assert.equal(validated.entries.has('server-room-invites.mjs'), true);
-  assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server-push.mjs'), true);
-  assert.equal(validated.entries.has('server-push.mjs'), true);
-  const missingValidatorIndex = required.indexOf('server-game-state-validation.mjs');
-  const missingValidator = required.filter((_, index) => index !== missingValidatorIndex);
-  const missingValidatorVerbose = verbose.filter((_, index) => index !== missingValidatorIndex);
-  assert.throws(
-    () => validateArchiveListing(missingValidator, missingValidatorVerbose),
-    /missing required runtime entry: server-game-state-validation\.mjs/
-  );
-  const missingPushIndex = required.indexOf('server-push.mjs');
+  assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server.mjs'), true);
+  const missingEntrypointIndex = required.indexOf('server.mjs');
   assert.throws(
     () => validateArchiveListing(
-      required.filter((_, index) => index !== missingPushIndex),
-      verbose.filter((_, index) => index !== missingPushIndex)
+      required.filter((_, index) => index !== missingEntrypointIndex),
+      verbose.filter((_, index) => index !== missingEntrypointIndex)
     ),
-    /missing required runtime entry: server-push\.mjs/
+    /missing required runtime entry: server\.mjs/
   );
   assert.throws(
     () => validateArchiveListing(
@@ -134,6 +121,67 @@ test('path and archive validation reject traversal, links, duplicates, and forbi
   const oversized = [...verbose];
   oversized[1] = `-rw-r--r-- 0/0 ${MAX_FILE_BYTES + 1} 2026-07-11 00:00:00 release.json`;
   assert.throws(() => validateArchiveListing(required, oversized), /too large/);
+});
+
+test('controller admits bounded top-level server helpers without coupling their inventory', () => {
+  for (const helper of [
+    'server-account-store.mjs',
+    'server-push.mjs',
+    'server-future-helper-v2.mjs',
+    `server-${'a'.repeat(117)}.mjs`
+  ]) {
+    assert.equal(isAllowedServerRuntimeModule(helper), true);
+    const names = [...required, helper];
+    const verbose = names.map((entry) => entry === './' ? 'drwxr-xr-x 0/0 0 2026-07-11 00:00:00 ./' : regularLine);
+    const validated = validateArchiveListing(names, verbose);
+    assert.equal(validated.entries.has(helper), true);
+    assert.equal(REQUIRED_ARCHIVE_ENTRIES.has(helper), false);
+  }
+
+  assert.doesNotThrow(() => validateArchiveListing(
+    required,
+    required.map((entry) => entry === './' ? 'drwxr-xr-x 0/0 0 2026-07-11 00:00:00 ./' : regularLine)
+  ));
+});
+
+test('controller rejects malformed, nested, and unreviewed top-level runtime helpers', () => {
+  const requiredVerbose = required.map((entry) => entry === './' ? 'drwxr-xr-x 0/0 0 2026-07-11 00:00:00 ./' : regularLine);
+  const rejected = [
+    'Server-push.mjs',
+    'server-Push.mjs',
+    'server-.mjs',
+    'server--push.mjs',
+    'server_push.mjs',
+    'server-push.js',
+    'server-push.mjs.bak',
+    'server-push.test.mjs',
+    `server-${'a'.repeat(118)}.mjs`,
+    'server/push.mjs',
+    'server-push/worker.mjs',
+    'helper.mjs'
+  ];
+  for (const entry of rejected) {
+    assert.equal(isAllowedServerRuntimeModule(entry), false, `${entry} unexpectedly matched the controller grammar`);
+    assert.throws(
+      () => validateArchiveListing([...required, entry], [...requiredVerbose, regularLine]),
+      /unexpected runtime entry/
+    );
+  }
+
+  assert.throws(
+    () => validateArchiveListing(
+      [...required, 'server-directory.mjs/'],
+      [...requiredVerbose, 'drwxr-xr-x 0/0 0 2026-07-11 00:00:00 server-directory.mjs/']
+    ),
+    /unexpected runtime entry/
+  );
+  assert.throws(
+    () => validateArchiveListing(
+      [...required, 'server-device.mjs'],
+      [...requiredVerbose, 'crw-r--r-- 0/0 0 2026-07-11 00:00:00 server-device.mjs']
+    ),
+    /not a regular file/
+  );
 });
 
 test('root and served release identities must match and verify checksums', async () => {
@@ -455,4 +503,25 @@ test('the one-time command-protocol cutover requires pre-merge bootstrap and man
   assert.match(document, /manual `verify` through `deploy\/github-release-remote\.sh`/);
   assert.match(document, /Merge only after that manual canary passes/);
   assert.match(document, /Do not tag or promote during the cutover window/);
+});
+
+test('the stable runtime-helper transition requires an exact reviewed bootstrap before merge', async () => {
+  const document = await fs.readFile(path.resolve(import.meta.dirname, '..', '..', 'docs', 'immutable-deployment.md'), 'utf8');
+  assert.match(document, /One-time stable runtime-helper policy transition/);
+  assert.match(document, /up to 128 characters/);
+  assert.match(document, /artifact producer keeps the exact reviewed server-module inventory/);
+  assert.match(document, /bootstrap-before-merge transition/);
+  assert.match(document, /Freeze and independently review the exact PR-head SHA/);
+  assert.match(document, /signed verify-only localhost canary with `activation=false`/);
+  assert.match(document, /production identity and readiness remain unchanged before merging/);
+  assert.match(document, /Changing `\/usr\/local\/lib\/skyjo-online\/bootstrap\/current` alone is not a rollback/);
+  assert.match(document, /"\$prior\/bootstrap-skyjo-delivery\.sh" prepare/);
+  assert.match(document, /"\$prior\/inputs\/transport\.pub"/);
+  assert.match(document, /"\$prior\/inputs\/canary\.pem"/);
+  assert.match(document, /"\$prior\/inputs\/production\.pem"/);
+  assert.match(document, /delivery-assets\.sha256` to verify every installed live asset hash/);
+  assert.match(document, /byte-compare the installed controller\/dispatcher libraries and launchers with the selected prior generation/);
+  assert.match(document, /skyjo-release-controller self-test` to return `activation=false`/);
+  assert.match(document, /Read back `bootstrap\/current`/);
+  assert.match(document, /active application release SHA and readiness must remain unchanged/);
 });
