@@ -18,6 +18,7 @@ export default defineConfig({
         'server-invite-codes.mjs',
         'server-room-invites.mjs',
         'server-persistence-health.mjs',
+        'server-push.mjs',
         'server-room-persistence.mjs',
         'server-readiness.mjs',
         'server-release.mjs',
@@ -41,6 +42,12 @@ export default defineConfig({
           statements: 85
         },
         'server-persistence-health.mjs': {
+          lines: 90,
+          branches: 85,
+          functions: 95,
+          statements: 85
+        },
+        'server-push.mjs': {
           lines: 90,
           branches: 85,
           functions: 95,

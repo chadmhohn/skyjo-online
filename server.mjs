@@ -65,6 +65,7 @@ import {
   parseRoomInviteToken
 } from './server-room-invites.mjs';
 import { createPersistenceHealthTracker } from './server-persistence-health.mjs';
+import { deliverWebPushNotifications, resolveWebPushConfiguration } from './server-push.mjs';
 import { createReadinessResult, createVersionResult } from './server-readiness.mjs';
 import { loadReleaseIdentity, releaseValidationOptionsForEnvironment } from './server-release.mjs';
 
@@ -87,10 +88,9 @@ const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
 const trustProxyClientIp = process.env.SKYJO_TRUST_PROXY_CLIENT_IP === 'true';
 const testPwaVariantsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_VARIANTS === 'true';
 const testPwaNetworkFaultsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_NETWORK_FAULTS === 'true';
-const vapidPublicKey = process.env.SKYJO_VAPID_PUBLIC_KEY || '';
-const vapidPrivateKey = process.env.SKYJO_VAPID_PRIVATE_KEY || '';
+const vapidPublicKeyEnvironment = process.env.SKYJO_VAPID_PUBLIC_KEY || '';
+const vapidPrivateKeyEnvironment = process.env.SKYJO_VAPID_PRIVATE_KEY || '';
 const vapidSubject = process.env.SKYJO_VAPID_SUBJECT || `mailto:${adminEmail}`;
-const pushNotificationsEnabled = Boolean(vapidPublicKey && vapidPrivateKey);
 const rooms = new Map();
 const roomsFile = resolveRoomsFilePath();
 const accountDatabaseFile = resolveAccountDatabasePath();
@@ -149,11 +149,27 @@ if (!accessPassword || !sessionSecret || typeof inviteSecret !== 'string' || inv
   process.exit(1);
 }
 
-if (pushNotificationsEnabled) {
-  webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
-} else {
-  console.warn('Web Push is disabled. Set SKYJO_VAPID_PUBLIC_KEY and SKYJO_VAPID_PRIVATE_KEY to enable notifications.');
+let webPushConfiguration;
+try {
+  webPushConfiguration = resolveWebPushConfiguration({
+    publicKey: vapidPublicKeyEnvironment,
+    privateKey: vapidPrivateKeyEnvironment,
+    subject: vapidSubject
+  });
+  if (webPushConfiguration.enabled) {
+    webPush.setVapidDetails(
+      webPushConfiguration.subject,
+      webPushConfiguration.publicKey,
+      webPushConfiguration.privateKey
+    );
+  } else {
+    console.warn('Web Push is disabled. Set SKYJO_VAPID_PUBLIC_KEY and SKYJO_VAPID_PRIVATE_KEY to enable notifications.');
+  }
+} catch (error) {
+  console.error(`Web Push configuration is invalid: ${error instanceof Error ? error.message : 'validation failed.'}`);
+  process.exit(1);
 }
+const pushNotificationsEnabled = webPushConfiguration.enabled;
 
 try {
   releaseIdentity = await loadReleaseIdentity(distDir, releaseValidationOptionsForEnvironment(process.env.NODE_ENV));
@@ -604,22 +620,17 @@ function transferRoomHost(fence) {
 }
 
 async function sendPushToUsers(userIds, payload) {
-  if (!pushNotificationsEnabled || !accountStore) return;
-  const subscriptions = accountStore.listPushSubscriptionsForUsers(userIds);
+  const store = accountStore;
+  if (!pushNotificationsEnabled || !store) return;
+  const subscriptions = store.listPushSubscriptionsForUsers(userIds);
   if (subscriptions.length === 0) return;
-  await Promise.all(
-    subscriptions.map(async ({ endpoint, subscription }) => {
-      try {
-        await webPush.sendNotification(subscription, JSON.stringify(payload));
-      } catch (error) {
-        if (error?.statusCode === 404 || error?.statusCode === 410) {
-          accountStore.deletePushSubscription(endpoint);
-          return;
-        }
-        console.warn('Failed to send push notification:', error?.message || error);
-      }
-    })
-  );
+  await deliverWebPushNotifications({
+    subscriptions,
+    payload,
+    sendNotification: (subscription, serializedPayload) => webPush.sendNotification(subscription, serializedPayload),
+    deleteSubscription: (endpoint) => store.deletePushSubscription(endpoint),
+    reportFailure: (diagnostic) => console.warn('Web Push delivery failed.', diagnostic)
+  });
 }
 
 function awayUserIdsForPlayers(room, playerIds) {
@@ -992,7 +1003,7 @@ async function handleApiRequest(req, res, url) {
       if (!user) return true;
       sendJsonResponse(res, 200, {
         enabled: pushNotificationsEnabled,
-        publicKey: pushNotificationsEnabled ? vapidPublicKey : ''
+        publicKey: pushNotificationsEnabled ? webPushConfiguration.publicKey : ''
       });
       return true;
     }
