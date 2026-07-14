@@ -190,9 +190,6 @@ async function expectKeyboardExposure(page: Page) {
 
 async function expectTouchExposure(page: Page, session: CDPSession, viewport: { width: number; height: number }) {
   await page.setViewportSize(viewport);
-  const rail = page.getByTestId('opponent-rail');
-  await rail.hover();
-  await page.mouse.wheel(-10_000, 0);
   await expect.poll(async () => (await railSnapshot(page)).scrollLeft).toBeLessThanOrEqual(1);
   let snapshot = await railSnapshot(page);
   const exposed = new Set(snapshot.visibleIds);
@@ -243,6 +240,7 @@ async function expectActionableCardsMeetTarget(page: Page, state: string) {
 }
 
 test('compiled opponent rail CSS preserves seven-seat geometry and trusted Chromium gestures', async ({
+  browser,
   page,
   skyjoServer
 }, testInfo) => {
@@ -257,20 +255,63 @@ test('compiled opponent rail CSS preserves seven-seat geometry and trusted Chrom
   await expect(page.getByTestId('local-board')).not.toHaveAttribute('tabindex');
   await expectCompiledOpponentOverflow(page);
   for (const viewport of railViewports) await expectRailGeometry(page, viewport);
-  if (testInfo.project.name === 'chromium') await expectKeyboardExposure(page);
+  if (testInfo.project.name !== 'chromium') return;
 
-  const touchSession = testInfo.project.name === 'chromium'
-    ? await page.context().newCDPSession(page)
-    : null;
-  if (!touchSession) return;
+  await expectKeyboardExposure(page);
+
+  let wheelContext: BrowserContext | undefined;
   try {
-    await touchSession.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+    wheelContext = await browser.newContext({
+      hasTouch: false,
+      isMobile: false,
+      serviceWorkers: 'allow',
+      viewport: railViewports[0]
+    });
+    const access = await wheelContext.request.post(`${skyjoServer.baseURL}/login`, {
+      form: { next: '/', password: skyjoServer.accessPassword }
+    });
+    expect(access.ok()).toBe(true);
+    const wheelPage = await wheelContext.newPage();
+    await installSeededBrowserRuntime(wheelPage, 81);
+    await wheelPage.emulateMedia({ reducedMotion: 'reduce' });
+    await wheelPage.goto(`${skyjoServer.baseURL}/single-player`);
+    await configureSoloRoster(wheelPage, 8);
+    await expectCompiledOpponentOverflow(wheelPage);
     for (const viewport of railViewports) {
-      await expectWheelExposure(page, viewport);
-      await expectTouchExposure(page, touchSession, viewport);
+      await expectRailGeometry(wheelPage, viewport);
+      await expectWheelExposure(wheelPage, viewport);
     }
   } finally {
-    await touchSession.detach();
+    await wheelContext?.close();
+  }
+
+  for (const viewport of railViewports) {
+    let touchContext: BrowserContext | undefined;
+    let touchSession: CDPSession | undefined;
+    try {
+      touchContext = await browser.newContext({
+        hasTouch: true,
+        isMobile: false,
+        serviceWorkers: 'allow',
+        viewport
+      });
+      const access = await touchContext.request.post(`${skyjoServer.baseURL}/login`, {
+        form: { next: '/', password: skyjoServer.accessPassword }
+      });
+      expect(access.ok()).toBe(true);
+      const touchPage = await touchContext.newPage();
+      await installSeededBrowserRuntime(touchPage, 81);
+      await touchPage.emulateMedia({ reducedMotion: 'reduce' });
+      await touchPage.goto(`${skyjoServer.baseURL}/single-player`);
+      await configureSoloRoster(touchPage, 8);
+      await expectRailGeometry(touchPage, viewport);
+      touchSession = await touchContext.newCDPSession(touchPage);
+      await touchSession.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+      await expectTouchExposure(touchPage, touchSession, viewport);
+    } finally {
+      await touchSession?.detach();
+      await touchContext?.close();
+    }
   }
 });
 
