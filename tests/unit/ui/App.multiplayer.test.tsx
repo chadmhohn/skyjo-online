@@ -1379,9 +1379,9 @@ describe('multiplayer game table', () => {
       drawnCard: makeCard('drawn', 9, true)
     };
     convergeCommand(socket, drawCommand, makeRoom({ state: drawnState, status: 'playing', revision: 5 }));
-    expect(screen.getAllByText('Drawn card waiting').length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('region', { name: 'Drawn card decision' }).length).toBeGreaterThan(0);
     await user.click(screen.getAllByRole('button', { name: /Discard \+ reveal/ })[0]);
-    expect(screen.getAllByText('Discard mode: select a highlighted hidden card.').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Discard + reveal selected. Choose a highlighted hidden card.').length).toBeGreaterThan(0);
     await user.click(screen.getAllByRole('button', { name: /row 1, column 3, SKYJO face-down\. Reveal after discarding the drawn card/ })[0]);
     const discardRevealCommand = expectCommand(socket, { type: 'discard-and-reveal', cardIndex: 2 }, 5);
     convergeCommand(

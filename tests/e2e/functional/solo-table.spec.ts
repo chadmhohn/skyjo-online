@@ -140,7 +140,7 @@ function responsiveGeometryCriteria(
   const expectedPhone = viewport.width <= 640;
   const expectedNarrow = viewport.width <= 900;
   const expectedCompact = viewport.width >= 641 && viewport.height <= 900;
-  const expectedCenterBandHeight = expectedPhone ? 100 : expectedCompact ? 150 : null;
+  const expectedCenterBandHeight = expectedPhone ? 110 : expectedCompact ? 150 : null;
   const centerTolerance = expectedPhone ? 8 : 16;
   const details = JSON.stringify(geometry);
   const criteria: ResponsiveGeometryCriterion[] = [
@@ -593,7 +593,7 @@ test.describe('responsive table settlement stress', () => {
         samples.push(await settleResponsiveTable(page, viewport, playerCount));
       }
 
-      expect(samples.map((sample) => sample.centerBandHeight)).toEqual([150, 100, 150, 100, 150]);
+      expect(samples.map((sample) => sample.centerBandHeight)).toEqual([150, 110, 150, 110, 150]);
       expect(samples.map((sample) => sample.phoneMediaMatches)).toEqual([false, true, false, true, false]);
       expect(samples.map((sample) => sample.compactMediaMatches)).toEqual([true, false, true, false, true]);
       expect(samples.map((sample) => sample.phoneGuidanceVisible)).toEqual([false, true, false, true, false]);

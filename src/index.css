@@ -411,6 +411,17 @@ html.skyjo-test-text-scale-200 {
     transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
   }
 
+  .skyjo-drawn-action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+
+  .skyjo-drawn-instruction {
+    margin-top: 0.75rem;
+  }
+
   .skyjo-choice-button span {
     font-size: 0.9rem;
     font-weight: 900;
@@ -1465,6 +1476,83 @@ html.skyjo-test-text-scale-200 {
     .skyjo-table-count {
       font-size: 0.68rem;
     }
+
+    .skyjo-drawn-decision {
+      display: grid;
+      min-width: 0;
+      grid-template-areas:
+        'card actions'
+        'instruction instruction';
+      grid-template-columns: 2.75rem minmax(0, 1fr);
+      align-content: center;
+      align-items: start;
+      gap: 0.25rem 0.4rem;
+    }
+
+    .skyjo-drawn-decision > .flex {
+      grid-area: card;
+      justify-content: center;
+    }
+
+    .skyjo-drawn-action-grid {
+      grid-area: actions;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.25rem;
+      margin-top: 0;
+    }
+
+    .skyjo-drawn-decision .skyjo-choice-button {
+      min-width: 44px;
+      min-height: 44px;
+      padding: 0.25rem;
+      text-align: center;
+    }
+
+    .skyjo-drawn-decision .skyjo-choice-button span {
+      font-size: 0.7rem;
+      line-height: 1.1;
+    }
+
+    .skyjo-drawn-instruction {
+      grid-area: instruction;
+      margin-top: 0;
+      padding: 0.25rem 0.35rem;
+      font-size: 0.65rem;
+      line-height: 1.2;
+    }
+
+    @container (max-width: 28rem) {
+      .skyjo-game-table-layout {
+        grid-template-rows: var(--skyjo-board-track) auto var(--skyjo-board-track);
+      }
+
+      .skyjo-table-center-band,
+      .skyjo-table-controls {
+        height: auto;
+        min-height: 0;
+        max-height: none;
+      }
+
+      .skyjo-table-controls {
+        grid-template-columns: minmax(0, 1fr);
+        overflow: visible;
+      }
+
+      .skyjo-table-band-side {
+        height: auto;
+        overflow: visible;
+      }
+
+      .skyjo-table-piles {
+        width: min(100%, 18rem);
+        justify-self: center;
+      }
+
+      .skyjo-drawn-decision {
+        width: 100%;
+        min-width: 0;
+      }
+    }
   }
 
   @media (max-width: 640px) {
@@ -1609,7 +1697,7 @@ html.skyjo-test-text-scale-200 {
     .skyjo-game-table-layout {
       --skyjo-board-track: 15rem;
       --skyjo-table-gap: 0.5rem;
-      grid-template-rows: var(--skyjo-board-track) 100px var(--skyjo-board-track);
+      grid-template-rows: var(--skyjo-board-track) 110px var(--skyjo-board-track);
       border-radius: 18px;
       padding: 0.5rem;
     }
@@ -1706,9 +1794,9 @@ html.skyjo-test-text-scale-200 {
 
     .skyjo-table-center-band,
     .skyjo-table-controls {
-      height: 100px;
-      min-height: 100px;
-      max-height: 100px;
+      height: 110px;
+      min-height: 110px;
+      max-height: 110px;
     }
 
     .skyjo-table-controls {
@@ -1720,7 +1808,7 @@ html.skyjo-test-text-scale-200 {
     }
 
     .skyjo-table-band-side {
-      height: 92px;
+      height: 102px;
       align-content: start;
       gap: 0.25rem;
       overflow-y: auto;
@@ -1760,6 +1848,10 @@ html.skyjo-test-text-scale-200 {
     .skyjo-drawn-decision {
       border-radius: 9px;
       padding: 0.35rem;
+    }
+
+    .skyjo-drawn-decision {
+      padding-block: 0.25rem;
     }
 
     .skyjo-table-controls .skyjo-turn-status h3 {
@@ -1811,8 +1903,8 @@ html.skyjo-test-text-scale-200 {
     }
 
     .skyjo-pile-button {
-      min-height: 92px;
-      height: 92px;
+      min-height: 102px;
+      height: 102px;
       padding: 3px;
     }
 
@@ -1839,10 +1931,10 @@ html.skyjo-test-text-scale-200 {
       display: none;
     }
 
-    .skyjo-drawn-decision > .mt-3 {
+    .skyjo-drawn-action-grid {
       display: grid;
       grid-template-columns: 1fr;
-      gap: 0.2rem;
+      gap: 0.125rem;
       margin-top: 0 !important;
     }
 
