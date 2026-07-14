@@ -5,6 +5,9 @@ import { domainToASCII } from 'node:url';
 const NON_PUBLIC_HOST_SUFFIXES = Object.freeze([
   'localhost',
   'local',
+  'localdomain',
+  'alt',
+  'arpa',
   'test',
   'example',
   'invalid',
@@ -45,63 +48,13 @@ function normalizeEnvironmentValue(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function isPublicIpv4(hostname) {
-  const octets = hostname.split('.').map(Number);
-  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return false;
-  const [first, second, third] = octets;
-  if (first === 0 || first === 10 || first === 127 || first >= 224) return false;
-  if (first === 100 && second >= 64 && second <= 127) return false;
-  if (first === 169 && second === 254) return false;
-  if (first === 172 && second >= 16 && second <= 31) return false;
-  if (first === 192 && second === 168) return false;
-  if (first === 192 && second === 0 && (third === 0 || third === 2)) return false;
-  if (first === 192 && second === 88 && third === 99) return false;
-  if (first === 198 && (second === 18 || second === 19 || (second === 51 && third === 100))) return false;
-  if (first === 203 && second === 0 && third === 113) return false;
-  return true;
-}
-
-function expandIpv6(hostname) {
-  let candidate = hostname;
-  if (candidate.includes('.')) {
-    const lastColon = candidate.lastIndexOf(':');
-    const octets = candidate.slice(lastColon + 1).split('.').map(Number);
-    if (octets.length !== 4) return null;
-    candidate = `${candidate.slice(0, lastColon)}:${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
-  }
-  const compressed = candidate.split('::');
-  if (compressed.length > 2) return null;
-  const left = compressed[0] ? compressed[0].split(':') : [];
-  const right = compressed[1] ? compressed[1].split(':') : [];
-  const missing = 8 - left.length - right.length;
-  if ((compressed.length === 1 && missing !== 0) || (compressed.length === 2 && missing < 1)) return null;
-  const groups = [...left, ...Array.from({ length: missing }, () => '0'), ...right].map((part) => Number.parseInt(part, 16));
-  return groups.length === 8 && groups.every((part) => Number.isInteger(part) && part >= 0 && part <= 0xffff)
-    ? groups
-    : null;
-}
-
-function isPublicIpv6(hostname) {
-  const groups = expandIpv6(hostname);
-  if (!groups) return false;
-  const [first, second] = groups;
-  if (first === 0) return false;
-  if ((first & 0xfe00) === 0xfc00) return false;
-  if ((first & 0xffc0) === 0xfe80) return false;
-  if ((first & 0xff00) === 0xff00) return false;
-  if (first === 0x2001 && second === 0x0db8) return false;
-  return true;
-}
-
 function hostMatchesSuffix(hostname, suffix) {
   return hostname === suffix || hostname.endsWith(`.${suffix}`);
 }
 
 function isPublicHostname(value) {
   const unwrapped = value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
-  const ipVersion = isIP(unwrapped);
-  if (ipVersion === 4) return isPublicIpv4(unwrapped);
-  if (ipVersion === 6) return isPublicIpv6(unwrapped.toLowerCase());
+  if (isIP(unwrapped) !== 0) return false;
   const hostname = domainToASCII(unwrapped.toLowerCase().replace(/\.$/, ''));
   if (!hostname || hostname.length > 253 || !hostname.includes('.') || /^[0-9.]+$/.test(hostname)) return false;
   if (NON_PUBLIC_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(hostname, suffix))) return false;
@@ -233,28 +186,73 @@ export function createWebPushDeliveryDiagnostic(error, endpoint) {
   };
 }
 
+function safeReport(reporter, diagnostic) {
+  if (typeof reporter !== 'function') return;
+  try {
+    const result = reporter(diagnostic);
+    if (result && typeof result.then === 'function') {
+      void Promise.resolve(result).catch(() => {});
+    }
+  } catch {
+    // Diagnostics must never change delivery or cleanup behavior.
+  }
+}
+
+function subscriptionEntry(value) {
+  try {
+    return value && typeof value === 'object'
+      ? { endpoint: value.endpoint, subscription: value.subscription }
+      : { endpoint: null, subscription: null };
+  } catch {
+    return { endpoint: null, subscription: null };
+  }
+}
+
+function failedDeliveryResult(diagnostic, { cleanupFailed = false } = {}) {
+  return {
+    delivered: false,
+    deleted: false,
+    cleanupFailed,
+    diagnostic
+  };
+}
+
 export async function deliverWebPushNotifications({
   subscriptions,
   payload,
   sendNotification,
   deleteSubscription,
-  reportFailure
+  reportFailure,
+  reportCleanupFailure
 }) {
-  const serializedPayload = JSON.stringify(payload);
-  return Promise.all(subscriptions.map(async ({ endpoint, subscription }) => {
+  const entries = Array.isArray(subscriptions) ? subscriptions.map(subscriptionEntry) : [];
+  let serializedPayload;
+  try {
+    serializedPayload = JSON.stringify(payload);
+    if (typeof serializedPayload !== 'string') throw new Error('serialization failed');
+  } catch {
+    return entries.map(({ endpoint }) => {
+      const diagnostic = createWebPushDeliveryDiagnostic(null, endpoint);
+      safeReport(reportFailure, diagnostic);
+      return failedDeliveryResult(diagnostic);
+    });
+  }
+  return Promise.all(entries.map(async ({ endpoint, subscription }) => {
     try {
       await sendNotification(subscription, serializedPayload);
-      return { delivered: true, deleted: false };
+      return { delivered: true, deleted: false, cleanupFailed: false };
     } catch (error) {
       const diagnostic = createWebPushDeliveryDiagnostic(error, endpoint);
+      safeReport(reportFailure, diagnostic);
+      const stale = diagnostic.statusCode === 404 || diagnostic.statusCode === 410;
+      if (!stale) return failedDeliveryResult(diagnostic);
       try {
-        reportFailure(diagnostic);
+        await deleteSubscription(endpoint);
+        return { delivered: false, deleted: true, cleanupFailed: false, diagnostic };
       } catch {
-        // Diagnostics must not change delivery or stale-subscription cleanup behavior.
+        safeReport(reportCleanupFailure, diagnostic);
+        return failedDeliveryResult(diagnostic, { cleanupFailed: true });
       }
-      const deleted = diagnostic.statusCode === 404 || diagnostic.statusCode === 410;
-      if (deleted) await deleteSubscription(endpoint);
-      return { delivered: false, deleted, diagnostic };
     }
   }));
 }

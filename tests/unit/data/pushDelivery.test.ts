@@ -1,4 +1,8 @@
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { createAccountStore } from '../../../server-account-store.mjs';
 import {
   createWebPushDeliveryDiagnostic,
@@ -6,6 +10,8 @@ import {
   resolveWebPushConfiguration,
   validateVapidSubject
 } from '../../../server-push.mjs';
+
+const execFileAsync = promisify(execFile);
 
 function generateVapidKeys() {
   const ecdh = crypto.createECDH('prime256v1');
@@ -28,8 +34,6 @@ describe('Web Push configuration', () => {
     'https://skyjo.groundworkrevops.com/push/contact?source=vapid#operations',
     'mailto:alerts@groundworkrevops.com',
     'mailto:push.team+skyjo@groundworkrevops.com?subject=Skyjo%20Web%20Push',
-    'https://8.8.8.8/push-contact',
-    'https://[2606:4700:4700::1111]/push-contact',
     'https://skyjo.xn--bcher-kva.de/push-contact'
   ])('accepts a public VAPID contact URI: %s', (subject) => {
     expect(validateVapidSubject(` ${subject} `)).toBe(subject);
@@ -47,6 +51,10 @@ describe('Web Push configuration', () => {
     'mailto:alerts@groundworkrevops.com#private',
     'https://localhost',
     'https://skyjo.localhost',
+    'https://skyjo.alt',
+    'mailto:alerts@skyjo.alt',
+    'https://skyjo.arpa',
+    'mailto:alerts@service.arpa',
     'https://skyjo.test',
     'mailto:alerts@skyjo.example',
     'https://skyjo.invalid',
@@ -60,6 +68,7 @@ describe('Web Push configuration', () => {
     'https://999.999.999.999',
     'https://-bad.groundworkrevops.com',
     'https://bad-.groundworkrevops.com',
+    'https://8.8.8.8',
     'https://10.0.0.1',
     'https://100.64.0.1',
     'https://127.0.0.1',
@@ -73,7 +82,12 @@ describe('Web Push configuration', () => {
     'https://198.51.100.1',
     'https://203.0.113.1',
     'https://224.0.0.1',
+    'https://[2606:4700:4700::1111]',
     'https://[::1]',
+    'https://[100::1]',
+    'https://[2001:2::1]',
+    'https://[3fff::1]',
+    'https://[5f00::1]',
     'https://[fc00::1]',
     'https://[fe80::1]',
     'https://[ff00::1]',
@@ -141,7 +155,7 @@ describe('Web Push delivery diagnostics', () => {
       sendNotification,
       deleteSubscription,
       reportFailure
-    })).resolves.toEqual([{ delivered: true, deleted: false }]);
+    })).resolves.toEqual([{ delivered: true, deleted: false, cleanupFailed: false }]);
     expect(sendNotification).toHaveBeenCalledWith(subscription, JSON.stringify({ title: 'Your turn', roomId: 'private-room-id' }));
     expect(deleteSubscription).not.toHaveBeenCalled();
     expect(reportFailure).not.toHaveBeenCalled();
@@ -231,9 +245,97 @@ describe('Web Push delivery diagnostics', () => {
     })).resolves.toEqual([{
       delivered: false,
       deleted: true,
+      cleanupFailed: false,
       diagnostic: { statusCode: 410, providerReason: 'Unregistered', endpointOrigin: 'https://web.push.apple.com' }
     }]);
     expect(deleteSubscription).toHaveBeenCalledWith('https://web.push.apple.com/device/stale-secret');
+  });
+
+  it('contains stale cleanup and payload serialization failures without exposing their errors', async () => {
+    const deliveryReports: DeliveryDiagnostic[] = [];
+    const cleanupReports: DeliveryDiagnostic[] = [];
+    const endpoint = 'https://web.push.apple.com/device/private-cleanup-token';
+    const cleanupResult = await deliverWebPushNotifications({
+      subscriptions: [{ endpoint, subscription: { endpoint } }],
+      payload: { title: 'Your turn', privateRoom: 'room-secret' },
+      sendNotification: async () => {
+        throw { statusCode: 410, body: '{"reason":"Unregistered","detail":"provider-secret"}' };
+      },
+      deleteSubscription: async () => {
+        throw new Error('private SQLite path and endpoint token');
+      },
+      reportFailure: (diagnostic: DeliveryDiagnostic) => deliveryReports.push(diagnostic),
+      reportCleanupFailure: (diagnostic: DeliveryDiagnostic) => cleanupReports.push(diagnostic)
+    });
+    const expectedDiagnostic = {
+      statusCode: 410,
+      providerReason: 'Unregistered',
+      endpointOrigin: 'https://web.push.apple.com'
+    };
+    expect(cleanupResult).toEqual([{
+      delivered: false,
+      deleted: false,
+      cleanupFailed: true,
+      diagnostic: expectedDiagnostic
+    }]);
+    expect(deliveryReports).toEqual([expectedDiagnostic]);
+    expect(cleanupReports).toEqual([expectedDiagnostic]);
+    expect(JSON.stringify({ cleanupResult, deliveryReports, cleanupReports })).not.toMatch(/private|secret|device\//i);
+
+    const circularPayload: Record<string, unknown> = {};
+    circularPayload.self = circularPayload;
+    const sendNotification = vi.fn();
+    const serializationReports: DeliveryDiagnostic[] = [];
+    await expect(deliverWebPushNotifications({
+      subscriptions: [{ endpoint, subscription: { endpoint } }],
+      payload: circularPayload,
+      sendNotification,
+      deleteSubscription: vi.fn(),
+      reportFailure: (diagnostic: DeliveryDiagnostic) => serializationReports.push(diagnostic),
+      reportCleanupFailure: vi.fn()
+    })).resolves.toEqual([{
+      delivered: false,
+      deleted: false,
+      cleanupFailed: false,
+      diagnostic: { statusCode: null, providerReason: null, endpointOrigin: 'https://web.push.apple.com' }
+    }]);
+    expect(sendNotification).not.toHaveBeenCalled();
+    expect(serializationReports).toEqual([
+      { statusCode: null, providerReason: null, endpointOrigin: 'https://web.push.apple.com' }
+    ]);
+  });
+
+  it('survives fire-and-forget cleanup failure under Node 24 strict unhandled-rejection behavior', async () => {
+    expect(Number(process.versions.node.split('.')[0])).toBe(24);
+    const moduleUrl = pathToFileURL(path.resolve('server-push.mjs')).href;
+    const script = `
+      import { deliverWebPushNotifications } from ${JSON.stringify(moduleUrl)};
+      let unhandled = 0;
+      process.on('unhandledRejection', () => { unhandled += 1; });
+      void deliverWebPushNotifications({
+        subscriptions: [{
+          endpoint: 'https://web.push.apple.com/device/private-token',
+          subscription: { endpoint: 'https://web.push.apple.com/device/private-token' }
+        }],
+        payload: { title: 'Your turn' },
+        sendNotification: async () => { throw { statusCode: 410, body: '{"reason":"Unregistered"}' }; },
+        deleteSubscription: async () => { throw new Error('private cleanup failure'); },
+        reportFailure: async () => { throw new Error('private report failure'); },
+        reportCleanupFailure: async () => { throw new Error('private cleanup report failure'); }
+      });
+      setTimeout(() => {
+        if (unhandled !== 0) process.exit(91);
+        process.stdout.write('survived\\n');
+      }, 30);
+    `;
+    const result = await execFileAsync(process.execPath, [
+      '--unhandled-rejections=strict',
+      '--input-type=module',
+      '--eval',
+      script
+    ], { timeout: 5_000 });
+    expect(result.stdout).toBe('survived\n');
+    expect(result.stderr).toBe('');
   });
 
   it('integrates delivery cleanup with the persisted subscription store', async () => {

@@ -65,7 +65,11 @@ import {
   parseRoomInviteToken
 } from './server-room-invites.mjs';
 import { createPersistenceHealthTracker } from './server-persistence-health.mjs';
-import { deliverWebPushNotifications, resolveWebPushConfiguration } from './server-push.mjs';
+import {
+  createWebPushDeliveryDiagnostic,
+  deliverWebPushNotifications,
+  resolveWebPushConfiguration
+} from './server-push.mjs';
 import { createReadinessResult, createVersionResult } from './server-readiness.mjs';
 import { loadReleaseIdentity, releaseValidationOptionsForEnvironment } from './server-release.mjs';
 
@@ -619,17 +623,36 @@ function transferRoomHost(fence) {
   return true;
 }
 
+function reportWebPushFailure(message, diagnostic = createWebPushDeliveryDiagnostic(null, null)) {
+  try {
+    console.warn(message, diagnostic);
+  } catch {
+    // Logging cannot be allowed to reject a fire-and-forget notification task.
+  }
+}
+
 async function sendPushToUsers(userIds, payload) {
-  const store = accountStore;
-  if (!pushNotificationsEnabled || !store) return;
-  const subscriptions = store.listPushSubscriptionsForUsers(userIds);
-  if (subscriptions.length === 0) return;
-  await deliverWebPushNotifications({
-    subscriptions,
-    payload,
-    sendNotification: (subscription, serializedPayload) => webPush.sendNotification(subscription, serializedPayload),
-    deleteSubscription: (endpoint) => store.deletePushSubscription(endpoint),
-    reportFailure: (diagnostic) => console.warn('Web Push delivery failed.', diagnostic)
+  try {
+    const store = accountStore;
+    if (!pushNotificationsEnabled || !store) return;
+    const subscriptions = store.listPushSubscriptionsForUsers(userIds);
+    if (subscriptions.length === 0) return;
+    await deliverWebPushNotifications({
+      subscriptions,
+      payload,
+      sendNotification: (subscription, serializedPayload) => webPush.sendNotification(subscription, serializedPayload),
+      deleteSubscription: (endpoint) => store.deletePushSubscription(endpoint),
+      reportFailure: (diagnostic) => reportWebPushFailure('Web Push delivery failed.', diagnostic),
+      reportCleanupFailure: (diagnostic) => reportWebPushFailure('Web Push subscription cleanup failed.', diagnostic)
+    });
+  } catch {
+    reportWebPushFailure('Web Push notification task failed.');
+  }
+}
+
+function schedulePushToUsers(userIds, payload) {
+  void sendPushToUsers(userIds, payload).catch(() => {
+    reportWebPushFailure('Web Push notification task rejected unexpectedly.');
   });
 }
 
@@ -649,7 +672,7 @@ function notifyAwayPlayersAfterMove(room, actor, nextState) {
       room.players.filter((player) => player.id !== actor.id).map((player) => player.id)
     );
     const title = nextState.phase === 'game-over' ? 'Skyjo game finished' : 'Skyjo round ended';
-    void sendPushToUsers(targetUserIds, {
+    schedulePushToUsers(targetUserIds, {
       title,
       body: `${actor.name} played in room ${room.code}.`,
       tag: `skyjo-${room.code}-${nextState.phase}`,
@@ -661,7 +684,7 @@ function notifyAwayPlayersAfterMove(room, actor, nextState) {
   const activePlayer = nextState.players[nextState.currentPlayerIndex];
   if (!activePlayer || activePlayer.id === actor.id) return;
   const targetUserIds = awayUserIdsForPlayers(room, [activePlayer.id]);
-  void sendPushToUsers(targetUserIds, {
+  schedulePushToUsers(targetUserIds, {
     title: 'Your turn in Skyjo',
     body: `${actor.name} played. Tap to take your turn.`,
     tag: `skyjo-${room.code}-turn`,
