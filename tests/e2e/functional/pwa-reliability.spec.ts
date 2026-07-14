@@ -1,7 +1,7 @@
 import type { BrowserContext, Page } from '@playwright/test';
 import { expect, test } from '../fixtures';
 
-const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/audio\/[A-Za-z0-9_.-]+\.mp3|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
+const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
 
 async function waitForServiceWorkerControl(page: Page) {
   await page.evaluate(async () => {
@@ -151,6 +151,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     expect(cacheEvidence.keys.some((key) => key.startsWith('skyjo-online-v') || key.startsWith('skyjo-static-v'))).toBe(false);
     expect(cacheEvidence.keys.filter((key) => key.startsWith('skyjo-pwa-v2-'))).toHaveLength(1);
     expect(cacheEvidence.entries.length).toBeGreaterThan(4);
+    expect(cacheEvidence.entries.some((entry) => entry.path.endsWith('.mp3'))).toBe(false);
     for (const entry of cacheEvidence.entries) {
       expect(entry.cache).toMatch(/^skyjo-pwa-v2-/);
       expect(entry.path).toMatch(safeCachedPath);

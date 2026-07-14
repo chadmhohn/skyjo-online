@@ -61,7 +61,7 @@ describe('HTML Audio playback', () => {
     vi.unstubAllGlobals();
   });
 
-  it('preloads each cue and ambience exactly once', async () => {
+  it('preloads only enabled cue assets exactly once', async () => {
     const audio = await loadAudio();
 
     await expect(audio.primeAudio()).resolves.toBe(true);
@@ -70,11 +70,31 @@ describe('HTML Audio playback', () => {
     expect(FakeAudio.instances.map((instance) => instance.src)).toEqual([
       '/audio/card-flip.mp3',
       '/audio/card-pickup.mp3',
-      '/audio/card-place.mp3',
-      '/audio/table-ambience.mp3'
+      '/audio/card-place.mp3'
     ]);
     FakeAudio.instances.forEach((instance) => expect(instance.load).toHaveBeenCalledOnce());
-    expect(bySource('table-ambience.mp3').loop).toBe(true);
+  });
+
+  it('does no audio work when both audio channels are disabled', async () => {
+    const audio = await loadAudio();
+    audio.setAudioSettings({ ambience: false, soundEffects: false });
+
+    await expect(audio.primeAudio()).resolves.toBe(true);
+    audio.playAudioCue('flip');
+
+    expect(FakeAudio.instances).toHaveLength(0);
+  });
+
+  it('warms ambience without touching disabled sound effects', async () => {
+    const audio = await loadAudio();
+    audio.setAudioSettings({ ambience: true, soundEffects: false });
+    await flushPromises();
+
+    await expect(audio.primeAudio()).resolves.toBe(true);
+
+    expect(FakeAudio.instances.map((instance) => instance.src)).toEqual(['/audio/table-ambience.mp3']);
+    expect(bySource('table-ambience.mp3').load).toHaveBeenCalledOnce();
+    expect(bySource('table-ambience.mp3').play).toHaveBeenCalledOnce();
   });
 
   it('plays a volume-scaled cue, throttles duplicates, and cleans it up on schedule', async () => {

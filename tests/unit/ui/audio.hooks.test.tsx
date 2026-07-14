@@ -57,8 +57,10 @@ describe('audio hooks', () => {
     const windowRemove = vi.spyOn(window, 'removeEventListener');
     const documentAdd = vi.spyOn(document, 'addEventListener');
     const documentRemove = vi.spyOn(document, 'removeEventListener');
+    const audioInstancesBeforeMount = HookAudio.instances.length;
     const { result, unmount } = renderHook(() => useAudioSettings());
 
+    expect(HookAudio.instances).toHaveLength(audioInstancesBeforeMount);
     expect(result.current[0].soundVolume).toBe(0.72);
     expect(windowAdd.mock.calls.map(([event]) => event)).toEqual(
       expect.arrayContaining(['pointerdown', 'touchstart', 'click', 'keydown', 'focus', 'pageshow'])
@@ -89,7 +91,7 @@ describe('audio hooks', () => {
       window.dispatchEvent(new Event('focus'));
       await Promise.resolve();
     });
-    expect(HookAudio.instances.length).toBeGreaterThan(4);
+    expect(HookAudio.instances).toHaveLength(audioInstancesBeforeMount + 1);
 
     unmount();
     expect(windowRemove.mock.calls.map(([event]) => event)).toEqual(
