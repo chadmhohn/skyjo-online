@@ -514,6 +514,9 @@ test('repeated responsive captures explicitly start a new durable game', async (
 });
 
 test('eight-player AI opening completes within normal and reduced-motion budgets', async ({ page, skyjoServer }) => {
+  // This test runs two measured eight-player openings; keep their 3s/1s budgets strict while
+  // allowing WebKit enough wall-clock headroom for setup and ordinary hover actionability.
+  test.setTimeout(60_000);
   await installSeededBrowserRuntime(page, 71);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.goto(`${skyjoServer.baseURL}/single-player`);
