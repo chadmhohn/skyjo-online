@@ -225,6 +225,69 @@ describe('GameTableLayout', () => {
     expect(screen.queryAllByRole('button', { name: /Reveal this opening card/ })).toHaveLength(0);
   });
 
+  it('does not let deferred card focus recovery override explicit deck focus', async () => {
+    const user = userEvent.setup();
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => {
+      frames.delete(frameId);
+    });
+
+    function flushFrames() {
+      const pendingFrames = [...frames.values()];
+      frames.clear();
+      pendingFrames.forEach((callback) => callback(1));
+    }
+
+    function StatefulTable() {
+      const [state, setState] = useState(() => stateFor(2));
+      return (
+        <GameTableLayout
+          {...handlers()}
+          drawIntent="place"
+          localPlayerId="p1"
+          localTurn={state.currentPlayerIndex === 0}
+          onCardClick={(index) =>
+            setState((current) => {
+              const next = revealOpeningCard(current, index);
+              if ((next.openingRevealCounts.p1 ?? 0) < 2) return next;
+              return {
+                ...next,
+                currentPlayerIndex: 0,
+                phase: 'choose-source',
+                openingRevealCounts: { ...next.openingRevealCounts, p2: 2 }
+              };
+            })
+          }
+          state={state}
+        />
+      );
+    }
+
+    render(<StatefulTable />);
+    await user.click(screen.getAllByRole('button', { name: /Reveal this opening card/ })[0]);
+    act(flushFrames);
+
+    const next = screen.getAllByRole('button', { name: /Reveal this opening card/ })[0];
+    expect(next).toHaveFocus();
+    await user.click(next);
+
+    const deck = screen.getByRole('button', { name: /^Deck/ });
+    expect(deck).toBeEnabled();
+    deck.focus();
+    expect(deck).toHaveFocus();
+
+    act(flushFrames);
+
+    expect(deck).toHaveFocus();
+    expect(screen.getByRole('region', { name: 'Action guidance' })).not.toHaveFocus();
+  });
+
   it('uses one atomic turn announcer and deduplicates changing waiting players', async () => {
     const actions = handlers();
     const { rerender } = render(
