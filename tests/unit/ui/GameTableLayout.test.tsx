@@ -166,7 +166,14 @@ describe('GameTableLayout', () => {
         }}
       />
     );
-    await user.click(screen.getByRole('button', { name: /Discard \+ reveal/ }));
+    const drawnDecision = screen.getByRole('region', { name: 'Drawn card decision' });
+    expect(screen.queryByRole('region', { name: 'Action guidance' })).not.toBeInTheDocument();
+    expect(drawnDecision.querySelector('.skyjo-drawn-action-grid')).toBeInTheDocument();
+    expect(drawnDecision.querySelector('.skyjo-drawn-action-grid')).not.toHaveClass('mt-3');
+    expect(drawnDecision).toHaveTextContent('Place selected. Choose a highlighted card.');
+    expect(within(drawnDecision).getByText('7')).toHaveClass('skyjo-drawn-card');
+    expect(within(drawnDecision).getAllByRole('button')).toHaveLength(2);
+    await user.click(within(drawnDecision).getByRole('button', { name: /Discard \+ reveal/ }));
     expect(actions.onSetDrawIntent).toHaveBeenCalledWith('discard');
   });
 

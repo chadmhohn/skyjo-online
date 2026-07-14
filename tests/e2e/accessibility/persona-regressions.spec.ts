@@ -37,6 +37,80 @@ async function finishOpeningAndDraw(page: Page) {
   await expect(page.locator('.skyjo-drawn-decision')).toBeVisible();
 }
 
+async function drawnDecisionSnapshot(page: Page) {
+  return page.evaluate(() => {
+    const required = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) throw new Error(`Missing ${selector}`);
+      return element;
+    };
+    const rect = (element: HTMLElement) => element.getBoundingClientRect();
+    const box = (element: HTMLElement) => {
+      const bounds = rect(element);
+      return {
+        bottom: bounds.bottom,
+        height: bounds.height,
+        left: bounds.left,
+        right: bounds.right,
+        top: bounds.top,
+        width: bounds.width
+      };
+    };
+    const contained = (child: HTMLElement, parent: HTMLElement) => {
+      const childRect = rect(child);
+      const parentRect = rect(parent);
+      return childRect.left >= parentRect.left - 1 && childRect.right <= parentRect.right + 1 &&
+        childRect.top >= parentRect.top - 1 && childRect.bottom <= parentRect.bottom + 1;
+    };
+    const scrollContained = (element: HTMLElement) =>
+      element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1;
+    const visible = (element: HTMLElement) => {
+      const bounds = rect(element);
+      return window.getComputedStyle(element).display !== 'none' && bounds.width > 0 && bounds.height > 0;
+    };
+
+    const band = required('[data-testid="table-center-band"]');
+    const controls = required('[data-testid="table-center"]');
+    const opponent = required('[data-testid="opponent-rail"]');
+    const region = required('[aria-label="Drawn card decision"]');
+    const decision = required('.skyjo-drawn-decision');
+    const actionGrid = required('.skyjo-drawn-action-grid');
+    const instruction = required('.skyjo-drawn-instruction');
+    const drawnCard = required('.skyjo-drawn-card');
+    const local = required('[data-testid="local-board"]');
+    const buttons = Array.from(actionGrid.querySelectorAll<HTMLElement>('.skyjo-choice-button'));
+    const labels = buttons.map((button) => button.querySelector<HTMLElement>('span'));
+    const allScrollable = [region, decision, actionGrid, instruction, ...buttons];
+
+    return {
+      bandHeight: rect(band).height,
+      boardsDoNotOverlap: rect(opponent).bottom <= rect(band).top + 1 && rect(band).bottom <= rect(local).top + 1,
+      buttons: buttons.map((button) => ({
+        height: rect(button).height,
+        width: rect(button).width
+      })),
+      buttonsContained: buttons.length === 2 && buttons.every((button) => contained(button, actionGrid)),
+      cardContained: contained(drawnCard, decision),
+      controlsContained: contained(controls, band),
+      decisionContained: contained(decision, region),
+      decisionBox: box(decision),
+      drawnCardVisible: visible(drawnCard),
+      instructionContained: contained(instruction, decision),
+      instructionText: instruction.textContent?.trim() ?? '',
+      instructionVisible: visible(instruction),
+      labelsContained: labels.length === 2 && labels.every((label, index) => {
+        if (!label) return false;
+        return contained(label, buttons[index]);
+      }),
+      noHorizontalPageScroll: document.documentElement.scrollWidth <= window.innerWidth + 1,
+      regionContained: contained(region, controls),
+      regionBox: box(region),
+      scrollContained: allScrollable.every(scrollContained),
+      transitionDurations: buttons.map((button) => window.getComputedStyle(button).transitionDuration)
+    };
+  });
+}
+
 async function railSnapshot(page: Page) {
   return page.getByTestId('opponent-rail').evaluate((rail) => {
     const element = rail as HTMLElement;
@@ -354,7 +428,150 @@ test('non-mobile WebKit keyboard and wheel input match the mobile build', async 
   }
 });
 
-test('320x568 drawn decisions reflow at 200% text while normal text keeps the 100px band', async ({
+for (const viewport of [
+  { width: 320, height: 568 },
+  { width: 390, height: 844 }
+]) {
+  test(`${viewport.width}x${viewport.height} normal-text drawn decisions remain fully contained`, async ({
+    page,
+    skyjoServer
+  }) => {
+    await installSeededBrowserRuntime(page, viewport.width);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setViewportSize(viewport);
+    await page.goto(`${skyjoServer.baseURL}/single-player`);
+    await finishOpeningAndDraw(page);
+
+    const decisionRegion = page.getByRole('region', { name: 'Drawn card decision' });
+    const placeChoice = decisionRegion.getByRole('button', { name: /Place drawn card/ });
+    const discardChoice = decisionRegion.getByRole('button', { name: /Discard \+ reveal/ });
+    await expect(decisionRegion).toHaveCount(1);
+    await expect(page.getByRole('region', { name: 'Action guidance' })).toBeVisible();
+    await expect(placeChoice).toHaveCount(1);
+    await expect(discardChoice).toHaveCount(1);
+    await expect(page.locator('.skyjo-drawn-instruction')).toBeHidden();
+
+    const snapshot = await drawnDecisionSnapshot(page);
+    expect(snapshot.bandHeight).toBeGreaterThanOrEqual(90);
+    expect(snapshot.bandHeight).toBeLessThanOrEqual(110);
+    expect(snapshot.buttons.every((button) => button.width >= minimumTargetSize && button.height >= minimumTargetSize)).toBe(true);
+    expect(snapshot.buttonsContained).toBe(true);
+    expect(snapshot.decisionContained, JSON.stringify({ decision: snapshot.decisionBox, region: snapshot.regionBox })).toBe(true);
+    expect(snapshot.instructionVisible).toBe(false);
+    expect(snapshot.labelsContained).toBe(true);
+    expect(snapshot.noHorizontalPageScroll).toBe(true);
+    expect(snapshot.regionContained).toBe(true);
+    expect(snapshot.scrollContained).toBe(true);
+
+    await placeChoice.focus();
+    await expect(placeChoice).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(discardChoice).toBeFocused();
+  });
+}
+
+test('844x390 drawn decisions replace redundant side guidance with one contained action region', async ({
+  page,
+  skyjoServer
+}) => {
+  await installSeededBrowserRuntime(page, 844);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 844, height: 390 });
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await finishOpeningAndDraw(page);
+
+  const decisionRegion = page.getByRole('region', { name: 'Drawn card decision' });
+  const placeChoice = decisionRegion.getByRole('button', { name: /Place drawn card/ });
+  const discardChoice = decisionRegion.getByRole('button', { name: /Discard \+ reveal/ });
+  await expect(decisionRegion).toHaveCount(1);
+  await expect(page.getByRole('region', { name: 'Action guidance' })).toHaveCount(0);
+  await expect(page.locator('.skyjo-drawn-card')).toBeVisible();
+  await expect(page.locator('.skyjo-drawn-instruction')).toBeVisible();
+  await expect(page.locator('.skyjo-drawn-instruction')).toContainText('Place selected. Choose a highlighted card.');
+
+  const snapshot = await drawnDecisionSnapshot(page);
+  expect(snapshot.boardsDoNotOverlap).toBe(true);
+  expect(snapshot.buttons.every((button) => button.width >= minimumTargetSize && button.height >= minimumTargetSize)).toBe(true);
+  expect(snapshot.buttonsContained).toBe(true);
+  expect(snapshot.cardContained).toBe(true);
+  expect(snapshot.controlsContained).toBe(true);
+  expect(snapshot.decisionContained).toBe(true);
+  expect(snapshot.drawnCardVisible).toBe(true);
+  expect(snapshot.instructionContained).toBe(true);
+  expect(snapshot.instructionVisible).toBe(true);
+  expect(snapshot.labelsContained).toBe(true);
+  expect(snapshot.noHorizontalPageScroll).toBe(true);
+  expect(snapshot.regionContained).toBe(true);
+  expect(snapshot.scrollContained).toBe(true);
+  expect(snapshot.transitionDurations.every((duration) => Number.parseFloat(duration) <= 0.001)).toBe(true);
+
+  await decisionRegion.focus();
+  await expect(decisionRegion).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(placeChoice).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(discardChoice).toBeFocused();
+});
+
+test('844x390 drawn decisions reflow without internal overflow at 200% text', async ({
+  page,
+  skyjoServer
+}) => {
+  await installSeededBrowserRuntime(page, 845);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 844, height: 390 });
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await finishOpeningAndDraw(page);
+  await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
+
+  const decisionRegion = page.getByRole('region', { name: 'Drawn card decision' });
+  const placeChoice = decisionRegion.getByRole('button', { name: /Place drawn card/ });
+  const discardChoice = decisionRegion.getByRole('button', { name: /Discard \+ reveal/ });
+  await expect(decisionRegion).toHaveCount(1);
+  await expect(page.getByRole('region', { name: 'Action guidance' })).toHaveCount(0);
+  await expect(page.locator('.skyjo-drawn-card')).toBeVisible();
+  await expect(page.locator('.skyjo-drawn-instruction')).toBeVisible();
+
+  await expect.poll(async () => {
+    const snapshot = await drawnDecisionSnapshot(page);
+    return {
+      bandExpanded: snapshot.bandHeight > 150,
+      boardsDoNotOverlap: snapshot.boardsDoNotOverlap,
+      buttonsContained: snapshot.buttonsContained,
+      cardContained: snapshot.cardContained,
+      controlsContained: snapshot.controlsContained,
+      decisionContained: snapshot.decisionContained,
+      instructionContained: snapshot.instructionContained,
+      labelsContained: snapshot.labelsContained,
+      noHorizontalPageScroll: snapshot.noHorizontalPageScroll,
+      regionContained: snapshot.regionContained,
+      scrollContained: snapshot.scrollContained,
+      targetsMeetMinimum: snapshot.buttons.every(
+        (button) => button.width >= minimumTargetSize && button.height >= minimumTargetSize
+      )
+    };
+  }).toEqual({
+    bandExpanded: true,
+    boardsDoNotOverlap: true,
+    buttonsContained: true,
+    cardContained: true,
+    controlsContained: true,
+    decisionContained: true,
+    instructionContained: true,
+    labelsContained: true,
+    noHorizontalPageScroll: true,
+    regionContained: true,
+    scrollContained: true,
+    targetsMeetMinimum: true
+  });
+
+  await placeChoice.focus();
+  await expect(placeChoice).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(discardChoice).toBeFocused();
+});
+
+test('320x568 drawn decisions reflow at 200% text while normal text keeps a compact band', async ({
   page,
   skyjoServer
 }) => {

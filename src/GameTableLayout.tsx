@@ -756,6 +756,7 @@ function TableControls({
   const discardDisabledReason = interactionDisabledReason || sourceDisabledReason(state, localTurn, 'discard');
   const selectedDiscard = localTurn && state.phase === 'choose-replacement' && state.selectedSource === 'discard';
   const hasLocalDrawnDecision = Boolean(state.drawnCard && localTurn);
+  const showResolvedSideGuidance = showSideGuidance && !hasLocalDrawnDecision;
   const discardButtonDisabled = Boolean(interactionDisabledReason || (discardDisabledReason && !selectedDiscard));
   const discardButtonTitle = selectedDiscard
     ? 'Put the discard card back.'
@@ -824,13 +825,13 @@ function TableControls({
       </div>
 
       <div
-        aria-label={showSideGuidance ? 'Action guidance' : hasLocalDrawnDecision ? 'Drawn card decision' : undefined}
+        aria-label={hasLocalDrawnDecision ? 'Drawn card decision' : showResolvedSideGuidance ? 'Action guidance' : undefined}
         className="skyjo-table-band-side skyjo-table-band-side-end"
         ref={guidanceRef}
-        role={showSideGuidance || hasLocalDrawnDecision ? 'region' : undefined}
-        tabIndex={showSideGuidance || hasLocalDrawnDecision ? 0 : undefined}
+        role={showResolvedSideGuidance || hasLocalDrawnDecision ? 'region' : undefined}
+        tabIndex={showResolvedSideGuidance || hasLocalDrawnDecision ? 0 : undefined}
       >
-        {showSideGuidance ? (
+        {showResolvedSideGuidance ? (
           <ActionGuidance className="skyjo-side-action-guidance" disabledReason={guidanceDisabledReason} status={status} />
         ) : null}
         {hasLocalDrawnDecision && state.drawnCard ? (
@@ -838,7 +839,7 @@ function TableControls({
             <div className="flex justify-end">
               <div className={`${cardClass(state.drawnCard, false)} skyjo-drawn-card shrink-0`}>{cardLabel(state.drawnCard)}</div>
             </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <div className="skyjo-drawn-action-grid">
               <button
                 aria-pressed={drawIntent === 'place'}
                 className={`skyjo-choice-button ${drawIntent === 'place' ? 'skyjo-choice-button-active' : ''}`}
@@ -865,10 +866,10 @@ function TableControls({
                 <small className="skyjo-choice-help">{hasHiddenCard ? 'Reveal one hidden card.' : 'No hidden cards remain.'}</small>
               </button>
             </div>
-            <p className="skyjo-action-hint mt-3">
+            <p className="skyjo-action-hint skyjo-drawn-instruction">
               {drawIntent === 'discard'
-                ? 'Discard mode: select a highlighted hidden card.'
-                : 'Place mode: select a highlighted card.'}
+                ? 'Discard + reveal selected. Choose a highlighted hidden card.'
+                : 'Place selected. Choose a highlighted card.'}
             </p>
           </div>
         ) : null}
