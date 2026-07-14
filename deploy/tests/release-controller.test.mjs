@@ -514,5 +514,14 @@ test('the stable runtime-helper transition requires an exact reviewed bootstrap 
   assert.match(document, /Freeze and independently review the exact PR-head SHA/);
   assert.match(document, /signed verify-only localhost canary with `activation=false`/);
   assert.match(document, /production identity and readiness remain unchanged before merging/);
-  assert.match(document, /select the prior verified bootstrap generation/);
+  assert.match(document, /Changing `\/usr\/local\/lib\/skyjo-online\/bootstrap\/current` alone is not a rollback/);
+  assert.match(document, /"\$prior\/bootstrap-skyjo-delivery\.sh" prepare/);
+  assert.match(document, /"\$prior\/inputs\/transport\.pub"/);
+  assert.match(document, /"\$prior\/inputs\/canary\.pem"/);
+  assert.match(document, /"\$prior\/inputs\/production\.pem"/);
+  assert.match(document, /delivery-assets\.sha256` to verify every installed live asset hash/);
+  assert.match(document, /byte-compare the installed controller\/dispatcher libraries and launchers with the selected prior generation/);
+  assert.match(document, /skyjo-release-controller self-test` to return `activation=false`/);
+  assert.match(document, /Read back `bootstrap\/current`/);
+  assert.match(document, /active application release SHA and readiness must remain unchanged/);
 });
