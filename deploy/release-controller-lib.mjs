@@ -16,6 +16,8 @@ export const MAX_STALE_LINK_TEMPS = 32;
 export const MAX_STALE_INCOMING_DIRECTORIES = 32;
 export const STALE_DEPLOYMENT_ARTIFACT_MS = 15 * 60 * 1000;
 export const DEPLOYMENT_CLOCK_SKEW_MS = 60 * 1000;
+const MAX_SERVER_RUNTIME_MODULE_LENGTH = 128;
+const SERVER_RUNTIME_MODULE_PATTERN = /^server(?:-[a-z0-9]+)*\.mjs$/;
 
 export const REQUIRED_ARCHIVE_ENTRIES = new Set([
   'release.json',
@@ -25,16 +27,6 @@ export const REQUIRED_ARCHIVE_ENTRIES = new Set([
   'package.json',
   'package-lock.json',
   'server.mjs',
-  'server-account-store.mjs',
-  'server-game-state-validation.mjs',
-  'server-invite-codes.mjs',
-  'server-persistence-health.mjs',
-  'server-push.mjs',
-  'server-readiness.mjs',
-  'server-release.mjs',
-  'server-room-invites.mjs',
-  'server-room-persistence.mjs',
-  'server-state-backup.mjs',
   'skyjo-runtime.cdx.json',
   'dist/index.html',
   'server-dist/game.js',
@@ -57,8 +49,15 @@ const EXACT_ALLOWED_FILES = new Set([
 ]);
 const ALLOWED_DIRECTORY_ROOTS = new Set(['dist', 'server-dist', 'scripts', 'node_modules']);
 
+export function isAllowedServerRuntimeModule(entry) {
+  return typeof entry === 'string' &&
+    entry.length <= MAX_SERVER_RUNTIME_MODULE_LENGTH &&
+    SERVER_RUNTIME_MODULE_PATTERN.test(entry);
+}
+
 function isAllowedRuntimeEntry(entry, isDirectory) {
   if (EXACT_ALLOWED_FILES.has(entry)) return !isDirectory;
+  if (isAllowedServerRuntimeModule(entry)) return !isDirectory;
   if (ALLOWED_DIRECTORY_ROOTS.has(entry)) return isDirectory;
   const root = entry.split('/', 1)[0];
   return ALLOWED_DIRECTORY_ROOTS.has(root) && root !== 'scripts';

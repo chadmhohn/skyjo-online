@@ -36,6 +36,12 @@ The corrective delivery lineage intentionally returns to the reviewed split cont
 
 This sequence is required only for the `0cc063e` protocol transition. Later changes use the normal merge-then-canary flow unless they deliberately alter the forced-command grammar again.
 
+### One-time stable runtime-helper policy transition
+
+The installed controller admits top-level regular application modules up to 128 characters through the bounded lowercase grammar `server(?:-[a-z0-9]+)*\.mjs`, while `server.mjs` remains explicitly required. The artifact producer keeps the exact reviewed server-module inventory; adding a helper therefore still requires a source change and CI evidence, but no longer requires a privileged controller refresh solely to repeat that helper's filename. Nested modules, alternate extensions, backup suffixes, uppercase or empty name segments, overlong names, and unrelated top-level files remain rejected.
+
+The first deployment of this stable grammar is a bootstrap-before-merge transition because the previously installed controller still uses the historical per-helper list. Freeze and independently review the exact PR-head SHA, snapshot its complete `deploy/` bundle and the existing pinned public keys into a new root-owned immutable bootstrap generation, then require controller self-test plus a signed verify-only localhost canary with `activation=false`. Confirm production identity and readiness remain unchanged before merging. After merge, protected-main certification must exercise the same controller contract again. If any transition check fails, atomically select the prior verified bootstrap generation; do not activate an application release, restart production, or restore live data as part of this controller-only rollback.
+
 Create `canary` and `production` GitHub environments with no human reviewers. Configure these environment values:
 
 | Kind | Name | Value |

@@ -37,9 +37,16 @@ import {
   runScheduledBackup,
   scheduledBackupName
 } from '../../scripts/scheduled-backup-lib.mjs';
-import { REQUIRED_ARCHIVE_ENTRIES } from '../release-controller-lib.mjs';
+import {
+  isAllowedServerRuntimeModule,
+  REQUIRED_ARCHIVE_ENTRIES
+} from '../release-controller-lib.mjs';
 import { validateOperationsReadiness } from '../validate-operations-readiness.mjs';
-import { REQUIRED_ARCHIVE_FILES } from '../../scripts/runtime-artifact-security.mjs';
+import {
+  isAllowedRuntimePath,
+  REQUIRED_ARCHIVE_FILES,
+  RUNTIME_ROOT_FILES
+} from '../../scripts/runtime-artifact-security.mjs';
 
 const deployRoot = path.resolve(import.meta.dirname, '..');
 const repoRoot = path.resolve(deployRoot, '..');
@@ -1108,16 +1115,25 @@ test('artifact producer and live controller require the same operations scripts'
   }
 });
 
-test('artifact producer and live controller include invite runtime modules', () => {
-  for (const module of ['server-invite-codes.mjs', 'server-room-invites.mjs']) {
-    assert.ok(REQUIRED_ARCHIVE_FILES.includes(module), `${module} must be required by the artifact producer`);
-    assert.ok(REQUIRED_ARCHIVE_ENTRIES.has(module), `${module} must be required by the live controller`);
-  }
-});
+test('exact artifact inventory satisfies the stable controller server-module grammar', () => {
+  const serverModules = RUNTIME_ROOT_FILES.filter((entry) => entry.endsWith('.mjs'));
+  assert.ok(serverModules.includes('server.mjs'));
+  assert.ok(serverModules.includes('server-invite-codes.mjs'));
+  assert.ok(serverModules.includes('server-room-invites.mjs'));
+  assert.ok(serverModules.includes('server-push.mjs'));
+  assert.equal(new Set(serverModules).size, serverModules.length, 'server-module inventory must not contain duplicates');
 
-test('artifact producer, live controller, and bootstrap include the Web Push runtime module', async () => {
-  assert.ok(REQUIRED_ARCHIVE_FILES.includes('server-push.mjs'));
-  assert.ok(REQUIRED_ARCHIVE_ENTRIES.has('server-push.mjs'));
-  const installer = await fs.readFile(path.join(deployRoot, 'bootstrap-skyjo-delivery.sh'), 'utf8');
-  assert.match(installer, /\bserver-push\.mjs\b/);
+  for (const module of serverModules) {
+    assert.ok(REQUIRED_ARCHIVE_FILES.includes(module), `${module} must be required by the artifact producer`);
+    assert.equal(isAllowedRuntimePath(module), true, `${module} must pass the exact artifact producer policy`);
+    assert.equal(isAllowedServerRuntimeModule(module), true, `${module} must pass the stable controller grammar`);
+  }
+
+  assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server.mjs'), true, 'the application entrypoint remains controller-required');
+  for (const helper of serverModules.filter((entry) => entry !== 'server.mjs')) {
+    assert.equal(REQUIRED_ARCHIVE_ENTRIES.has(helper), false, `${helper} must not couple the installed controller to one helper inventory`);
+  }
+
+  assert.equal(isAllowedServerRuntimeModule('server-future-helper-v2.mjs'), true);
+  assert.equal(isAllowedRuntimePath('server-future-helper-v2.mjs'), false, 'unreviewed helpers must remain excluded by the artifact producer');
 });
