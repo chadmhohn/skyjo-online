@@ -305,7 +305,11 @@ function nextCommandId() {
 
 function sendAdmission(ws, message, label) {
   const snapshot = waitForMessage(ws, publicSnapshotFrame, label);
-  ws.send(JSON.stringify({ ...message, protocolVersion: MULTIPLAYER_PROTOCOL_VERSION }));
+  ws.send(JSON.stringify({
+    ...message,
+    protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    snapshotEnvelopeVersion: 2
+  }));
   return snapshot;
 }
 

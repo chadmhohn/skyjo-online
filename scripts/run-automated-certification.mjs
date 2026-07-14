@@ -250,7 +250,7 @@ class RecoverySocket {
     }
     if ((frame.type === 'snapshot' || frame.type === 'resync') && frame.room) {
       this.revision = frame.revision;
-      this.playerId = frame.playerId;
+      if (typeof frame.playerId === 'string') this.playerId = frame.playerId;
       this.room = frame.room;
     } else if (frame.type === 'ack' && Number.isSafeInteger(frame.revision)) {
       this.revision = frame.revision;
@@ -289,7 +289,11 @@ class RecoverySocket {
 
   async admit(message) {
     const snapshot = this.waitFor((frame) => frame.type === 'snapshot' || frame.type === 'resync', 'admission snapshot');
-    this.socket.send(JSON.stringify({ ...message, protocolVersion: 2 }));
+    this.socket.send(JSON.stringify({
+      ...message,
+      protocolVersion: 2,
+      snapshotEnvelopeVersion: 2
+    }));
     return snapshot;
   }
 

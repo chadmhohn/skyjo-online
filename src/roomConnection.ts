@@ -2,6 +2,7 @@ import {
   EXPLICIT_PRESENCE_VERSION,
   MULTIPLAYER_PROTOCOL_VERSION,
   PUBLIC_SNAPSHOT_LIMITS,
+  SHARED_SNAPSHOT_ENVELOPE_VERSION,
   parseClientCommand,
   type PublicGameStateSnapshot,
   type PublicPlayerSnapshot,
@@ -489,13 +490,19 @@ function isAuxiliaryServerFrame(
 
 function sessionWireFrame(currentSession: RoomConnectionSession): RoomConnectionFrame {
   if (currentSession.action === 'create-room') {
-    return { type: 'create-room', protocolVersion: MULTIPLAYER_PROTOCOL_VERSION, name: currentSession.name };
+    return {
+      type: 'create-room',
+      protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+      snapshotEnvelopeVersion: SHARED_SNAPSHOT_ENVELOPE_VERSION,
+      name: currentSession.name
+    };
   }
   const recoveryExpectation = resetRecoveryExpectation(currentSession);
   return {
     type: 'join-room',
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
     presenceVersion: EXPLICIT_PRESENCE_VERSION,
+    snapshotEnvelopeVersion: SHARED_SNAPSHOT_ENVELOPE_VERSION,
     code: currentSession.code,
     name: currentSession.name,
     ...(currentSession.playerId ? { playerId: currentSession.playerId } : {}),

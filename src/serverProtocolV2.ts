@@ -2,6 +2,7 @@ import {
   EXPLICIT_PRESENCE_VERSION,
   MAX_RECENT_COMMAND_RECEIPTS,
   MULTIPLAYER_PROTOCOL_VERSION,
+  SHARED_SNAPSHOT_ENVELOPE_VERSION,
   parseClientCommand,
   reduceAuthoritativeAiAction,
   reduceAuthoritativeGameCommand,
@@ -404,8 +405,14 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       const hasPlayerId = typeof message.playerId === 'string';
       const hasRecoveryCommandId = typeof message.recoveryCommandId === 'string';
       const hasPresenceVersion = Object.prototype.hasOwnProperty.call(message, 'presenceVersion');
-      const validKeys = isCreate
-        ? hasExactKeys(message, ['type', 'protocolVersion', 'name'])
+      const hasSnapshotEnvelopeVersion = Object.prototype.hasOwnProperty.call(message, 'snapshotEnvelopeVersion');
+      const validEnvelopeKeys = isCreate
+        ? hasExactKeys(message, [
+            'type',
+            'protocolVersion',
+            'name',
+            ...(hasSnapshotEnvelopeVersion ? ['snapshotEnvelopeVersion'] : [])
+          ])
         : hasExactKeys(
             message,
             hasPlayerId
@@ -416,12 +423,23 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
                   'name',
                   'playerId',
                   ...(hasPresenceVersion ? ['presenceVersion'] : []),
+                  ...(hasSnapshotEnvelopeVersion ? ['snapshotEnvelopeVersion'] : []),
                   ...(hasRecoveryCommandId ? ['recoveryCommandId'] : [])
                 ]
-              : ['type', 'protocolVersion', 'code', 'name', ...(hasPresenceVersion ? ['presenceVersion'] : [])]
-          ) &&
-          (!hasRecoveryCommandId || hasPlayerId) &&
-          (!hasPresenceVersion || message.presenceVersion === EXPLICIT_PRESENCE_VERSION);
+              : [
+                  'type',
+                  'protocolVersion',
+                  'code',
+                  'name',
+                  ...(hasPresenceVersion ? ['presenceVersion'] : []),
+                  ...(hasSnapshotEnvelopeVersion ? ['snapshotEnvelopeVersion'] : [])
+                ]
+            );
+      const validKeys = validEnvelopeKeys &&
+        (!hasRecoveryCommandId || hasPlayerId) &&
+        (!hasPresenceVersion || message.presenceVersion === EXPLICIT_PRESENCE_VERSION) &&
+        (!hasSnapshotEnvelopeVersion ||
+          message.snapshotEnvelopeVersion === SHARED_SNAPSHOT_ENVELOPE_VERSION);
       if (!validKeys) {
         commandError(sendJson, ws, 'Invalid room request.');
         return;
@@ -454,6 +472,9 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
         ws.roomCode = code;
         ws.playerId = playerId;
         ws.admittedRoomCode = code;
+        ws.snapshotEnvelopeVersion = hasSnapshotEnvelopeVersion
+          ? SHARED_SNAPSHOT_ENVELOPE_VERSION
+          : null;
         persistRoomsSoon();
         sendRoomSnapshot(ws, room);
         return;
@@ -557,6 +578,9 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
       ws.roomCode = room.code;
       ws.playerId = player.id;
       ws.admittedRoomCode = room.code;
+      ws.snapshotEnvelopeVersion = hasSnapshotEnvelopeVersion
+        ? SHARED_SNAPSHOT_ENVELOPE_VERSION
+        : null;
       room.clients.add(ws);
       syncPlayerPresence(room, player, timestamp);
       const publicConnectionChanged = player.connected !== wasPubliclyConnected;

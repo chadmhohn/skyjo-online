@@ -31,6 +31,7 @@ class FakeSocket implements RealtimeSocket {
   playerId?: string | null;
   roomCode?: string | null;
   snapshotRoomCode?: string | null;
+  snapshotEnvelopeVersion?: number | null;
   visible?: boolean;
   heartbeatAwaitingPong?: boolean;
   readonly sent: string[] = [];
@@ -274,6 +275,7 @@ describe('serverRealtime transport seam', () => {
       socket.playerId = playerId;
       socket.roomCode = 'ABCDE';
       socket.snapshotRoomCode = 'ABCDE';
+      socket.snapshotEnvelopeVersion = 2;
       return socket;
     });
     const privateCard = { id: 'private-drawn-card-sentinel', value: 999, faceUp: true, removed: false };
@@ -365,6 +367,7 @@ describe('serverRealtime transport seam', () => {
     for (const [index, socket] of [established, firstSync, rejoining].entries()) {
       socket.playerId = `p${index + 1}`;
       socket.roomCode = 'ABCDE';
+      socket.snapshotEnvelopeVersion = 2;
     }
     established.snapshotRoomCode = 'ABCDE';
     rejoining.snapshotRoomCode = 'OLD01';
@@ -404,14 +407,59 @@ describe('serverRealtime transport seam', () => {
     expect(JSON.parse(firstSync.sent.at(-1) || '{}')).toEqual(resync);
   });
 
+  it('keeps immediately preceding strict protocol-v2 clients on personalized envelopes forever', () => {
+    const legacySockets = [new FakeSocket(), new FakeSocket()];
+    for (const [index, socket] of legacySockets.entries()) {
+      socket.playerId = `legacy-p${index + 1}`;
+      socket.roomCode = 'ABCDE';
+      socket.snapshotRoomCode = 'ABCDE';
+      // Omitted by the immediately preceding v2 client; a wrong/old version is
+      // equally ineligible for anonymous envelopes.
+      socket.snapshotEnvelopeVersion = index === 0 ? null : 1;
+    }
+    const room = {
+      clients: new Set<RealtimeSocket>(legacySockets),
+      code: 'ABCDE',
+      revision: 4,
+      state: null,
+      updatedAt: 1_000
+    };
+    const createSnapshot = vi.fn((_room, _viewerPlayerId: string, serverNow: number) => ({
+      code: 'ABCDE', hostId: 'legacy-p1', players: [], chatMessages: [], readyForNextRoundPlayerIds: [],
+      state: null, status: 'waiting', updatedAt: 1_000, completedGameId: null, finishedByAi: false,
+      hostTransferAt: null, revision: 4, serverNow
+    }) as never);
+    const sendPersonalized = vi.fn((socket: RealtimeSocket, _room, snapshot) => sendRealtimeJson(socket, {
+      type: 'snapshot', protocolVersion: 2, playerId: socket.playerId, revision: 4, room: snapshot
+    }));
+
+    for (const serverNow of [1_001, 1_002]) {
+      expect(broadcastRealtimeSnapshots({ room, createSnapshot, sendPersonalized, now: () => serverNow }))
+        .toEqual({ personalizedRecipients: 2, sharedEncodings: 0, sharedRecipients: 0 });
+    }
+    for (const socket of legacySockets) {
+      expect(socket.rawSent).toHaveLength(2);
+      for (const sent of socket.rawSent) {
+        expect(typeof sent.payload).toBe('string');
+        const frame = JSON.parse(String(sent.payload));
+        expect(Object.keys(frame).sort()).toEqual(
+          ['type', 'protocolVersion', 'playerId', 'revision', 'room'].sort()
+        );
+        expect(frame.playerId).toBe(socket.playerId);
+      }
+    }
+  });
+
   it('clears personalized sync on detach so a same-code rejoin cannot receive an anonymous first frame', () => {
     const socket = new FakeSocket();
     socket.playerId = 'p1';
     socket.roomCode = 'ABCDE';
     socket.snapshotRoomCode = 'ABCDE';
+    socket.snapshotEnvelopeVersion = 2;
     const detachedRoom: RealtimeRoom = { clients: new Set([socket]), code: 'ABCDE', updatedAt: 1_000 };
     detachRealtimeSocket(detachedRoom, socket);
     expect(socket.snapshotRoomCode).toBeNull();
+    expect(socket.snapshotEnvelopeVersion).toBeNull();
 
     socket.playerId = 'p1';
     socket.roomCode = 'ABCDE';
@@ -485,6 +533,8 @@ describe('serverRealtime transport seam', () => {
 
     expect(request.accountUser).toEqual({ id: 'account-1' });
     expect(socket.accountUser).toBe(request.accountUser);
+    expect(socket.snapshotEnvelopeVersion).toBeNull();
+    expect(socket.snapshotRoomCode).toBeNull();
     expect(socket.visible).toBe(false);
     expect(harness.webSocketServer.upgrades).toEqual([{ request, socket: networkSocket, head: 'head' }]);
 
@@ -684,11 +734,13 @@ describe('serverRealtime transport seam', () => {
     const finalConnection = finalHarness.connect();
     const finalContext = roomContext(finalConnection.socket);
     finalConnection.socket.snapshotRoomCode = 'ABCDE';
+    finalConnection.socket.snapshotEnvelopeVersion = 2;
     finalHarness.contexts.set(finalConnection.socket, finalContext);
     finalConnection.socket.emit('close');
 
     expect(finalContext.player.connected).toBe(false);
     expect(finalConnection.socket.snapshotRoomCode).toBeNull();
+    expect(finalConnection.socket.snapshotEnvelopeVersion).toBeNull();
     expect(finalContext.room.updatedAt).toBe(2_002);
     expect(finalHarness.persistRoomsSoon).toHaveBeenCalledOnce();
     expect(finalHarness.broadcastRoom).toHaveBeenCalledWith(finalContext.room);

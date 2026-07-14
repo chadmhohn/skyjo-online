@@ -430,14 +430,17 @@ describe('room connection controller', () => {
     const created = createHarness();
     created.controller.connect({ action: 'create-room', name: 'Alice' });
     created.sockets[0].open();
-    expect(created.sockets[0].sent).toEqual([{ type: 'create-room', protocolVersion: 2, name: 'Alice' }]);
+    expect(created.sockets[0].sent).toEqual([{
+      type: 'create-room', protocolVersion: 2, snapshotEnvelopeVersion: 2, name: 'Alice'
+    }]);
     expect(created.sockets[0].sent[0]).not.toHaveProperty('action');
 
     const joined = createHarness();
     joined.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice' });
     joined.sockets[0].open();
     expect(joined.sockets[0].sent).toEqual([{
-      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice'
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+      code: 'ABCDE', name: 'Alice'
     }]);
 
     const recovered = createHarness();
@@ -445,7 +448,10 @@ describe('room connection controller', () => {
     recovered.runTimer(0);
     recovered.sockets[0].open();
     expect(recovered.sockets[0].sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      }
     ]);
 
     const resetRecovery = createHarness();
@@ -464,6 +470,7 @@ describe('room connection controller', () => {
         type: 'join-room',
         protocolVersion: 2,
         presenceVersion: 1,
+        snapshotEnvelopeVersion: 2,
         code: 'ABCDE',
         name: 'Alice',
         playerId: 'p1',
@@ -499,6 +506,7 @@ describe('room connection controller', () => {
         type: 'join-room',
         protocolVersion: 2,
         presenceVersion: 1,
+        snapshotEnvelopeVersion: 2,
         code: 'ABCDE',
         name: 'Alice',
         ...(playerId ? { playerId } : {})
@@ -697,6 +705,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
       playerId: 'p1',
@@ -724,6 +733,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
@@ -740,6 +750,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
@@ -783,6 +794,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
@@ -1114,7 +1126,10 @@ describe('room connection controller', () => {
     recovered.open();
     recovered.receive(snapshotFrame(room('ABCDE', 200)));
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      },
       { type: 'set-presence', visible: false }
     ]);
   });
@@ -1141,7 +1156,10 @@ describe('room connection controller', () => {
     recovered.open();
     recovered.receive(snapshotFrame());
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      },
       { type: 'set-presence', visible: true },
       pending
     ]);
@@ -1220,7 +1238,10 @@ describe('room connection controller', () => {
     recovered.open();
 
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      }
     ]);
     recovered.receive(snapshotFrame(room('ABCDE', 200)));
     expect(recovered.sent).toHaveLength(2);
@@ -1253,6 +1274,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
       playerId: 'p1'

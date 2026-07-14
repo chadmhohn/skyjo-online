@@ -318,10 +318,15 @@ describe('protocol v2 room admission', () => {
     value.handler(value.socket, { type: 'create-room', protocolVersion: 2, name: 'ignored', extra: true });
     expect(lastPayload(value)).toMatchObject({ type: 'error', code: 'invalid-command' });
 
+    value.handler(value.socket, {
+      type: 'create-room', protocolVersion: 2, name: 'ignored', snapshotEnvelopeVersion: 1
+    });
+    expect(lastPayload(value)).toMatchObject({ type: 'error', code: 'invalid-command' });
+
     value.handler(value.socket, { type: 'create-room', protocolVersion: 2, name: 'ignored' });
     const created = value.rooms.get('NEW01');
     expect(created?.players).toEqual([expect.objectContaining({ id: NEW_ID, name: 'Host', userId: `${HOST_ID}-account`, host: true })]);
-    expect(value.socket).toMatchObject({ roomCode: 'NEW01', playerId: NEW_ID });
+    expect(value.socket).toMatchObject({ roomCode: 'NEW01', playerId: NEW_ID, snapshotEnvelopeVersion: null });
     expect(value.calls.persisted).toBe(1);
     expect(value.calls.snapshots).toHaveLength(1);
   });
@@ -353,6 +358,8 @@ describe('protocol v2 room admission', () => {
   it.each([
     [{ type: 'join-room', protocolVersion: 2, code: 'MISS', name: 'x' }, 'room-not-found'],
     [{ type: 'join-room', protocolVersion: 2, presenceVersion: 2, code: 'ROOM1', name: 'x' }, 'invalid-command'],
+    [{ type: 'join-room', protocolVersion: 2, snapshotEnvelopeVersion: 1, code: 'ROOM1', name: 'x' }, 'invalid-command'],
+    [{ type: 'join-room', protocolVersion: 2, snapshotEnvelopeVersion: '2', code: 'ROOM1', name: 'x' }, 'invalid-command'],
     [{ type: 'join-room', protocolVersion: 2, code: 'ROOM1', name: 'x', playerId: HOST_ID, extra: true }, 'invalid-command']
   ])('rejects invalid join requests without mutation', (message, code) => {
     const value = harness();
@@ -401,6 +408,41 @@ describe('protocol v2 room admission', () => {
     expect(value.calls.persisted).toBe(1);
     expect(value.calls.broadcasts).toHaveLength(0);
     expect(value.calls.snapshots).toHaveLength(1);
+    expect(value.socket.snapshotEnvelopeVersion).toBeNull();
+  });
+
+  it('retains the explicit shared-envelope capability only after successful create and join admission', () => {
+    const created = harness();
+    created.handler(created.socket, {
+      type: 'create-room',
+      protocolVersion: 2,
+      snapshotEnvelopeVersion: 2,
+      name: 'ignored'
+    });
+    expect(created.socket.snapshotEnvelopeVersion).toBe(2);
+
+    const joined = harness();
+    joined.handler(joined.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      snapshotEnvelopeVersion: 2,
+      code: 'ROOM1',
+      name: 'ignored',
+      playerId: HOST_ID
+    });
+    expect(joined.socket.snapshotEnvelopeVersion).toBe(2);
+
+    const rejected = harness();
+    rejected.handler(rejected.socket, {
+      type: 'join-room',
+      protocolVersion: 2,
+      snapshotEnvelopeVersion: 3,
+      code: 'ROOM1',
+      name: 'ignored',
+      playerId: HOST_ID
+    });
+    expect(rejected.socket.snapshotEnvelopeVersion).toBeUndefined();
+    expect(lastPayload(rejected)).toMatchObject({ type: 'error', code: 'invalid-command' });
   });
 
   it('preserves a hidden reconnect until the client explicitly reports visible presence', () => {

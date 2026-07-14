@@ -430,11 +430,17 @@ export default function roomController(data) {
     socket.addEventListener('open', () => {
       clientsConnected.add(1);
       if (seat === 0) {
-        socket.send(JSON.stringify({ type: 'create-room', protocolVersion: 2, name: `Room ${__VU} Host` }));
+        socket.send(JSON.stringify({
+          type: 'create-room',
+          protocolVersion: 2,
+          snapshotEnvelopeVersion: 2,
+          name: `Room ${__VU} Host`
+        }));
       } else {
         socket.send(JSON.stringify({
           type: 'join-room',
           protocolVersion: 2,
+          snapshotEnvelopeVersion: 2,
           code: state.roomCode,
           name: `Room ${__VU} Seat ${seat + 1}`
         }));

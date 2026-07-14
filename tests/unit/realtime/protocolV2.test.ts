@@ -2,6 +2,7 @@ import {
   MAX_RECENT_COMMAND_RECEIPTS,
   MULTIPLAYER_PROTOCOL_VERSION,
   PUBLIC_SNAPSHOT_LIMITS,
+  createGameStateSnapshotProjector,
   createRoomSnapshot,
   hasPrivateDrawnCardVisibility,
   multiplayerRoomForRender,
@@ -219,6 +220,36 @@ describe('protocol v2 player-specific projection', () => {
     for (const viewerId of otherViewerIds.slice(1)) {
       expect(createRoomSnapshot(roomWithState(drawn), viewerId)).toEqual(bob);
     }
+  });
+
+  it('reuses write-only projections only for the same immutable state and visibility', () => {
+    const projector = createGameStateSnapshotProjector();
+    const drawn = apply(openedState(), 'p1', { type: 'draw-blind' });
+    const publicForBob = projector(drawn, 'p2');
+    const publicForAnotherViewer = projector(drawn, 'p3');
+    const privateForDrawer = projector(drawn, 'p1');
+
+    expect(publicForAnotherViewer).toBe(publicForBob);
+    expect(projector(drawn, 'p2')).toBe(publicForBob);
+    expect(privateForDrawer).not.toBe(publicForBob);
+    expect(privateForDrawer.drawnCard?.value).toBe(drawn.drawnCard?.value);
+    expect(publicForBob.drawnCard).toBeNull();
+    const detached = redactGameState(drawn, 'p2');
+    expect(detached).not.toBe(publicForBob);
+    detached.players[0].name = 'Detached mutation';
+    expect(publicForBob.players[0].name).toBe('Alice');
+
+    const replaced = apply(drawn, 'p1', { type: 'replace-card', cardIndex: 2 });
+    const nextProjection = projector(replaced, 'p2');
+    expect(nextProjection).not.toBe(publicForBob);
+    expect(nextProjection.currentPlayerIndex).toBe(1);
+
+    const firstRoom = createRoomSnapshot(roomWithState(drawn), 'p2', 10, undefined, projector);
+    const secondRoom = createRoomSnapshot(roomWithState(drawn), 'p3', 11, undefined, projector);
+    expect(firstRoom.state).toBe(publicForBob);
+    expect(secondRoom.state).toBe(publicForBob);
+    expect(firstRoom.serverNow).toBe(10);
+    expect(secondRoom.serverNow).toBe(11);
   });
 
   it('sanitizes historical numeric draw logs before, during, and after later moves', () => {

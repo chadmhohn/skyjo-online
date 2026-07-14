@@ -34,6 +34,7 @@ import {
   WAITING_HOST_TRANSFER_MS
 } from './server-dist/serverRoomLifecycle.js';
 import {
+  createGameStateSnapshotProjector,
   createRoomSnapshot,
   MULTIPLAYER_PROTOCOL_VERSION
 } from './server-dist/protocolV2.js';
@@ -442,11 +443,13 @@ function sendJson(ws, payload) {
   return sendRealtimeJson(ws, payload);
 }
 
+const projectGameStateSnapshot = createGameStateSnapshotProjector();
+
 function broadcastRoom(room) {
   broadcastRealtimeSnapshots({
     room,
     createSnapshot: (candidate, playerId, serverNow) =>
-      createRoomSnapshot(candidate, playerId, serverNow, lifecyclePolicy),
+      createRoomSnapshot(candidate, playerId, serverNow, lifecyclePolicy, projectGameStateSnapshot),
     sendPersonalized: (client, candidate, snapshot) =>
       sendRoomSnapshot(client, candidate, {}, snapshot)
   });
@@ -464,7 +467,13 @@ function sendRoomSnapshot(ws, room, options = {}, preparedSnapshot = null) {
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
     playerId: ws.playerId,
     revision: room.revision,
-    room: preparedSnapshot || createRoomSnapshot(room, ws.playerId, Date.now(), lifecyclePolicy),
+    room: preparedSnapshot || createRoomSnapshot(
+      room,
+      ws.playerId,
+      Date.now(),
+      lifecyclePolicy,
+      projectGameStateSnapshot
+    ),
     ...(type === 'resync'
       ? {
           reason: options.reason || 'revision-mismatch',

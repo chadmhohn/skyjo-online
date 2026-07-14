@@ -3,6 +3,7 @@ import {
   hasPrivateDrawnCardVisibility,
   MAX_INBOUND_CLIENT_FRAME_BYTES,
   MULTIPLAYER_PROTOCOL_VERSION,
+  SHARED_SNAPSHOT_ENVELOPE_VERSION,
   type PublicRoomSnapshot
 } from './protocolV2.js';
 import type { GameState } from './types.js';
@@ -18,6 +19,7 @@ export interface RealtimeSocket {
   playerId?: string | null;
   roomCode?: string | null;
   snapshotRoomCode?: string | null;
+  snapshotEnvelopeVersion?: number | null;
   visible?: boolean;
   heartbeatAwaitingPong?: boolean;
   on(event: 'message' | 'close' | 'pong', listener: (...args: unknown[]) => void): unknown;
@@ -188,7 +190,11 @@ export function broadcastRealtimeSnapshots<TRoom extends RealtimeSnapshotRoom>(
   for (const client of room.clients) {
     if (!client.playerId) continue;
     const { snapshot, visibility } = snapshotFor(client.playerId);
-    if (visibility === 'public' && client.snapshotRoomCode === room.code) {
+    if (
+      visibility === 'public' &&
+      client.snapshotEnvelopeVersion === SHARED_SNAPSHOT_ENVELOPE_VERSION &&
+      client.snapshotRoomCode === room.code
+    ) {
       sharedRecipients.push(client);
       continue;
     }
@@ -317,6 +323,7 @@ export function detachRealtimeSocket(room: RealtimeRoom, socket: RealtimeSocket)
   socket.playerId = null;
   socket.admittedRoomCode = null;
   socket.snapshotRoomCode = null;
+  socket.snapshotEnvelopeVersion = null;
 }
 
 function rejectUpgrade(socket: RealtimeUpgradeSocket): void {
@@ -366,6 +373,7 @@ export function registerRealtimeServer({
   webSocketServer.on('connection', (socket, request) => {
     socket.accountUser = request.accountUser;
     socket.snapshotRoomCode = null;
+    socket.snapshotEnvelopeVersion = null;
     // Presence is established explicitly after the first authoritative snapshot.
     // This prevents a hidden reconnect from resetting grace timers or reclaiming AI.
     socket.visible = false;

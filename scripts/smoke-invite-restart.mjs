@@ -153,7 +153,12 @@ async function openRoom(baseUrl, cookies) {
       resolve(frame);
     });
   });
-  socket.send(JSON.stringify({ type: 'create-room', name: 'Restart Host', protocolVersion }));
+  socket.send(JSON.stringify({
+    type: 'create-room',
+    name: 'Restart Host',
+    protocolVersion,
+    snapshotEnvelopeVersion: 2
+  }));
   const frame = await snapshot;
   return { socket, roomCode: frame.room.code };
 }
