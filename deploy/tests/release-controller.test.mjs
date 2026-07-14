@@ -103,12 +103,22 @@ test('path and archive validation reject traversal, links, duplicates, and forbi
   assert.equal(validated.entries.has('server-invite-codes.mjs'), true);
   assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server-room-invites.mjs'), true);
   assert.equal(validated.entries.has('server-room-invites.mjs'), true);
+  assert.equal(REQUIRED_ARCHIVE_ENTRIES.has('server-push.mjs'), true);
+  assert.equal(validated.entries.has('server-push.mjs'), true);
   const missingValidatorIndex = required.indexOf('server-game-state-validation.mjs');
   const missingValidator = required.filter((_, index) => index !== missingValidatorIndex);
   const missingValidatorVerbose = verbose.filter((_, index) => index !== missingValidatorIndex);
   assert.throws(
     () => validateArchiveListing(missingValidator, missingValidatorVerbose),
     /missing required runtime entry: server-game-state-validation\.mjs/
+  );
+  const missingPushIndex = required.indexOf('server-push.mjs');
+  assert.throws(
+    () => validateArchiveListing(
+      required.filter((_, index) => index !== missingPushIndex),
+      verbose.filter((_, index) => index !== missingPushIndex)
+    ),
+    /missing required runtime entry: server-push\.mjs/
   );
   assert.throws(
     () => validateArchiveListing(

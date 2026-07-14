@@ -261,6 +261,7 @@ describe('runtime artifact safety contract', () => {
     expect(isAllowedRuntimePath('server-game-state-validation.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-invite-codes.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-room-invites.mjs')).toBe(true);
+    expect(isAllowedRuntimePath('server-push.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-deployed.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-chat.mjs')).toBe(false);
     expect(isAllowedRuntimePath('src/game.ts')).toBe(false);
@@ -330,6 +331,7 @@ describe('runtime artifact safety contract', () => {
     expect(result.files.has('server-game-state-validation.mjs')).toBe(true);
     expect(result.files.has('server-invite-codes.mjs')).toBe(true);
     expect(result.files.has('server-room-invites.mjs')).toBe(true);
+    expect(result.files.has('server-push.mjs')).toBe(true);
     expect(result.files.has('server-dist/protocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverProtocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverRealtime.js')).toBe(true);
@@ -459,6 +461,10 @@ describe('runtime artifact safety contract', () => {
     )).toThrow('missing required');
     expect(() => validateRuntimeEntries(
       fixtureEntries().filter((entry) => entry.rawPath !== 'server-room-invites.mjs'),
+      releaseSha
+    )).toThrow('missing required');
+    expect(() => validateRuntimeEntries(
+      fixtureEntries().filter((entry) => entry.rawPath !== 'server-push.mjs'),
       releaseSha
     )).toThrow('missing required');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server-dist/serverRealtime.js'), releaseSha)).toThrow(

@@ -573,7 +573,7 @@ adopt_legacy() {
     tmp="$APP_ROOT/releases/.legacy-$sha-$$"
     [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || die 'Legacy staging destination already exists.'
     /usr/bin/mkdir -m 0700 "$tmp"
-    for item in dist server-dist scripts package.json package-lock.json server.mjs server-account-store.mjs server-invite-codes.mjs server-room-invites.mjs server-room-persistence.mjs server-persistence-health.mjs server-readiness.mjs server-release.mjs server-state-backup.mjs; do
+    for item in dist server-dist scripts package.json package-lock.json server.mjs server-account-store.mjs server-invite-codes.mjs server-room-invites.mjs server-room-persistence.mjs server-persistence-health.mjs server-push.mjs server-readiness.mjs server-release.mjs server-state-backup.mjs; do
       [ ! -e "$APP_ROOT/$item" ] || /usr/bin/cp -a "$APP_ROOT/$item" "$tmp/$item"
     done
     (cd "$tmp" && "$NODE_ROOT/node-v$NODE_VERSION/bin/node" "$NODE_ROOT/node-v$NODE_VERSION/lib/node_modules/npm/bin/npm-cli.js" ci --omit=dev --ignore-scripts --no-audit --no-fund)

@@ -1114,3 +1114,10 @@ test('artifact producer and live controller include invite runtime modules', () 
     assert.ok(REQUIRED_ARCHIVE_ENTRIES.has(module), `${module} must be required by the live controller`);
   }
 });
+
+test('artifact producer, live controller, and bootstrap include the Web Push runtime module', async () => {
+  assert.ok(REQUIRED_ARCHIVE_FILES.includes('server-push.mjs'));
+  assert.ok(REQUIRED_ARCHIVE_ENTRIES.has('server-push.mjs'));
+  const installer = await fs.readFile(path.join(deployRoot, 'bootstrap-skyjo-delivery.sh'), 'utf8');
+  assert.match(installer, /\bserver-push\.mjs\b/);
+});

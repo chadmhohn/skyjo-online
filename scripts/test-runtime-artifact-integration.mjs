@@ -89,6 +89,10 @@ try {
     controllerContract.entries.has('server-room-invites.mjs'),
     'The packaged artifact must include the signed room-invite module imported at production startup.'
   );
+  assert.ok(
+    controllerContract.entries.has('server-push.mjs'),
+    'The packaged artifact must include the Web Push validation and delivery module imported at production startup.'
+  );
   assert.ok(controllerContract.entries.has('node_modules/minimist/package.json'), 'The real production tree must exercise minimist pruning.');
   assert.equal(
     [...controllerContract.entries].some((entry) => entry.split('/').some(isForbiddenArchivePathSegment)),

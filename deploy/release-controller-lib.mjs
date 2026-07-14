@@ -29,6 +29,7 @@ export const REQUIRED_ARCHIVE_ENTRIES = new Set([
   'server-game-state-validation.mjs',
   'server-invite-codes.mjs',
   'server-persistence-health.mjs',
+  'server-push.mjs',
   'server-readiness.mjs',
   'server-release.mjs',
   'server-room-invites.mjs',
