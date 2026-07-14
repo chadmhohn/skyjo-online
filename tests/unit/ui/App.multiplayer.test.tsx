@@ -351,7 +351,9 @@ async function createJoinedRoom(room = makeRoom(), viewerPlayerId = room.hostId)
   expect(screen.getByRole('button', { name: 'Create Room' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Join' })).toBeDisabled();
   const socket = openSocket();
-  expect(lastFrame(socket)).toEqual({ type: 'create-room', protocolVersion: 2, name: 'Alice' });
+  expect(lastFrame(socket)).toEqual({
+    type: 'create-room', protocolVersion: 2, snapshotEnvelopeVersion: 2, name: 'Alice'
+  });
   receiveSnapshot(socket, room, viewerPlayerId);
   await screen.findByText(room.code);
   return { room, socket, user };
@@ -449,6 +451,7 @@ describe('multiplayer lobby', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId
@@ -487,6 +490,7 @@ describe('multiplayer lobby', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId,
@@ -526,6 +530,7 @@ describe('multiplayer lobby', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId,
@@ -1016,7 +1021,8 @@ describe('multiplayer lobby', () => {
     await user.click(screen.getByRole('button', { name: 'Join' }));
     const socket = openSocket();
     expect(lastFrame(socket)).toEqual({
-      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABC12', name: 'Alice'
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+      code: 'ABC12', name: 'Alice'
     });
     receive(socket, {
       type: 'error',
@@ -1098,6 +1104,7 @@ describe('multiplayer lobby', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
       playerId: savedRecoveryPlayerId
@@ -1120,7 +1127,8 @@ describe('multiplayer lobby', () => {
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1), { timeout: 1000 });
     const first = openSocket();
     expect(lastFrame(first)).toEqual({
-      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+      code: 'ABCDE', name: 'Alice', playerId: 'p1'
     });
     receiveSnapshot(first, makeRoom());
     expect(window.localStorage.getItem('skyjo-player-name')).toBe('Alice');
@@ -1138,7 +1146,8 @@ describe('multiplayer lobby', () => {
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1000 });
     const resumed = openSocket();
     expect(lastFrame(resumed)).toEqual({
-      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+      code: 'ABCDE', name: 'Alice', playerId: 'p1'
     });
     receiveSnapshot(resumed, makeRoom({ updatedAt: 200 }));
     expect(screen.getByText(/Bob online/)).toBeInTheDocument();
@@ -1199,7 +1208,8 @@ describe('multiplayer lobby', () => {
     await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3), { timeout: 1000 });
     const retried = openSocket();
     expect(lastFrame(retried)).toEqual({
-      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+      code: 'ABCDE', name: 'Alice', playerId: 'p1'
     });
     receive(retried, {
       type: 'error',
@@ -1298,7 +1308,10 @@ describe('multiplayer lobby', () => {
     const socket = openSocket();
     receiveSnapshot(socket, makeRoom());
     expect(socket.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      },
       { type: 'set-presence', visible: false }
     ]);
   });
