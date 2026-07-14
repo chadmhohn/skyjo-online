@@ -300,6 +300,16 @@ function PlayerGrid({
     if (previousIndex === null) return undefined;
     pendingFocusIndexRef.current = null;
     const frame = window.requestAnimationFrame(() => {
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLElement &&
+        activeElement !== document.body &&
+        activeElement !== document.documentElement &&
+        activeElement.isConnected
+      ) {
+        return;
+      }
+
       const nextIndex = actionableIndices.find((index) => index > previousIndex) ?? actionableIndices[0];
       if (typeof nextIndex === 'number') {
         setRovingIndex(nextIndex);
