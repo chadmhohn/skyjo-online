@@ -102,6 +102,7 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   expect(serviceWorkerSource).toContain("addEventListener('push'");
   expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
   expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
+  expect(serviceWorkerSource).not.toMatch(/(?:__WB_MANIFEST|url)[^\n]*audio\/[^\n]*\.mp3/);
   const originGuardIndex = serviceWorkerSource.indexOf('if (event.origin !== self.location.origin) return;');
   const activationIndex = serviceWorkerSource.indexOf('if (isActivation) {');
   const skipWaitingIndex = serviceWorkerSource.indexOf('void self.skipWaiting().catch(() => {});');

@@ -99,15 +99,17 @@ describe('WebAudio playback', () => {
     vi.unstubAllGlobals();
   });
 
-  it('preloads decoded buffers and plays a gain-scaled cue', async () => {
+  it('preloads decoded buffers without constructing disabled ambience and plays a gain-scaled cue', async () => {
     const audio = await loadAudio();
 
+    expect(fetch).not.toHaveBeenCalled();
+    expect(FakeAudioContext.instances).toHaveLength(0);
     await expect(audio.primeAudio()).resolves.toBe(true);
     await flushPromises();
     const context = FakeAudioContext.instances[0];
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(context.decodeAudioData).toHaveBeenCalledTimes(3);
-    expect(AmbienceAudio.instances[0].load).toHaveBeenCalledOnce();
+    expect(AmbienceAudio.instances).toHaveLength(0);
 
     audio.playAudioCue('flip');
     await flushPromises();
@@ -122,6 +124,36 @@ describe('WebAudio playback', () => {
 
     await vi.advanceTimersByTimeAsync(520);
     expect(source.stop).toHaveBeenCalledOnce();
+  });
+
+  it('coalesces duplicate warmup and preserves the cue triggered by the first activation', async () => {
+    FakeAudioContext.initialState = 'suspended';
+    const audio = await loadAudio();
+
+    const firstPrime = audio.primeAudio();
+    const duplicatePrime = audio.primeAudio();
+    expect(duplicatePrime).toBe(firstPrime);
+    audio.playAudioCue('flip');
+
+    await expect(firstPrime).resolves.toBe(true);
+    await flushPromises();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(FakeAudioContext.instances[0].decodeAudioData).toHaveBeenCalledTimes(3);
+    expect(FakeBufferSource.instances).toHaveLength(1);
+    expect(FakeBufferSource.instances[0].start).toHaveBeenCalledOnce();
+  });
+
+  it('does not create a context or fetch buffers while sound and ambience are disabled', async () => {
+    const audio = await loadAudio();
+    audio.setAudioSettings({ ambience: false, soundEffects: false });
+
+    await expect(audio.primeAudio()).resolves.toBe(true);
+    audio.playAudioCue('place');
+    await flushPromises();
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(AmbienceAudio.instances).toHaveLength(0);
   });
 
   it('resumes a suspended context before playing', async () => {

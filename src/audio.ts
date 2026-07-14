@@ -44,7 +44,9 @@ let audioSettings = readStoredAudioSettings();
 let audioStatus: AudioStatus = 'idle';
 let audioContext: AudioContext | null = null;
 let ambienceAudio: HTMLAudioElement | null = null;
-let audioAssetsPreloaded = false;
+let cueAssetsPreloaded = false;
+let ambienceAssetPreloaded = false;
+let audioPrimeInFlight: Promise<boolean> | null = null;
 let audioBlockedUntil = 0;
 let ambienceStartInFlight: Promise<void> | null = null;
 let lastAudioResumeResetAt = 0;
@@ -143,23 +145,35 @@ function cueElement(cue: AudioCue) {
   return audio;
 }
 
-function preloadAudioAssets() {
-  if (audioAssetsPreloaded) return;
-  if (!hasWebAudio() && !hasAudioElement()) {
+function preloadEnabledAudioAssets() {
+  const shouldPreloadCues = audioSettings.soundEffects && audioSettings.soundVolume > 0;
+  const shouldPreloadAmbience = audioSettings.ambience && audioSettings.ambienceVolume > 0;
+  if (!shouldPreloadCues && !shouldPreloadAmbience) return;
+  if ((shouldPreloadCues && !hasWebAudio() && !hasAudioElement()) || (shouldPreloadAmbience && !hasAudioElement())) {
     setAudioStatus('unavailable');
     return;
   }
-  audioAssetsPreloaded = true;
-  if (hasWebAudio()) {
-    (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
-      void cueBuffer(cue);
-    });
-  } else {
-    (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
-      cueElement(cue)?.load();
-    });
+
+  if (shouldPreloadCues && !cueAssetsPreloaded) {
+    cueAssetsPreloaded = true;
+    if (hasWebAudio()) {
+      (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
+        void cueBuffer(cue);
+      });
+    } else {
+      (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
+        cueElement(cue)?.load();
+      });
+    }
   }
-  ensureAmbienceAudio()?.load();
+
+  if (shouldPreloadAmbience && !ambienceAssetPreloaded) {
+    const ambience = ensureAmbienceAudio();
+    if (ambience) {
+      ambienceAssetPreloaded = true;
+      ambience.load();
+    }
+  }
 }
 
 async function cueBuffer(cue: AudioCue) {
@@ -210,9 +224,9 @@ function resetAudioAfterResume() {
     ambienceAudio = null;
   }
   ambienceStartInFlight = null;
-  audioAssetsPreloaded = false;
+  cueAssetsPreloaded = false;
+  ambienceAssetPreloaded = false;
   setAudioStatus('idle');
-  preloadAudioAssets();
 }
 
 function cleanupCueAudio(audio: HTMLAudioElement) {
@@ -326,11 +340,18 @@ export function playAudioTestCue() {
   window.setTimeout(() => void playAudioCue('place'), 360);
 }
 
-export async function primeAudio() {
-  preloadAudioAssets();
-  if (!hasWebAudio() && !hasAudioElement()) return false;
+async function primeEnabledAudio() {
+  const cuesEnabled = audioSettings.soundEffects && audioSettings.soundVolume > 0;
+  const ambienceEnabled = audioSettings.ambience && audioSettings.ambienceVolume > 0;
+  if (!cuesEnabled && !ambienceEnabled) return true;
+  if ((cuesEnabled && !hasWebAudio() && !hasAudioElement()) || (ambienceEnabled && !hasAudioElement())) {
+    setAudioStatus('unavailable');
+    return false;
+  }
+
   audioBlockedUntil = 0;
-  const context = getAudioContext();
+  preloadEnabledAudioAssets();
+  const context = cuesEnabled && hasWebAudio() ? getAudioContext() : null;
   if (context?.state === 'suspended') {
     try {
       await context.resume();
@@ -339,9 +360,18 @@ export async function primeAudio() {
       setAudioStatus('blocked');
     }
   }
-  if (!audioSettings.ambience) return true;
+  if (!ambienceEnabled) return true;
   await startAmbience();
   return audioStatus === 'ready';
+}
+
+export function primeAudio() {
+  if (audioPrimeInFlight) return audioPrimeInFlight;
+  const prime: Promise<boolean> = primeEnabledAudio().finally(() => {
+    if (audioPrimeInFlight === prime) audioPrimeInFlight = null;
+  });
+  audioPrimeInFlight = prime;
+  return prime;
 }
 
 function ensureAmbienceAudio() {
@@ -438,12 +468,11 @@ export function useAudioSettings() {
 
   useEffect(() => {
     if (!isBrowser()) return undefined;
-    const unlockAudio = () => {
+    const unlockAudio = (event: Event) => {
+      if (!event.isTrusted) return;
       void primeAudio();
-      syncAmbience(true);
     };
 
-    preloadAudioAssets();
     syncAmbience(false);
     window.addEventListener('pointerdown', unlockAudio, { passive: true });
     window.addEventListener('touchstart', unlockAudio, { passive: true });
