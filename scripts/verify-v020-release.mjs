@@ -4,8 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
+  assertRecoveryTraceMatchesCertification,
   assertRssStageEvidenceMatchesCertification,
   readVerifiedCertificationEvidence,
+  readVerifiedRecoveryTraceEvidence,
   readVerifiedRssStageEvidence
 } from './certification-lib.mjs';
 import { loadReleaseIdentity } from '../server-release.mjs';
@@ -18,6 +20,8 @@ function parseArguments(argv) {
     checksum: path.join(root, 'test-results', 'certification', 'automated.json.sha256'),
     evidence: path.join(root, 'test-results', 'certification', 'automated.json'),
     productionBaseUrl: '',
+    recoveryChecksum: path.join(root, 'test-results', 'certification', 'recovery-trials.json.sha256'),
+    recoveryEvidence: path.join(root, 'test-results', 'certification', 'recovery-trials.json'),
     releaseSha: '',
     rssChecksum: path.join(root, 'test-results', 'certification', 'rss-stages.json.sha256'),
     rssEvidence: path.join(root, 'test-results', 'certification', 'rss-stages.json'),
@@ -30,12 +34,14 @@ function parseArguments(argv) {
       '--checksum',
       '--evidence',
       '--production-base-url',
+      '--recovery-checksum',
+      '--recovery-evidence',
       '--release-sha',
       '--rss-checksum',
       '--rss-evidence',
       '--tag'
     ].includes(name)) {
-      throw new Error('Usage: verify-v020-release --release-sha SHA [--evidence FILE --checksum FILE --rss-evidence FILE --rss-checksum FILE --tag v0.2.0 --production-base-url HTTPS_URL]');
+      throw new Error('Usage: verify-v020-release --release-sha SHA [--evidence FILE --checksum FILE --recovery-evidence FILE --recovery-checksum FILE --rss-evidence FILE --rss-checksum FILE --tag v0.2.0 --production-base-url HTTPS_URL]');
     }
     const key = name.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     options[key] = value;
@@ -78,13 +84,18 @@ async function main() {
   if (checkoutOutput.trim().toLowerCase() !== options.releaseSha) {
     throw new Error('The checked-out source does not match the certified v0.2.0 commit.');
   }
-  const [{ evidence, digest }, { evidence: rssEvidence }] = await Promise.all([
+  const [{ evidence, digest }, { evidence: recoveryEvidence }, { evidence: rssEvidence }] = await Promise.all([
     readVerifiedCertificationEvidence(path.resolve(options.evidence), path.resolve(options.checksum)),
+    readVerifiedRecoveryTraceEvidence(
+      path.resolve(options.recoveryEvidence),
+      path.resolve(options.recoveryChecksum)
+    ),
     readVerifiedRssStageEvidence(path.resolve(options.rssEvidence), path.resolve(options.rssChecksum))
   ]);
   if (evidence.release.sourceSha !== options.releaseSha || evidence.release.version !== '0.2.0') {
     throw new Error('Certification evidence belongs to a different release.');
   }
+  assertRecoveryTraceMatchesCertification(evidence, recoveryEvidence);
   assertRssStageEvidenceMatchesCertification(evidence, rssEvidence);
   const packageDocument = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
   if (packageDocument.version !== '0.2.0') throw new Error('package.json does not identify v0.2.0.');

@@ -6,18 +6,24 @@ import {
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
   K6_LINUX_AMD64_SHA256,
+  assertRecoveryTraceMatchesCertification,
   assertRssStageEvidenceMatchesCertification,
   assertSanitizedCertificationValue,
   createAutomatedCertificationEvidence,
+  createRecoveryTraceEvidence,
   createRssStageEvidence,
+  measurePersistenceRpo,
   readVerifiedCertificationEvidence,
+  readVerifiedRecoveryTraceEvidence,
   readVerifiedRssStageEvidence,
   validateAutomatedCertificationEvidence,
   validateEightClientPersonaEvidence,
   validateK6CertificationSummary,
   validateRecoveryCertification,
+  validateRecoveryTraceEvidence,
   validateRssStageEvidence,
   writeCertificationEvidence,
+  writeRecoveryTraceEvidence,
   writeRssStageEvidence
 } from '../../../scripts/certification-lib.mjs';
 import { REQUIRED_CHECKS } from '../../../scripts/github-governance-lib.mjs';
@@ -142,6 +148,112 @@ function automatedEvidence() {
   });
 }
 
+function recoveryTraceEvidence() {
+  return createRecoveryTraceEvidence({
+    sourceSha,
+    trials: recoveryEvidence().trials.map((trial) => ({
+      trial: trial.trial,
+      acknowledgedCommands: trial.acknowledgedCommands,
+      durableCommands: trial.durableCommands,
+      lostCommands: trial.acknowledgedCommands - trial.durableCommands,
+      persistenceRpoMs: trial.persistenceRpoMs
+    }))
+  });
+}
+
+function recoveryAcknowledgement(commandId: string, acknowledgedAt: number) {
+  return { commandId, acknowledgedAt };
+}
+
+describe('recovery RPO measurement', () => {
+  it('measures the crash-time age of the oldest lost acknowledgement', () => {
+    const acknowledgements = [
+      recoveryAcknowledgement('command-a', 100),
+      recoveryAcknowledgement('command-b', 950)
+    ];
+    expect(measurePersistenceRpo({
+      acknowledgements,
+      durableCommandIds: ['command-a'],
+      crashSignalAt: 1_000
+    })).toEqual({
+      acknowledgedCommands: 2,
+      durableCommands: 1,
+      lostCommands: 1,
+      persistenceRpoMs: 50
+    });
+
+    expect(measurePersistenceRpo({
+      acknowledgements,
+      durableCommandIds: ['command-a', 'command-b'],
+      crashSignalAt: 2_000
+    }).persistenceRpoMs).toBe(0);
+  });
+
+  it('includes post-ack exposure and preserves the inclusive 500ms boundary', () => {
+    const acknowledgements = [
+      recoveryAcknowledgement('command-a', 100),
+      recoveryAcknowledgement('command-b', 500)
+    ];
+    expect(measurePersistenceRpo({
+      acknowledgements,
+      durableCommandIds: ['command-a'],
+      crashSignalAt: 1_000
+    }).persistenceRpoMs).toBe(500);
+    expect(measurePersistenceRpo({
+      acknowledgements,
+      durableCommandIds: ['command-a'],
+      crashSignalAt: 1_001
+    }).persistenceRpoMs).toBe(501);
+  });
+
+  it('fails closed on inconsistent acknowledgement and durable streams', () => {
+    const acknowledgements = [
+      recoveryAcknowledgement('command-a', 100),
+      recoveryAcknowledgement('command-b', 200),
+      recoveryAcknowledgement('command-c', 300)
+    ];
+    expect(() => measurePersistenceRpo({
+      acknowledgements,
+      durableCommandIds: ['command-a', 'command-c'],
+      crashSignalAt: 400
+    })).toThrow(/prefix/i);
+    expect(() => measurePersistenceRpo({
+      acknowledgements,
+      durableCommandIds: ['command-b', 'command-a'],
+      crashSignalAt: 400
+    })).toThrow(/ordered acknowledged prefix/i);
+    expect(() => measurePersistenceRpo({
+      acknowledgements,
+      durableCommandIds: ['unknown-command'],
+      crashSignalAt: 400
+    })).toThrow(/acknowledged recovery stream/i);
+    expect(() => measurePersistenceRpo({
+      acknowledgements: [
+        recoveryAcknowledgement('command-a', 200),
+        recoveryAcknowledgement('command-b', 100)
+      ],
+      durableCommandIds: ['command-a'],
+      crashSignalAt: 400
+    })).toThrow(/monotonic/i);
+  });
+
+  it('creates sanitized partial trace evidence before a threshold assertion', () => {
+    const trace = createRecoveryTraceEvidence({
+      sourceSha,
+      trials: [{
+        trial: 1,
+        acknowledgedCommands: 3,
+        durableCommands: 1,
+        lostCommands: 2,
+        persistenceRpoMs: 501
+      }]
+    });
+    expect(validateRecoveryTraceEvidence(trace)).toEqual(trace);
+    expect(trace.trials[0]).toMatchObject({ thresholdPassed: false, persistenceRpoMs: 501 });
+    expect(JSON.stringify(trace)).not.toMatch(/command-a|room|player|path|cookie/i);
+  });
+});
+
 describe('v0.2.0 certification evidence', () => {
   it('accepts only the exact finite release topology and thresholds', () => {
     expect(validateK6CertificationSummary(k6Summary())).toEqual(k6Summary());
@@ -150,6 +262,7 @@ describe('v0.2.0 certification evidence', () => {
     expect(validateEightClientPersonaEvidence(personaEvidence())).toEqual(personaEvidence());
     expect(validateAutomatedCertificationEvidence(automatedEvidence())).toEqual(automatedEvidence());
     expect(assertRssStageEvidenceMatchesCertification(automatedEvidence(), rssStageEvidence())).toEqual(rssStageEvidence());
+    expect(assertRecoveryTraceMatchesCertification(automatedEvidence(), recoveryTraceEvidence())).toEqual(recoveryTraceEvidence());
 
     for (const mutate of [
       (summary: ReturnType<typeof k6Summary>) => { summary.metrics.clientsConnected = 159; },
@@ -198,6 +311,11 @@ describe('v0.2.0 certification evidence', () => {
     mismatchedRss.stages[0].peakRssKib -= 1;
     mismatchedRss.stages[0].samples[1].rssKib -= 1;
     expect(() => assertRssStageEvidenceMatchesCertification(automatedEvidence(), mismatchedRss)).toThrow(/does not exactly match/i);
+
+    const mismatchedRecovery = recoveryTraceEvidence();
+    mismatchedRecovery.trials[0].durableCommands -= 1;
+    mismatchedRecovery.trials[0].lostCommands += 1;
+    expect(() => assertRecoveryTraceMatchesCertification(automatedEvidence(), mismatchedRecovery)).toThrow(/does not exactly match/i);
   });
 
   it('rejects PII, credentials, filesystem paths, SQL, and raw protocol evidence', () => {
@@ -224,8 +342,14 @@ describe('v0.2.0 certification evidence', () => {
   it('writes canonical evidence and verifies its exact SHA-256 checksum', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-certification-unit-'));
     const evidencePath = path.join(directory, 'automated.json');
+    const recoveryTracePath = path.join(directory, 'recovery-trials.json');
     const rssPath = path.join(directory, 'rss-stages.json');
     try {
+      const trace = recoveryTraceEvidence();
+      const traceWritten = await writeRecoveryTraceEvidence(recoveryTracePath, trace);
+      expect(await fs.readFile(traceWritten.checksumPath, 'utf8')).toMatch(/^[a-f0-9]{64} {2}recovery-trials\.json\n$/);
+      expect((await readVerifiedRecoveryTraceEvidence(recoveryTracePath, traceWritten.checksumPath)).evidence).toEqual(trace);
+      expect(assertRecoveryTraceMatchesCertification(automatedEvidence(), trace)).toEqual(trace);
       const rssWritten = await writeRssStageEvidence(rssPath, rssStageEvidence());
       expect(await fs.readFile(rssWritten.checksumPath, 'utf8')).toMatch(/^[a-f0-9]{64} {2}rss-stages\.json\n$/);
       expect((await readVerifiedRssStageEvidence(rssPath, rssWritten.checksumPath)).evidence).toEqual(rssStageEvidence());
@@ -284,12 +408,18 @@ describe('v0.2.0 workflow governance', () => {
     expect(bootstrapSection).toMatch(/catch \(error\) \{[\s\S]*?fs\.rm\(authenticationPath, \{ force: true \}\)/);
     expect(measuredLoadSection).toMatch(/finally \{[\s\S]*?fs\.rm\(authenticationPath, \{ force: true \}\)/);
     expect(runner).toMatch(/writeRssStageEvidence\(rssEvidencePath, rss\)/);
+    expect(runner).toMatch(/acknowledgedAt: performance\.now\(\)/);
+    expect(runner).toMatch(/child\.kill\('SIGKILL'\)[\s\S]*?crashSignalAt = performance\.now\(\)/);
+    expect(runner).toMatch(/await recordMeasurement\(\{ trial, \.\.\.measurement \}\);[\s\S]*?Persistence RPO \$\{measurement\.persistenceRpoMs\.toFixed\(3\)\}ms exceeded/);
+    expect(runner).toMatch(/writeRecoveryTraceEvidence\([\s\S]*?createRecoveryTraceEvidence/);
     expect(realtime).toMatch(/Buffer\.byteLength/);
     expect(realtime).not.toMatch(/new TextEncoder/);
     expect(verifier).not.toMatch(/gh release create|\/releases/);
     expect(verifier).toMatch(/rev-parse', 'HEAD\^\{commit\}'/);
     expect(verifier).toMatch(/readVerifiedRssStageEvidence/);
     expect(verifier).toMatch(/assertRssStageEvidenceMatchesCertification\(evidence, rssEvidence\)/);
+    expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
+    expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
     expect(JSON.parse(packageDocument).version).toBe('0.2.0');
     expect(JSON.parse(packageLock).version).toBe('0.2.0');
     expect(changelog).toMatch(/^## 0\.2\.0 - 2026-07-13$/m);

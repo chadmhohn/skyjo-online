@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
@@ -11,11 +12,14 @@ import {
   CERTIFICATION_RELEASE_VERSION,
   K6_LINUX_AMD64_SHA256,
   K6_VERSION,
+  createRecoveryTraceEvidence,
   createAutomatedCertificationEvidence,
   createRssStageEvidence,
+  measurePersistenceRpo,
   validateEightClientPersonaEvidence,
   validateK6CertificationSummary,
   writeCertificationEvidence,
+  writeRecoveryTraceEvidence,
   writeRssStageEvidence
 } from './certification-lib.mjs';
 import { loadReleaseIdentity } from '../server-release.mjs';
@@ -26,6 +30,7 @@ const resultsDirectory = path.join(root, 'test-results', 'certification');
 const personaEvidencePath = path.join(resultsDirectory, 'eight-client-personas.json');
 const k6SummaryPath = path.join(resultsDirectory, 'k6-summary.json');
 const automatedEvidencePath = path.join(resultsDirectory, 'automated.json');
+const recoveryTracePath = path.join(resultsDirectory, 'recovery-trials.json');
 const rssEvidencePath = path.join(resultsDirectory, 'rss-stages.json');
 const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const siteCookieName = 'skyjo_cert_site';
@@ -182,6 +187,16 @@ async function stopCertificationServer(server, signal = 'SIGTERM') {
   }
 }
 
+async function crashCertificationServer(server) {
+  if (!server || server.child.exitCode !== null || server.child.signalCode !== null) {
+    throw new Error('Recovery server exited before the crash signal.');
+  }
+  if (!server.child.kill('SIGKILL')) throw new Error('Recovery server rejected the crash signal.');
+  const crashSignalAt = performance.now();
+  await waitForExit(server.child, 5_000);
+  return crashSignalAt;
+}
+
 function cookieFrom(response, name) {
   const headers = typeof response.headers.getSetCookie === 'function'
     ? response.headers.getSetCookie()
@@ -320,7 +335,7 @@ class RecoverySocket {
     if (snapshotFrame.revision !== nextRevision || ackFrame.revision !== nextRevision) {
       throw new Error('Recovery command did not advance exactly one revision.');
     }
-    return { acknowledgedAt: Date.now(), commandId, revision: nextRevision };
+    return { acknowledgedAt: performance.now(), commandId, revision: nextRevision };
   }
 
   close() {
@@ -373,7 +388,7 @@ async function readPersistedRoom(roomsFile, predicate, timeoutMs = 5_000) {
   throw new Error('The expected recovery room was not durably persisted.');
 }
 
-async function runRecoveryTrial(trial, parentDirectory, sourceSha) {
+async function runRecoveryTrial(trial, parentDirectory, sourceSha, recordMeasurement) {
   const dataDirectory = path.join(parentDirectory, `recovery-${trial}`);
   const roomsFile = path.join(dataDirectory, 'rooms.json');
   const killOffsets = [325, 475, 625];
@@ -413,18 +428,25 @@ async function runRecoveryTrial(trial, parentDirectory, sourceSha) {
       await delay(commandSpacing[trial - 1]);
     }
     if (acknowledgements.length < 2) throw new Error('Recovery trial produced too few acknowledged commands.');
-    await stopCertificationServer(server, 'SIGKILL');
+    const crashSignalAt = await crashCertificationServer(server);
     server = null;
     socket = null;
 
     const persisted = await readPersistedRoom(roomsFile, (room) => room.code === roomCode, 1_000);
-    const persistedIds = new Set((persisted.recentCommandIds || []).map((receipt) => receipt.commandId));
-    const durable = acknowledgements.filter((acknowledgement) => persistedIds.has(acknowledgement.commandId));
-    if (durable.length === 0) throw new Error('Recovery trial retained no acknowledged command.');
-    const lastAcknowledgedAt = Math.max(...acknowledgements.map((acknowledgement) => acknowledgement.acknowledgedAt));
-    const lastDurableAt = Math.max(...durable.map((acknowledgement) => acknowledgement.acknowledgedAt));
-    const persistenceRpoMs = Math.max(0, lastAcknowledgedAt - lastDurableAt);
-    if (persistenceRpoMs > CERTIFICATION_LIMITS.persistenceRpoMs) throw new Error('Persistence RPO exceeded 500ms.');
+    const measurement = measurePersistenceRpo({
+      acknowledgements: acknowledgements.map(({ acknowledgedAt, commandId }) => ({ acknowledgedAt, commandId })),
+      durableCommandIds: (persisted.recentCommandIds || []).map((receipt) => receipt.commandId),
+      crashSignalAt
+    });
+    await recordMeasurement({ trial, ...measurement });
+    if (measurement.durableCommands === 0) throw new Error('Recovery trial retained no acknowledged command.');
+    if (measurement.persistenceRpoMs > CERTIFICATION_LIMITS.persistenceRpoMs) {
+      throw new Error(
+        `Persistence RPO ${measurement.persistenceRpoMs.toFixed(3)}ms exceeded ${CERTIFICATION_LIMITS.persistenceRpoMs}ms ` +
+        `in recovery trial ${trial} (acknowledged ${measurement.acknowledgedCommands}, ` +
+        `durable ${measurement.durableCommands}, lost ${measurement.lostCommands}).`
+      );
+    }
 
     restarted = await spawnCertificationServer(dataDirectory, sourceSha);
     const restartRtoMs = restarted.readyAt - restarted.startedAt;
@@ -449,9 +471,9 @@ async function runRecoveryTrial(trial, parentDirectory, sourceSha) {
     restarted = null;
     return {
       trial,
-      acknowledgedCommands: acknowledgements.length,
-      durableCommands: durable.length,
-      persistenceRpoMs,
+      acknowledgedCommands: measurement.acknowledgedCommands,
+      durableCommands: measurement.durableCommands,
+      persistenceRpoMs: measurement.persistenceRpoMs,
       restartRtoMs,
       reconnectRtoMs
     };
@@ -465,8 +487,17 @@ async function runRecoveryTrial(trial, parentDirectory, sourceSha) {
 
 async function runRecoveryCertification(parentDirectory, sourceSha) {
   const trials = [];
+  const traceTrials = [];
+  const recordMeasurement = async (measurement) => {
+    if (measurement.trial !== traceTrials.length + 1) throw new Error('Recovery trace trials are out of order.');
+    traceTrials.push(measurement);
+    await writeRecoveryTraceEvidence(
+      recoveryTracePath,
+      createRecoveryTraceEvidence({ sourceSha, trials: traceTrials })
+    );
+  };
   for (let trial = 1; trial <= CERTIFICATION_LIMITS.recoveryTrials; trial += 1) {
-    trials.push(await runRecoveryTrial(trial, parentDirectory, sourceSha));
+    trials.push(await runRecoveryTrial(trial, parentDirectory, sourceSha, recordMeasurement));
   }
   return {
     trials,

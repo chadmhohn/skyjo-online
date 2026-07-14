@@ -27,6 +27,8 @@ export const CERTIFICATION_LIMITS = Object.freeze({
   targetSizePx: 44
 });
 
+export const RECOVERY_TRACE_KIND = 'skyjo-recovery-rpo-trace';
+
 const fullShaPattern = /^[a-f0-9]{40}$/;
 const sha256Pattern = /^[a-f0-9]{64}$/;
 const unsafeKeyPattern = /(?:cookie|credential|email|frame|password|path|playerid|raw|roomcode|secret|sql|token)/i;
@@ -74,6 +76,138 @@ function exactBoolean(value, expected, label) {
 
 function exactString(value, expected, label) {
   if (value !== expected) throw new Error(`${label} must be ${expected}.`);
+  return value;
+}
+
+export function measurePersistenceRpo({ acknowledgements, durableCommandIds, crashSignalAt }) {
+  if (!Array.isArray(acknowledgements) || acknowledgements.length < 1) {
+    throw new Error('Persistence RPO measurement requires at least one acknowledgement.');
+  }
+  if (!Array.isArray(durableCommandIds)) {
+    throw new Error('Persistence RPO durable command ids must be an array.');
+  }
+  finiteNumber(crashSignalAt, 'Persistence RPO crash signal time');
+
+  const acknowledgementIndex = new Map();
+  let previousAcknowledgedAt = -1;
+  for (const [index, acknowledgement] of acknowledgements.entries()) {
+    assertExactKeys(acknowledgement, ['acknowledgedAt', 'commandId'], `Persistence acknowledgement ${index + 1}`);
+    if (typeof acknowledgement.commandId !== 'string' || acknowledgement.commandId.length < 1) {
+      throw new Error('Persistence acknowledgement command id must be a non-empty string.');
+    }
+    if (acknowledgementIndex.has(acknowledgement.commandId)) {
+      throw new Error('Persistence acknowledgement command ids must be unique.');
+    }
+    finiteNumber(acknowledgement.acknowledgedAt, 'Persistence acknowledgement time');
+    if (acknowledgement.acknowledgedAt < previousAcknowledgedAt) {
+      throw new Error('Persistence acknowledgement times must be monotonic.');
+    }
+    if (acknowledgement.acknowledgedAt > crashSignalAt) {
+      throw new Error('Persistence acknowledgement cannot occur after the crash signal.');
+    }
+    acknowledgementIndex.set(acknowledgement.commandId, index);
+    previousAcknowledgedAt = acknowledgement.acknowledgedAt;
+  }
+
+  const durableIndexes = [];
+  const durableIds = new Set();
+  for (const commandId of durableCommandIds) {
+    if (typeof commandId !== 'string' || commandId.length < 1 || durableIds.has(commandId)) {
+      throw new Error('Durable persistence command ids must be unique non-empty strings.');
+    }
+    const index = acknowledgementIndex.get(commandId);
+    if (index === undefined) {
+      throw new Error('Durable persistence command ids must belong to the acknowledged recovery stream.');
+    }
+    durableIds.add(commandId);
+    durableIndexes.push(index);
+  }
+  if (durableIndexes.some((index, position) => index !== position)) {
+    throw new Error('Durable persistence commands must form an ordered acknowledged prefix.');
+  }
+
+  const durableCommands = durableIndexes.length;
+  const lostCommands = acknowledgements.length - durableCommands;
+  const persistenceRpoMs = lostCommands === 0
+    ? 0
+    : crashSignalAt - acknowledgements[durableCommands].acknowledgedAt;
+  finiteNumber(persistenceRpoMs, 'Persistence RPO');
+  return {
+    acknowledgedCommands: acknowledgements.length,
+    durableCommands,
+    lostCommands,
+    persistenceRpoMs
+  };
+}
+
+export function createRecoveryTraceEvidence({ sourceSha, trials }) {
+  if (!fullShaPattern.test(sourceSha)) throw new Error('Recovery trace source SHA must be a full lowercase SHA.');
+  if (!Array.isArray(trials) || trials.length < 1 || trials.length > CERTIFICATION_LIMITS.recoveryTrials) {
+    throw new Error('Recovery trace must contain between one and three trials.');
+  }
+  const evidence = {
+    formatVersion: CERTIFICATION_FORMAT_VERSION,
+    kind: RECOVERY_TRACE_KIND,
+    limitMs: CERTIFICATION_LIMITS.persistenceRpoMs,
+    sourceSha,
+    trials: trials.map((trial, index) => {
+      assertExactKeys(trial, [
+        'acknowledgedCommands',
+        'durableCommands',
+        'lostCommands',
+        'persistenceRpoMs',
+        'trial'
+      ], `Recovery trace trial ${index + 1}`);
+      exactNumber(trial.trial, index + 1, `Recovery trace trial identity ${index + 1}`);
+      finiteNumber(trial.acknowledgedCommands, 'Recovery trace acknowledgements', { integer: true, minimum: 1 });
+      finiteNumber(trial.durableCommands, 'Recovery trace durable commands', { integer: true });
+      finiteNumber(trial.lostCommands, 'Recovery trace lost commands', { integer: true });
+      finiteNumber(trial.persistenceRpoMs, 'Recovery trace persistence RPO');
+      if (trial.durableCommands + trial.lostCommands !== trial.acknowledgedCommands) {
+        throw new Error('Recovery trace command counts do not reconcile.');
+      }
+      return {
+        ...trial,
+        thresholdPassed: trial.persistenceRpoMs <= CERTIFICATION_LIMITS.persistenceRpoMs
+      };
+    })
+  };
+  return validateRecoveryTraceEvidence(evidence);
+}
+
+export function validateRecoveryTraceEvidence(value) {
+  assertExactKeys(value, ['formatVersion', 'kind', 'limitMs', 'sourceSha', 'trials'], 'Recovery trace evidence');
+  exactNumber(value.formatVersion, CERTIFICATION_FORMAT_VERSION, 'Recovery trace format version');
+  exactString(value.kind, RECOVERY_TRACE_KIND, 'Recovery trace kind');
+  exactNumber(value.limitMs, CERTIFICATION_LIMITS.persistenceRpoMs, 'Recovery trace limit');
+  if (!fullShaPattern.test(value.sourceSha)) throw new Error('Recovery trace source SHA must be a full lowercase SHA.');
+  if (!Array.isArray(value.trials) || value.trials.length < 1 || value.trials.length > CERTIFICATION_LIMITS.recoveryTrials) {
+    throw new Error('Recovery trace must contain between one and three trials.');
+  }
+  value.trials.forEach((trial, index) => {
+    assertExactKeys(trial, [
+      'acknowledgedCommands',
+      'durableCommands',
+      'lostCommands',
+      'persistenceRpoMs',
+      'thresholdPassed',
+      'trial'
+    ], `Recovery trace trial ${index + 1}`);
+    exactNumber(trial.trial, index + 1, `Recovery trace trial identity ${index + 1}`);
+    finiteNumber(trial.acknowledgedCommands, 'Recovery trace acknowledgements', { integer: true, minimum: 1 });
+    finiteNumber(trial.durableCommands, 'Recovery trace durable commands', { integer: true });
+    finiteNumber(trial.lostCommands, 'Recovery trace lost commands', { integer: true });
+    finiteNumber(trial.persistenceRpoMs, 'Recovery trace persistence RPO');
+    if (trial.durableCommands + trial.lostCommands !== trial.acknowledgedCommands) {
+      throw new Error('Recovery trace command counts do not reconcile.');
+    }
+    exactBoolean(
+      trial.thresholdPassed,
+      trial.persistenceRpoMs <= CERTIFICATION_LIMITS.persistenceRpoMs,
+      'Recovery trace threshold result'
+    );
+  });
+  assertSanitizedCertificationValue(value);
   return value;
 }
 
@@ -471,6 +605,11 @@ export function serializeRssStageEvidence(value) {
   return `${JSON.stringify(sortedValue(value), null, 2)}\n`;
 }
 
+export function serializeRecoveryTraceEvidence(value) {
+  validateRecoveryTraceEvidence(value);
+  return `${JSON.stringify(sortedValue(value), null, 2)}\n`;
+}
+
 export function assertRssStageEvidenceMatchesCertification(certification, rssEvidence) {
   validateAutomatedCertificationEvidence(certification);
   validateRssStageEvidence(rssEvidence);
@@ -478,6 +617,31 @@ export function assertRssStageEvidenceMatchesCertification(certification, rssEvi
     throw new Error('Standalone RSS evidence does not exactly match combined certification evidence.');
   }
   return rssEvidence;
+}
+
+export function assertRecoveryTraceMatchesCertification(certification, recoveryTrace) {
+  validateAutomatedCertificationEvidence(certification);
+  validateRecoveryTraceEvidence(recoveryTrace);
+  if (
+    recoveryTrace.sourceSha !== certification.release.sourceSha ||
+    recoveryTrace.trials.length !== certification.recovery.trials.length
+  ) {
+    throw new Error('Recovery trace does not match the combined certification identity.');
+  }
+  certification.recovery.trials.forEach((trial, index) => {
+    const traceTrial = recoveryTrace.trials[index];
+    if (
+      traceTrial.trial !== trial.trial ||
+      traceTrial.acknowledgedCommands !== trial.acknowledgedCommands ||
+      traceTrial.durableCommands !== trial.durableCommands ||
+      traceTrial.lostCommands !== trial.acknowledgedCommands - trial.durableCommands ||
+      traceTrial.persistenceRpoMs !== trial.persistenceRpoMs ||
+      !traceTrial.thresholdPassed
+    ) {
+      throw new Error('Recovery trace does not exactly match the combined certification trials.');
+    }
+  });
+  return recoveryTrace;
 }
 
 export function certificationSha256(value) {
@@ -496,6 +660,16 @@ export async function writeCertificationEvidence(filePath, value) {
 
 export async function writeRssStageEvidence(filePath, value) {
   const data = serializeRssStageEvidence(value);
+  const digest = certificationSha256(data);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, data, { encoding: 'utf8', mode: 0o600 });
+  const checksumPath = `${filePath}.sha256`;
+  await fs.writeFile(checksumPath, `${digest}  ${path.basename(filePath)}\n`, { encoding: 'utf8', mode: 0o600 });
+  return { digest, checksumPath };
+}
+
+export async function writeRecoveryTraceEvidence(filePath, value) {
+  const data = serializeRecoveryTraceEvidence(value);
   const digest = certificationSha256(data);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, data, { encoding: 'utf8', mode: 0o600 });
@@ -524,6 +698,29 @@ export async function readVerifiedRssStageEvidence(filePath, checksumPath = `${f
   }
   validateRssStageEvidence(decoded);
   if (serializeRssStageEvidence(decoded) !== data) throw new Error('RSS evidence is not canonically serialized.');
+  return { evidence: decoded, digest: actual };
+}
+
+export async function readVerifiedRecoveryTraceEvidence(filePath, checksumPath = `${filePath}.sha256`) {
+  const [data, checksum] = await Promise.all([
+    fs.readFile(filePath, 'utf8'),
+    fs.readFile(checksumPath, 'utf8')
+  ]);
+  const expectedName = path.basename(filePath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = checksum.match(new RegExp(`^([a-f0-9]{64})  ${expectedName}\\n$`));
+  if (!match || !sha256Pattern.test(match[1])) throw new Error('Recovery trace checksum file is invalid.');
+  const actual = certificationSha256(data);
+  if (!crypto.timingSafeEqual(Buffer.from(match[1]), Buffer.from(actual))) {
+    throw new Error('Recovery trace checksum mismatch.');
+  }
+  let decoded;
+  try {
+    decoded = JSON.parse(data);
+  } catch {
+    throw new Error('Recovery trace is not valid JSON.');
+  }
+  validateRecoveryTraceEvidence(decoded);
+  if (serializeRecoveryTraceEvidence(decoded) !== data) throw new Error('Recovery trace is not canonically serialized.');
   return { evidence: decoded, digest: actual };
 }
 
