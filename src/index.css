@@ -1019,13 +1019,13 @@ html.skyjo-test-text-scale-200 {
   }
 
   .skyjo-card-cyan {
-    background: linear-gradient(145deg, #0284c7 0%, #0ea5e9 100%);
+    background: linear-gradient(145deg, #075985 0%, #0369a1 100%);
     color: #fff;
     box-shadow: 0 4px 14px rgba(125, 211, 252, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
   }
 
   .skyjo-card-green {
-    background: linear-gradient(145deg, #15803d 0%, #16a34a 100%);
+    background: linear-gradient(145deg, #166534 0%, #15803d 100%);
     color: #fff;
     box-shadow: 0 4px 14px rgba(74, 222, 128, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -2px 6px rgba(0, 0, 0, 0.18);
   }
@@ -1097,6 +1097,7 @@ html.skyjo-test-text-scale-200 {
     display: grid;
     min-width: 0;
     gap: 0.65rem;
+    container-type: inline-size;
   }
 
   .skyjo-phone-action-guidance {
@@ -1389,6 +1390,7 @@ html.skyjo-test-text-scale-200 {
 
     .skyjo-player-grid .skyjo-card {
       width: min(100%, 2.75rem);
+      min-width: 44px;
       min-height: 44px;
       aspect-ratio: 6 / 7;
       border-radius: 8px;
@@ -1909,6 +1911,43 @@ html.skyjo-test-text-scale-200 {
     .skyjo-score-row {
       grid-template-columns: 1fr;
       align-items: stretch;
+    }
+  }
+
+  @media (max-width: 640px) {
+    @container (max-width: 14rem) {
+      .skyjo-game-table-layout {
+        grid-template-rows: var(--skyjo-board-track) auto var(--skyjo-board-track);
+      }
+
+      .skyjo-table-center-band,
+      .skyjo-table-controls {
+        height: auto;
+        min-height: 0;
+        max-height: none;
+      }
+
+      .skyjo-table-controls {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.5rem;
+        padding: 0.5rem;
+        overflow: visible;
+      }
+
+      .skyjo-table-band-side {
+        height: auto;
+        overflow: visible;
+      }
+
+      .skyjo-table-piles {
+        width: min(100%, 14rem);
+        justify-self: center;
+      }
+
+      .skyjo-drawn-decision {
+        width: 100%;
+        min-width: 0;
+      }
     }
   }
 

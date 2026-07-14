@@ -10,6 +10,21 @@ const currentPlayerScrollPauseMs = 1800;
 export type DrawIntent = 'place' | 'discard';
 export type PlayerBoardVariant = 'opponents' | 'local';
 
+const playerBoardVariantClasses: Record<PlayerBoardVariant, string> = {
+  opponents: 'skyjo-opponents-board',
+  local: 'skyjo-local-board'
+};
+const opponentBoardCountClasses = [
+  'skyjo-opponents-count-0',
+  'skyjo-opponents-count-1',
+  'skyjo-opponents-count-2',
+  'skyjo-opponents-count-3',
+  'skyjo-opponents-count-4',
+  'skyjo-opponents-count-5',
+  'skyjo-opponents-count-6',
+  'skyjo-opponents-count-7'
+] as const;
+
 type TurnStatusTone = 'local' | 'waiting' | 'neutral';
 type TurnStatus = {
   eyebrow: string;
@@ -455,6 +470,9 @@ export function PlayerBoardGrid({
     ? currentPlayer.id
     : '';
   const reducedMotion = usePrefersReducedMotion();
+  const boardCountClass = isOpponents
+    ? opponentBoardCountClasses[players.length] ?? opponentBoardCountClasses[7]
+    : '';
 
   useEffect(() => {
     if (!isOpponents) return undefined;
@@ -465,12 +483,21 @@ export function PlayerBoardGrid({
     const pauseCurrentPlayerScroll = () => {
       userScrollPausedUntilRef.current = Date.now() + currentPlayerScrollPauseMs;
     };
+    const pauseCurrentPlayerScrollFromKeyboard = (event: KeyboardEvent) => {
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+        pauseCurrentPlayerScroll();
+      }
+    };
 
+    element.addEventListener('focusin', pauseCurrentPlayerScroll);
+    element.addEventListener('keydown', pauseCurrentPlayerScrollFromKeyboard);
     element.addEventListener('wheel', pauseCurrentPlayerScroll, { passive: true });
     element.addEventListener('touchstart', pauseCurrentPlayerScroll, { passive: true });
     element.addEventListener('pointerdown', pauseCurrentPlayerScroll, { passive: true });
 
     return () => {
+      element.removeEventListener('focusin', pauseCurrentPlayerScroll);
+      element.removeEventListener('keydown', pauseCurrentPlayerScrollFromKeyboard);
       element.removeEventListener('wheel', pauseCurrentPlayerScroll);
       element.removeEventListener('touchstart', pauseCurrentPlayerScroll);
       element.removeEventListener('pointerdown', pauseCurrentPlayerScroll);
@@ -500,15 +527,19 @@ export function PlayerBoardGrid({
     return () => window.cancelAnimationFrame(frame);
   }, [currentOpponentId, isOpponents, reducedMotion, state.log.length, state.phase]);
 
+  const isScrollableOpponentRail = isOpponents && players.length > 2;
+
   return (
     <div
       aria-label={isOpponents ? 'Opponent boards' : 'Your board'}
-      className={`skyjo-player-board-grid skyjo-${variant}-board skyjo-${variant}-count-${players.length}`}
+      className={`skyjo-player-board-grid ${playerBoardVariantClasses[variant]} ${boardCountClass}`.trim()}
       data-entry-count={players.length}
       data-layout-variant={variant}
       data-scroll-contained={isOpponents ? 'true' : undefined}
       data-testid={isOpponents ? 'opponent-rail' : 'local-board'}
       ref={boardRef}
+      role={isOpponents ? 'region' : undefined}
+      tabIndex={isScrollableOpponentRail ? 0 : undefined}
     >
       {players.map((player) => {
         const index = state.players.findIndex((item) => item.id === player.id);
