@@ -45,6 +45,17 @@ async function expectActiveWorker(page: Page) {
   });
 }
 
+async function expectProtectedObserverControlledByActiveWorker(page: Page) {
+  await expect.poll(() => serviceWorkerLifecycle(page), {
+    timeout: 15_000,
+    intervals: [100, 250, 500, 1_000]
+  }).toMatchObject({
+    active: 'activated',
+    controller: 'activated',
+    controllerIsActive: true
+  });
+}
+
 async function expectWaitingWorker(page: Page) {
   await expect.poll(() => serviceWorkerLifecycle(page), {
     timeout: 15_000,
@@ -385,9 +396,13 @@ test('cross-tab activation never reloads a protected game and preserves one safe
   const updaterReload = updater.waitForNavigation({ waitUntil: 'domcontentloaded' });
   await updater.getByRole('button', { name: 'Update now' }).click();
   await updaterReload;
+  // Keep the activating tab strict: a successor here is a genuine second update.
   await expectActiveWorker(updater);
 
-  await expectActiveWorker(page);
+  // WebKit can retain an observer-local installing/waiting reference after the
+  // newly activated worker already controls this protected tab. That successor
+  // must not weaken any of the protected-game reload and action invariants below.
+  await expectProtectedObserverControlledByActiveWorker(page);
   expect(await page.evaluate(() => Number(sessionStorage.getItem('skyjo-cross-tab-loads')))).toBe(protectedLoads);
   await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
   await expect(page.getByRole('button', { name: /Reload now|Update now/ })).toHaveCount(0);
