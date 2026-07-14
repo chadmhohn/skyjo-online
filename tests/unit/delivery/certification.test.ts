@@ -169,22 +169,23 @@ describe('recovery RPO measurement', () => {
   it('measures the crash-time age of the oldest lost acknowledgement', () => {
     const acknowledgements = [
       recoveryAcknowledgement('command-a', 100),
-      recoveryAcknowledgement('command-b', 950)
+      recoveryAcknowledgement('command-b', 900),
+      recoveryAcknowledgement('command-c', 950)
     ];
     expect(measurePersistenceRpo({
       acknowledgements,
       durableCommandIds: ['command-a'],
       crashSignalAt: 1_000
     })).toEqual({
-      acknowledgedCommands: 2,
+      acknowledgedCommands: 3,
       durableCommands: 1,
-      lostCommands: 1,
-      persistenceRpoMs: 50
+      lostCommands: 2,
+      persistenceRpoMs: 100
     });
 
     expect(measurePersistenceRpo({
       acknowledgements,
-      durableCommandIds: ['command-a', 'command-b'],
+      durableCommandIds: ['command-a', 'command-b', 'command-c'],
       crashSignalAt: 2_000
     }).persistenceRpoMs).toBe(0);
   });
