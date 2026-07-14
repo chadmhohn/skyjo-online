@@ -430,14 +430,17 @@ describe('room connection controller', () => {
     const created = createHarness();
     created.controller.connect({ action: 'create-room', name: 'Alice' });
     created.sockets[0].open();
-    expect(created.sockets[0].sent).toEqual([{ type: 'create-room', protocolVersion: 2, name: 'Alice' }]);
+    expect(created.sockets[0].sent).toEqual([{
+      type: 'create-room', protocolVersion: 2, snapshotEnvelopeVersion: 2, name: 'Alice'
+    }]);
     expect(created.sockets[0].sent[0]).not.toHaveProperty('action');
 
     const joined = createHarness();
     joined.controller.connect({ action: 'join-room', code: 'ABCDE', name: 'Alice' });
     joined.sockets[0].open();
     expect(joined.sockets[0].sent).toEqual([{
-      type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice'
+      type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+      code: 'ABCDE', name: 'Alice'
     }]);
 
     const recovered = createHarness();
@@ -445,7 +448,10 @@ describe('room connection controller', () => {
     recovered.runTimer(0);
     recovered.sockets[0].open();
     expect(recovered.sockets[0].sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      }
     ]);
 
     const resetRecovery = createHarness();
@@ -464,6 +470,7 @@ describe('room connection controller', () => {
         type: 'join-room',
         protocolVersion: 2,
         presenceVersion: 1,
+        snapshotEnvelopeVersion: 2,
         code: 'ABCDE',
         name: 'Alice',
         playerId: 'p1',
@@ -499,6 +506,7 @@ describe('room connection controller', () => {
         type: 'join-room',
         protocolVersion: 2,
         presenceVersion: 1,
+        snapshotEnvelopeVersion: 2,
         code: 'ABCDE',
         name: 'Alice',
         ...(playerId ? { playerId } : {})
@@ -545,6 +553,91 @@ describe('room connection controller', () => {
       expect(socket.closes.at(-1)?.code).toBe(1002);
       expect(harness.frames).toHaveLength(0);
     }
+  });
+
+  it('accepts identity-free public snapshots only after personalized socket sync and retains the seat identity', () => {
+    const anonymousBeforeSync = createHarness();
+    anonymousBeforeSync.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    anonymousBeforeSync.runTimer(0);
+    anonymousBeforeSync.sockets[0].open();
+    const firstSharedRoom = { ...room(), revision: 1, updatedAt: 101, serverNow: 101 };
+    anonymousBeforeSync.sockets[0].receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1, room: firstSharedRoom
+    });
+    expect(anonymousBeforeSync.sockets[0].closes.at(-1)).toEqual({
+      code: 1002, reason: 'Invalid server response'
+    });
+    expect(anonymousBeforeSync.frames).toHaveLength(0);
+
+    const established = createHarness();
+    established.controller.recover({ action: 'join-room', code: 'ABCDE', name: 'Alice', playerId: 'p1' });
+    established.runTimer(0);
+    const socket = established.sockets[0];
+    socket.open();
+    socket.receive(snapshotFrame());
+    socket.receive({ type: 'snapshot', protocolVersion: 2, revision: 1, room: firstSharedRoom });
+
+    expect(established.controller.getState()).toBe('connected');
+    expect(established.frames.at(-1)).toMatchObject({
+      type: 'snapshot', playerId: 'p1', revision: 1, room: { code: 'ABCDE', revision: 1 }
+    });
+    expect(established.frames.at(-1)).toHaveProperty('playerId', 'p1');
+    expect(socket.closes).toEqual([]);
+  });
+
+  it('rejects stale identity-free revisions, missing seat membership, and anonymous private-draw views', () => {
+    function synchronizedHarness(playerId: string, revision = 0) {
+      const harness = createHarness();
+      harness.controller.recover({ action: 'join-room', code: 'ABCDE', name: playerId, playerId });
+      harness.runTimer(0);
+      const socket = harness.sockets[0];
+      socket.open();
+      socket.receive(snapshotFrame({ ...validActiveRoom(), revision } as never, playerId));
+      return { harness, socket };
+    }
+
+    const stale = synchronizedHarness('p2', 2);
+    stale.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1,
+      room: { ...validActiveRoom(), revision: 1 }
+    });
+    expect(stale.socket.closes.at(-1)?.code).toBe(1002);
+
+    const wrongRevision = synchronizedHarness('p2');
+    wrongRevision.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 2,
+      room: { ...validActiveRoom(), revision: 1 }
+    });
+    expect(wrongRevision.socket.closes.at(-1)?.code).toBe(1002);
+
+    const missingSeat = synchronizedHarness('p2');
+    missingSeat.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1,
+      room: { ...room(), revision: 1 }
+    });
+    expect(missingSeat.socket.closes.at(-1)?.code).toBe(1002);
+
+    const privateDrawer = synchronizedHarness('p1');
+    const privateState = {
+      ...validGameState(),
+      phase: 'choose-replacement',
+      selectedSource: 'draw',
+      hasDrawnCard: true,
+      drawnCard: validCard('drawn-card', 9, true)
+    };
+    privateDrawer.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1,
+      room: { ...validActiveRoom(), revision: 1, state: privateState }
+    });
+    expect(privateDrawer.socket.closes.at(-1)?.code).toBe(1002);
+
+    const publicNonDrawer = synchronizedHarness('p2');
+    publicNonDrawer.socket.receive({
+      type: 'snapshot', protocolVersion: 2, revision: 1,
+      room: { ...validActiveRoom(), revision: 1, state: { ...privateState, drawnCard: null } }
+    });
+    expect(publicNonDrawer.socket.closes).toEqual([]);
+    expect(publicNonDrawer.harness.frames.at(-1)).toMatchObject({ playerId: 'p2', revision: 1 });
   });
 
   it('accepts a fresh room code only for the matching in-memory reset command and converges on ack', () => {
@@ -612,6 +705,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
       playerId: 'p1',
@@ -639,6 +733,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
@@ -655,6 +750,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
@@ -698,6 +794,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'FGHIJ',
       name: 'Alice',
       playerId: 'p1'
@@ -1029,7 +1126,10 @@ describe('room connection controller', () => {
     recovered.open();
     recovered.receive(snapshotFrame(room('ABCDE', 200)));
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      },
       { type: 'set-presence', visible: false }
     ]);
   });
@@ -1056,7 +1156,10 @@ describe('room connection controller', () => {
     recovered.open();
     recovered.receive(snapshotFrame());
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' },
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      },
       { type: 'set-presence', visible: true },
       pending
     ]);
@@ -1135,7 +1238,10 @@ describe('room connection controller', () => {
     recovered.open();
 
     expect(recovered.sent).toEqual([
-      { type: 'join-room', protocolVersion: 2, presenceVersion: 1, code: 'ABCDE', name: 'Alice', playerId: 'p1' }
+      {
+        type: 'join-room', protocolVersion: 2, presenceVersion: 1, snapshotEnvelopeVersion: 2,
+        code: 'ABCDE', name: 'Alice', playerId: 'p1'
+      }
     ]);
     recovered.receive(snapshotFrame(room('ABCDE', 200)));
     expect(recovered.sent).toHaveLength(2);
@@ -1168,6 +1274,7 @@ describe('room connection controller', () => {
       type: 'join-room',
       protocolVersion: 2,
       presenceVersion: 1,
+      snapshotEnvelopeVersion: 2,
       code: 'ABCDE',
       name: 'Alice',
       playerId: 'p1'

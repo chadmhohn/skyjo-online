@@ -5,7 +5,10 @@ export default defineConfig({
     name: 'delivery-security',
     environment: 'node',
     globals: true,
-    include: ['./tests/unit/data/runtimeArtifact.test.ts'],
+    include: [
+      './tests/unit/data/runtimeArtifact.test.ts',
+      './tests/unit/delivery/certification.test.ts'
+    ],
     restoreMocks: true,
     clearMocks: true,
     coverage: {

@@ -12,6 +12,7 @@ import {
   createNextRoundRoomState
 } from './server-dist/serverValidation.js';
 import {
+  broadcastRealtimeSnapshots,
   hasVisibleLiveClient,
   REALTIME_MAX_INBOUND_CLIENT_FRAME_BYTES,
   registerRealtimeServer,
@@ -33,6 +34,7 @@ import {
   WAITING_HOST_TRANSFER_MS
 } from './server-dist/serverRoomLifecycle.js';
 import {
+  createGameStateSnapshotProjector,
   createRoomSnapshot,
   MULTIPLAYER_PROTOCOL_VERSION
 } from './server-dist/protocolV2.js';
@@ -438,20 +440,26 @@ function setPlayerReadyForNextRound(room, playerId, ready) {
 }
 
 function sendJson(ws, payload) {
-  sendRealtimeJson(ws, payload);
+  return sendRealtimeJson(ws, payload);
 }
 
+const projectGameStateSnapshot = createGameStateSnapshotProjector();
+
 function broadcastRoom(room) {
-  for (const client of room.clients) {
-    sendRoomSnapshot(client, room);
-  }
+  broadcastRealtimeSnapshots({
+    room,
+    createSnapshot: (candidate, playerId, serverNow) =>
+      createRoomSnapshot(candidate, playerId, serverNow, lifecyclePolicy, projectGameStateSnapshot),
+    sendPersonalized: (client, candidate, snapshot) =>
+      sendRoomSnapshot(client, candidate, {}, snapshot)
+  });
 }
 
 function sendCurrentRoom(ws, room) {
   sendRoomSnapshot(ws, room);
 }
 
-function sendRoomSnapshot(ws, room, options = {}) {
+function sendRoomSnapshot(ws, room, options = {}, preparedSnapshot = null) {
   if (!ws.playerId || !room.players.some((player) => player.id === ws.playerId)) return false;
   const type = options.type === 'resync' ? 'resync' : 'snapshot';
   const payload = {
@@ -459,7 +467,13 @@ function sendRoomSnapshot(ws, room, options = {}) {
     protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
     playerId: ws.playerId,
     revision: room.revision,
-    room: createRoomSnapshot(room, ws.playerId, Date.now(), lifecyclePolicy),
+    room: preparedSnapshot || createRoomSnapshot(
+      room,
+      ws.playerId,
+      Date.now(),
+      lifecyclePolicy,
+      projectGameStateSnapshot
+    ),
     ...(type === 'resync'
       ? {
           reason: options.reason || 'revision-mismatch',
@@ -467,7 +481,9 @@ function sendRoomSnapshot(ws, room, options = {}) {
         }
       : {})
   };
-  return sendJson(ws, payload);
+  const sent = sendJson(ws, payload);
+  if (sent) ws.snapshotRoomCode = room.code;
+  return sent;
 }
 
 function queueRoomsSave() {

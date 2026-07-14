@@ -200,7 +200,10 @@ describe('room persistence', () => {
     expect(serialized.rooms[0].readyForNextRoundPlayerIds).toEqual([]);
 
     await saveRoomsToDisk(new Map([[value.code, value]]), roomsFile);
-    const saved = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
+    const savedBytes = await fs.readFile(roomsFile, 'utf8');
+    const saved = JSON.parse(savedBytes);
+    expect(savedBytes).toBe(`${JSON.stringify(saved)}\n`);
+    expect(savedBytes).not.toBe(`${JSON.stringify(saved, null, 2)}\n`);
     expect(saved).toEqual(expect.objectContaining({
       format: 'skyjo-rooms',
       version: 2,
@@ -743,6 +746,24 @@ describe('room persistence', () => {
       protocolVersion: 1
     }));
     expect(snapshot.rooms).toHaveLength(1);
+  });
+
+  it('reads prior pretty and current compact bytes for both v1 and v2 envelopes', async () => {
+    const current = serializeRooms(new Map([['ABCDE', room()]]), fixedNow);
+    const documents = [
+      { version: 1, savedAt: fixedNow, rooms: current.rooms },
+      current
+    ];
+    for (const document of documents) {
+      for (const spacing of [undefined, 2] as const) {
+        const bytes = `${JSON.stringify(document, null, spacing)}\n`;
+        await fs.writeFile(roomsFile, bytes, 'utf8');
+        const snapshot = await loadRoomsSnapshotFromDisk(roomsFile, { now: fixedNow + 1 });
+        expect(snapshot.rooms).toHaveLength(1);
+        expect(snapshot.rooms[0]).toMatchObject({ code: 'ABCDE', state: null });
+        expect(await fs.readFile(roomsFile, 'utf8')).toBe(bytes);
+      }
+    }
   });
 
   it('treats only a missing file or valid stale rooms as an empty collection', async () => {

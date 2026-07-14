@@ -27,6 +27,7 @@ import type {
 
 export const MULTIPLAYER_PROTOCOL_VERSION = 2 as const;
 export const EXPLICIT_PRESENCE_VERSION = 1 as const;
+export const SHARED_SNAPSHOT_ENVELOPE_VERSION = 2 as const;
 // This is a client-to-server command-frame limit, not a server snapshot limit.
 export const MAX_INBOUND_CLIENT_FRAME_BYTES = 16_384;
 export const MAX_RECENT_COMMAND_RECEIPTS = 128;
@@ -376,10 +377,7 @@ function publicName(value: string): string {
 }
 
 export function redactGameState(state: GameState, viewerPlayerId: string): PublicGameStateSnapshot {
-  const activePlayer = state.players[state.currentPlayerIndex];
-  const viewerMaySeeDrawnCard = Boolean(
-    state.selectedSource === 'draw' && state.drawnCard && activePlayer?.id === viewerPlayerId
-  );
+  const viewerMaySeeDrawnCard = hasPrivateDrawnCardVisibility(state, viewerPlayerId);
   const log = state.log
     .slice(0, PUBLIC_SNAPSHOT_LIMITS.logEntries)
     .map((entry) => entry.replace(/^(.+) drew a -?\d+\.$/, '$1 drew a blind card.'))
@@ -427,6 +425,42 @@ export function redactGameState(state: GameState, viewerPlayerId: string): Publi
   };
 }
 
+export type GameStateSnapshotProjector = (
+  state: GameState,
+  viewerPlayerId: string
+) => PublicGameStateSnapshot;
+
+/**
+ * Cache projections of immutable server game-state objects without changing
+ * the detached contract of redactGameState(). Authoritative reducers replace GameState
+ * objects, and the projector is retained only by the server's write-only wire
+ * path. A WeakMap entry therefore expires with its source state and never
+ * relies on room revisions or mutable room metadata for invalidation.
+ */
+export function createGameStateSnapshotProjector(): GameStateSnapshotProjector {
+  const projections = new WeakMap<GameState, Map<string, PublicGameStateSnapshot>>();
+  return (state, viewerPlayerId) => {
+    const visibility = hasPrivateDrawnCardVisibility(state, viewerPlayerId)
+      ? `private:${viewerPlayerId}`
+      : 'public';
+    let byVisibility = projections.get(state);
+    if (!byVisibility) {
+      byVisibility = new Map();
+      projections.set(state, byVisibility);
+    }
+    const cached = byVisibility.get(visibility);
+    if (cached) return cached;
+    const projected = redactGameState(state, viewerPlayerId);
+    byVisibility.set(visibility, projected);
+    return projected;
+  };
+}
+
+export function hasPrivateDrawnCardVisibility(state: GameState | null, viewerPlayerId: string): boolean {
+  const activePlayer = state?.players[state.currentPlayerIndex];
+  return Boolean(state?.selectedSource === 'draw' && state.drawnCard && activePlayer?.id === viewerPlayerId);
+}
+
 interface SnapshotRoomSource extends Omit<
   PublicRoomSnapshot,
   'finishedByAi' | 'hostTransferAt' | 'players' | 'serverNow' | 'state'
@@ -440,7 +474,8 @@ export function createRoomSnapshot(
   room: SnapshotRoomSource,
   viewerPlayerId: string,
   serverNow = room.updatedAt,
-  lifecyclePolicy: RoomLifecyclePolicy = DEFAULT_ROOM_LIFECYCLE_POLICY
+  lifecyclePolicy: RoomLifecyclePolicy = DEFAULT_ROOM_LIFECYCLE_POLICY,
+  projectGameState: GameStateSnapshotProjector = redactGameState
 ): PublicRoomSnapshot {
   return {
     code: room.code,
@@ -466,7 +501,7 @@ export function createRoomSnapshot(
       createdAt: message.createdAt
     })),
     readyForNextRoundPlayerIds: [...room.readyForNextRoundPlayerIds],
-    state: room.state ? redactGameState(room.state, viewerPlayerId) : null,
+    state: room.state ? projectGameState(room.state, viewerPlayerId) : null,
     status: room.status,
     updatedAt: room.updatedAt,
     completedGameId: room.completedGameId,

@@ -137,7 +137,7 @@ async function testWorkflowContract() {
   assert.match(workflow, /run_id="\$\{GITHUB_RUN_ID\}-1-production"/);
   assert.equal((workflow.match(/rm -rf -- "\$RUNNER_TEMP\/skyjo-ssh"/g) || []).length, 2,
     'both deployment lanes must remove the complete credential directory');
-  for (const job of ['unit-domain', 'unit-data', 'e2e-chromium-1', 'e2e-chromium-2', 'e2e-webkit', 'visual-accessibility', 'lighthouse']) {
+  for (const job of ['unit-domain', 'unit-data', 'e2e-chromium-1', 'e2e-chromium-2', 'e2e-webkit', 'visual-accessibility', 'lighthouse', 'load-recovery']) {
     assert.match(workflow, new RegExp(`release-canary:[\\s\\S]*?- ${job}`), `release canary must wait for ${job}`);
   }
 

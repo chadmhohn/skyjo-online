@@ -160,17 +160,32 @@ function assertNoPrivateKeys(value, pathLabel = 'snapshot') {
   }
 }
 
-function inspectPublicSnapshot(frame, socketLabel) {
+function inspectPublicSnapshot(frame, socketLabel, establishedPlayerId) {
   privacyEvidence.snapshots += 1;
   assert.equal(frame.protocolVersion, MULTIPLAYER_PROTOCOL_VERSION, `${socketLabel} snapshot uses protocol v2`);
   assert.equal(frame.revision, frame.room?.revision, `${socketLabel} frame and room revisions match`);
-  assert.equal(typeof frame.playerId, 'string', `${socketLabel} snapshot identifies its viewer`);
+  const viewerPlayerId = frame.playerId ?? establishedPlayerId;
+  assert.equal(typeof viewerPlayerId, 'string', `${socketLabel} snapshot identifies its viewer`);
+  if (frame.playerId === undefined) {
+    assert.equal(
+      typeof establishedPlayerId,
+      'string',
+      `${socketLabel} shares an identity-free snapshot only after personalized synchronization`
+    );
+  } else if (establishedPlayerId !== null) {
+    assert.equal(frame.playerId, establishedPlayerId, `${socketLabel} snapshot cannot change its viewer`);
+  }
+  assert.equal(
+    frame.room?.players?.some((player) => player.id === viewerPlayerId),
+    true,
+    `${socketLabel} viewer remains a member of the room`
+  );
   assertNoPrivateKeys(frame);
   const encoded = JSON.stringify(frame);
   assert.doesNotMatch(encoded, /card-\d+--?\d+/, `${socketLabel} snapshot hides internal card ids`);
 
   const state = frame.room?.state;
-  if (!state) return;
+  if (!state) return viewerPlayerId;
   assert.equal(Number.isSafeInteger(state.drawPileCount), true, `${socketLabel} receives only a draw count`);
   state.players.forEach((player, playerIndex) => {
     player.grid.forEach((card, cardIndex) => {
@@ -189,7 +204,7 @@ function inspectPublicSnapshot(frame, socketLabel) {
   if (state.hasDrawnCard) {
     assert.equal(state.selectedSource, 'draw', `${socketLabel} blind draw metadata is coherent`);
     const drawerId = state.players[state.currentPlayerIndex]?.id;
-    if (frame.playerId === drawerId) {
+    if (viewerPlayerId === drawerId) {
       privacyEvidence.drawerBlindFrames += 1;
       assert.ok(state.drawnCard, `${socketLabel} drawer receives its blind card`);
       assert.equal(Number.isInteger(state.drawnCard.value), true, `${socketLabel} drawer receives the blind value`);
@@ -200,6 +215,7 @@ function inspectPublicSnapshot(frame, socketLabel) {
   } else {
     assert.equal(state.drawnCard, null, `${socketLabel} has no stray drawn-card value`);
   }
+  return viewerPlayerId;
 }
 
 function trackSocket(ws, label) {
@@ -219,9 +235,9 @@ function trackSocket(ws, label) {
     try {
       message = JSON.parse(String(raw));
       if (publicSnapshotFrame(message)) {
-        inspectPublicSnapshot(message, label);
+        const viewerPlayerId = inspectPublicSnapshot(message, label, state.playerId);
         state.revision = message.revision;
-        state.playerId = message.playerId;
+        state.playerId = viewerPlayerId;
         state.room = message.room;
       } else if (message.type === 'ack' && Number.isSafeInteger(message.revision)) {
         state.revision = message.revision;
@@ -289,7 +305,11 @@ function nextCommandId() {
 
 function sendAdmission(ws, message, label) {
   const snapshot = waitForMessage(ws, publicSnapshotFrame, label);
-  ws.send(JSON.stringify({ ...message, protocolVersion: MULTIPLAYER_PROTOCOL_VERSION }));
+  ws.send(JSON.stringify({
+    ...message,
+    protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
+    snapshotEnvelopeVersion: 2
+  }));
   return snapshot;
 }
 

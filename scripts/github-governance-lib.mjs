@@ -10,6 +10,7 @@ export const REQUIRED_CHECKS = Object.freeze([
   'CI / E2E (webkit)',
   'CI / Visual & Accessibility',
   'CI / Lighthouse',
+  'CI / Load & Recovery',
   'CodeQL / Analyze'
 ]);
 
