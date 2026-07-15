@@ -584,6 +584,9 @@ describe('v0.2.0 workflow governance', () => {
     const loadRecoverySection = ci.match(/\n {2}load-recovery:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     expect(loadRecoverySection).toContain('test-results/certification');
     expect(loadRecoverySection).not.toMatch(/playwright-report|test-results\/playwright|test-results\/server/);
+    expect(nightly).toContain('Upload checksummed sanitized nightly evidence');
+    expect(nightly).toContain('test-results/certification');
+    expect(nightly).not.toMatch(/playwright-report|test-results\/playwright|test-results\/server/);
     expect(ci).toMatch(/release-canary:[\s\S]*?needs:[\s\S]*?- load-recovery/);
     expect(ci).toMatch(/pull_request:[\s\S]*push:[\s\S]*tags:[\s\S]*v\*/);
     expect(nightly).toMatch(/schedule:[\s\S]*cron:/);
