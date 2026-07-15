@@ -92,9 +92,8 @@ const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
 const trustProxyClientIp = process.env.SKYJO_TRUST_PROXY_CLIENT_IP === 'true';
 const testPwaVariantsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_VARIANTS === 'true';
 const testPwaNetworkFaultsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_NETWORK_FAULTS === 'true';
-// Fail the diagnostic before the product coordinator's absolute 8s deadline.
-const testPwaActivationArrivalWaitMs = 7_500;
-const testPwaActivationBarrierActiveMs = 6_000;
+// One fixed pre-click clock leaves a 500ms diagnostic margin inside the product's 8s deadline.
+const testPwaActivationBarrierDeadlineMs = 7_500;
 const testPwaActivationBarrierLifetimeMs = 30_000;
 const testPwaActivationBarrierMaxRuns = 16;
 const testPwaActivationBarriers = new Map();
@@ -415,10 +414,10 @@ function createTestPwaActivationBarrier(token, expectedWorkerBuildNonces) {
 function beginTestPwaActivationBarrierDeadline(token, barrier) {
   if (barrier.deadlineAt !== null) return;
   clearTimeout(barrier.expiryTimer);
-  barrier.deadlineAt = Date.now() + testPwaActivationBarrierActiveMs;
+  barrier.deadlineAt = Date.now() + testPwaActivationBarrierDeadlineMs;
   barrier.expiryTimer = setTimeout(() => {
     deleteTestPwaActivationBarrier(token, barrier, 'expired');
-  }, testPwaActivationBarrierActiveMs);
+  }, testPwaActivationBarrierDeadlineMs);
   barrier.expiryTimer.unref?.();
 }
 
@@ -443,10 +442,8 @@ function testPwaActivationBarrierSnapshot(barrier) {
 async function waitForTestPwaActivationArrivals(barrier, count, req, res) {
   if (barrier.arrivals.length >= count) return 'arrived';
   if (barrier.poisoned) return 'poisoned';
-  const deadlineRemainingMs = barrier.deadlineAt === null
-    ? testPwaActivationArrivalWaitMs
-    : Math.max(0, barrier.deadlineAt - Date.now());
-  const remainingMs = Math.min(testPwaActivationArrivalWaitMs, deadlineRemainingMs);
+  if (barrier.deadlineAt === null) return 'not-started';
+  const remainingMs = Math.max(0, barrier.deadlineAt - Date.now());
   if (remainingMs === 0) return 'timeout';
   return new Promise((resolve) => {
     let timeout = null;
@@ -522,6 +519,33 @@ async function handleTestPwaActivationBarrierRequest(req, res, url) {
     return;
   }
 
+  if (url.pathname === '/__test/pwa-activation/start' && req.method === 'POST') {
+    const payload = await readJsonBody(req);
+    const { token } = payload;
+    if (!validTestPwaActivationBarrierToken(token)) {
+      sendInvalidTestPwaActivationBarrierResponse(res);
+      return;
+    }
+    const barrier = testPwaActivationBarriers.get(token);
+    if (!barrier) {
+      sendJsonResponse(res, 404, { error: 'Test activation barrier not found.' });
+      return;
+    }
+    if (
+      barrier.poisoned ||
+      barrier.deadlineAt !== null ||
+      barrier.step !== 0 ||
+      barrier.arrivals.length !== 0
+    ) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 409, { error: 'Unexpected test activation barrier start.' });
+      return;
+    }
+    beginTestPwaActivationBarrierDeadline(token, barrier);
+    sendJsonResponse(res, 200, testPwaActivationBarrierSnapshot(barrier));
+    return;
+  }
+
   if (url.pathname === '/__test/pwa-activation/status' && req.method === 'GET') {
     const token = url.searchParams.get('token');
     if (!validTestPwaActivationBarrierToken(token)) {
@@ -588,6 +612,11 @@ async function handleTestPwaActivationBarrierRequest(req, res, url) {
       sendJsonResponse(res, 404, { error: 'Test activation barrier not found.' });
       return;
     }
+    if (barrier.deadlineAt === null) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 409, { error: 'Test worker activation barrier was not started.' });
+      return;
+    }
     if (barrier.deadlineAt !== null && Date.now() >= barrier.deadlineAt) {
       poisonTestPwaActivationBarrier(barrier);
       sendJsonResponse(res, 504, { error: 'Test worker activation barrier timed out.' });
@@ -615,7 +644,6 @@ async function handleTestPwaActivationBarrierRequest(req, res, url) {
       sendJsonResponse(res, 409, { error: 'Unexpected test worker activation arrival.' });
       return;
     }
-    if (variant === 'B') beginTestPwaActivationBarrierDeadline(token, barrier);
     barrier.arrivals.push(variant);
     barrier.step += 1;
     barrier.workers.set(variant, {

@@ -194,6 +194,14 @@ async function initializeTestPwaActivationBarrier(
   return response.json() as Promise<TestPwaActivationBarrierStatus>;
 }
 
+async function startTestPwaActivationBarrier(context: BrowserContext, baseURL: string, token: string) {
+  const response = await context.request.post(testPwaActivationBarrierUrl(baseURL, 'start'), {
+    data: { token }
+  });
+  if (!response.ok()) throw new Error(`Activation barrier start failed with ${response.status()}.`);
+  return response.json() as Promise<TestPwaActivationBarrierStatus>;
+}
+
 async function releaseTestPwaActivation(
   context: BrowserContext,
   baseURL: string,
@@ -575,7 +583,7 @@ test('a changed worker defers on solo and lobby routes, then applies once from a
   await expectSessionStorageNumber(page, 'skyjo-test-page-loads', loadsBeforeApply + 1);
 });
 
-test('test-only activation barrier rejects an unseen successor identity and poisons the run', async ({ context, skyjoServer }) => {
+test('test-only activation barrier requires an absolute start and rejects an unseen successor identity', async ({ context, skyjoServer }) => {
   const token = randomUUID();
   const workers = (['B', 'C', 'D'] as const).map((variant) => ({
     variant,
@@ -596,11 +604,48 @@ test('test-only activation barrier rejects an unseen successor identity and pois
       }
     );
     expect(duplicateIdentityInit.status()).toBe(400);
+    const unstartedToken = randomUUID();
+    const unstartedWorkers = (['B', 'C', 'D'] as const).map((variant) => ({
+      variant,
+      buildNonce: randomUUID()
+    }));
+    try {
+      await initializeTestPwaActivationBarrier(
+        context,
+        skyjoServer.baseURL,
+        unstartedToken,
+        unstartedWorkers
+      );
+      const prematureArrival = await context.request.post(
+        testPwaActivationBarrierUrl(skyjoServer.baseURL, 'arrive'),
+        {
+          data: {
+            token: unstartedToken,
+            variant: 'B',
+            buildNonce: unstartedWorkers[0].buildNonce,
+            instanceNonce: 'b'.repeat(32)
+          }
+        }
+      );
+      expect(prematureArrival.status()).toBe(409);
+      await expect(testPwaActivationBarrierStatus(
+        context,
+        skyjoServer.baseURL,
+        unstartedToken
+      )).resolves.toMatchObject({ poisoned: true, workers: [] });
+    } finally {
+      await cleanupTestPwaActivationBarrier(context, skyjoServer.baseURL, unstartedToken);
+    }
     await expect(initializeTestPwaActivationBarrier(
       context,
       skyjoServer.baseURL,
       token,
       workers
+    )).resolves.toMatchObject({ poisoned: false, workers: [] });
+    await expect(startTestPwaActivationBarrier(
+      context,
+      skyjoServer.baseURL,
+      token
     )).resolves.toMatchObject({ poisoned: false, workers: [] });
     const unseenArrival = await context.request.post(
       testPwaActivationBarrierUrl(skyjoServer.baseURL, 'arrive'),
@@ -676,6 +721,38 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     await updater.addInitScript(() => {
       const loads = Number(sessionStorage.getItem('skyjo-updater-loads') || '0') + 1;
       sessionStorage.setItem('skyjo-updater-loads', String(loads));
+      if (sessionStorage.getItem('skyjo-updater-reprompt-watch') === 'armed') {
+        sessionStorage.setItem('skyjo-updater-reprompt-watch', 'watching');
+        const elementContainsUpdatePrompt = (element: Element | null) => {
+          if (!element) return false;
+          const candidates = element.matches('[data-testid="pwa-update-banner"], button')
+            ? [element, ...element.querySelectorAll('[data-testid="pwa-update-banner"], button')]
+            : [...element.querySelectorAll('[data-testid="pwa-update-banner"], button')];
+          return candidates.some((candidate) => (
+            candidate.matches('[data-testid="pwa-update-banner"]') ||
+            /^(?:Updating\.\.\.|Update now|Reload now)$/.test(candidate.textContent?.trim() || '')
+          ));
+        };
+        const nodeContainsUpdatePrompt = (node: Node) => {
+          const element = node instanceof Element ? node : node.parentElement;
+          return element ? elementContainsUpdatePrompt(element) : false;
+        };
+        const recordUpdatePrompt = (records: MutationRecord[] = []) => {
+          const mutationContainedPrompt = records.some((record) => (
+            [...record.addedNodes].some(nodeContainsUpdatePrompt) ||
+            (record.type === 'characterData' && nodeContainsUpdatePrompt(record.target))
+          ));
+          if (mutationContainedPrompt || elementContainsUpdatePrompt(document.documentElement)) {
+            sessionStorage.setItem('skyjo-updater-reprompt-observed', 'true');
+          }
+        };
+        new MutationObserver(recordUpdatePrompt).observe(document, {
+          childList: true,
+          characterData: true,
+          subtree: true
+        });
+        recordUpdatePrompt();
+      }
     });
     await updater.goto(`${skyjoServer.baseURL}/`);
     await setWorkerVariant(context, skyjoServer.baseURL, 'B', workerBuildNonces.B);
@@ -715,6 +792,17 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       workerCount: 1
     });
 
+    await expect(startTestPwaActivationBarrier(
+      context,
+      skyjoServer.baseURL,
+      activationBarrierToken
+    )).resolves.toEqual({
+      arrivals: [],
+      pending: [],
+      poisoned: false,
+      released: [],
+      workers: []
+    });
     const updateButton = updater.getByRole('button', { name: 'Update now' });
     await updateButton.evaluate((button: HTMLButtonElement) => button.click());
     await expect(updater.getByRole('button', { name: 'Updating...' })).toBeDisabled();
@@ -775,7 +863,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       if (!harness) throw new Error('Successor harness disappeared before identity validation.');
       const [workerB, workerC, workerD] = harness.workers;
       return {
-        heldSuccessorState: workerD?.state ?? null,
+        heldSuccessorObserverState: workerD?.state ?? null,
         successorCIsDistinct: Boolean(workerB && workerC && workerC !== workerB),
         successorDIsDistinct: Boolean(
           workerB && workerC && workerD && workerD !== workerB && workerD !== workerC
@@ -794,11 +882,15 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     const updaterLoadsBeforeFinalRelease = Number(
       await updater.evaluate(() => sessionStorage.getItem('skyjo-updater-loads'))
     );
+    expect(['installed', 'activating']).toContain(identityEvidence.heldSuccessorObserverState);
     expect({
       activationStatus,
       harnessCleanupComplete,
       updaterLoadsBeforeFinalRelease,
-      ...identityEvidence
+      successorCIsDistinct: identityEvidence.successorCIsDistinct,
+      successorDIsDistinct: identityEvidence.successorDIsDistinct,
+      variants: identityEvidence.variants,
+      workerCount: identityEvidence.workerCount
     }).toEqual({
       activationStatus: {
         arrivals: ['B', 'C', 'D'],
@@ -807,7 +899,6 @@ test('cross-tab activation never reloads a protected game and preserves one safe
         released: ['B', 'C'],
         workers: activationStatus?.workers
       },
-      heldSuccessorState: 'activating',
       harnessCleanupComplete: true,
       successorCIsDistinct: true,
       successorDIsDistinct: true,
@@ -816,6 +907,10 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       workerCount: 3
     });
 
+    await updater.evaluate(() => {
+      sessionStorage.removeItem('skyjo-updater-reprompt-observed');
+      sessionStorage.setItem('skyjo-updater-reprompt-watch', 'armed');
+    });
     const updaterReload = updater.waitForNavigation({ waitUntil: 'domcontentloaded' });
     const releasedD = await releaseTestPwaActivation(
       context,
@@ -846,6 +941,13 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     await expect(updater.getByRole('button', { name: /Updating|Update now|Reload now/ })).toHaveCount(0);
     await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
     await updater.waitForTimeout(750);
+    await expectActiveWorker(updater);
+    await expect(updater.getByTestId('pwa-update-banner')).toHaveCount(0);
+    await expect(updater.getByRole('button', { name: /Updating|Update now|Reload now/ })).toHaveCount(0);
+    expect(await updater.evaluate(() => ({
+      observed: sessionStorage.getItem('skyjo-updater-reprompt-observed'),
+      watch: sessionStorage.getItem('skyjo-updater-reprompt-watch')
+    }))).toEqual({ observed: null, watch: 'watching' });
     await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
 
     // WebKit can retain an observer-local installing/waiting reference after the
