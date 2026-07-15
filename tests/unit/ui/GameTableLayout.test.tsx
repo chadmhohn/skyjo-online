@@ -177,6 +177,141 @@ describe('GameTableLayout', () => {
     expect(actions.onSetDrawIntent).toHaveBeenCalledWith('discard');
   });
 
+  it('keeps structural phone table bands out of the accessibility tree and exposes final-lap status once', async () => {
+    act(() => setMediaQueryMatches('(max-width: 640px)', true));
+    const actions = handlers();
+    const opening = stateFor(2);
+    const { container, rerender } = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={opening}
+      />
+    );
+    const progressBand = container.querySelector<HTMLElement>('.skyjo-table-band-side-start');
+    expect(progressBand).not.toBeNull();
+    expect(progressBand).not.toHaveAttribute('role');
+    expect(progressBand).not.toHaveAttribute('aria-label');
+    expect(progressBand).toHaveAttribute('tabindex', '-1');
+    expect(screen.queryByRole('region', { name: /opening reveal progress/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Action guidance' })).toHaveTextContent('Choose two face-down cards');
+
+    const chooseSource = stateFor(2, {
+      phase: 'choose-source',
+      openingRevealCounts: { p1: 2, p2: 2 }
+    });
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={chooseSource}
+      />
+    );
+    expect(progressBand).not.toHaveAttribute('role');
+    expect(progressBand).toHaveAttribute('tabindex', '-1');
+
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={{
+          ...chooseSource,
+          phase: 'choose-replacement',
+          selectedSource: 'draw',
+          drawnCard: { ...card('blind', 0, true), value: 7 }
+        }}
+      />
+    );
+    expect(progressBand).not.toHaveAttribute('role');
+    expect(progressBand).toHaveAttribute('tabindex', '-1');
+    expect(screen.getByRole('region', { name: 'Drawn card decision' })).toBeInTheDocument();
+
+    const finalTurn = {
+      ...chooseSource,
+      roundCloserId: 'p2',
+      finalTurnPlayerIds: ['p1']
+    };
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={finalTurn}
+      />
+    );
+    const finalLap = screen.getByRole('region', { name: 'Final lap status' });
+    expect(screen.getAllByRole('region', { name: 'Final lap status' })).toHaveLength(1);
+    expect(finalLap).toBe(progressBand);
+    expect(finalLap).toHaveAttribute('tabindex', '0');
+    expect(finalLap).toHaveTextContent('Opponent 1 went out.');
+    expect(finalLap).toHaveTextContent('This is your last move of the round.');
+
+    finalLap.focus();
+    expect(finalLap).toHaveFocus();
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={{ ...chooseSource, phase: 'round-over' }}
+      />
+    );
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Action guidance' })).toHaveFocus());
+    expect(progressBand).not.toHaveAttribute('role');
+    expect(progressBand).not.toHaveAttribute('aria-label');
+    expect(progressBand).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('keeps visible desktop opening progress named and keyboard reachable', () => {
+    act(() => setMediaQueryMatches('(max-width: 640px)', false));
+    render(
+      <GameTableLayout
+        {...handlers()}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(2)}
+      />
+    );
+
+    const progress = screen.getByRole('region', { name: 'Opening reveal progress' });
+    expect(progress).toHaveAttribute('tabindex', '0');
+    expect(progress).toHaveTextContent('You (you)');
+    expect(progress).toHaveTextContent('0/2');
+  });
+
+  it('names the authoritative current player while a waiting player watches the final lap', () => {
+    const finalTurn = stateFor(3, {
+      currentPlayerIndex: 1,
+      phase: 'choose-source',
+      roundCloserId: 'p1',
+      finalTurnPlayerIds: ['p2', 'p3'],
+      openingRevealCounts: { p1: 2, p2: 2, p3: 2 }
+    });
+
+    render(
+      <GameTableLayout
+        {...handlers()}
+        drawIntent="place"
+        localPlayerId="p3"
+        localTurn={false}
+        state={finalTurn}
+      />
+    );
+
+    expect(screen.getByRole('region', { name: 'Final lap status' })).toHaveTextContent(
+      'Opponent 1 is taking a final turn.'
+    );
+  });
+
   it('keeps one actionable card in the tab order and moves it with grid arrow keys', async () => {
     const user = userEvent.setup();
     const actions = handlers();

@@ -1,7 +1,353 @@
 import type { BrowserContext, CDPSession, Page } from '@playwright/test';
+import type { GameState } from '../../../src/types';
+import { soloProgressGameStates } from '../../helpers/soloGameState';
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
 
 const minimumTargetSize = 43.99;
+
+async function stageSoloState(page: Page, baseURL: string, state: GameState, stateIndex: number) {
+  await page.goto(baseURL);
+  await page.evaluate(
+    ({ record }) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open('skyjo-pwa', 1);
+        request.onupgradeneeded = () => {
+          const database = request.result;
+          if (!database.objectStoreNames.contains('soloSessions')) {
+            const sessions = database.createObjectStore('soloSessions', { keyPath: ['ownerKey', 'gameId'] });
+            sessions.createIndex('byOwner', 'ownerKey', { unique: false });
+            sessions.createIndex('byOwnerUpdatedAt', ['ownerKey', 'updatedAt'], { unique: false });
+          }
+          if (!database.objectStoreNames.contains('statsOutbox')) {
+            const outbox = database.createObjectStore('statsOutbox', { keyPath: ['ownerKey', 'gameId'] });
+            outbox.createIndex('byOwner', 'ownerKey', { unique: false });
+            outbox.createIndex('byOwnerNextAttempt', ['ownerKey', 'nextAttemptAt'], { unique: false });
+          }
+        };
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const database = request.result;
+          const transaction = database.transaction('soloSessions', 'readwrite');
+          const store = transaction.objectStore('soloSessions');
+          store.clear();
+          store.put(record);
+          transaction.oncomplete = () => {
+            database.close();
+            resolve();
+          };
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error);
+        };
+      }),
+    {
+      record: {
+        ownerKey: 'guest',
+        gameId: `00000000-0000-4000-8000-${String(stateIndex).padStart(12, '0')}`,
+        schemaVersion: 1,
+        state,
+        aiOpponentCount: 1,
+        updatedAt: Date.now() + stateIndex
+      }
+    }
+  );
+  await page.goto(`${baseURL}/single-player`);
+  const resume = page.getByRole('dialog', { name: 'Continue your solo game?' });
+  await expect(resume).toBeVisible();
+  await resume.getByRole('button', { name: 'Continue Game' }).click();
+  await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', state.phase);
+  await page.evaluate(
+    () => new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())))
+  );
+}
+
+async function setDoubleText(page: Page, enabled: boolean) {
+  await page.evaluate((active) => document.documentElement.classList.toggle('skyjo-test-text-scale-200', active), enabled);
+  await expect.poll(() => page.evaluate(() => Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize)))
+    .toBe(enabled ? 32 : 16);
+}
+
+async function expectPhoneFocusableContract(
+  page: Page,
+  state: string,
+  options: { progressLabel?: string; normalText: boolean }
+) {
+  const snapshot = await page.evaluate(() => {
+    const required = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) throw new Error(`Missing ${selector}`);
+      return element;
+    };
+    const rect = (element: HTMLElement) => element.getBoundingClientRect();
+    const progress = required('.skyjo-table-band-side-start');
+    const band = required('[data-testid="table-center-band"]');
+    const controls = required('[data-testid="table-center"]');
+    const opponent = required('[data-testid="opponent-rail"]');
+    const local = required('[data-testid="local-board"]');
+    const focusable = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'a[href], button, input:not([type="hidden"]), select, summary, textarea, [role="button"], [role="switch"], [role="tab"], [tabindex]'
+      )
+    ).filter((element) => {
+      const bounds = rect(element);
+      const style = window.getComputedStyle(element);
+      return element.tabIndex >= 0 &&
+        !(element as HTMLButtonElement).disabled &&
+        !element.closest('[inert]') &&
+        !element.hidden &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        bounds.width > 0 &&
+        bounds.height > 0;
+    });
+    return {
+      bandHeight: rect(band).height,
+      boardsDoNotOverlap: rect(opponent).bottom <= rect(band).top + 1 && rect(band).bottom <= rect(local).top + 1,
+      controlsContained:
+        rect(controls).left >= rect(band).left - 1 &&
+        rect(controls).right <= rect(band).right + 1 &&
+        rect(controls).top >= rect(band).top - 1 &&
+        rect(controls).bottom <= rect(band).bottom + 1,
+      focusable: focusable.map((element) => {
+        const bounds = rect(element);
+        return {
+          height: bounds.height,
+          label:
+            element.getAttribute('aria-label') ||
+            element.getAttribute('title') ||
+            element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 120) ||
+            '',
+          tag: element.tagName.toLowerCase(),
+          width: bounds.width
+        };
+      }),
+      noHorizontalPageScroll: document.documentElement.scrollWidth <= window.innerWidth + 1,
+      progress: {
+        ariaLabel: progress.getAttribute('aria-label'),
+        height: rect(progress).height,
+        role: progress.getAttribute('role'),
+        tabIndex: progress.getAttribute('tabindex'),
+        width: rect(progress).width
+      }
+    };
+  });
+  expect(snapshot.boardsDoNotOverlap, `${state} boards should not overlap`).toBe(true);
+  expect(snapshot.controlsContained, `${state} center controls should remain contained`).toBe(true);
+  expect(snapshot.noHorizontalPageScroll, `${state} should not create page overflow`).toBe(true);
+  expect(snapshot.focusable.length, `${state} should expose focusable controls`).toBeGreaterThan(0);
+  expect(
+    snapshot.focusable.filter((target) => target.width < minimumTargetSize || target.height < minimumTargetSize),
+    `${state} contains focus targets smaller than 44 by 44 CSS pixels`
+  ).toEqual([]);
+  expect(snapshot.focusable.filter((target) => !target.label), `${state} contains unlabeled focus targets`).toEqual([]);
+  if (options.normalText) {
+    expect(snapshot.bandHeight, `${state} normal phone band should preserve its minimum`).toBeGreaterThanOrEqual(90);
+    expect(snapshot.bandHeight, `${state} normal phone band should preserve its maximum`).toBeLessThanOrEqual(110);
+  }
+  if (options.progressLabel) {
+    expect(snapshot.progress).toMatchObject({
+      ariaLabel: options.progressLabel,
+      role: 'region',
+      tabIndex: '0'
+    });
+    expect(snapshot.progress.width).toBeGreaterThanOrEqual(minimumTargetSize);
+    expect(snapshot.progress.height).toBeGreaterThanOrEqual(minimumTargetSize);
+  } else {
+    expect(snapshot.progress).toMatchObject({ ariaLabel: null, role: null, tabIndex: '-1' });
+  }
+}
+
+async function expectTabSequence(page: Page, targets: ReturnType<Page['locator']>[]) {
+  await targets[0].focus();
+  await expect(targets[0]).toBeFocused();
+  for (let index = 1; index < targets.length; index += 1) {
+    await page.keyboard.press('Tab');
+    await expect(targets[index]).toBeFocused();
+  }
+}
+
+for (const viewport of [
+  { width: 320, height: 568 },
+  { width: 390, height: 844 }
+]) {
+  test(`${viewport.width}x${viewport.height} phone progress semantics stay meaningful through turn and round transitions`, async ({
+    page,
+    skyjoServer
+  }) => {
+    test.setTimeout(120_000);
+    const states = soloProgressGameStates();
+    await installSeededBrowserRuntime(page, viewport.width + 128);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setViewportSize(viewport);
+
+    const cases = [
+      { key: 'opening', state: states.opening, progressLabel: undefined },
+      { key: 'choose source', state: states.chooseSource, progressLabel: undefined },
+      { key: 'drawn card', state: states.drawnDecision, progressLabel: undefined },
+      { key: 'final turn', state: states.finalTurn, progressLabel: 'Final lap status' },
+      { key: 'round over', state: states.roundOver, progressLabel: undefined }
+    ] as const;
+
+    for (const [caseIndex, scenario] of cases.entries()) {
+      await stageSoloState(page, skyjoServer.baseURL, scenario.state, viewport.width * 10 + caseIndex);
+      for (const doubleText of [false, true]) {
+        await setDoubleText(page, doubleText);
+        const label = `${viewport.width}x${viewport.height} ${doubleText ? '200% text' : 'normal text'} ${scenario.key}`;
+        await expectPhoneFocusableContract(page, label, {
+          progressLabel: scenario.progressLabel,
+          normalText: !doubleText
+        });
+        await expect(page.getByRole('region', { name: 'Opening and final-turn progress' })).toHaveCount(0);
+
+        const guidance = page.getByRole('region', { name: 'Action guidance' });
+        if (scenario.key === 'opening') {
+          await expect(guidance.getByRole('heading', { level: 2, name: 'Choose two face-down cards' })).toBeVisible();
+          await expect(page.locator('.skyjo-opening-tracker')).toHaveCount(0);
+          await expectTabSequence(page, [
+            guidance,
+            page.getByRole('button', { name: /Reveal this opening card/ }).first()
+          ]);
+        } else if (scenario.key === 'choose source') {
+          await expectTabSequence(page, [
+            guidance,
+            page.getByTestId('table-piles').getByRole('button', { name: /^Deck/ }),
+            page.getByTestId('table-piles').getByRole('button', { name: /^Discard/ })
+          ]);
+        } else if (scenario.key === 'drawn card') {
+          const decision = page.getByRole('region', { name: 'Drawn card decision' });
+          await expectTabSequence(page, [
+            guidance,
+            decision,
+            decision.getByRole('button', { name: /Place drawn card/ }),
+            decision.getByRole('button', { name: /Discard \+ reveal/ })
+          ]);
+        } else if (scenario.key === 'final turn') {
+          const finalLap = page.getByRole('region', { name: 'Final lap status' });
+          await expect(finalLap).toHaveCount(1);
+          await expect(finalLap.getByText('Final lap active')).toBeVisible();
+          await expect(finalLap.getByRole('heading', { name: /went out\./ })).toBeVisible();
+          await expectTabSequence(page, [guidance, finalLap]);
+        } else {
+          const summary = page.getByRole('dialog', { name: 'Round complete.' });
+          await expect(summary).toBeVisible();
+          await expectTabSequence(page, [
+            summary.getByRole('button', { name: 'Minimize' }),
+            summary.getByRole('button', { name: 'Next Round' })
+          ]);
+        }
+      }
+    }
+
+    const summary = page.getByRole('dialog', { name: 'Round complete.' });
+    await summary.getByRole('button', { name: 'Next Round' }).click();
+    await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', 'opening-reveal');
+    await expect(page.getByRole('region', { name: 'Action guidance' })).toBeFocused();
+    await expect(page.locator('.skyjo-table-band-side-start')).toHaveAttribute('tabindex', '-1');
+    await expect(page.locator('.skyjo-table-band-side-start')).not.toHaveAttribute('role');
+  });
+}
+
+test('320x568 200% focused final lap restores guidance without focus-induced scroll', async ({
+  page,
+  skyjoServer
+}) => {
+  test.setTimeout(45_000);
+  const states = soloProgressGameStates();
+  await installSeededBrowserRuntime(page, 448);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await stageSoloState(page, skyjoServer.baseURL, states.finalTurn, 12_800);
+  await setDoubleText(page, true);
+
+  const table = page.getByTestId('shared-game-table');
+  if ((await table.getAttribute('data-phase')) === 'choose-source') {
+    await page.getByTestId('table-piles').getByRole('button', { name: /^Discard/ }).click();
+    await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
+  }
+
+  const finalLap = page.getByRole('region', { name: 'Final lap status' });
+  await finalLap.evaluate((element) => (element as HTMLElement).focus({ preventScroll: true }));
+  await expect(finalLap).toBeFocused();
+  await page.evaluate(() => {
+    const trace: string[] = [];
+    (window as unknown as { skyjoFocusTrace: string[] }).skyjoFocusTrace = trace;
+    const selectors = [
+      '[data-testid="opponent-rail"]',
+      '[data-testid="table-center-band"]',
+      '[data-testid="table-center"]',
+      '.skyjo-table-band-side-start',
+      '.skyjo-table-band-side-end',
+      '[data-testid="local-board"]'
+    ];
+    const scrollSnapshot = () => ({
+      table: Object.fromEntries(selectors.map((selector) => {
+        const element = document.querySelector<HTMLElement>(selector);
+        if (!element) throw new Error(`Missing ${selector}`);
+        return [selector, { left: element.scrollLeft, top: element.scrollTop }];
+      })),
+      viewport: { left: window.scrollX, top: window.scrollY }
+    });
+    const handoff: Array<{ event: string; scroll: ReturnType<typeof scrollSnapshot> }> = [];
+    (window as unknown as {
+      skyjoFocusHandoff: Array<{ event: string; scroll: ReturnType<typeof scrollSnapshot> }>;
+    }).skyjoFocusHandoff = handoff;
+    document.addEventListener('focusout', (event) => {
+      const element = event.target as HTMLElement;
+      if (element.classList.contains('skyjo-table-band-side-start')) {
+        handoff.push({ event: 'final-lap-focusout', scroll: scrollSnapshot() });
+      }
+    }, true);
+    document.addEventListener('focusin', (event) => {
+      const element = event.target as HTMLElement;
+      const label = element.getAttribute('aria-label') || (element.id ? `#${element.id}` : element.tagName);
+      trace.push(label);
+      if (label === 'Action guidance') {
+        handoff.push({ event: 'guidance-focusin', scroll: scrollSnapshot() });
+      }
+    }, true);
+  });
+  const scrollSnapshot = () =>
+    page.evaluate(() => {
+      const selectors = [
+        '[data-testid="opponent-rail"]',
+        '[data-testid="table-center-band"]',
+        '[data-testid="table-center"]',
+        '.skyjo-table-band-side-start',
+        '.skyjo-table-band-side-end',
+        '[data-testid="local-board"]'
+      ];
+      return {
+        table: Object.fromEntries(selectors.map((selector) => {
+          const element = document.querySelector<HTMLElement>(selector);
+          if (!element) throw new Error(`Missing ${selector}`);
+          return [selector, { left: element.scrollLeft, top: element.scrollTop }];
+        })),
+        viewport: { left: window.scrollX, top: window.scrollY }
+      };
+    });
+  const before = await scrollSnapshot();
+
+  const replacement = page.locator('button.skyjo-card-selectable:not([disabled])').first();
+  await expect(replacement).toBeVisible();
+  await replacement.evaluate((element) => (element as HTMLButtonElement).click());
+  const summary = page.getByRole('dialog', { name: 'Round complete.' });
+  await expect(summary).toBeVisible();
+  await expect(page.locator('.skyjo-table-band-side-start')).toHaveAttribute('tabindex', '-1');
+  await expect(page.locator('.skyjo-table-band-side-start')).not.toHaveAttribute('role');
+  await expect(summary.getByRole('heading', { name: 'Round complete.' })).toBeFocused();
+  const focusTrace = await page.evaluate(
+    () => (window as unknown as { skyjoFocusTrace: string[] }).skyjoFocusTrace
+  );
+  expect(focusTrace).toContain('Action guidance');
+  expect(focusTrace.indexOf('Action guidance')).toBeLessThan(focusTrace.indexOf('#skyjo-round-summary-title'));
+  const handoff = await page.evaluate(
+    () => (window as unknown as {
+      skyjoFocusHandoff: Array<{ event: string; scroll: unknown }>;
+    }).skyjoFocusHandoff
+  );
+  expect(handoff.map(({ event }) => event)).toEqual(['final-lap-focusout', 'guidance-focusin']);
+  expect(handoff[1]?.scroll).toEqual(handoff[0]?.scroll);
+  expect((await scrollSnapshot()).table).toEqual(before.table);
+});
 
 async function configureSoloRoster(page: Page, playerCount: number) {
   await page.getByRole('button', { name: 'Open game settings' }).click();
@@ -232,7 +578,7 @@ async function expectKeyboardExposure(page: Page) {
   await page.setViewportSize(railViewports[0]);
   const guidance = page.getByRole('region', { name: 'Action guidance' });
   const rail = page.getByRole('region', { name: 'Opponent boards' });
-  const followingRegion = page.getByRole('region', { name: 'Opening and final-turn progress' });
+  const followingCard = page.getByRole('button', { name: /Reveal this opening card/ }).first();
   await guidance.focus();
   await expect(guidance).toBeFocused();
   await page.keyboard.press('Tab');
@@ -259,7 +605,7 @@ async function expectKeyboardExposure(page: Page) {
 
   await page.keyboard.press('Tab');
   await expect(rail).not.toBeFocused();
-  await expect(followingRegion).toBeFocused();
+  await expect(followingCard).toBeFocused();
 }
 
 async function expectTouchExposure(page: Page, session: CDPSession, viewport: { width: number; height: number }) {

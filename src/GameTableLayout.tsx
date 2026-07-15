@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import { usePhoneLayout, usePrefersReducedMotion } from './accessibility';
 import { knownCardCount } from './gamePresentation';
 import type { Card, GameState, Player } from './types';
@@ -630,21 +630,14 @@ function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPla
 
   const closer = state.players.find((player) => player.id === state.roundCloserId);
   const currentPlayer = state.players[state.currentPlayerIndex];
-  const currentPlayerHasFinalTurn = Boolean(currentPlayer && state.finalTurnPlayerIds.includes(currentPlayer.id));
-  const localPlayerHasFinalTurn = Boolean(localPlayerId && state.finalTurnPlayerIds.includes(localPlayerId));
   const closerName = closer?.name || 'A player';
-  let turnMessage = 'Everyone else gets one final turn before scoring.';
-
-  if (currentPlayerHasFinalTurn && currentPlayer?.id === localPlayerId) {
-    turnMessage = 'This is your last move of the round.';
-  } else if (currentPlayerHasFinalTurn && currentPlayer) {
-    turnMessage = `${currentPlayer.name} is taking a final turn.`;
-  } else if (localPlayerHasFinalTurn) {
-    turnMessage = 'Your final turn is still coming up.';
-  }
+  const turnMessage =
+    currentPlayer.id === localPlayerId
+      ? 'This is your last move of the round.'
+      : `${currentPlayer.name} is taking a final turn.`;
 
   return (
-    <section aria-label="Final lap status" className="skyjo-final-turn-callout">
+    <div className="skyjo-final-turn-callout">
       <div className="flex items-start gap-3">
         <div className="skyjo-final-turn-mark" aria-hidden="true">!</div>
         <div className="min-w-0">
@@ -656,7 +649,7 @@ function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPla
           </p>
         </div>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -671,6 +664,7 @@ interface TableControlsProps {
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
   guidanceRef: RefObject<HTMLDivElement>;
+  focusFallbackRef: RefObject<HTMLDivElement>;
   showSideGuidance: boolean;
 }
 
@@ -798,6 +792,7 @@ function TableControls({
   onDraw,
   onSetDrawIntent,
   guidanceRef,
+  focusFallbackRef,
   showSideGuidance
 }: TableControlsProps) {
   const topDiscard = state.discardPile[0];
@@ -809,27 +804,42 @@ function TableControls({
   const selectedDiscard = localTurn && state.phase === 'choose-replacement' && state.selectedSource === 'discard';
   const hasLocalDrawnDecision = Boolean(state.drawnCard && localTurn);
   const showResolvedSideGuidance = showSideGuidance && !hasLocalDrawnDecision;
+  const finalLapActive =
+    Boolean(state.roundCloserId) && (state.phase === 'choose-source' || state.phase === 'choose-replacement');
+  const progressRegionLabel = finalLapActive
+    ? 'Final lap status'
+    : state.phase === 'opening-reveal' && showSideGuidance
+      ? 'Opening reveal progress'
+      : undefined;
+  const progressRef = useRef<HTMLDivElement | null>(null);
   const discardButtonDisabled = Boolean(interactionDisabledReason || (discardDisabledReason && !selectedDiscard));
   const discardButtonTitle = selectedDiscard
     ? 'Put the discard card back.'
     : discardDisabledReason || 'Take the top discard card.';
   const guidanceDisabledReason = actionGuidanceDisabledReason(state, localTurn, interactionDisabledReason);
 
+  useLayoutEffect(() => {
+    if (!progressRegionLabel && document.activeElement === progressRef.current) {
+      focusFallbackRef.current?.focus({ preventScroll: true });
+    }
+  }, [focusFallbackRef, progressRegionLabel]);
+
   return (
     <section className="skyjo-panel skyjo-table-controls skyjo-table-glow" data-testid="table-center">
       <div
-        aria-label="Opening and final-turn progress"
+        aria-label={progressRegionLabel}
         className="skyjo-table-band-side skyjo-table-band-side-start"
-        role="region"
-        tabIndex={0}
+        ref={progressRef}
+        role={progressRegionLabel ? 'region' : undefined}
+        tabIndex={progressRegionLabel ? 0 : -1}
       >
         <FinalTurnCallout localPlayerId={localPlayerId} state={state} />
         <div className="skyjo-table-header flex items-center justify-between gap-3">
           <h2 className="skyjo-serif text-xl font-semibold">Table</h2>
           <span className="skyjo-kicker text-right">Round {state.round}</span>
         </div>
-        {state.phase === 'opening-reveal' ? (
-          <div className="skyjo-opening-tracker" aria-label="Opening reveal progress">
+        {state.phase === 'opening-reveal' && showSideGuidance ? (
+          <div className="skyjo-opening-tracker">
             <div className="skyjo-kicker">Opening reveal</div>
             <div className="mt-2 grid gap-1">
               {state.players.map((player) => (
@@ -989,6 +999,7 @@ export function GameTableLayout({
         <div className="skyjo-table-center-band" data-testid="table-center-band">
           <TableControls
             drawIntent={drawIntent}
+            focusFallbackRef={focusFallbackRef}
             guidanceRef={sideGuidanceRef}
             interactionDisabledReason={interactionDisabledReason}
             localPlayerId={localPlayerId}
