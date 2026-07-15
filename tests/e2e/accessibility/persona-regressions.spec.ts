@@ -246,6 +246,109 @@ for (const viewport of [
   });
 }
 
+test('320x568 200% focused final lap restores guidance without focus-induced scroll', async ({
+  page,
+  skyjoServer
+}) => {
+  test.setTimeout(45_000);
+  const states = soloProgressGameStates();
+  await installSeededBrowserRuntime(page, 448);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await stageSoloState(page, skyjoServer.baseURL, states.finalTurn, 12_800);
+  await setDoubleText(page, true);
+
+  const table = page.getByTestId('shared-game-table');
+  if ((await table.getAttribute('data-phase')) === 'choose-source') {
+    await page.getByTestId('table-piles').getByRole('button', { name: /^Discard/ }).click();
+    await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
+  }
+
+  const finalLap = page.getByRole('region', { name: 'Final lap status' });
+  await finalLap.evaluate((element) => (element as HTMLElement).focus({ preventScroll: true }));
+  await expect(finalLap).toBeFocused();
+  await page.evaluate(() => {
+    const trace: string[] = [];
+    (window as unknown as { skyjoFocusTrace: string[] }).skyjoFocusTrace = trace;
+    const selectors = [
+      '[data-testid="opponent-rail"]',
+      '[data-testid="table-center-band"]',
+      '[data-testid="table-center"]',
+      '.skyjo-table-band-side-start',
+      '.skyjo-table-band-side-end',
+      '[data-testid="local-board"]'
+    ];
+    const scrollSnapshot = () => ({
+      table: Object.fromEntries(selectors.map((selector) => {
+        const element = document.querySelector<HTMLElement>(selector);
+        if (!element) throw new Error(`Missing ${selector}`);
+        return [selector, { left: element.scrollLeft, top: element.scrollTop }];
+      })),
+      viewport: { left: window.scrollX, top: window.scrollY }
+    });
+    const handoff: Array<{ event: string; scroll: ReturnType<typeof scrollSnapshot> }> = [];
+    (window as unknown as {
+      skyjoFocusHandoff: Array<{ event: string; scroll: ReturnType<typeof scrollSnapshot> }>;
+    }).skyjoFocusHandoff = handoff;
+    document.addEventListener('focusout', (event) => {
+      const element = event.target as HTMLElement;
+      if (element.classList.contains('skyjo-table-band-side-start')) {
+        handoff.push({ event: 'final-lap-focusout', scroll: scrollSnapshot() });
+      }
+    }, true);
+    document.addEventListener('focusin', (event) => {
+      const element = event.target as HTMLElement;
+      const label = element.getAttribute('aria-label') || (element.id ? `#${element.id}` : element.tagName);
+      trace.push(label);
+      if (label === 'Action guidance') {
+        handoff.push({ event: 'guidance-focusin', scroll: scrollSnapshot() });
+      }
+    }, true);
+  });
+  const scrollSnapshot = () =>
+    page.evaluate(() => {
+      const selectors = [
+        '[data-testid="opponent-rail"]',
+        '[data-testid="table-center-band"]',
+        '[data-testid="table-center"]',
+        '.skyjo-table-band-side-start',
+        '.skyjo-table-band-side-end',
+        '[data-testid="local-board"]'
+      ];
+      return {
+        table: Object.fromEntries(selectors.map((selector) => {
+          const element = document.querySelector<HTMLElement>(selector);
+          if (!element) throw new Error(`Missing ${selector}`);
+          return [selector, { left: element.scrollLeft, top: element.scrollTop }];
+        })),
+        viewport: { left: window.scrollX, top: window.scrollY }
+      };
+    });
+  const before = await scrollSnapshot();
+
+  const replacement = page.locator('button.skyjo-card-selectable:not([disabled])').first();
+  await expect(replacement).toBeVisible();
+  await replacement.evaluate((element) => (element as HTMLButtonElement).click());
+  const summary = page.getByRole('dialog', { name: 'Round complete.' });
+  await expect(summary).toBeVisible();
+  await expect(page.locator('.skyjo-table-band-side-start')).toHaveAttribute('tabindex', '-1');
+  await expect(page.locator('.skyjo-table-band-side-start')).not.toHaveAttribute('role');
+  await expect(summary.getByRole('heading', { name: 'Round complete.' })).toBeFocused();
+  const focusTrace = await page.evaluate(
+    () => (window as unknown as { skyjoFocusTrace: string[] }).skyjoFocusTrace
+  );
+  expect(focusTrace).toContain('Action guidance');
+  expect(focusTrace.indexOf('Action guidance')).toBeLessThan(focusTrace.indexOf('#skyjo-round-summary-title'));
+  const handoff = await page.evaluate(
+    () => (window as unknown as {
+      skyjoFocusHandoff: Array<{ event: string; scroll: unknown }>;
+    }).skyjoFocusHandoff
+  );
+  expect(handoff.map(({ event }) => event)).toEqual(['final-lap-focusout', 'guidance-focusin']);
+  expect(handoff[1]?.scroll).toEqual(handoff[0]?.scroll);
+  expect((await scrollSnapshot()).table).toEqual(before.table);
+});
+
 async function configureSoloRoster(page: Page, playerCount: number) {
   await page.getByRole('button', { name: 'Open game settings' }).click();
   const settings = page.getByRole('dialog', { name: 'Settings' });

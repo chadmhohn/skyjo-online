@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import { usePhoneLayout, usePrefersReducedMotion } from './accessibility';
 import { knownCardCount } from './gamePresentation';
 import type { Card, GameState, Player } from './types';
@@ -825,12 +825,11 @@ function TableControls({
     : discardDisabledReason || 'Take the top discard card.';
   const guidanceDisabledReason = actionGuidanceDisabledReason(state, localTurn, interactionDisabledReason);
 
-  useEffect(() => {
-    if (progressRegionLabel || document.activeElement !== progressRef.current) return undefined;
-    const frame = window.requestAnimationFrame(() => {
-      if (document.activeElement === progressRef.current) focusFallbackRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
+  useLayoutEffect(() => {
+    if (progressRegionLabel) return undefined;
+    if (document.activeElement !== progressRef.current || !focusFallbackRef.current) return undefined;
+    focusFallbackRef.current.focus({ preventScroll: true });
+    return undefined;
   }, [focusFallbackRef, progressRegionLabel]);
 
   return (
