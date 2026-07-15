@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import type { BrowserContext, Page } from '@playwright/test';
+import type { BrowserContext, Locator, Page } from '@playwright/test';
 import {
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
@@ -99,9 +99,10 @@ async function installPropagationSendRoute(
   await context.routeWebSocket(/\/rooms(?:\?.*)?$/, (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((payload) => {
+      const observedAt = performance.now();
       const serialized = typeof payload === 'string' ? payload : payload.toString('utf8');
       try {
-        tracker.recordSentFrame(clientIndex, JSON.parse(serialized), performance.now());
+        tracker.recordSentFrame(clientIndex, JSON.parse(serialized), observedAt);
       } catch {
         runtimeFailures.push(`${profile}:invalid-sent-propagation-frame`);
         tracker.failAll(new Error('A sent propagation WebSocket frame was not valid JSON.'));
@@ -118,9 +119,10 @@ function installPropagationObserver(
 ): void {
   client.page.on('websocket', (socket) => {
     socket.on('framereceived', ({ payload }) => {
+      const observedAt = performance.now();
       const serialized = typeof payload === 'string' ? payload : payload.toString('utf8');
       try {
-        tracker.recordFrame(client.index, JSON.parse(serialized) as PersonaFrame, performance.now());
+        tracker.recordFrame(client.index, JSON.parse(serialized) as PersonaFrame, observedAt);
       } catch {
         runtimeFailures.push(`${client.profile}:invalid-propagation-frame`);
         tracker.failAll(new Error('A propagation WebSocket frame was not valid JSON.'));
@@ -156,6 +158,16 @@ async function commonRevision(tracker: PropagationTracker): Promise<number> {
   return revision;
 }
 
+async function requiredCardIndex(target: Locator, label: string): Promise<number> {
+  const value = await target.getAttribute('data-card-index');
+  if (value === null || !/^\d+$/.test(value)) throw new Error(`${label} is missing its card index.`);
+  const cardIndex = Number(value);
+  if (!Number.isSafeInteger(cardIndex) || cardIndex < 0 || cardIndex >= 12) {
+    throw new Error(`${label} has an invalid card index.`);
+  }
+  return cardIndex;
+}
+
 async function authenticateClient(
   client: PersonaClient,
   baseURL: string,
@@ -189,18 +201,20 @@ async function revealOpeningCard(
   expectedRevision: number
 ): Promise<number> {
   const actionable = () => client.page.locator('button[aria-label*="Reveal this opening card"]:visible:not([disabled])').first();
-  await expect(actionable()).toBeVisible();
+  const target = actionable();
+  await expect(target).toBeVisible();
+  const cardIndex = await requiredCardIndex(target, 'Opening reveal target');
   if (keyboard) {
-    await actionable().focus();
+    await target.focus();
     return completePropagationProbe(
-      tracker.beginRevision(expectedRevision, 'reveal-opening-card', client.index),
+      tracker.beginRevision(expectedRevision, { type: 'reveal-opening-card', cardIndex }, client.index),
       () => client.page.keyboard.press('Enter'),
       `Opening revision ${expectedRevision}`
     );
   }
   return completePropagationProbe(
-    tracker.beginRevision(expectedRevision, 'reveal-opening-card', client.index),
-    () => actionable().click(),
+    tracker.beginRevision(expectedRevision, { type: 'reveal-opening-card', cardIndex }, client.index),
+    () => target.click(),
     `Opening revision ${expectedRevision}`
   );
 }
@@ -257,7 +271,7 @@ async function completeMeasuredReplacementTurn(
   await deck.focus();
   const drawRevision = startingRevision + 1;
   const drawSample = await completePropagationProbe(
-    tracker.beginRevision(drawRevision, 'draw-blind', activeClient.index),
+    tracker.beginRevision(drawRevision, { type: 'draw-blind' }, activeClient.index),
     () => activeClient.page.keyboard.press('Enter'),
     `Blind-draw revision ${drawRevision}`
   );
@@ -268,9 +282,10 @@ async function completeMeasuredReplacementTurn(
     .first();
   await expect(replacement).toBeEnabled();
   await replacement.focus();
+  const cardIndex = await requiredCardIndex(replacement, 'Replacement target');
   const replacementRevision = drawRevision + 1;
   const replacementSample = await completePropagationProbe(
-    tracker.beginRevision(replacementRevision, 'replace-card', activeClient.index),
+    tracker.beginRevision(replacementRevision, { type: 'replace-card', cardIndex }, activeClient.index),
     () => activeClient.page.keyboard.press('Enter'),
     `Replacement revision ${replacementRevision}`
   );
@@ -292,8 +307,9 @@ async function measureChatPropagation(
     const marker = `cert-chat-${String(index + 1).padStart(2, '0')}`;
     await input.fill(marker);
     await expect(send).toBeEnabled();
+    const expectedRevision = await commonRevision(tracker);
     samples.push(await completePropagationProbe(
-      tracker.beginChat(marker, client.index),
+      tracker.beginChat(marker, expectedRevision, client.index),
       () => send.click(),
       `Chat marker ${index + 1}`
     ));
