@@ -1129,7 +1129,6 @@ html.skyjo-test-text-scale-200 {
     overflow-y: hidden;
     overscroll-behavior-inline: contain;
     scroll-padding-inline: 0.5rem;
-    scroll-snap-type: inline proximity;
     scrollbar-color: rgba(245, 230, 200, 0.3) transparent;
     scrollbar-width: thin;
   }
@@ -1147,7 +1146,6 @@ html.skyjo-test-text-scale-200 {
     min-width: 0;
     height: 100%;
     overflow: hidden;
-    scroll-snap-align: center;
   }
 
   .skyjo-opponents-count-1 {
