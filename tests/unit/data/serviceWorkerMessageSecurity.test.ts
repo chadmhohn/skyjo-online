@@ -38,6 +38,26 @@ function generatedTestWorkerSource(
   return context.workerSource;
 }
 
+function generatedTestBarrierWaiters(now: number) {
+  const serverSource = fs.readFileSync('server.mjs', 'utf8');
+  const start = serverSource.indexOf('async function waitForTestPwaActivationArrivals(');
+  const end = serverSource.indexOf('\n\nfunction sendInvalidTestPwaActivationBarrierResponse', start);
+  if (start < 0 || end < 0) throw new Error('Generated test barrier waiters were not found.');
+  const context: {
+    Date: { now: () => number };
+    arrivalWaiter?: (...args: unknown[]) => Promise<string>;
+    releaseWaiter?: (...args: unknown[]) => Promise<string>;
+  } = { Date: { now: () => now } };
+  vm.runInNewContext(
+    `${serverSource.slice(start, end)}\narrivalWaiter = waitForTestPwaActivationArrivals; releaseWaiter = waitForTestPwaActivationRelease;`,
+    context
+  );
+  if (!context.arrivalWaiter || !context.releaseWaiter) {
+    throw new Error('Generated test barrier waiters were not evaluated.');
+  }
+  return { arrivalWaiter: context.arrivalWaiter, releaseWaiter: context.releaseWaiter };
+}
+
 function workerSource(kind: WorkerSourceKind): string {
   return kind === 'generated'
     ? generatedTestWorkerSource()
@@ -214,6 +234,46 @@ describe('service worker message trust boundary', () => {
     expect(serverSource).toContain('if (!testPwaVariantsEnabled) {');
     expect(workerSource('production')).not.toContain(identityType);
     expect(workerSource('production')).not.toContain('/__test/pwa-activation/');
+  });
+
+  it('makes the absolute activation deadline win over arrived and released fast paths', async () => {
+    const request = {};
+    const response = {};
+    const overdue = generatedTestBarrierWaiters(101);
+    await expect(overdue.arrivalWaiter({
+      arrivals: ['B'],
+      deadlineAt: 100,
+      poisoned: false
+    }, 1, request, response)).resolves.toBe('timeout');
+    const overdueWorker = { released: true, waitStarted: false };
+    await expect(overdue.releaseWaiter({
+      deadlineAt: 100,
+      poisoned: false
+    }, overdueWorker, request, response)).resolves.toBe('timeout');
+    expect(overdueWorker.waitStarted).toBe(false);
+
+    const beforeDeadline = generatedTestBarrierWaiters(99);
+    await expect(beforeDeadline.arrivalWaiter({
+      arrivals: ['B'],
+      deadlineAt: 100,
+      poisoned: false
+    }, 1, request, response)).resolves.toBe('arrived');
+    const releasedWorker = { released: true, waitStarted: false };
+    await expect(beforeDeadline.releaseWaiter({
+      deadlineAt: 100,
+      poisoned: false
+    }, releasedWorker, request, response)).resolves.toBe('released');
+    expect(releasedWorker.waitStarted).toBe(true);
+
+    await expect(beforeDeadline.arrivalWaiter({
+      arrivals: ['B'],
+      deadlineAt: 100,
+      poisoned: true
+    }, 1, request, response)).resolves.toBe('poisoned');
+    await expect(beforeDeadline.releaseWaiter({
+      deadlineAt: 100,
+      poisoned: true
+    }, { released: true, waitStarted: false }, request, response)).resolves.toBe('poisoned');
   });
 
   it('generated test workers disclose their exact identity only to an exact-origin message port', async () => {

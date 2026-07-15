@@ -440,11 +440,11 @@ function testPwaActivationBarrierSnapshot(barrier) {
 }
 
 async function waitForTestPwaActivationArrivals(barrier, count, req, res) {
-  if (barrier.arrivals.length >= count) return 'arrived';
   if (barrier.poisoned) return 'poisoned';
   if (barrier.deadlineAt === null) return 'not-started';
   const remainingMs = Math.max(0, barrier.deadlineAt - Date.now());
   if (remainingMs === 0) return 'timeout';
+  if (barrier.arrivals.length >= count) return 'arrived';
   return new Promise((resolve) => {
     let timeout = null;
     const waiter = { count, settle: null };
@@ -462,19 +462,23 @@ async function waitForTestPwaActivationArrivals(barrier, count, req, res) {
     res.once('close', onDisconnect);
     timeout = setTimeout(() => settle('timeout'), remainingMs);
     timeout.unref?.();
-    if (barrier.arrivals.length >= count) settle('arrived');
+    if (barrier.poisoned) settle('poisoned');
+    else if (Date.now() >= barrier.deadlineAt) settle('timeout');
+    else if (barrier.arrivals.length >= count) settle('arrived');
   });
 }
 
 async function waitForTestPwaActivationRelease(barrier, worker, req, res) {
+  if (barrier.poisoned) return 'poisoned';
+  if (barrier.deadlineAt === null) return 'not-started';
+  const remainingMs = Math.max(0, barrier.deadlineAt - Date.now());
+  if (remainingMs === 0) return 'timeout';
   if (worker.waitStarted) {
     poisonTestPwaActivationBarrier(barrier);
     return 'duplicate';
   }
   worker.waitStarted = true;
   if (worker.released) return 'released';
-  const remainingMs = Math.max(0, Number(barrier.deadlineAt) - Date.now());
-  if (remainingMs === 0) return 'timeout';
   return new Promise((resolve) => {
     let timeout = null;
     const onDisconnect = () => settle('disconnected');
