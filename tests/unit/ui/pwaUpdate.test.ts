@@ -155,7 +155,11 @@ function installContainer(container: FakeServiceWorkerContainer) {
   });
 }
 
-async function beginRegistration(container: FakeServiceWorkerContainer, reload = vi.fn()) {
+async function beginRegistration(
+  container: FakeServiceWorkerContainer,
+  reload = vi.fn(),
+  waitForIdentity = true
+) {
   installContainer(container);
   const module = await import('../../../src/pwaUpdate');
   module.registerPwaUpdates(reload);
@@ -169,6 +173,7 @@ async function beginRegistration(container: FakeServiceWorkerContainer, reload =
       : null;
   const active = registration.active;
   if (
+    waitForIdentity &&
     candidate &&
     active &&
     active === container.controller &&
@@ -186,6 +191,7 @@ afterEach(() => {
   fakeBuildSequence = 0;
   vi.resetModules();
   vi.restoreAllMocks();
+  vi.doUnmock('../../../src/pwaWorkerIdentity');
   window.history.replaceState(null, '', '/');
   Reflect.deleteProperty(navigator, 'serviceWorker');
   if (originalServiceWorker) Object.defineProperty(Navigator.prototype, 'serviceWorker', originalServiceWorker);
@@ -286,6 +292,26 @@ describe('PWA update coordination', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(waiting.identityPostCalls).toBe(0);
     expect(mismatchedActive.identityPostCalls).toBe(0);
+    expect(waiting.messages).toEqual([]);
+  });
+
+  it('fails a never-resolving identity module import closed within the outer deadline', async () => {
+    vi.doMock('../../../src/pwaWorkerIdentity', () => new Promise<never>(() => {}));
+    const registration = new FakeRegistration();
+    const waiting = new FakeWorker('installed', 'e'.repeat(64));
+    registration.waiting = waiting;
+    const container = new FakeServiceWorkerContainer(
+      registration,
+      new FakeWorker('activated', 'd'.repeat(64))
+    );
+    const module = await beginRegistration(container, vi.fn(), false);
+
+    await vi.waitFor(() => expect(module.getPwaUpdateSnapshot()).toEqual({
+      available: true,
+      activating: false,
+      reloadRequired: false
+    }), { timeout: 2_000 });
+    expect(waiting.identityPostCalls).toBe(0);
     expect(waiting.messages).toEqual([]);
   });
 
