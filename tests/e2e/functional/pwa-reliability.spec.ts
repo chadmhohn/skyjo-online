@@ -4,11 +4,17 @@ import { expect, test } from '../fixtures';
 
 const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
 type TestPwaWorkerVariant = 'A' | 'B' | 'C' | 'D';
+type TestPwaWorkerIdentity = {
+  variant: TestPwaWorkerVariant;
+  buildNonce: string;
+  instanceNonce: string;
+};
 type TestPwaActivationBarrierStatus = {
   arrivals: TestPwaWorkerVariant[];
   pending: TestPwaWorkerVariant[];
   poisoned: boolean;
   released: TestPwaWorkerVariant[];
+  workers: TestPwaWorkerIdentity[];
 };
 type TestPwaSuccessorHarness = {
   variants: TestPwaWorkerVariant[];
@@ -91,13 +97,51 @@ async function expectSessionStorageNumber(page: Page, key: string, expected: num
   }).toBe(expected);
 }
 
-async function setWorkerVariant(context: BrowserContext, baseURL: string, variant: TestPwaWorkerVariant) {
-  await context.addCookies([{
-    name: 'skyjo_sw_test_variant',
-    value: variant,
-    url: baseURL,
-    sameSite: 'Lax'
-  }]);
+async function activeControllerIdentity(page: Page) {
+  return page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration('/');
+    const active = registration?.active || null;
+    const controller = navigator.serviceWorker.controller;
+    if (!active || !controller || active !== controller) {
+      return { controllerIsActive: false, identity: null };
+    }
+    const identity = await new Promise<TestPwaWorkerIdentity>((resolve, reject) => {
+      const channel = new MessageChannel();
+      const timeout = window.setTimeout(() => {
+        channel.port1.close();
+        reject(new Error('Timed out requesting the active test worker identity.'));
+      }, 2_000);
+      channel.port1.onmessage = (event: MessageEvent<TestPwaWorkerIdentity>) => {
+        window.clearTimeout(timeout);
+        channel.port1.close();
+        resolve(event.data);
+      };
+      active.postMessage({ type: 'SKYJO_TEST_WORKER_IDENTITY' }, [channel.port2]);
+    });
+    return { controllerIsActive: true, identity };
+  });
+}
+
+async function setWorkerVariant(
+  context: BrowserContext,
+  baseURL: string,
+  variant: TestPwaWorkerVariant,
+  buildNonce?: string
+) {
+  await context.addCookies([
+    {
+      name: 'skyjo_sw_test_variant',
+      value: variant,
+      url: baseURL,
+      sameSite: 'Lax'
+    },
+    ...(buildNonce ? [{
+      name: 'skyjo_sw_test_worker_nonce',
+      value: buildNonce,
+      url: baseURL,
+      sameSite: 'Lax' as const
+    }] : [])
+  ]);
 }
 
 function testPwaActivationBarrierUrl(baseURL: string, action: string) {
@@ -123,17 +167,28 @@ async function expectTestPwaActivationArrivals(
   token: string,
   arrivals: TestPwaWorkerVariant[]
 ) {
-  await expect.poll(async () => (
-    await testPwaActivationBarrierStatus(context, baseURL, token)
-  )?.arrivals ?? null, {
-    timeout: 2_000,
-    intervals: [50, 100, 250]
-  }).toEqual(arrivals);
+  const response = await context.request.get(
+    `${testPwaActivationBarrierUrl(baseURL, 'wait-arrivals')}?token=${encodeURIComponent(token)}&count=${arrivals.length}`,
+    { timeout: 9_000 }
+  );
+  if (!response.ok()) {
+    throw new Error(
+      `Activation barrier arrival proof failed with ${response.status()}: ${await response.text()}`
+    );
+  }
+  const status = await response.json() as TestPwaActivationBarrierStatus;
+  expect(status.arrivals).toEqual(arrivals);
+  return status;
 }
 
-async function initializeTestPwaActivationBarrier(context: BrowserContext, baseURL: string, token: string) {
+async function initializeTestPwaActivationBarrier(
+  context: BrowserContext,
+  baseURL: string,
+  token: string,
+  workers: Array<{ variant: 'B' | 'C' | 'D'; buildNonce: string }>
+) {
   const response = await context.request.post(testPwaActivationBarrierUrl(baseURL, 'init'), {
-    data: { token }
+    data: { token, workers }
   });
   if (!response.ok()) throw new Error(`Activation barrier initialization failed with ${response.status()}.`);
   return response.json() as Promise<TestPwaActivationBarrierStatus>;
@@ -165,8 +220,8 @@ async function cleanupTestPwaActivationBarrier(context: BrowserContext, baseURL:
   }
 }
 
-async function installTestPwaSuccessor(page: Page, variant: 'C' | 'D') {
-  return page.evaluate(async (nextVariant) => {
+async function installTestPwaSuccessor(page: Page, variant: 'C' | 'D', buildNonce: string) {
+  return page.evaluate(async ({ nextVariant, nextBuildNonce }) => {
     const registration = await navigator.serviceWorker.ready;
     const harnessWindow = window as typeof window & {
       __skyjoSuccessorHarness?: TestPwaSuccessorHarness;
@@ -175,6 +230,7 @@ async function installTestPwaSuccessor(page: Page, variant: 'C' | 'D') {
     if (!harness) throw new Error('Successor harness was not ready.');
     const priorWorkers = [...harness.workers];
     document.cookie = `skyjo_sw_test_variant=${nextVariant}; Path=/; SameSite=Lax`;
+    document.cookie = `skyjo_sw_test_worker_nonce=${nextBuildNonce}; Path=/; SameSite=Lax`;
     let discoveredWorker: ServiceWorker | null = null;
     let timeout: number | null = null;
     let onUpdateFound: (() => void) | null = null;
@@ -229,7 +285,7 @@ async function installTestPwaSuccessor(page: Page, variant: 'C' | 'D') {
     harness.variants.push(nextVariant);
     harness.workers.push(worker);
     return { state: worker.state, variant: nextVariant };
-  }, variant);
+  }, { nextVariant: variant, nextBuildNonce: buildNonce });
 }
 
 async function setNetworkUnavailable(
@@ -519,8 +575,73 @@ test('a changed worker defers on solo and lobby routes, then applies once from a
   await expectSessionStorageNumber(page, 'skyjo-test-page-loads', loadsBeforeApply + 1);
 });
 
+test('test-only activation barrier rejects an unseen successor identity and poisons the run', async ({ context, skyjoServer }) => {
+  const token = randomUUID();
+  const workers = (['B', 'C', 'D'] as const).map((variant) => ({
+    variant,
+    buildNonce: randomUUID()
+  }));
+  try {
+    const duplicateBuildNonce = randomUUID();
+    const duplicateIdentityInit = await context.request.post(
+      testPwaActivationBarrierUrl(skyjoServer.baseURL, 'init'),
+      {
+        data: {
+          token: randomUUID(),
+          workers: (['B', 'C', 'D'] as const).map((variant) => ({
+            variant,
+            buildNonce: duplicateBuildNonce
+          }))
+        }
+      }
+    );
+    expect(duplicateIdentityInit.status()).toBe(400);
+    await expect(initializeTestPwaActivationBarrier(
+      context,
+      skyjoServer.baseURL,
+      token,
+      workers
+    )).resolves.toMatchObject({ poisoned: false, workers: [] });
+    const unseenArrival = await context.request.post(
+      testPwaActivationBarrierUrl(skyjoServer.baseURL, 'arrive'),
+      {
+        data: {
+          token,
+          variant: 'B',
+          buildNonce: randomUUID(),
+          instanceNonce: 'a'.repeat(32)
+        }
+      }
+    );
+    expect(unseenArrival.status()).toBe(409);
+    await expect(testPwaActivationBarrierStatus(
+      context,
+      skyjoServer.baseURL,
+      token
+    )).resolves.toEqual({
+      arrivals: [],
+      pending: [],
+      poisoned: true,
+      released: [],
+      workers: []
+    });
+  } finally {
+    await cleanupTestPwaActivationBarrier(context, skyjoServer.baseURL, token);
+  }
+});
+
 test('cross-tab activation never reloads a protected game and preserves one safe reload prompt', async ({ context, page, skyjoServer }) => {
   const activationBarrierToken = randomUUID();
+  const workerBuildNonces = {
+    A: randomUUID(),
+    B: randomUUID(),
+    C: randomUUID(),
+    D: randomUUID()
+  } satisfies Record<TestPwaWorkerVariant, string>;
+  const expectedSuccessors = (['B', 'C', 'D'] as const).map((variant) => ({
+    variant,
+    buildNonce: workerBuildNonces[variant]
+  }));
   await context.addCookies([{
     name: 'skyjo_sw_test_activation_barrier',
     value: activationBarrierToken,
@@ -532,18 +653,20 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     await expect(initializeTestPwaActivationBarrier(
       context,
       skyjoServer.baseURL,
-      activationBarrierToken
+      activationBarrierToken,
+      expectedSuccessors
     )).resolves.toEqual({
       arrivals: [],
       pending: [],
       poisoned: false,
-      released: []
+      released: [],
+      workers: []
     });
     await page.addInitScript(() => {
       const loads = Number(sessionStorage.getItem('skyjo-cross-tab-loads') || '0') + 1;
       sessionStorage.setItem('skyjo-cross-tab-loads', String(loads));
     });
-    await setWorkerVariant(context, skyjoServer.baseURL, 'A');
+    await setWorkerVariant(context, skyjoServer.baseURL, 'A', workerBuildNonces.A);
     await page.goto(`${skyjoServer.baseURL}/single-player`);
     await waitForServiceWorkerControl(page);
     await expectActiveWorker(page);
@@ -555,7 +678,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       sessionStorage.setItem('skyjo-updater-loads', String(loads));
     });
     await updater.goto(`${skyjoServer.baseURL}/`);
-    await setWorkerVariant(context, skyjoServer.baseURL, 'B');
+    await setWorkerVariant(context, skyjoServer.baseURL, 'B', workerBuildNonces.B);
     await updater.evaluate(async () => {
       const registration = await navigator.serviceWorker.ready;
       await registration.update();
@@ -592,16 +715,19 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       workerCount: 1
     });
 
-    await updater.getByRole('button', { name: 'Update now' }).evaluate((button: HTMLButtonElement) => button.click());
+    const updateButton = updater.getByRole('button', { name: 'Update now' });
+    await updateButton.evaluate((button: HTMLButtonElement) => button.click());
+    await expect(updater.getByRole('button', { name: 'Updating...' })).toBeDisabled();
 
     await expectTestPwaActivationArrivals(context, skyjoServer.baseURL, activationBarrierToken, ['B']);
-    await expect(installTestPwaSuccessor(updater, 'C')).resolves.toEqual({ state: 'installed', variant: 'C' });
-    await expect(releaseTestPwaActivation(
+    await expect(installTestPwaSuccessor(updater, 'C', workerBuildNonces.C)).resolves.toEqual({ state: 'installed', variant: 'C' });
+    const releasedB = await releaseTestPwaActivation(
       context,
       skyjoServer.baseURL,
       activationBarrierToken,
       'B'
-    )).resolves.toEqual({
+    );
+    expect(releasedB).toMatchObject({
       arrivals: ['B'],
       pending: [],
       poisoned: false,
@@ -609,13 +735,14 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     });
 
     await expectTestPwaActivationArrivals(context, skyjoServer.baseURL, activationBarrierToken, ['B', 'C']);
-    await expect(installTestPwaSuccessor(updater, 'D')).resolves.toEqual({ state: 'installed', variant: 'D' });
-    await expect(releaseTestPwaActivation(
+    await expect(installTestPwaSuccessor(updater, 'D', workerBuildNonces.D)).resolves.toEqual({ state: 'installed', variant: 'D' });
+    const releasedC = await releaseTestPwaActivation(
       context,
       skyjoServer.baseURL,
       activationBarrierToken,
       'C'
-    )).resolves.toEqual({
+    );
+    expect(releasedC).toMatchObject({
       arrivals: ['B', 'C'],
       pending: [],
       poisoned: false,
@@ -633,6 +760,13 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       skyjoServer.baseURL,
       activationBarrierToken
     );
+    expect(activationStatus).not.toBeNull();
+    expect(activationStatus?.workers.map(({ variant, buildNonce }) => ({ variant, buildNonce }))).toEqual(
+      expectedSuccessors
+    );
+    expect(new Set(activationStatus?.workers.map(({ instanceNonce }) => instanceNonce)).size).toBe(3);
+    const releasedWorkerD = activationStatus?.workers.find(({ variant }) => variant === 'D');
+    expect(releasedWorkerD).toBeDefined();
     const identityEvidence = await updater.evaluate(() => {
       const harnessWindow = window as typeof window & {
         __skyjoSuccessorHarness?: TestPwaSuccessorHarness;
@@ -670,7 +804,8 @@ test('cross-tab activation never reloads a protected game and preserves one safe
         arrivals: ['B', 'C', 'D'],
         pending: ['D'],
         poisoned: false,
-        released: ['B', 'C']
+        released: ['B', 'C'],
+        workers: activationStatus?.workers
       },
       heldSuccessorState: 'activating',
       harnessCleanupComplete: true,
@@ -682,20 +817,33 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     });
 
     const updaterReload = updater.waitForNavigation({ waitUntil: 'domcontentloaded' });
-    await expect(releaseTestPwaActivation(
+    const releasedD = await releaseTestPwaActivation(
       context,
       skyjoServer.baseURL,
       activationBarrierToken,
       'D'
-    )).resolves.toEqual({
+    );
+    expect(releasedD).toMatchObject({
       arrivals: ['B', 'C', 'D'],
       pending: [],
       poisoned: false,
       released: ['B', 'C', 'D']
     });
     await updaterReload;
-    // Keep the activating tab strict: every queued successor must be drained.
+    // Keep the activating tab strict: every queued successor must be drained,
+    // and the released D identity must be the exact active controller.
     await expectActiveWorker(updater);
+    const finalControllerIdentity = await activeControllerIdentity(updater);
+    expect(finalControllerIdentity).toMatchObject({
+      controllerIsActive: true,
+      identity: {
+        variant: 'D',
+        buildNonce: releasedWorkerD?.buildNonce
+      }
+    });
+    expect(finalControllerIdentity.identity?.instanceNonce).toMatch(/^[a-f0-9]{32}$/);
+    await expect(updater.getByTestId('pwa-update-banner')).toHaveCount(0);
+    await expect(updater.getByRole('button', { name: /Updating|Update now|Reload now/ })).toHaveCount(0);
     await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
     await updater.waitForTimeout(750);
     await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);

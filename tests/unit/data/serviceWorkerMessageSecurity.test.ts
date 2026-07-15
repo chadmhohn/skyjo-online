@@ -14,17 +14,24 @@ type TimerCallback = () => void;
 
 const appOrigin = 'https://skyjo.example';
 const activationType = 'SKYJO_ACTIVATE_UPDATE';
+const identityType = 'SKYJO_TEST_WORKER_IDENTITY';
 const sanitizerType = 'SKYJO_SANITIZE_CACHE';
 const workerSourceKinds: WorkerSourceKind[] = ['generated', 'production'];
 
-function generatedTestWorkerSource(variant = 'A', activationBarrierToken: string | null = null): string {
+function generatedTestWorkerSource(
+  variant = 'A',
+  activationBarrierToken: string | null = null,
+  workerBuildNonce: string | null = null
+): string {
   const serverSource = fs.readFileSync('server.mjs', 'utf8');
-  const start = serverSource.indexOf('function testPwaWorkerSource(variant, activationBarrierToken = null) {');
+  const start = serverSource.indexOf(
+    'function testPwaWorkerSource(variant, activationBarrierToken = null, workerBuildNonce = null) {'
+  );
   const end = serverSource.indexOf('\n\nfunction makeRoomCode', start);
   if (start < 0 || end < 0) throw new Error('Generated test worker source builder was not found.');
   const context: { workerSource?: string } = {};
   vm.runInNewContext(
-    `${serverSource.slice(start, end)}\nworkerSource = testPwaWorkerSource(${JSON.stringify(variant)}, ${JSON.stringify(activationBarrierToken)});`,
+    `${serverSource.slice(start, end)}\nworkerSource = testPwaWorkerSource(${JSON.stringify(variant)}, ${JSON.stringify(activationBarrierToken)}, ${JSON.stringify(workerBuildNonce)});`,
     context
   );
   if (typeof context.workerSource !== 'string') throw new Error('Generated test worker source was not produced.');
@@ -61,6 +68,12 @@ function loadMessageHandler(
     __WB_MANIFEST: [],
     addEventListener: vi.fn((type: string, handler: (...args: never[]) => unknown) => handlers.set(type, handler)),
     clients: { claim: vi.fn(() => Promise.resolve()) },
+    crypto: {
+      getRandomValues: vi.fn((values: Uint32Array) => {
+        values.set([0x01234567, 0x89abcdef, 0x13579bdf, 0x2468ace0]);
+        return values;
+      })
+    },
     location: { origin: appOrigin },
     skipWaiting
   };
@@ -176,8 +189,9 @@ describe('service worker message trust boundary', () => {
 
   it('generated successor workers use the scoped activation barrier only when explicitly requested', () => {
     const token = 'barrier_test_token_1234';
-    const initialSource = generatedTestWorkerSource('A', token);
-    const successorSource = generatedTestWorkerSource('B', token);
+    const buildNonce = 'worker_build_nonce_1234';
+    const initialSource = generatedTestWorkerSource('A', token, buildNonce);
+    const successorSource = generatedTestWorkerSource('B', token, buildNonce);
 
     expect(initialSource).not.toContain('/__test/pwa-activation/');
     expect(initialSource).not.toContain(token);
@@ -185,7 +199,61 @@ describe('service worker message trust boundary', () => {
     expect(successorSource).toContain("fetch('/__test/pwa-activation/arrive'");
     expect(successorSource).toContain("fetch('/__test/pwa-activation/wait-release?");
     expect(successorSource).toContain('variant: version');
+    expect(successorSource).toContain('buildNonce: workerBuildNonce');
+    expect(successorSource).toContain('instanceNonce: workerInstanceNonce');
     expect(successorSource).toContain('await waitAtActivationBarrier();');
+  });
+
+  it('keeps every generated PWA diagnostic behind both test-only environment gates', () => {
+    const serverSource = fs.readFileSync('server.mjs', 'utf8');
+    expect(serverSource).toContain(
+      "const testPwaVariantsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_VARIANTS === 'true';"
+    );
+    expect(serverSource).toContain("if (testPwaVariantsEnabled && url.pathname === '/sw.js') {");
+    expect(serverSource).toContain("if (url.pathname.startsWith('/__test/pwa-activation/')) {");
+    expect(serverSource).toContain('if (!testPwaVariantsEnabled) {');
+    expect(workerSource('production')).not.toContain(identityType);
+    expect(workerSource('production')).not.toContain('/__test/pwa-activation/');
+  });
+
+  it('generated test workers disclose their exact identity only to an exact-origin message port', async () => {
+    const buildNonce = 'worker_build_nonce_5678';
+    const postMessage = vi.fn();
+    const { handler } = loadMessageHandler('generated');
+    await dispatchMessage(handler, {
+      data: { type: identityType },
+      origin: appOrigin,
+      ports: [{ postMessage }],
+      source: null
+    });
+    expect(postMessage).toHaveBeenCalledWith({
+      type: identityType,
+      variant: 'A',
+      buildNonce: null,
+      instanceNonce: '0123456789abcdef13579bdf2468ace0'
+    });
+
+    for (const origin of ['', 'null', 'https://attacker.example']) {
+      const rejectedPost = vi.fn();
+      await dispatchMessage(handler, {
+        data: { type: identityType },
+        origin,
+        ports: [{ postMessage: rejectedPost }],
+        source: { id: 'untrusted-client' }
+      });
+      expect(rejectedPost).not.toHaveBeenCalled();
+    }
+
+    await dispatchMessage(handler, {
+      data: { type: identityType },
+      origin: appOrigin,
+      ports: [],
+      source: { id: 'same-origin-client' }
+    });
+    expect(workerSource('production')).not.toContain(identityType);
+    expect(generatedTestWorkerSource('D', null, buildNonce)).toContain(
+      `const workerBuildNonce=${JSON.stringify(buildNonce)};`
+    );
   });
 
   it.each([
