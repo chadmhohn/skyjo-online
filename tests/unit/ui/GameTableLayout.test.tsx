@@ -378,7 +378,7 @@ describe('GameTableLayout', () => {
     expect(screen.getByTestId('opponent-rail')).toHaveAttribute('data-scroll-contained', 'true');
   });
 
-  it('cancels contained auto-follow for every supported trusted rail gesture', () => {
+  it('cancels contained auto-follow for supported gestures without hijacking modified or handled keys', () => {
     const actions = handlers();
     const scrollTo = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
@@ -400,22 +400,46 @@ describe('GameTableLayout', () => {
       />
     );
     const rail = screen.getByTestId('opponent-rail');
+    Object.defineProperty(rail, 'clientWidth', { configurable: true, value: 200 });
     Object.defineProperty(rail, 'scrollLeft', { configurable: true, value: 173, writable: true });
+    Object.defineProperty(rail, 'scrollWidth', { configurable: true, value: 1000 });
     scrollTo.mockClear();
 
     fireEvent.focusIn(rail);
     for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']) {
-      fireEvent.keyDown(rail, { key });
+      expect(fireEvent.keyDown(rail, { key })).toBe(false);
     }
     fireEvent.wheel(rail, { deltaX: 80 });
     fireEvent.pointerDown(rail);
     fireEvent.touchStart(rail, { touches: [{ clientX: 200, clientY: 100 }] });
 
-    expect(scrollTo).toHaveBeenCalledTimes(10);
-    expect(scrollTo).toHaveBeenNthCalledWith(10, { left: 173, behavior: 'auto' });
-    fireEvent.keyDown(rail, { key: 'Enter' });
+    expect(scrollTo).toHaveBeenCalledTimes(16);
+    expect(scrollTo).toHaveBeenNthCalledWith(3, { left: 123, behavior: 'auto' });
+    expect(scrollTo).toHaveBeenNthCalledWith(5, { left: 223, behavior: 'auto' });
+    expect(scrollTo).toHaveBeenNthCalledWith(7, { left: 0, behavior: 'auto' });
+    expect(scrollTo).toHaveBeenNthCalledWith(9, { left: 800, behavior: 'auto' });
+    expect(scrollTo).toHaveBeenNthCalledWith(11, { left: 0, behavior: 'auto' });
+    expect(scrollTo).toHaveBeenNthCalledWith(13, { left: 353, behavior: 'auto' });
+    expect(scrollTo).toHaveBeenNthCalledWith(16, { left: 173, behavior: 'auto' });
+    expect(fireEvent.keyDown(rail, { key: 'Enter' })).toBe(true);
     fireEvent.wheel(screen.getByTestId('local-board'), { deltaX: 80 });
-    expect(scrollTo).toHaveBeenCalledTimes(10);
+    expect(scrollTo).toHaveBeenCalledTimes(16);
+    for (const modifier of [
+      { altKey: true },
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true }
+    ]) {
+      expect(fireEvent.keyDown(rail, { key: 'ArrowRight', ...modifier })).toBe(true);
+    }
+    const alreadyPrevented = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'ArrowRight'
+    });
+    alreadyPrevented.preventDefault();
+    rail.dispatchEvent(alreadyPrevented);
+    expect(scrollTo).toHaveBeenCalledTimes(16);
     unmount();
   });
 

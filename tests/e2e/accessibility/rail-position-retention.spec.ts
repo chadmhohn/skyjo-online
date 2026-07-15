@@ -226,11 +226,13 @@ async function waitForSettledRail(page: Page, gesture: AuditedGesture) {
       const current = element.scrollLeft;
       stableSamples = Math.abs(current - previous) <= 0.25 ? stableSamples + 1 : 0;
       const scrollEnd = audit.scrollEnds.find((entry) => entry.at >= trustedGesture.at);
-      if (scrollEnd && stableSamples >= 2) {
-        return { at: performance.now(), mode: 'scrollend', scrollLeft: current, stableSamples };
-      }
-      if (stableSamples >= 6) {
-        return { at: performance.now(), mode: 'stable-samples', scrollLeft: current, stableSamples };
+      if (stableSamples >= 10) {
+        return {
+          at: performance.now(),
+          mode: scrollEnd ? 'scrollend-and-stable-samples' : 'stable-samples',
+          scrollLeft: current,
+          stableSamples
+        };
       }
       previous = current;
     }
@@ -282,6 +284,13 @@ async function expectRetainedThroughCheckpoint(
 
 async function openingCards(page: Page) {
   return page.locator('button[aria-label*="Reveal this opening card"]:visible:not([disabled])');
+}
+
+async function activateOpeningCardImmediately(page: Page): Promise<void> {
+  await page
+    .locator('button[aria-label*="Reveal this opening card"]:visible:not([disabled])')
+    .first()
+    .evaluate((card) => (card as HTMLButtonElement).click());
 }
 
 async function swipeOpponentRailByTouch(page: Page, session: CDPSession) {
@@ -449,7 +458,7 @@ test('trusted wheel and keyboard gestures retain settled positions across real o
     await expect.poll(async () => (await railSnapshot(page)).scrollLeft).toBeGreaterThan(100);
     const wheelGesture = latestTrustedGesture(await getRailAudit(page), 'wheel');
     const wheelSettle = await waitForSettledRail(page, wheelGesture);
-    await cards.first().click();
+    await activateOpeningCardImmediately(page);
     await expect(cards).toHaveCount(11);
     await expect.poll(async () => (await getRailAudit(page)).states.some((entry) => entry.openingCardCount === 11)).toBe(true);
     const wheelUpdate = (await getRailAudit(page)).states.find((entry) => entry.openingCardCount === 11);
@@ -469,7 +478,7 @@ test('trusted wheel and keyboard gestures retain settled positions across real o
     await expect.poll(async () => (await railSnapshot(page)).scrollLeft).toBeGreaterThan(wheelSettle.scrollLeft + 1);
     const keyboardGesture = latestTrustedGesture(await getRailAudit(page), 'keydown', 'ArrowRight');
     const keyboardSettle = await waitForSettledRail(page, keyboardGesture);
-    await cards.first().click();
+    await activateOpeningCardImmediately(page);
     await expect.poll(async () => (await getRailAudit(page)).states.some((entry) => entry.currentPlayerId)).toBe(true);
     const keyboardUpdate = (await getRailAudit(page)).states.find(
       (entry) => entry.currentPlayerId && entry.epochMs >= keyboardGesture.epochMs
@@ -507,7 +516,7 @@ test('trusted touch retains its settled rail position across a real opening upda
     const gesture = latestTrustedGesture(await getRailAudit(page), 'touchstart');
     const settled = await waitForSettledRail(page, gesture);
     const cards = await openingCards(page);
-    await cards.first().click();
+    await activateOpeningCardImmediately(page);
     await expect(cards).toHaveCount(11);
     await expect.poll(async () => (await getRailAudit(page)).states.some((entry) => entry.openingCardCount === 11)).toBe(true);
     const update = (await getRailAudit(page)).states.find((entry) => entry.openingCardCount === 11);

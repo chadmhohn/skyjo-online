@@ -42,6 +42,20 @@ function scrollOpponentIntoView(
   element.scrollTo({ left, behavior: reducedMotion ? 'auto' : 'smooth' });
 }
 
+function opponentRailKeyboardTarget(element: HTMLElement, key: string): number {
+  const maximum = Math.max(0, element.scrollWidth - element.clientWidth);
+  const arrowStep = Math.max(44, Math.round(element.clientWidth * 0.25));
+  const pageStep = Math.max(44, Math.round(element.clientWidth * 0.9));
+  let target = element.scrollLeft;
+  if (key === 'ArrowLeft') target -= arrowStep;
+  else if (key === 'ArrowRight') target += arrowStep;
+  else if (key === 'Home') target = 0;
+  else if (key === 'End') target = maximum;
+  else if (key === 'PageUp') target -= pageStep;
+  else if (key === 'PageDown') target += pageStep;
+  return Math.max(0, Math.min(maximum, target));
+}
+
 type TurnStatusTone = 'local' | 'waiting' | 'neutral';
 type TurnStatus = {
   eyebrow: string;
@@ -536,8 +550,11 @@ export function PlayerBoardGrid({
       resumeTimer = window.setTimeout(scheduleCurrentPlayerScrollResume, currentPlayerScrollPauseMs);
     };
     const pauseCurrentPlayerScrollFromKeyboard = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
+        event.preventDefault();
         pauseCurrentPlayerScroll();
+        element.scrollTo({ left: opponentRailKeyboardTarget(element, event.key), behavior: 'auto' });
       }
     };
 
