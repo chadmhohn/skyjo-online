@@ -1,5 +1,73 @@
-import { startFreshGame } from '../../src/game';
+import {
+  chooseDiscard,
+  discardDrawnAndReveal,
+  drawBlind,
+  getBestAiMove,
+  replaceCard,
+  revealOpeningCard,
+  startFreshGame,
+  startNextRound
+} from '../../src/game';
+import { createSeededRandom, type RandomSource } from '../../src/runtime';
 import type { Card, GameState, Player } from '../../src/types';
+
+export interface SoloProgressGameStates {
+  opening: GameState;
+  chooseSource: GameState;
+  drawnDecision: GameState;
+  finalTurn: GameState;
+  roundOver: GameState;
+}
+
+function playAutomatedStep(state: GameState, random: RandomSource): GameState {
+  if (state.phase === 'game-over') return state;
+  if (state.phase === 'round-over') return startNextRound(state, random);
+  const player = state.players[state.currentPlayerIndex];
+  if (state.phase === 'opening-reveal') {
+    return revealOpeningCard(state, player.grid.findIndex((card) => !card.faceUp && !card.removed));
+  }
+  const move = getBestAiMove(state);
+  if (state.phase === 'choose-source') {
+    return move.action === 'discard' ? chooseDiscard(state) : drawBlind(state, random);
+  }
+  if (move.action === 'reveal') return discardDrawnAndReveal(state, move.index ?? 0);
+  return replaceCard(state, move.index ?? 0);
+}
+
+export function soloProgressGameStates(): SoloProgressGameStates {
+  for (let seed = 1; seed <= 50; seed += 1) {
+    const random = createSeededRandom(seed);
+    let state = startFreshGame({ aiOpponentCount: 1, random });
+    const opening = state;
+    let chooseSource: GameState | undefined;
+    let finalTurn: GameState | undefined;
+    for (let step = 0; step < 5_000; step += 1) {
+      const activePlayer = state.players[state.currentPlayerIndex];
+      if (!chooseSource && !state.roundCloserId && state.phase === 'choose-source' && activePlayer.kind === 'human') {
+        chooseSource = state;
+      }
+      if (
+        !finalTurn &&
+        state.roundCloserId &&
+        (state.phase === 'choose-source' || state.phase === 'choose-replacement') &&
+        activePlayer.kind === 'human'
+      ) {
+        finalTurn = state;
+      }
+      if (chooseSource && finalTurn && state.phase === 'round-over') {
+        return {
+          opening,
+          chooseSource,
+          drawnDecision: drawBlind(chooseSource, createSeededRandom(seed + 1_000)),
+          finalTurn,
+          roundOver: state
+        };
+      }
+      state = playAutomatedStep(state, random);
+    }
+  }
+  throw new Error('Could not build deterministic solo progress states.');
+}
 
 function gridScore(grid: Card[]): number {
   return grid.reduce((total, card) => total + (card.removed ? 0 : card.value), 0);
