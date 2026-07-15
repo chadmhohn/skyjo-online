@@ -91,6 +91,7 @@ async function installFrameAudit(context: BrowserContext): Promise<void> {
 
 async function installPropagationSendRoute(
   context: BrowserContext,
+  clientIndex: number,
   profile: string,
   tracker: PropagationTracker,
   runtimeFailures: string[]
@@ -100,7 +101,7 @@ async function installPropagationSendRoute(
     socket.onMessage((payload) => {
       const serialized = typeof payload === 'string' ? payload : payload.toString('utf8');
       try {
-        tracker.recordSentFrame(JSON.parse(serialized), performance.now());
+        tracker.recordSentFrame(clientIndex, JSON.parse(serialized), performance.now());
       } catch {
         runtimeFailures.push(`${profile}:invalid-sent-propagation-frame`);
         tracker.failAll(new Error('A sent propagation WebSocket frame was not valid JSON.'));
@@ -192,13 +193,13 @@ async function revealOpeningCard(
   if (keyboard) {
     await actionable().focus();
     return completePropagationProbe(
-      tracker.beginRevision(expectedRevision, 'reveal-opening-card'),
+      tracker.beginRevision(expectedRevision, 'reveal-opening-card', client.index),
       () => client.page.keyboard.press('Enter'),
       `Opening revision ${expectedRevision}`
     );
   }
   return completePropagationProbe(
-    tracker.beginRevision(expectedRevision, 'reveal-opening-card'),
+    tracker.beginRevision(expectedRevision, 'reveal-opening-card', client.index),
     () => actionable().click(),
     `Opening revision ${expectedRevision}`
   );
@@ -256,7 +257,7 @@ async function completeMeasuredReplacementTurn(
   await deck.focus();
   const drawRevision = startingRevision + 1;
   const drawSample = await completePropagationProbe(
-    tracker.beginRevision(drawRevision, 'draw-blind'),
+    tracker.beginRevision(drawRevision, 'draw-blind', activeClient.index),
     () => activeClient.page.keyboard.press('Enter'),
     `Blind-draw revision ${drawRevision}`
   );
@@ -269,7 +270,7 @@ async function completeMeasuredReplacementTurn(
   await replacement.focus();
   const replacementRevision = drawRevision + 1;
   const replacementSample = await completePropagationProbe(
-    tracker.beginRevision(replacementRevision, 'replace-card'),
+    tracker.beginRevision(replacementRevision, 'replace-card', activeClient.index),
     () => activeClient.page.keyboard.press('Enter'),
     `Replacement revision ${replacementRevision}`
   );
@@ -292,7 +293,7 @@ async function measureChatPropagation(
     await input.fill(marker);
     await expect(send).toBeEnabled();
     samples.push(await completePropagationProbe(
-      tracker.beginChat(marker),
+      tracker.beginChat(marker, client.index),
       () => send.click(),
       `Chat marker ${index + 1}`
     ));
@@ -367,7 +368,7 @@ test('eight independent clients cover the release persona matrix without state o
         reducedMotion: profile.reducedMotion
       });
       await installFrameAudit(context);
-      await installPropagationSendRoute(context, profile.profile, propagationTracker, runtimeFailures);
+      await installPropagationSendRoute(context, clients.length, profile.profile, propagationTracker, runtimeFailures);
       const page = await context.newPage();
       const client = { context, index: clients.length, page, profile: profile.profile };
       installPropagationObserver(client, propagationTracker, runtimeFailures);

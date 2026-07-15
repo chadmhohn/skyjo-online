@@ -26,6 +26,7 @@ export type PropagationProbe = {
 type PendingProbe = {
   arrivals: Map<number, number>;
   expectedActionType: string;
+  expectedSenderIndex: number;
   reject: (error: Error) => void;
   resolve: (latencyMs: number) => void;
   startedAt: number | null;
@@ -101,6 +102,7 @@ export function createPropagationArrivalTracker(
   const latestRevisions = Array<number | null>(clientCount).fill(null);
   const pendingRevisions = new Map<number, PendingProbe>();
   const pendingChats = new Map<string, PendingProbe>();
+  const usedRevisionKeys = new Set<number>();
   const usedChatMarkers = new Set<string>();
   let terminalError: Error | null = null;
 
@@ -114,10 +116,14 @@ export function createPropagationArrivalTracker(
   function beginProbe(
     map: Map<number | string, PendingProbe>,
     key: number | string,
-    expectedActionType: string
+    expectedActionType: string,
+    expectedSenderIndex: number
   ): PropagationProbe {
     if (terminalError) throw terminalError;
     if (map.has(key)) throw new Error('A propagation probe for this marker is already pending.');
+    if (!Number.isSafeInteger(expectedSenderIndex) || expectedSenderIndex < 0 || expectedSenderIndex >= clientCount) {
+      throw new Error('Expected propagation sender index is invalid.');
+    }
     let resolve!: (latencyMs: number) => void;
     let reject!: (error: Error) => void;
     const promise = new Promise<number>((resolvePromise, rejectPromise) => {
@@ -127,7 +133,14 @@ export function createPropagationArrivalTracker(
     // Mark the rejection as observed immediately. Callers still await the original
     // promise, but an arrival can fail while the Playwright action is in flight.
     void promise.catch(() => {});
-    map.set(key, { arrivals: new Map(), expectedActionType, reject, resolve, startedAt: null });
+    map.set(key, {
+      arrivals: new Map(),
+      expectedActionType,
+      expectedSenderIndex,
+      reject,
+      resolve,
+      startedAt: null
+    });
     return {
       cancel: () => {
         const probe = map.get(key);
@@ -139,17 +152,29 @@ export function createPropagationArrivalTracker(
     };
   }
 
-  function beginRevision(revision: number, expectedActionType: string): PropagationProbe {
+  function beginRevision(revision: number, expectedActionType: string, expectedSenderIndex: number): PropagationProbe {
+    if (terminalError) throw terminalError;
     if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Expected propagation revision is invalid.');
     if (!expectedActionType) throw new Error('Expected propagation action type is invalid.');
-    return beginProbe(pendingRevisions, revision, expectedActionType);
+    if (usedRevisionKeys.has(revision)) {
+      failAll(new Error(`Propagation revision ${revision} was probed more than once.`));
+      throw terminalError;
+    }
+    const probe = beginProbe(pendingRevisions, revision, expectedActionType, expectedSenderIndex);
+    usedRevisionKeys.add(revision);
+    return probe;
   }
 
-  function beginChat(marker: string): PropagationProbe {
+  function beginChat(marker: string, expectedSenderIndex: number): PropagationProbe {
+    if (terminalError) throw terminalError;
     if (!/^cert-chat-[0-9]{2}$/.test(marker)) throw new Error('Chat propagation marker is invalid.');
-    if (usedChatMarkers.has(marker)) throw new Error('Chat propagation markers must be unique.');
+    if (usedChatMarkers.has(marker)) {
+      failAll(new Error('Chat propagation markers must be unique.'));
+      throw terminalError;
+    }
+    const probe = beginProbe(pendingChats, marker, 'send-chat-message', expectedSenderIndex);
     usedChatMarkers.add(marker);
-    return beginProbe(pendingChats, marker, 'send-chat-message');
+    return probe;
   }
 
   function failAll(error: Error): void {
@@ -162,12 +187,19 @@ export function createPropagationArrivalTracker(
     map: Map<number | string, PendingProbe>,
     key: number | string,
     actionType: string,
+    senderIndex: number,
     observedAt: number
   ): void {
     const probe = map.get(key);
     if (!probe) return;
     if (probe.expectedActionType !== actionType) {
       failAll(new Error(`A propagation probe expected ${probe.expectedActionType} but observed ${actionType}.`));
+      return;
+    }
+    if (probe.expectedSenderIndex !== senderIndex) {
+      failAll(new Error(
+        `A propagation probe expected sender ${probe.expectedSenderIndex + 1} but observed sender ${senderIndex + 1}.`
+      ));
       return;
     }
     if (probe.startedAt !== null) {
@@ -177,8 +209,12 @@ export function createPropagationArrivalTracker(
     probe.startedAt = finiteTimestamp(observedAt, 'Propagation sent command');
   }
 
-  function recordSentFrame(frame: PropagationSentFrame, observedAt = now()): void {
+  function recordSentFrame(clientIndex: number, frame: PropagationSentFrame, observedAt = now()): void {
     if (terminalError) return;
+    if (!Number.isSafeInteger(clientIndex) || clientIndex < 0 || clientIndex >= clientCount) {
+      failAll(new Error('Propagation sent observer reported an invalid client index.'));
+      return;
+    }
     if (frame.type !== 'command') return;
     if (!Number.isSafeInteger(frame.expectedRevision) || Number(frame.expectedRevision) < 0) {
       failAll(new Error('A sent propagation command contains an invalid expected revision.'));
@@ -200,14 +236,23 @@ export function createPropagationArrivalTracker(
       failAll(error instanceof Error ? error : new Error('Propagation sent-command timing failed.'));
       return;
     }
-    startProbe(pendingRevisions, resultingRevision, actionType, observedAt);
+    if (pendingRevisions.has(resultingRevision)) {
+      startProbe(pendingRevisions, resultingRevision, actionType, clientIndex, observedAt);
+    } else if (usedRevisionKeys.has(resultingRevision)) {
+      failAll(new Error(`Propagation revision ${resultingRevision} was sent after its probe completed.`));
+      return;
+    }
 
     if (actionType !== 'send-chat-message') return;
     if (typeof frame.action.text !== 'string') {
       failAll(new Error('A sent chat propagation command contains an invalid marker.'));
       return;
     }
-    startProbe(pendingChats, frame.action.text, actionType, observedAt);
+    if (pendingChats.has(frame.action.text)) {
+      startProbe(pendingChats, frame.action.text, actionType, clientIndex, observedAt);
+    } else if (usedChatMarkers.has(frame.action.text)) {
+      failAll(new Error(`Chat propagation marker ${frame.action.text} was sent after its probe completed.`));
+    }
   }
 
   function recordFrame(clientIndex: number, frame: PropagationFrame, observedAt = now()): void {
@@ -275,6 +320,7 @@ export function createPropagationArrivalTracker(
   }
 
   function commonRevision(): number | null {
+    if (terminalError) throw terminalError;
     const first = latestRevisions[0];
     if (first === null || latestRevisions.some((revision) => revision !== first)) return null;
     return first;
@@ -293,6 +339,7 @@ export function createPropagationArrivalTracker(
       latestRevisions.filter((revision) => revision !== null).length +
       [...pendingRevisions.values(), ...pendingChats.values()]
         .reduce((count, probe) => count + probe.arrivals.size, 0) +
+      usedRevisionKeys.size +
       usedChatMarkers.size
     ),
     recordFrame,

@@ -290,8 +290,8 @@ describe('v0.2.0 certification evidence', () => {
         tracker.recordFrame(index % 8, { type: 'ack' }, 90 + index / Math.max(historyLength, 1));
       }
       expect(tracker.retainedObservationCount()).toBe(0);
-      const probe = tracker.beginRevision(7, 'reveal-opening-card');
-      tracker.recordSentFrame({
+      const probe = tracker.beginRevision(7, 'reveal-opening-card', 0);
+      tracker.recordSentFrame(0, {
         type: 'command',
         expectedRevision: 6,
         action: { type: 'reveal-opening-card' }
@@ -305,7 +305,7 @@ describe('v0.2.0 certification evidence', () => {
       }
       const latencyMs = await probe.promise;
       expect(tracker.pendingCount()).toBe(0);
-      expect(tracker.retainedObservationCount()).toBe(8);
+      expect(tracker.retainedObservationCount()).toBe(9);
       return latencyMs;
     }
 
@@ -313,8 +313,8 @@ describe('v0.2.0 certification evidence', () => {
     expect(await sampleWithDiagnosticHistory(10_000)).toBe(17);
 
     const skippedRevision = createPropagationArrivalTracker(8, () => 100);
-    const revisionProbe = skippedRevision.beginRevision(7, 'reveal-opening-card');
-    skippedRevision.recordSentFrame({
+    const revisionProbe = skippedRevision.beginRevision(7, 'reveal-opening-card', 0);
+    skippedRevision.recordSentFrame(0, {
       type: 'command',
       expectedRevision: 6,
       action: { type: 'reveal-opening-card' }
@@ -326,11 +326,12 @@ describe('v0.2.0 certification evidence', () => {
     }, 101);
     await expect(revisionProbe.promise).rejects.toThrow(/skipped expected revision/i);
     expect(() => skippedRevision.assertHealthy()).toThrow(/skipped expected revision/i);
-    expect(() => skippedRevision.beginRevision(9, 'reveal-opening-card')).toThrow(/skipped expected revision/i);
+    expect(() => skippedRevision.beginRevision(9, 'reveal-opening-card', 0)).toThrow(/skipped expected revision/i);
+    expect(() => skippedRevision.commonRevision()).toThrow(/skipped expected revision/i);
 
     const duplicateChat = createPropagationArrivalTracker(8, () => 100);
-    const chatProbe = duplicateChat.beginChat('cert-chat-01');
-    duplicateChat.recordSentFrame({
+    const chatProbe = duplicateChat.beginChat('cert-chat-01', 0);
+    duplicateChat.recordSentFrame(0, {
       type: 'command',
       expectedRevision: 0,
       action: { type: 'send-chat-message', text: 'cert-chat-01' }
@@ -346,8 +347,8 @@ describe('v0.2.0 certification evidence', () => {
     await expect(chatProbe.promise).rejects.toThrow(/duplicated/i);
 
     const lateDuplicateChat = createPropagationArrivalTracker(8, () => 100);
-    const completedChatProbe = lateDuplicateChat.beginChat('cert-chat-01');
-    lateDuplicateChat.recordSentFrame({
+    const completedChatProbe = lateDuplicateChat.beginChat('cert-chat-01', 0);
+    lateDuplicateChat.recordSentFrame(0, {
       type: 'command',
       expectedRevision: 0,
       action: { type: 'send-chat-message', text: 'cert-chat-01' }
@@ -371,7 +372,7 @@ describe('v0.2.0 certification evidence', () => {
     expect(() => lateDuplicateChat.assertHealthy()).toThrow(/duplicated/i);
 
     const missingSentCommand = createPropagationArrivalTracker(8, () => 100);
-    const missingSentProbe = missingSentCommand.beginRevision(7, 'reveal-opening-card');
+    const missingSentProbe = missingSentCommand.beginRevision(7, 'reveal-opening-card', 0);
     missingSentCommand.recordFrame(0, {
       type: 'snapshot',
       revision: 7,
@@ -380,26 +381,46 @@ describe('v0.2.0 certification evidence', () => {
     await expect(missingSentProbe.promise).rejects.toThrow(/preceded its matching sent command/i);
 
     const duplicateSentCommand = createPropagationArrivalTracker(8, () => 100);
-    const duplicateSentProbe = duplicateSentCommand.beginRevision(7, 'reveal-opening-card');
+    const duplicateSentProbe = duplicateSentCommand.beginRevision(7, 'reveal-opening-card', 0);
     const sentFrame = {
       type: 'command',
       expectedRevision: 6,
       action: { type: 'reveal-opening-card' }
     };
-    duplicateSentCommand.recordSentFrame(sentFrame, 100);
-    duplicateSentCommand.recordSentFrame(sentFrame, 101);
+    duplicateSentCommand.recordSentFrame(0, sentFrame, 100);
+    duplicateSentCommand.recordSentFrame(0, sentFrame, 101);
     await expect(duplicateSentProbe.promise).rejects.toThrow(/more than once/i);
     expect(() => duplicateSentCommand.assertHealthy()).toThrow(/more than once/i);
 
     const mismatchedAction = createPropagationArrivalTracker(8, () => 100);
-    const mismatchedActionProbe = mismatchedAction.beginRevision(7, 'reveal-opening-card');
-    mismatchedAction.recordSentFrame({
+    const mismatchedActionProbe = mismatchedAction.beginRevision(7, 'reveal-opening-card', 0);
+    mismatchedAction.recordSentFrame(0, {
       type: 'command',
       expectedRevision: 6,
       action: { type: 'draw-blind' }
     }, 100);
     await expect(mismatchedActionProbe.promise).rejects.toThrow(/expected reveal-opening-card but observed draw-blind/i);
     expect(() => mismatchedAction.assertHealthy()).toThrow(/expected reveal-opening-card but observed draw-blind/i);
+
+    const mismatchedSender = createPropagationArrivalTracker(8, () => 100);
+    const mismatchedSenderProbe = mismatchedSender.beginRevision(7, 'reveal-opening-card', 0);
+    mismatchedSender.recordSentFrame(1, sentFrame, 100);
+    await expect(mismatchedSenderProbe.promise).rejects.toThrow(/expected sender 1 but observed sender 2/i);
+    expect(() => mismatchedSender.assertHealthy()).toThrow(/expected sender 1 but observed sender 2/i);
+
+    const replayAfterCompletion = createPropagationArrivalTracker(8, () => 100);
+    const completedRevisionProbe = replayAfterCompletion.beginRevision(7, 'reveal-opening-card', 0);
+    replayAfterCompletion.recordSentFrame(0, sentFrame, 100);
+    for (let clientIndex = 0; clientIndex < 8; clientIndex += 1) {
+      replayAfterCompletion.recordFrame(clientIndex, {
+        type: 'snapshot',
+        revision: 7,
+        room: { revision: 7, chatMessages: [] }
+      }, 101 + clientIndex);
+    }
+    await expect(completedRevisionProbe.promise).resolves.toBe(8);
+    replayAfterCompletion.recordSentFrame(0, sentFrame, 109);
+    expect(() => replayAfterCompletion.assertHealthy()).toThrow(/sent after its probe completed/i);
 
     const stickyFailure = createPropagationArrivalTracker(8, () => 100);
     stickyFailure.recordFrame(0, {
@@ -408,7 +429,7 @@ describe('v0.2.0 certification evidence', () => {
       room: { revision: Number.NaN, chatMessages: [] }
     }, 101);
     expect(() => stickyFailure.assertHealthy()).toThrow(/invalid revision/i);
-    expect(() => stickyFailure.beginRevision(1, 'reveal-opening-card')).toThrow(/invalid revision/i);
+    expect(() => stickyFailure.beginRevision(1, 'reveal-opening-card', 0)).toThrow(/invalid revision/i);
 
     expect(() => summarizePropagationSamples([1, 2, Number.NaN], 3)).toThrow(/finite/i);
     expect(() => summarizePropagationSamples([1, 2], 3)).toThrow(/exactly 3/i);
