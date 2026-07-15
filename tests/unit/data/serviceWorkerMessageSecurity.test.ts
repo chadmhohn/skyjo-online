@@ -16,6 +16,29 @@ type WorkerMessage = {
 type WorkerMessageHandler = (event: WorkerMessage & { waitUntil: (promise: Promise<unknown>) => void }) => void;
 type WorkerSourceKind = 'generated' | 'production';
 type TimerCallback = () => void;
+type TestPwaWorkerBarrier = {
+  arrivals: string[];
+  deadlineAt: number | null;
+  expectedWorkerBuildNonces: Map<string, string>;
+  poisoned: boolean;
+  releases: string[];
+  step: number;
+  token: string;
+  workers: Map<string, { buildNonce: string; released: boolean }>;
+};
+type TestPwaWorkerLease = {
+  activationBarrierToken: string;
+  token: string;
+  variant: string;
+  workerBuildNonce: string;
+};
+type TestPwaWorkerRequest = {
+  activationBarrierToken?: string | null;
+  kind: 'error' | 'worker';
+  status?: number;
+  variant?: string;
+  workerBuildNonce?: string;
+} | null;
 
 const appOrigin = 'https://skyjo.example';
 const activationType = 'SKYJO_ACTIVATE_UPDATE';
@@ -63,6 +86,86 @@ function generatedTestBarrierWaiters(now: number) {
     throw new Error('Generated test barrier waiters were not evaluated.');
   }
   return { arrivalWaiter: context.arrivalWaiter, releaseWaiter: context.releaseWaiter };
+}
+
+function testPwaWorkerBarrierFixture(
+  token = 'activation_barrier_token_1234',
+  phase: 'before-d-release' | 'after-d-release' = 'before-d-release'
+): TestPwaWorkerBarrier {
+  const buildNonces = new Map([
+    ['B', 'worker_build_nonce_b'],
+    ['C', 'worker_build_nonce_c'],
+    ['D', 'worker_build_nonce_d']
+  ]);
+  const dReleased = phase === 'after-d-release';
+  return {
+    arrivals: ['B', 'C', 'D'],
+    deadlineAt: 200,
+    expectedWorkerBuildNonces: buildNonces,
+    poisoned: false,
+    releases: dReleased ? ['B', 'C', 'D'] : ['B', 'C'],
+    step: dReleased ? 6 : 5,
+    token,
+    workers: new Map([...buildNonces].map(([variant, buildNonce]) => [
+      variant,
+      { buildNonce, released: variant !== 'D' || dReleased }
+    ]))
+  };
+}
+
+function generatedTestPwaWorkerLease(now = 100) {
+  const serverSource = fs.readFileSync('server.mjs', 'utf8');
+  const start = serverSource.indexOf('function validTestPwaActivationBarrierToken(');
+  const end = serverSource.indexOf('\n\nfunction testPwaExpectedWorkerBuildNonces', start);
+  if (start < 0 || end < 0) throw new Error('Generated test worker lease functions were not found.');
+  type TestTimer = { callback: TimerCallback; cleared: boolean; delay: number; unref: () => void };
+  const timers: TestTimer[] = [];
+  let currentTime = now;
+  const context: {
+    Date: { now: () => number };
+    arm?: (token: string, barrier: TestPwaWorkerBarrier) => TestPwaWorkerLease | null;
+    clear?: (token?: string | null) => boolean;
+    clearTimeout: (timer: TestTimer) => void;
+    current?: () => TestPwaWorkerLease | null;
+    request?: (cookies: Map<string, string>) => TestPwaWorkerRequest;
+    setTimeout: (callback: TimerCallback, delay: number) => TestTimer;
+    switchToE?: (
+      token: string,
+      buildNonce: string,
+      barrier?: TestPwaWorkerBarrier | null
+    ) => TestPwaWorkerLease | null;
+  } = {
+    Date: { now: () => currentTime },
+    clearTimeout: (timer) => { timer.cleared = true; },
+    setTimeout: (callback, delay) => {
+      const timer = { callback, cleared: false, delay, unref: () => {} };
+      timers.push(timer);
+      return timer;
+    }
+  };
+  vm.runInNewContext(
+    `const testPwaWorkerLeaseLifetimeMs = 30000;
+let testPwaWorkerLease = null;
+${serverSource.slice(start, end)}
+arm = armTestPwaWorkerLeaseForReleasedD;
+clear = clearTestPwaWorkerLease;
+current = activeTestPwaWorkerLease;
+request = testPwaWorkerRequest;
+switchToE = switchTestPwaWorkerLeaseToE;`,
+    context
+  );
+  if (!context.arm || !context.clear || !context.current || !context.request || !context.switchToE) {
+    throw new Error('Generated test worker lease functions were not evaluated.');
+  }
+  return {
+    arm: context.arm,
+    clear: context.clear,
+    current: context.current,
+    request: context.request,
+    setNow: (value: number) => { currentTime = value; },
+    switchToE: context.switchToE,
+    timers
+  };
 }
 
 function workerSource(kind: WorkerSourceKind): string {
@@ -258,8 +361,170 @@ describe('service worker message trust boundary', () => {
     expect(serverSource).toContain("if (testPwaVariantsEnabled && url.pathname === '/sw.js') {");
     expect(serverSource).toContain("if (url.pathname.startsWith('/__test/pwa-activation/')) {");
     expect(serverSource).toContain('if (!testPwaVariantsEnabled) {');
+    expect(serverSource).toContain("url.pathname === '/__test/pwa-activation/lease'");
+    expect(serverSource).toContain('const workerRequest = testPwaWorkerRequest(cookies);');
     expect(workerSource('production')).not.toContain(identityType);
     expect(workerSource('production')).not.toContain('/__test/pwa-activation/');
+  });
+
+  it('arms an exclusive D lease only at the exact validated pre-release transition', () => {
+    const token = 'activation_barrier_token_1234';
+    const wrongOwner = generatedTestPwaWorkerLease();
+    expect(wrongOwner.arm(
+      'activation_barrier_token_5678',
+      testPwaWorkerBarrierFixture(token)
+    )).toBeNull();
+    const harness = generatedTestPwaWorkerLease();
+    const lease = harness.arm(token, testPwaWorkerBarrierFixture(token));
+
+    expect(lease).toMatchObject({
+      activationBarrierToken: token,
+      token,
+      variant: 'D',
+      workerBuildNonce: 'worker_build_nonce_d'
+    });
+    const dRequest = harness.request(new Map([['unrelated_cookie', 'allowed']]));
+    expect(dRequest).toEqual({
+      activationBarrierToken: token,
+      kind: 'worker',
+      variant: 'D',
+      workerBuildNonce: 'worker_build_nonce_d'
+    });
+    expect(generatedTestWorkerSource(
+      dRequest?.variant,
+      dRequest?.activationBarrierToken,
+      dRequest?.workerBuildNonce
+    )).toBe(generatedTestWorkerSource('D', token, 'worker_build_nonce_d'));
+
+    const secondToken = 'activation_barrier_token_5678';
+    expect(harness.arm(secondToken, testPwaWorkerBarrierFixture(secondToken))).toBeNull();
+    expect(harness.current()).toMatchObject({ token, variant: 'D' });
+  });
+
+  it.each([
+    ['poisoned', (barrier: TestPwaWorkerBarrier) => { barrier.poisoned = true; }],
+    ['unstarted', (barrier: TestPwaWorkerBarrier) => { barrier.deadlineAt = null; }],
+    ['incomplete step', (barrier: TestPwaWorkerBarrier) => { barrier.step = 4; }],
+    ['incomplete arrivals', (barrier: TestPwaWorkerBarrier) => { barrier.arrivals.pop(); }],
+    ['incomplete releases', (barrier: TestPwaWorkerBarrier) => { barrier.releases.pop(); }],
+    ['premature D release', (barrier: TestPwaWorkerBarrier) => {
+      const worker = barrier.workers.get('D');
+      if (worker) worker.released = true;
+    }],
+    ['mismatched D nonce', (barrier: TestPwaWorkerBarrier) => {
+      const worker = barrier.workers.get('D');
+      if (worker) worker.buildNonce = 'unexpected_build_nonce_d';
+    }]
+  ])('rejects %s activation state before arming D', (_label, mutate) => {
+    const token = 'activation_barrier_token_1234';
+    const barrier = testPwaWorkerBarrierFixture(token);
+    mutate(barrier);
+    const harness = generatedTestPwaWorkerLease();
+    expect(harness.arm(token, barrier)).toBeNull();
+    expect(harness.current()).toBeNull();
+  });
+
+  it('switches D to distinct E before requests and keeps both cookieless sources byte-identical', () => {
+    const token = 'activation_barrier_token_1234';
+    const harness = generatedTestPwaWorkerLease();
+    harness.arm(token, testPwaWorkerBarrierFixture(token));
+    const dRequest = harness.request(new Map());
+    expect(dRequest).toMatchObject({ variant: 'D', workerBuildNonce: 'worker_build_nonce_d' });
+    expect(generatedTestWorkerSource(
+      dRequest?.variant,
+      dRequest?.activationBarrierToken,
+      dRequest?.workerBuildNonce
+    )).toBe(generatedTestWorkerSource('D', token, 'worker_build_nonce_d'));
+
+    // The activation barrier may already have reached its 7.5s expiry; its
+    // independently owned lease remains sufficient for the D-to-E handoff.
+    const lease = harness.switchToE(token, 'worker_build_nonce_e', null);
+    expect(lease).toMatchObject({ token, variant: 'E', workerBuildNonce: 'worker_build_nonce_e' });
+    const eRequest = harness.request(new Map());
+    expect(eRequest).toEqual({
+      activationBarrierToken: token,
+      kind: 'worker',
+      variant: 'E',
+      workerBuildNonce: 'worker_build_nonce_e'
+    });
+    expect(generatedTestWorkerSource(
+      eRequest?.variant,
+      eRequest?.activationBarrierToken,
+      eRequest?.workerBuildNonce
+    )).toBe(generatedTestWorkerSource('E', token, 'worker_build_nonce_e'));
+    expect(harness.switchToE(
+      token,
+      'worker_build_nonce_e',
+      testPwaWorkerBarrierFixture(token, 'after-d-release')
+    )).toBe(lease);
+    expect(harness.switchToE(token, 'worker_build_nonce_d')).toBeNull();
+    expect(harness.switchToE('activation_barrier_token_5678', 'other_worker_nonce_e')).toBeNull();
+    expect(harness.clear(token)).toBe(true);
+    expect(harness.request(new Map())).toBeNull();
+  });
+
+  it.each([
+    ['poisoned', (barrier: TestPwaWorkerBarrier) => { barrier.poisoned = true; }],
+    ['incomplete', (barrier: TestPwaWorkerBarrier) => { barrier.step = 5; }],
+    ['unreleased D', (barrier: TestPwaWorkerBarrier) => {
+      const worker = barrier.workers.get('D');
+      if (worker) worker.released = false;
+    }],
+    ['mismatched D identity', (barrier: TestPwaWorkerBarrier) => {
+      const worker = barrier.workers.get('D');
+      if (worker) worker.buildNonce = 'unexpected_build_nonce_d';
+    }]
+  ])('rejects an E switch against a %s barrier', (_label, mutate) => {
+    const token = 'activation_barrier_token_1234';
+    const harness = generatedTestPwaWorkerLease();
+    harness.arm(token, testPwaWorkerBarrierFixture(token));
+    const barrier = testPwaWorkerBarrierFixture(token, 'after-d-release');
+    mutate(barrier);
+    expect(harness.switchToE(token, 'worker_build_nonce_e', barrier)).toBeNull();
+    expect(harness.current()).toBeNull();
+  });
+
+  it('fails closed for partial, invalid, and lease-mismatched routing tuples', () => {
+    const token = 'activation_barrier_token_1234';
+    const noLease = generatedTestPwaWorkerLease();
+    expect(noLease.request(new Map())).toBeNull();
+    expect(noLease.request(new Map([
+      ['skyjo_sw_test_variant', 'A'],
+      ['skyjo_sw_test_worker_nonce', 'worker_build_nonce_a']
+    ]))).toEqual({
+      activationBarrierToken: null,
+      kind: 'worker',
+      variant: 'A',
+      workerBuildNonce: 'worker_build_nonce_a'
+    });
+    expect(noLease.request(new Map([['skyjo_sw_test_variant', 'A']]))).toEqual({ kind: 'error', status: 400 });
+
+    const harness = generatedTestPwaWorkerLease();
+    harness.arm(token, testPwaWorkerBarrierFixture(token));
+    expect(harness.request(new Map([
+      ['skyjo_sw_test_variant', 'D'],
+      ['skyjo_sw_test_worker_nonce', 'worker_build_nonce_d']
+    ]))).toEqual({ kind: 'error', status: 409 });
+    expect(harness.request(new Map([
+      ['skyjo_sw_test_variant', 'E'],
+      ['skyjo_sw_test_activation_barrier', token],
+      ['skyjo_sw_test_worker_nonce', 'worker_build_nonce_e']
+    ]))).toEqual({ kind: 'error', status: 409 });
+  });
+
+  it('clears leases idempotently by owner or independent expiry', () => {
+    const token = 'activation_barrier_token_1234';
+    const harness = generatedTestPwaWorkerLease();
+    harness.arm(token, testPwaWorkerBarrierFixture(token));
+    expect(harness.clear('activation_barrier_token_5678')).toBe(false);
+    expect(harness.clear(token)).toBe(true);
+    expect(harness.clear(token)).toBe(false);
+
+    harness.arm(token, testPwaWorkerBarrierFixture(token));
+    const expiry = harness.timers.at(-1);
+    expect(expiry?.delay).toBe(30_000);
+    expiry?.callback();
+    expect(harness.current()).toBeNull();
   });
 
   it('makes the absolute activation deadline win over arrived and released fast paths', async () => {

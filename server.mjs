@@ -96,7 +96,9 @@ const testPwaNetworkFaultsEnabled = process.env.NODE_ENV === 'test' && process.e
 const testPwaActivationBarrierDeadlineMs = 7_500;
 const testPwaActivationBarrierLifetimeMs = 30_000;
 const testPwaActivationBarrierMaxRuns = 16;
+const testPwaWorkerLeaseLifetimeMs = 30_000;
 const testPwaActivationBarriers = new Map();
+let testPwaWorkerLease = null;
 const vapidPublicKeyEnvironment = process.env.SKYJO_VAPID_PUBLIC_KEY || '';
 const vapidPrivateKeyEnvironment = process.env.SKYJO_VAPID_PRIVATE_KEY || '';
 const vapidSubject = process.env.SKYJO_VAPID_SUBJECT || `mailto:${adminEmail}`;
@@ -338,6 +340,181 @@ function validTestPwaWorkerInstanceNonce(value) {
   return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 }
 
+function clearTestPwaWorkerLease(token = null) {
+  const lease = testPwaWorkerLease;
+  if (!lease || (token !== null && lease.token !== token)) return false;
+  clearTimeout(lease.expiryTimer);
+  if (testPwaWorkerLease === lease) testPwaWorkerLease = null;
+  return true;
+}
+
+function activeTestPwaWorkerLease() {
+  const lease = testPwaWorkerLease;
+  if (lease && Date.now() >= lease.expiresAt) {
+    clearTestPwaWorkerLease(lease.token);
+    return null;
+  }
+  return lease;
+}
+
+function installTestPwaWorkerLease({
+  token,
+  variant,
+  workerBuildNonce,
+  releasedDBuildNonce,
+  reservedBuildNonces
+}) {
+  const priorLease = testPwaWorkerLease;
+  if (priorLease) clearTimeout(priorLease.expiryTimer);
+  const lease = {
+    activationBarrierToken: token,
+    expiresAt: Date.now() + testPwaWorkerLeaseLifetimeMs,
+    expiryTimer: null,
+    releasedDBuildNonce,
+    reservedBuildNonces: new Set(reservedBuildNonces),
+    token,
+    variant,
+    workerBuildNonce
+  };
+  lease.expiryTimer = setTimeout(() => {
+    if (testPwaWorkerLease === lease) clearTestPwaWorkerLease(token);
+  }, testPwaWorkerLeaseLifetimeMs);
+  lease.expiryTimer.unref?.();
+  testPwaWorkerLease = lease;
+  return lease;
+}
+
+function exactTestPwaWorkerSequence(actual, expected) {
+  return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+}
+
+function validTestPwaWorkerBarrierIdentities(barrier, expectedVariants) {
+  if (
+    barrier.expectedWorkerBuildNonces.size !== expectedVariants.length ||
+    barrier.workers.size !== expectedVariants.length
+  ) return false;
+  const seenBuildNonces = new Set();
+  for (const variant of expectedVariants) {
+    const expectedBuildNonce = barrier.expectedWorkerBuildNonces.get(variant);
+    const worker = barrier.workers.get(variant);
+    if (
+      !validTestPwaWorkerBuildNonce(expectedBuildNonce) ||
+      !worker ||
+      worker.buildNonce !== expectedBuildNonce ||
+      seenBuildNonces.has(expectedBuildNonce)
+    ) return false;
+    seenBuildNonces.add(expectedBuildNonce);
+  }
+  return true;
+}
+
+function armTestPwaWorkerLeaseForReleasedD(token, barrier) {
+  const expectedVariants = ['B', 'C', 'D'];
+  const workerD = barrier.workers.get('D');
+  if (
+    activeTestPwaWorkerLease() ||
+    barrier.token !== token ||
+    barrier.poisoned ||
+    barrier.deadlineAt === null ||
+    barrier.step !== 5 ||
+    !exactTestPwaWorkerSequence(barrier.arrivals, expectedVariants) ||
+    !exactTestPwaWorkerSequence(barrier.releases, ['B', 'C']) ||
+    !validTestPwaWorkerBarrierIdentities(barrier, expectedVariants) ||
+    !barrier.workers.get('B').released ||
+    !barrier.workers.get('C').released ||
+    workerD.released
+  ) return null;
+
+  return installTestPwaWorkerLease({
+    token,
+    variant: 'D',
+    workerBuildNonce: workerD.buildNonce,
+    releasedDBuildNonce: workerD.buildNonce,
+    reservedBuildNonces: barrier.expectedWorkerBuildNonces.values()
+  });
+}
+
+function completedTestPwaWorkerBarrierMatchesLease(token, barrier, lease) {
+  const expectedVariants = ['B', 'C', 'D'];
+  return (
+    barrier.token === token &&
+    !barrier.poisoned &&
+    barrier.deadlineAt !== null &&
+    barrier.step === 6 &&
+    exactTestPwaWorkerSequence(barrier.arrivals, expectedVariants) &&
+    exactTestPwaWorkerSequence(barrier.releases, expectedVariants) &&
+    validTestPwaWorkerBarrierIdentities(barrier, expectedVariants) &&
+    expectedVariants.every((variant) => barrier.workers.get(variant).released) &&
+    barrier.workers.get('D').buildNonce === lease.releasedDBuildNonce
+  );
+}
+
+function switchTestPwaWorkerLeaseToE(token, workerBuildNonce, barrier = null) {
+  const lease = activeTestPwaWorkerLease();
+  if (
+    !lease ||
+    lease.token !== token ||
+    !validTestPwaWorkerBuildNonce(workerBuildNonce) ||
+    lease.reservedBuildNonces.has(workerBuildNonce)
+  ) return null;
+  if (barrier && !completedTestPwaWorkerBarrierMatchesLease(token, barrier, lease)) {
+    clearTestPwaWorkerLease(token);
+    return null;
+  }
+  if (lease.variant === 'E') {
+    return lease.workerBuildNonce === workerBuildNonce ? lease : null;
+  }
+  if (lease.variant !== 'D') return null;
+  return installTestPwaWorkerLease({
+    token,
+    variant: 'E',
+    workerBuildNonce,
+    releasedDBuildNonce: lease.releasedDBuildNonce,
+    reservedBuildNonces: lease.reservedBuildNonces
+  });
+}
+
+function testPwaWorkerRequest(cookies) {
+  const cookieNames = [
+    'skyjo_sw_test_variant',
+    'skyjo_sw_test_activation_barrier',
+    'skyjo_sw_test_worker_nonce'
+  ];
+  const hasTestWorkerCookies = cookieNames.some((name) => cookies.has(name));
+  const lease = activeTestPwaWorkerLease();
+  if (!hasTestWorkerCookies) {
+    return lease ? {
+      activationBarrierToken: lease.activationBarrierToken,
+      kind: 'worker',
+      variant: lease.variant,
+      workerBuildNonce: lease.workerBuildNonce
+    } : null;
+  }
+
+  const variant = cookies.get('skyjo_sw_test_variant');
+  const activationBarrierToken = cookies.get('skyjo_sw_test_activation_barrier');
+  const workerBuildNonce = cookies.get('skyjo_sw_test_worker_nonce');
+  const hasActivationBarrierToken = cookies.has('skyjo_sw_test_activation_barrier');
+  if (
+    !validTestPwaWorkerVariant(variant) ||
+    !validTestPwaWorkerBuildNonce(workerBuildNonce) ||
+    (hasActivationBarrierToken && !validTestPwaActivationBarrierToken(activationBarrierToken))
+  ) return { kind: 'error', status: 400 };
+
+  const workerRequest = {
+    activationBarrierToken: hasActivationBarrierToken ? activationBarrierToken : null,
+    kind: 'worker',
+    variant,
+    workerBuildNonce
+  };
+  if (lease && (
+    workerRequest.activationBarrierToken !== lease.activationBarrierToken ||
+    workerRequest.variant !== lease.variant ||
+    workerRequest.workerBuildNonce !== lease.workerBuildNonce
+  )) return { kind: 'error', status: 409 };
+  return workerRequest;
+}
+
 function testPwaExpectedWorkerBuildNonces(value) {
   if (!Array.isArray(value) || value.length !== 3) return null;
   const expectedVariants = ['B', 'C', 'D'];
@@ -374,6 +551,7 @@ function settleTestPwaActivationWaiters(worker, outcome) {
 
 function poisonTestPwaActivationBarrier(barrier) {
   barrier.poisoned = true;
+  clearTestPwaWorkerLease(barrier.token);
   settleTestPwaActivationArrivalWaiters(barrier, 'poisoned');
   for (const worker of barrier.workers.values()) {
     settleTestPwaActivationWaiters(worker, 'poisoned');
@@ -401,6 +579,7 @@ function createTestPwaActivationBarrier(token, expectedWorkerBuildNonces) {
     poisoned: false,
     releases: [],
     step: 0,
+    token,
     workers: new Map()
   };
   barrier.expiryTimer = setTimeout(() => {
@@ -740,10 +919,39 @@ async function handleTestPwaActivationBarrierRequest(req, res, url) {
       sendJsonResponse(res, 409, { error: 'Unexpected test worker activation release.' });
       return;
     }
+    if (variant === 'D' && !armTestPwaWorkerLeaseForReleasedD(token, barrier)) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 409, { error: 'Test worker lease could not be armed.' });
+      return;
+    }
     settleTestPwaActivationWaiters(worker, 'released');
     barrier.releases.push(variant);
     barrier.step += 1;
     sendJsonResponse(res, 200, testPwaActivationBarrierSnapshot(barrier));
+    return;
+  }
+
+  if (url.pathname === '/__test/pwa-activation/lease' && req.method === 'POST') {
+    const payload = await readJsonBody(req);
+    const { token, variant, buildNonce } = payload;
+    if (
+      !validTestPwaActivationBarrierToken(token) ||
+      variant !== 'E' ||
+      !validTestPwaWorkerBuildNonce(buildNonce)
+    ) {
+      sendInvalidTestPwaActivationBarrierResponse(res);
+      return;
+    }
+    const lease = switchTestPwaWorkerLeaseToE(
+      token,
+      buildNonce,
+      testPwaActivationBarriers.get(token) || null
+    );
+    if (!lease) {
+      sendJsonResponse(res, 409, { error: 'Test worker lease switch was rejected.' });
+      return;
+    }
+    sendJsonResponse(res, 200, { variant: lease.variant, buildNonce: lease.workerBuildNonce });
     return;
   }
 
@@ -756,6 +964,7 @@ async function handleTestPwaActivationBarrierRequest(req, res, url) {
     }
     const barrier = testPwaActivationBarriers.get(token);
     if (barrier) deleteTestPwaActivationBarrier(token, barrier);
+    clearTestPwaWorkerLease(token);
     send(res, 204, '');
     return;
   }
@@ -1956,14 +2165,18 @@ const server = http.createServer(async (req, res) => {
 
     if (testPwaVariantsEnabled && url.pathname === '/sw.js') {
       const cookies = parseCookies(req.headers.cookie);
-      const variant = cookies.get('skyjo_sw_test_variant');
-      const activationBarrierToken = cookies.get('skyjo_sw_test_activation_barrier');
-      const workerBuildNonce = cookies.get('skyjo_sw_test_worker_nonce');
-      if (validTestPwaWorkerVariant(variant)) {
+      const workerRequest = testPwaWorkerRequest(cookies);
+      if (workerRequest?.kind === 'error') {
+        send(res, workerRequest.status, 'Invalid test service worker routing.', {
+          'Content-Type': 'text/plain; charset=utf-8'
+        });
+        return;
+      }
+      if (workerRequest?.kind === 'worker') {
         send(res, 200, testPwaWorkerSource(
-          variant,
-          validTestPwaActivationBarrierToken(activationBarrierToken) ? activationBarrierToken : null,
-          validTestPwaWorkerBuildNonce(workerBuildNonce) ? workerBuildNonce : null
+          workerRequest.variant,
+          workerRequest.activationBarrierToken,
+          workerRequest.workerBuildNonce
         ), {
           'Cache-Control': 'no-store',
           'Content-Type': 'application/javascript; charset=utf-8',

@@ -309,6 +309,25 @@ async function releaseTestPwaActivation(
   return response.json() as Promise<TestPwaActivationBarrierStatus>;
 }
 
+async function switchTestPwaWorkerLeaseToE(
+  context: BrowserContext,
+  baseURL: string,
+  token: string,
+  buildNonce: string
+) {
+  const response = await context.request.post(testPwaActivationBarrierUrl(baseURL, 'lease'), {
+    data: { token, variant: 'E', buildNonce }
+  });
+  if (!response.ok()) throw new Error(`Test worker lease switch failed with ${response.status()}.`);
+  return response.json() as Promise<{ variant: 'E'; buildNonce: string }>;
+}
+
+async function fetchCookielessTestWorkerSource(baseURL: string) {
+  const response = await fetch(`${baseURL}/sw.js`, { headers: { Accept: 'application/javascript' } });
+  if (!response.ok) throw new Error(`Cookieless test worker fetch failed with ${response.status}.`);
+  return response.text();
+}
+
 async function cleanupTestPwaActivationBarrier(context: BrowserContext, baseURL: string, token: string) {
   const response = await context.request.post(testPwaActivationBarrierUrl(baseURL, 'cleanup'), {
     data: { token }
@@ -1020,6 +1039,12 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       poisoned: false,
       released: ['B', 'C', 'D']
     });
+    const leasedDSource = await fetchCookielessTestWorkerSource(skyjoServer.baseURL);
+    expect(leasedDSource).toContain('const version="D";');
+    expect(leasedDSource).toContain(`const workerBuildNonce=${JSON.stringify(workerBuildNonces.D)};`);
+    expect(leasedDSource).toContain(
+      `const activationBarrierToken=${JSON.stringify(activationBarrierToken)};`
+    );
     await updaterReload;
     // Keep the activating tab strict: raw drain and an observer-local same-build
     // D waiter are both settled, but the exact active controller must be D.
@@ -1047,6 +1072,18 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     }))).toEqual({ observed: null, watch: 'watching' });
     await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
 
+    await expect(switchTestPwaWorkerLeaseToE(
+      context,
+      skyjoServer.baseURL,
+      activationBarrierToken,
+      workerBuildNonces.E
+    )).resolves.toEqual({ variant: 'E', buildNonce: workerBuildNonces.E });
+    const leasedESource = await fetchCookielessTestWorkerSource(skyjoServer.baseURL);
+    expect(leasedESource).toContain('const version="E";');
+    expect(leasedESource).toContain(`const workerBuildNonce=${JSON.stringify(workerBuildNonces.E)};`);
+    expect(leasedESource).toContain(
+      `const activationBarrierToken=${JSON.stringify(activationBarrierToken)};`
+    );
     await setWorkerVariant(context, skyjoServer.baseURL, 'E', workerBuildNonces.E);
     await updater.evaluate(async () => {
       const registration = await navigator.serviceWorker.ready;
