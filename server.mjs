@@ -331,7 +331,7 @@ async function activateTestWorker() {
   if (version === 'A') return;
   const windows = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
   for (const client of windows) client.postMessage({ type: 'SKYJO_TEST_ACTIVATION_REQUESTED', version });
-  // Keep activation alive long enough for the protected observer to start the next registration update.
+  // Keep activation alive long enough for the foreground updater to start the next registration update.
   await new Promise((resolve) => setTimeout(resolve, successorQueueDelayMs));
 }
 self.addEventListener('install', () => {});

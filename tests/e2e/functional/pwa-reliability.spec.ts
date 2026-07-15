@@ -400,7 +400,10 @@ test('cross-tab activation never reloads a protected game and preserves one safe
   await expectWaitingWorker(updater);
   const updaterLoads = Number(await updater.evaluate(() => sessionStorage.getItem('skyjo-updater-loads')));
 
-  const successorHarnessReady = await page.evaluate(async () => {
+  // Keep lifecycle orchestration on the foreground updater. WebKit may suspend
+  // a protected background tablet page even while correctly preserving it.
+  await updater.bringToFront();
+  const successorHarnessReady = await updater.evaluate(async () => {
     const registration = await navigator.serviceWorker.ready;
     const initialTarget = registration.waiting;
     if (!initialTarget) throw new Error('Initial update target was not waiting.');
@@ -444,7 +447,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     targetState: 'installed'
   });
 
-  const queuedSuccessors = page.evaluate(async () => {
+  const queuedSuccessors = updater.evaluate(async () => {
     const registration = await navigator.serviceWorker.ready;
     const harnessWindow = window as typeof window & {
       __skyjoSuccessorHarness?: {
@@ -519,7 +522,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     successorCIsDistinct: true,
     successorDIsDistinct: true
   });
-  expect(await page.evaluate(() => !('__skyjoSuccessorHarness' in window))).toBe(true);
+  expect(await updater.evaluate(() => !('__skyjoSuccessorHarness' in window))).toBe(true);
   await updaterReload;
   // Keep the activating tab strict: every queued successor must be drained.
   await expectActiveWorker(updater);
