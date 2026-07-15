@@ -16,7 +16,7 @@ import {
   createAutomatedCertificationEvidence,
   createRssStageEvidence,
   measurePersistenceRpo,
-  validateEightClientPersonaEvidence,
+  readVerifiedEightClientPersonaEvidence,
   validateK6CertificationSummary,
   writeCertificationEvidence,
   writeRecoveryTraceEvidence,
@@ -732,8 +732,7 @@ async function main() {
         SKYJO_RELEASE_SHA: sourceSha
       }
     });
-    const persona = JSON.parse(await fs.readFile(personaEvidencePath, 'utf8'));
-    validateEightClientPersonaEvidence(persona);
+    const { evidence: persona } = await readVerifiedEightClientPersonaEvidence(personaEvidencePath);
     const { summary: k6Summary, rss } = await runK6Certification(temporaryDirectory, sourceSha, k6Binary);
     await writeRssStageEvidence(rssEvidencePath, rss);
     if (!rss.authenticatedLoadPassed) {

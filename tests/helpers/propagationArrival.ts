@@ -9,6 +9,15 @@ export type PropagationFrame = {
   type?: unknown;
 };
 
+export type PropagationSentFrame = {
+  action?: {
+    text?: unknown;
+    type?: unknown;
+  };
+  expectedRevision?: unknown;
+  type?: unknown;
+};
+
 export type PropagationProbe = {
   cancel: () => void;
   promise: Promise<number>;
@@ -16,9 +25,10 @@ export type PropagationProbe = {
 
 type PendingProbe = {
   arrivals: Map<number, number>;
+  expectedActionType: string;
   reject: (error: Error) => void;
   resolve: (latencyMs: number) => void;
-  startedAt: number;
+  startedAt: number | null;
 };
 
 type ChatMessage = {
@@ -63,17 +73,21 @@ function finishArrival(
   clientIndex: number,
   observedAt: number,
   clientCount: number
-): void {
-  if (probe.arrivals.has(clientIndex)) return;
-  probe.arrivals.set(clientIndex, observedAt);
-  if (probe.arrivals.size !== clientCount) return;
-  const latencyMs = Math.max(...probe.arrivals.values()) - probe.startedAt;
-  probes.delete(key);
-  if (!Number.isFinite(latencyMs) || latencyMs < 0) {
-    probe.reject(new Error('A propagation sample is missing a finite non-negative latency.'));
-    return;
+): Error | null {
+  if (probe.arrivals.has(clientIndex)) return null;
+  if (probe.startedAt === null) {
+    return new Error('A propagation arrival preceded its matching sent command.');
   }
+  if (observedAt < probe.startedAt) return new Error('A propagation arrival preceded its matching sent command.');
+  probe.arrivals.set(clientIndex, observedAt);
+  if (probe.arrivals.size !== clientCount) return null;
+  const latencyMs = Math.max(...probe.arrivals.values()) - probe.startedAt;
+  if (!Number.isFinite(latencyMs) || latencyMs < 0) {
+    return new Error('A propagation sample is missing a finite non-negative latency.');
+  }
+  probes.delete(key);
   probe.resolve(latencyMs);
+  return null;
 }
 
 export function createPropagationArrivalTracker(
@@ -88,6 +102,7 @@ export function createPropagationArrivalTracker(
   const pendingRevisions = new Map<number, PendingProbe>();
   const pendingChats = new Map<string, PendingProbe>();
   const usedChatMarkers = new Set<string>();
+  let terminalError: Error | null = null;
 
   function rejectProbe(map: Map<number | string, PendingProbe>, key: number | string, error: Error): void {
     const probe = map.get(key);
@@ -96,9 +111,13 @@ export function createPropagationArrivalTracker(
     probe.reject(error);
   }
 
-  function beginProbe(map: Map<number | string, PendingProbe>, key: number | string): PropagationProbe {
+  function beginProbe(
+    map: Map<number | string, PendingProbe>,
+    key: number | string,
+    expectedActionType: string
+  ): PropagationProbe {
+    if (terminalError) throw terminalError;
     if (map.has(key)) throw new Error('A propagation probe for this marker is already pending.');
-    const startedAt = finiteTimestamp(now(), 'Propagation start');
     let resolve!: (latencyMs: number) => void;
     let reject!: (error: Error) => void;
     const promise = new Promise<number>((resolvePromise, rejectPromise) => {
@@ -108,7 +127,7 @@ export function createPropagationArrivalTracker(
     // Mark the rejection as observed immediately. Callers still await the original
     // promise, but an arrival can fail while the Playwright action is in flight.
     void promise.catch(() => {});
-    map.set(key, { arrivals: new Map(), reject, resolve, startedAt });
+    map.set(key, { arrivals: new Map(), expectedActionType, reject, resolve, startedAt: null });
     return {
       cancel: () => {
         const probe = map.get(key);
@@ -120,24 +139,79 @@ export function createPropagationArrivalTracker(
     };
   }
 
-  function beginRevision(revision: number): PropagationProbe {
+  function beginRevision(revision: number, expectedActionType: string): PropagationProbe {
     if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Expected propagation revision is invalid.');
-    return beginProbe(pendingRevisions, revision);
+    if (!expectedActionType) throw new Error('Expected propagation action type is invalid.');
+    return beginProbe(pendingRevisions, revision, expectedActionType);
   }
 
   function beginChat(marker: string): PropagationProbe {
     if (!/^cert-chat-[0-9]{2}$/.test(marker)) throw new Error('Chat propagation marker is invalid.');
     if (usedChatMarkers.has(marker)) throw new Error('Chat propagation markers must be unique.');
     usedChatMarkers.add(marker);
-    return beginProbe(pendingChats, marker);
+    return beginProbe(pendingChats, marker, 'send-chat-message');
   }
 
   function failAll(error: Error): void {
-    for (const revision of [...pendingRevisions.keys()]) rejectProbe(pendingRevisions, revision, error);
-    for (const marker of [...pendingChats.keys()]) rejectProbe(pendingChats, marker, error);
+    terminalError ??= error;
+    for (const revision of [...pendingRevisions.keys()]) rejectProbe(pendingRevisions, revision, terminalError);
+    for (const marker of [...pendingChats.keys()]) rejectProbe(pendingChats, marker, terminalError);
+  }
+
+  function startProbe(
+    map: Map<number | string, PendingProbe>,
+    key: number | string,
+    actionType: string,
+    observedAt: number
+  ): void {
+    const probe = map.get(key);
+    if (!probe) return;
+    if (probe.expectedActionType !== actionType) {
+      failAll(new Error(`A propagation probe expected ${probe.expectedActionType} but observed ${actionType}.`));
+      return;
+    }
+    if (probe.startedAt !== null) {
+      failAll(new Error('A propagation probe observed its matching sent command more than once.'));
+      return;
+    }
+    probe.startedAt = finiteTimestamp(observedAt, 'Propagation sent command');
+  }
+
+  function recordSentFrame(frame: PropagationSentFrame, observedAt = now()): void {
+    if (terminalError) return;
+    if (frame.type !== 'command') return;
+    if (!Number.isSafeInteger(frame.expectedRevision) || Number(frame.expectedRevision) < 0) {
+      failAll(new Error('A sent propagation command contains an invalid expected revision.'));
+      return;
+    }
+    if (!frame.action || typeof frame.action.type !== 'string' || !frame.action.type) {
+      failAll(new Error('A sent propagation command contains an invalid action type.'));
+      return;
+    }
+    const actionType = frame.action.type;
+    const resultingRevision = Number(frame.expectedRevision) + 1;
+    if (!Number.isSafeInteger(resultingRevision)) {
+      failAll(new Error('A sent propagation command contains an unsafe resulting revision.'));
+      return;
+    }
+    try {
+      observedAt = finiteTimestamp(observedAt, 'Propagation sent command');
+    } catch (error) {
+      failAll(error instanceof Error ? error : new Error('Propagation sent-command timing failed.'));
+      return;
+    }
+    startProbe(pendingRevisions, resultingRevision, actionType, observedAt);
+
+    if (actionType !== 'send-chat-message') return;
+    if (typeof frame.action.text !== 'string') {
+      failAll(new Error('A sent chat propagation command contains an invalid marker.'));
+      return;
+    }
+    startProbe(pendingChats, frame.action.text, actionType, observedAt);
   }
 
   function recordFrame(clientIndex: number, frame: PropagationFrame, observedAt = now()): void {
+    if (terminalError) return;
     if (!Number.isSafeInteger(clientIndex) || clientIndex < 0 || clientIndex >= clientCount) {
       failAll(new Error('Propagation observer reported an invalid client index.'));
       return;
@@ -161,24 +235,41 @@ export function createPropagationArrivalTracker(
     }
     latestRevisions[clientIndex] = revision;
 
+    for (const message of messages) {
+      if (typeof message?.text !== 'string' || !/^cert-chat-[0-9]{2}$/.test(message.text)) continue;
+      if (!usedChatMarkers.has(message.text)) {
+        failAll(new Error(`Unexpected chat propagation marker ${message.text} was observed.`));
+        return;
+      }
+    }
+    for (const marker of usedChatMarkers) {
+      if (messages.filter((message) => message?.text === marker).length > 1) {
+        failAll(new Error(`Chat propagation marker ${marker} was duplicated.`));
+        return;
+      }
+    }
+
     for (const [expectedRevision, probe] of [...pendingRevisions.entries()]) {
       if (revision > expectedRevision && !probe.arrivals.has(clientIndex)) {
-        rejectProbe(
-          pendingRevisions,
-          expectedRevision,
-          new Error(`Client ${clientIndex + 1} skipped expected revision ${expectedRevision}.`)
-        );
+        failAll(new Error(`Client ${clientIndex + 1} skipped expected revision ${expectedRevision}.`));
+        return;
       } else if (revision === expectedRevision) {
-        finishArrival(pendingRevisions, expectedRevision, probe, clientIndex, observedAt, clientCount);
+        const error = finishArrival(pendingRevisions, expectedRevision, probe, clientIndex, observedAt, clientCount);
+        if (error) {
+          failAll(error);
+          return;
+        }
       }
     }
 
     for (const [marker, probe] of [...pendingChats.entries()]) {
       const matches = messages.filter((message) => message?.text === marker).length;
-      if (matches > 1) {
-        rejectProbe(pendingChats, marker, new Error(`Chat propagation marker ${marker} was duplicated.`));
-      } else if (matches === 1) {
-        finishArrival(pendingChats, marker, probe, clientIndex, observedAt, clientCount);
+      if (matches === 1) {
+        const error = finishArrival(pendingChats, marker, probe, clientIndex, observedAt, clientCount);
+        if (error) {
+          failAll(error);
+          return;
+        }
       }
     }
   }
@@ -190,12 +281,22 @@ export function createPropagationArrivalTracker(
   }
 
   return {
+    assertHealthy: () => {
+      if (terminalError) throw terminalError;
+    },
     beginChat,
     beginRevision,
     commonRevision,
     failAll,
     pendingCount: () => pendingChats.size + pendingRevisions.size,
-    recordFrame
+    retainedObservationCount: () => (
+      latestRevisions.filter((revision) => revision !== null).length +
+      [...pendingRevisions.values(), ...pendingChats.values()]
+        .reduce((count, probe) => count + probe.arrivals.size, 0) +
+      usedChatMarkers.size
+    ),
+    recordFrame,
+    recordSentFrame
   };
 }
 

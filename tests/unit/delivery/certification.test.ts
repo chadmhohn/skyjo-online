@@ -6,6 +6,7 @@ import {
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
   K6_LINUX_AMD64_SHA256,
+  PERSONA_EVIDENCE_FORMAT_VERSION,
   assertRecoveryTraceMatchesCertification,
   assertRssStageEvidenceMatchesCertification,
   assertSanitizedCertificationValue,
@@ -14,6 +15,7 @@ import {
   createRssStageEvidence,
   measurePersistenceRpo,
   readVerifiedCertificationEvidence,
+  readVerifiedEightClientPersonaEvidence,
   readVerifiedRecoveryTraceEvidence,
   readVerifiedRssStageEvidence,
   validateAutomatedCertificationEvidence,
@@ -23,6 +25,7 @@ import {
   validateRecoveryTraceEvidence,
   validateRssStageEvidence,
   writeCertificationEvidence,
+  writeEightClientPersonaEvidence,
   writeRecoveryTraceEvidence,
   writeRssStageEvidence
 } from '../../../scripts/certification-lib.mjs';
@@ -85,7 +88,7 @@ function personaEvidence() {
   const stateSummary = summarizePropagationSamples(stateMs, CERTIFICATION_LIMITS.personaStatePropagationSamples);
   const chatSummary = summarizePropagationSamples(chatMs, CERTIFICATION_LIMITS.personaChatPropagationSamples);
   return {
-    formatVersion: 1,
+    formatVersion: PERSONA_EVIDENCE_FORMAT_VERSION,
     kind: 'skyjo-eight-client-persona',
     release: { version: '0.2.0', sourceSha, protocolVersion: 2 },
     topology: {
@@ -283,8 +286,16 @@ describe('v0.2.0 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     async function sampleWithDiagnosticHistory(historyLength: number) {
       const tracker = createPropagationArrivalTracker(8, () => 100);
-      const diagnosticHistory = Array.from({ length: historyLength }, (_, index) => ({ index }));
-      const probe = tracker.beginRevision(7);
+      for (let index = 0; index < historyLength; index += 1) {
+        tracker.recordFrame(index % 8, { type: 'ack' }, 90 + index / Math.max(historyLength, 1));
+      }
+      expect(tracker.retainedObservationCount()).toBe(0);
+      const probe = tracker.beginRevision(7, 'reveal-opening-card');
+      tracker.recordSentFrame({
+        type: 'command',
+        expectedRevision: 6,
+        action: { type: 'reveal-opening-card' }
+      }, 100);
       for (let clientIndex = 0; clientIndex < 8; clientIndex += 1) {
         tracker.recordFrame(clientIndex, {
           type: 'snapshot',
@@ -293,8 +304,8 @@ describe('v0.2.0 certification evidence', () => {
         }, 110 + clientIndex);
       }
       const latencyMs = await probe.promise;
-      expect(diagnosticHistory).toHaveLength(historyLength);
       expect(tracker.pendingCount()).toBe(0);
+      expect(tracker.retainedObservationCount()).toBe(8);
       return latencyMs;
     }
 
@@ -302,16 +313,28 @@ describe('v0.2.0 certification evidence', () => {
     expect(await sampleWithDiagnosticHistory(10_000)).toBe(17);
 
     const skippedRevision = createPropagationArrivalTracker(8, () => 100);
-    const revisionProbe = skippedRevision.beginRevision(7);
+    const revisionProbe = skippedRevision.beginRevision(7, 'reveal-opening-card');
+    skippedRevision.recordSentFrame({
+      type: 'command',
+      expectedRevision: 6,
+      action: { type: 'reveal-opening-card' }
+    }, 100);
     skippedRevision.recordFrame(0, {
       type: 'snapshot',
       revision: 8,
       room: { revision: 8, chatMessages: [] }
     }, 101);
     await expect(revisionProbe.promise).rejects.toThrow(/skipped expected revision/i);
+    expect(() => skippedRevision.assertHealthy()).toThrow(/skipped expected revision/i);
+    expect(() => skippedRevision.beginRevision(9, 'reveal-opening-card')).toThrow(/skipped expected revision/i);
 
     const duplicateChat = createPropagationArrivalTracker(8, () => 100);
     const chatProbe = duplicateChat.beginChat('cert-chat-01');
+    duplicateChat.recordSentFrame({
+      type: 'command',
+      expectedRevision: 0,
+      action: { type: 'send-chat-message', text: 'cert-chat-01' }
+    }, 100);
     duplicateChat.recordFrame(0, {
       type: 'snapshot',
       revision: 1,
@@ -322,8 +345,75 @@ describe('v0.2.0 certification evidence', () => {
     }, 101);
     await expect(chatProbe.promise).rejects.toThrow(/duplicated/i);
 
+    const lateDuplicateChat = createPropagationArrivalTracker(8, () => 100);
+    const completedChatProbe = lateDuplicateChat.beginChat('cert-chat-01');
+    lateDuplicateChat.recordSentFrame({
+      type: 'command',
+      expectedRevision: 0,
+      action: { type: 'send-chat-message', text: 'cert-chat-01' }
+    }, 100);
+    for (let clientIndex = 0; clientIndex < 8; clientIndex += 1) {
+      lateDuplicateChat.recordFrame(clientIndex, {
+        type: 'snapshot',
+        revision: 1,
+        room: { revision: 1, chatMessages: [{ text: 'cert-chat-01' }] }
+      }, 101 + clientIndex);
+    }
+    await expect(completedChatProbe.promise).resolves.toBe(8);
+    lateDuplicateChat.recordFrame(0, {
+      type: 'snapshot',
+      revision: 1,
+      room: {
+        revision: 1,
+        chatMessages: [{ text: 'cert-chat-01' }, { text: 'cert-chat-01' }]
+      }
+    }, 109);
+    expect(() => lateDuplicateChat.assertHealthy()).toThrow(/duplicated/i);
+
+    const missingSentCommand = createPropagationArrivalTracker(8, () => 100);
+    const missingSentProbe = missingSentCommand.beginRevision(7, 'reveal-opening-card');
+    missingSentCommand.recordFrame(0, {
+      type: 'snapshot',
+      revision: 7,
+      room: { revision: 7, chatMessages: [] }
+    }, 101);
+    await expect(missingSentProbe.promise).rejects.toThrow(/preceded its matching sent command/i);
+
+    const duplicateSentCommand = createPropagationArrivalTracker(8, () => 100);
+    const duplicateSentProbe = duplicateSentCommand.beginRevision(7, 'reveal-opening-card');
+    const sentFrame = {
+      type: 'command',
+      expectedRevision: 6,
+      action: { type: 'reveal-opening-card' }
+    };
+    duplicateSentCommand.recordSentFrame(sentFrame, 100);
+    duplicateSentCommand.recordSentFrame(sentFrame, 101);
+    await expect(duplicateSentProbe.promise).rejects.toThrow(/more than once/i);
+    expect(() => duplicateSentCommand.assertHealthy()).toThrow(/more than once/i);
+
+    const mismatchedAction = createPropagationArrivalTracker(8, () => 100);
+    const mismatchedActionProbe = mismatchedAction.beginRevision(7, 'reveal-opening-card');
+    mismatchedAction.recordSentFrame({
+      type: 'command',
+      expectedRevision: 6,
+      action: { type: 'draw-blind' }
+    }, 100);
+    await expect(mismatchedActionProbe.promise).rejects.toThrow(/expected reveal-opening-card but observed draw-blind/i);
+    expect(() => mismatchedAction.assertHealthy()).toThrow(/expected reveal-opening-card but observed draw-blind/i);
+
+    const stickyFailure = createPropagationArrivalTracker(8, () => 100);
+    stickyFailure.recordFrame(0, {
+      type: 'snapshot',
+      revision: Number.NaN,
+      room: { revision: Number.NaN, chatMessages: [] }
+    }, 101);
+    expect(() => stickyFailure.assertHealthy()).toThrow(/invalid revision/i);
+    expect(() => stickyFailure.beginRevision(1, 'reveal-opening-card')).toThrow(/invalid revision/i);
+
     expect(() => summarizePropagationSamples([1, 2, Number.NaN], 3)).toThrow(/finite/i);
     expect(() => summarizePropagationSamples([1, 2], 3)).toThrow(/exactly 3/i);
+    expect(summarizePropagationSamples(Array.from({ length: 18 }, (_, index) => index + 1), 18).p95Ms).toBe(18);
+    expect(summarizePropagationSamples([...Array.from({ length: 19 }, (_, index) => index + 1), 10_000], 20).p95Ms).toBe(19);
   });
 
   it('accepts only the exact finite release topology and thresholds', () => {
@@ -376,6 +466,10 @@ describe('v0.2.0 certification evidence', () => {
     const mismatchedPropagation = personaEvidence();
     mismatchedPropagation.measurements.chatPropagationP95Ms += 1;
     expect(() => validateEightClientPersonaEvidence(mismatchedPropagation)).toThrow(/must equal/i);
+
+    const obsoletePersona = personaEvidence();
+    obsoletePersona.formatVersion = 1;
+    expect(() => validateEightClientPersonaEvidence(obsoletePersona)).toThrow(/format version/i);
 
     expect(() => createAutomatedCertificationEvidence({
       release: releaseIdentity(),
@@ -432,6 +526,7 @@ describe('v0.2.0 certification evidence', () => {
     const evidencePath = path.join(directory, 'automated.json');
     const recoveryTracePath = path.join(directory, 'recovery-trials.json');
     const rssPath = path.join(directory, 'rss-stages.json');
+    const personaPath = path.join(directory, 'persona.json');
     try {
       const trace = recoveryTraceEvidence();
       const traceWritten = await writeRecoveryTraceEvidence(recoveryTracePath, trace);
@@ -447,6 +542,19 @@ describe('v0.2.0 certification evidence', () => {
       const verified = await readVerifiedCertificationEvidence(evidencePath, written.checksumPath);
       expect(verified.digest).toBe(written.digest);
       expect(verified.evidence.release.sourceSha).toBe(sourceSha);
+
+      const failedPersona = personaEvidence();
+      failedPersona.propagation.stateMs[failedPersona.propagation.stateMs.length - 1] = 251;
+      failedPersona.measurements.statePropagationP95Ms = 251;
+      failedPersona.gates.browserPropagation = false;
+      const personaWritten = await writeEightClientPersonaEvidence(personaPath, failedPersona, { requirePassed: false });
+      expect(personaWritten.digest).toMatch(/^[a-f0-9]{64}$/);
+      expect((await readVerifiedEightClientPersonaEvidence(
+        personaPath,
+        personaWritten.checksumPath,
+        { requirePassed: false }
+      )).evidence).toEqual(failedPersona);
+      await expect(readVerifiedEightClientPersonaEvidence(personaPath, personaWritten.checksumPath)).rejects.toThrow(/exceeded 250ms/i);
 
       await fs.appendFile(evidencePath, ' ');
       await expect(readVerifiedCertificationEvidence(evidencePath, written.checksumPath)).rejects.toThrow(/checksum/i);
@@ -473,6 +581,9 @@ describe('v0.2.0 workflow governance', () => {
     expect(REQUIRED_CHECKS).toContain('CI / Load & Recovery');
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'CI / Load & Recovery')).toHaveLength(1);
     expect(ci).toMatch(/load-recovery:\s*\n\s*name: CI \/ Load & Recovery/);
+    const loadRecoverySection = ci.match(/\n {2}load-recovery:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
+    expect(loadRecoverySection).toContain('test-results/certification');
+    expect(loadRecoverySection).not.toMatch(/playwright-report|test-results\/playwright|test-results\/server/);
     expect(ci).toMatch(/release-canary:[\s\S]*?needs:[\s\S]*?- load-recovery/);
     expect(ci).toMatch(/pull_request:[\s\S]*push:[\s\S]*tags:[\s\S]*v\*/);
     expect(nightly).toMatch(/schedule:[\s\S]*cron:/);
@@ -509,6 +620,7 @@ describe('v0.2.0 workflow governance', () => {
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
     expect(JSON.parse(packageDocument).version).toBe('0.2.0');
+    expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('--retries=0');
     expect(JSON.parse(packageLock).version).toBe('0.2.0');
     expect(changelog).toMatch(/^## 0\.2\.0 - 2026-07-13$/m);
   });

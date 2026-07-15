@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 export const CERTIFICATION_FORMAT_VERSION = 1;
+export const PERSONA_EVIDENCE_FORMAT_VERSION = 2;
 export const CERTIFICATION_RELEASE_VERSION = '0.2.0';
 export const K6_VERSION = '2.0.0';
 export const K6_LINUX_AMD64_SHA256 = '2ae87d976f6cdba17185bdd980d8819a3a98e9092c6f0638cd58272ecefc8b90';
@@ -344,9 +345,9 @@ function validatePersonaPropagationSamples(value, expectedCount, label) {
   };
 }
 
-export function validateEightClientPersonaEvidence(value) {
+export function validateEightClientPersonaEvidence(value, { requirePassed = true } = {}) {
   assertExactKeys(value, ['formatVersion', 'gates', 'kind', 'measurements', 'profiles', 'propagation', 'release', 'topology'], 'Persona evidence');
-  exactNumber(value.formatVersion, CERTIFICATION_FORMAT_VERSION, 'Persona format version');
+  exactNumber(value.formatVersion, PERSONA_EVIDENCE_FORMAT_VERSION, 'Persona format version');
   exactString(value.kind, 'skyjo-eight-client-persona', 'Persona evidence kind');
   assertExactKeys(value.release, ['protocolVersion', 'sourceSha', 'version'], 'Persona release identity');
   exactString(value.release.version, CERTIFICATION_RELEASE_VERSION, 'Persona release version');
@@ -388,12 +389,12 @@ export function validateEightClientPersonaEvidence(value) {
   ], 'Persona measurements');
   const measurements = value.measurements;
   for (const [label, measurement] of Object.entries(measurements)) finiteNumber(measurement, `Persona ${label}`);
-  if (measurements.maxHorizontalOverflowPx > 0) throw new Error('Persona viewport has horizontal overflow.');
-  if (measurements.minimumTargetPx < CERTIFICATION_LIMITS.targetSizePx) throw new Error('Persona target size is below 44px.');
-  if (measurements.openingSettleMs > CERTIFICATION_LIMITS.personaOpeningSettleMs) throw new Error('Eight-client opening did not settle within three seconds.');
-  if (measurements.reducedMotionSettleMs > CERTIFICATION_LIMITS.personaReducedMotionSettleMs) throw new Error('Reduced-motion opening did not settle within one second.');
-  if (measurements.reconnectBannerMs > CERTIFICATION_LIMITS.personaReconnectBannerMs) throw new Error('Reconnect banner exceeded 500ms.');
-  if (measurements.reconnectRtoMs > CERTIFICATION_LIMITS.personaReconnectRtoMs) throw new Error('Persona reconnect exceeded ten seconds.');
+  if (requirePassed && measurements.maxHorizontalOverflowPx > 0) throw new Error('Persona viewport has horizontal overflow.');
+  if (requirePassed && measurements.minimumTargetPx < CERTIFICATION_LIMITS.targetSizePx) throw new Error('Persona target size is below 44px.');
+  if (requirePassed && measurements.openingSettleMs > CERTIFICATION_LIMITS.personaOpeningSettleMs) throw new Error('Eight-client opening did not settle within three seconds.');
+  if (requirePassed && measurements.reducedMotionSettleMs > CERTIFICATION_LIMITS.personaReducedMotionSettleMs) throw new Error('Reduced-motion opening did not settle within one second.');
+  if (requirePassed && measurements.reconnectBannerMs > CERTIFICATION_LIMITS.personaReconnectBannerMs) throw new Error('Reconnect banner exceeded 500ms.');
+  if (requirePassed && measurements.reconnectRtoMs > CERTIFICATION_LIMITS.personaReconnectRtoMs) throw new Error('Persona reconnect exceeded ten seconds.');
   assertExactKeys(value.propagation, ['chatMs', 'stateMs'], 'Persona propagation samples');
   const statePropagation = validatePersonaPropagationSamples(
     value.propagation.stateMs,
@@ -407,14 +408,23 @@ export function validateEightClientPersonaEvidence(value) {
   );
   exactNumber(measurements.statePropagationP95Ms, statePropagation.p95Ms, 'Persona state propagation p95');
   exactNumber(measurements.chatPropagationP95Ms, chatPropagation.p95Ms, 'Persona chat propagation p95');
-  if (measurements.statePropagationP95Ms > CERTIFICATION_LIMITS.personaPropagationP95Ms) {
+  if (requirePassed && measurements.statePropagationP95Ms > CERTIFICATION_LIMITS.personaPropagationP95Ms) {
     throw new Error('Persona state propagation p95 exceeded 250ms.');
   }
-  if (measurements.chatPropagationP95Ms > CERTIFICATION_LIMITS.personaPropagationP95Ms) {
+  if (requirePassed && measurements.chatPropagationP95Ms > CERTIFICATION_LIMITS.personaPropagationP95Ms) {
     throw new Error('Persona chat propagation p95 exceeded 250ms.');
   }
   assertExactKeys(value.gates, ['browserPropagation', 'centeredTable', 'keyboardComplete', 'privacyRedaction', 'sameSeatReconnect'], 'Persona gates');
-  for (const [gate, passed] of Object.entries(value.gates)) exactBoolean(passed, true, `Persona ${gate}`);
+  exactBoolean(
+    value.gates.browserPropagation,
+    measurements.statePropagationP95Ms <= CERTIFICATION_LIMITS.personaPropagationP95Ms &&
+      measurements.chatPropagationP95Ms <= CERTIFICATION_LIMITS.personaPropagationP95Ms,
+    'Persona browser propagation gate'
+  );
+  for (const [gate, passed] of Object.entries(value.gates)) {
+    if (typeof passed !== 'boolean') throw new Error(`Persona ${gate} must be boolean.`);
+    if (requirePassed) exactBoolean(passed, true, `Persona ${gate}`);
+  }
   assertSanitizedCertificationValue(value);
   return value;
 }
@@ -653,6 +663,11 @@ export function serializeCertificationEvidence(value) {
   return `${JSON.stringify(sortedValue(value), null, 2)}\n`;
 }
 
+export function serializeEightClientPersonaEvidence(value, options = {}) {
+  validateEightClientPersonaEvidence(value, options);
+  return `${JSON.stringify(sortedValue(value), null, 2)}\n`;
+}
+
 export function serializeRssStageEvidence(value) {
   validateRssStageEvidence(value);
   return `${JSON.stringify(sortedValue(value), null, 2)}\n`;
@@ -703,6 +718,16 @@ export function certificationSha256(value) {
 
 export async function writeCertificationEvidence(filePath, value) {
   const data = serializeCertificationEvidence(value);
+  const digest = certificationSha256(data);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, data, { encoding: 'utf8', mode: 0o600 });
+  const checksumPath = `${filePath}.sha256`;
+  await fs.writeFile(checksumPath, `${digest}  ${path.basename(filePath)}\n`, { encoding: 'utf8', mode: 0o600 });
+  return { digest, checksumPath };
+}
+
+export async function writeEightClientPersonaEvidence(filePath, value, options = {}) {
+  const data = serializeEightClientPersonaEvidence(value, options);
   const digest = certificationSha256(data);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, data, { encoding: 'utf8', mode: 0o600 });
@@ -795,5 +820,30 @@ export async function readVerifiedCertificationEvidence(filePath, checksumPath =
   }
   validateAutomatedCertificationEvidence(decoded);
   if (serializeCertificationEvidence(decoded) !== data) throw new Error('Certification evidence is not canonically serialized.');
+  return { evidence: decoded, digest: actual };
+}
+
+export async function readVerifiedEightClientPersonaEvidence(
+  filePath,
+  checksumPath = `${filePath}.sha256`,
+  options = {}
+) {
+  const [data, checksum] = await Promise.all([
+    fs.readFile(filePath, 'utf8'),
+    fs.readFile(checksumPath, 'utf8')
+  ]);
+  const expectedName = path.basename(filePath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = checksum.match(new RegExp(`^([a-f0-9]{64})  ${expectedName}\\n$`));
+  if (!match || !sha256Pattern.test(match[1])) throw new Error('Persona evidence checksum file is invalid.');
+  const actual = certificationSha256(data);
+  if (!crypto.timingSafeEqual(Buffer.from(match[1]), Buffer.from(actual))) throw new Error('Persona evidence checksum mismatch.');
+  let decoded;
+  try {
+    decoded = JSON.parse(data);
+  } catch {
+    throw new Error('Persona evidence is not valid JSON.');
+  }
+  validateEightClientPersonaEvidence(decoded, options);
+  if (serializeEightClientPersonaEvidence(decoded, options) !== data) throw new Error('Persona evidence is not canonically serialized.');
   return { evidence: decoded, digest: actual };
 }
