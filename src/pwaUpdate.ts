@@ -10,10 +10,15 @@ type ActivationAttempt = {
   deadline: number;
   generation: number;
   pendingInstallers: Set<ServiceWorker>;
+  postRetriedTargets: Set<ServiceWorker>;
+  postRetryAt: number | null;
+  refreshedTargets: Set<ServiceWorker>;
   seenTargets: Set<ServiceWorker>;
   target: ServiceWorker;
   targetStateChange: (() => void) | null;
+  terminalController: ServiceWorker | null;
   terminalQuietUntil: number | null;
+  terminalReconciliationInFlight: boolean;
   timeout: number | null;
 };
 
@@ -22,11 +27,16 @@ type ControllerObservation =
   | { kind: 'external' }
   | { kind: 'own'; generation: number };
 
+type EquivalentWorkerContext = readonly [ServiceWorker, number];
+
 const activationTimeoutMs = 8_000;
-// One short quiet window catches queued WebKit updatefound work before a safe reload.
+const activationPostRetryMs = 50;
+// Two short quiet windows surround an explicit registration refresh before a safe reload.
 const terminalQuiescenceMs = 250;
 const listeners = new Set<() => void>();
 const observedInstallingWorkers = new WeakSet<ServiceWorker>();
+const workerClassifications = new WeakSet<ServiceWorker>();
+const equivalentWorkerContexts = new WeakMap<ServiceWorker, EquivalentWorkerContext>();
 let snapshot: PwaUpdateSnapshot = Object.freeze({ available: false, activating: false, reloadRequired: false });
 let registration: ServiceWorkerRegistration | null = null;
 let waitingWorker: ServiceWorker | null = null;
@@ -36,30 +46,129 @@ let reloadStarted = false;
 let registrationStarted = false;
 let controllerKnown = false;
 let knownController: ServiceWorker | null = null;
+let controllerEpoch = 0;
 let observedController: ServiceWorker | null = null;
 let observedControllerStateChange: (() => void) | null = null;
 let reloadPage = () => window.location.reload();
 
-function publish(next: PwaUpdateSnapshot) {
+function publish(available: boolean, activating = false, reloadRequired = false) {
   if (
-    snapshot.available === next.available &&
-    snapshot.activating === next.activating &&
-    snapshot.reloadRequired === next.reloadRequired
+    snapshot.available === available &&
+    snapshot.activating === activating &&
+    snapshot.reloadRequired === reloadRequired
   ) return;
-  snapshot = Object.freeze(next);
+  snapshot = Object.freeze({ available, activating, reloadRequired });
   for (const listener of listeners) listener();
 }
 
+function isEquivalentWorker(worker: ServiceWorker): boolean {
+  const context = equivalentWorkerContexts.get(worker);
+  return Boolean(
+    context &&
+    context[1] === controllerEpoch &&
+    navigator.serviceWorker.controller === context[0] &&
+    registration?.active === context[0] &&
+    context[0].state === 'activated'
+  );
+}
+
+function isCurrentRegistrationCandidate(
+  candidate: ServiceWorker,
+  expectedRegistration: ServiceWorkerRegistration
+): boolean {
+  return (
+    registration === expectedRegistration &&
+    candidate.state === 'installed' &&
+    (expectedRegistration.waiting === candidate || expectedRegistration.installing === candidate)
+  );
+}
+
+async function classifyWaitingWorker(
+  candidate: ServiceWorker,
+  expectedRegistration: ServiceWorkerRegistration,
+  expectedControllerEpoch: number
+): Promise<boolean> {
+  const controller = navigator.serviceWorker.controller;
+  if (!controller || expectedRegistration.active !== controller || controller.state !== 'activated') {
+    rememberWaiting(candidate);
+    return false;
+  }
+  let identityDeadline!: ReturnType<typeof setTimeout>;
+  const sameBuild = await Promise.race([
+    import('./pwaWorkerIdentity').then(({ default: compareBuilds }) => compareBuilds(controller, candidate)),
+    new Promise<false>((resolve) => {
+      identityDeadline = setTimeout(resolve, 750, false);
+    })
+  ]).finally(() => clearTimeout(identityDeadline));
+  if (!isCurrentRegistrationCandidate(candidate, expectedRegistration)) return false;
+  const unchangedActiveController = (
+    controllerEpoch === expectedControllerEpoch &&
+    navigator.serviceWorker.controller === controller &&
+    expectedRegistration.active === controller &&
+    controller.state === 'activated'
+  );
+  if (
+    unchangedActiveController &&
+    sameBuild
+  ) {
+    equivalentWorkerContexts.set(candidate, [controller, expectedControllerEpoch]);
+    if (waitingWorker === candidate) {
+      waitingWorker = null;
+      if (!activationAttempt && !snapshot.reloadRequired) {
+        publish(false);
+      }
+    }
+    return false;
+  }
+  if (!unchangedActiveController) return true;
+  rememberWaiting(candidate);
+  return false;
+}
+
+function queueWaitingWorkerClassification(worker: ServiceWorker | null) {
+  const expectedRegistration = registration;
+  if (
+    !worker ||
+    !expectedRegistration ||
+    worker.state !== 'installed' ||
+    activationAttempt ||
+    isEquivalentWorker(worker) ||
+    workerClassifications.has(worker) ||
+    (
+      expectedRegistration.waiting !== worker &&
+      expectedRegistration.installing !== worker
+    )
+  ) return;
+  const expectedControllerEpoch = controllerEpoch;
+  workerClassifications.add(worker);
+  void (async () => {
+    let retry = false;
+    try {
+      retry = await classifyWaitingWorker(worker, expectedRegistration, expectedControllerEpoch);
+    } catch {
+      if (isCurrentRegistrationCandidate(worker, expectedRegistration)) rememberWaiting(worker);
+    } finally {
+      workerClassifications.delete(worker);
+      if (retry && isCurrentRegistrationCandidate(worker, expectedRegistration)) {
+        queueWaitingWorkerClassification(worker);
+      } else if (!isCurrentRegistrationCandidate(worker, expectedRegistration)) {
+        queueWaitingWorkerClassification(expectedRegistration.waiting);
+        queueWaitingWorkerClassification(expectedRegistration.installing);
+      }
+    }
+  })();
+}
+
 function rememberWaiting(worker: ServiceWorker | null) {
-  if (!worker || worker.state === 'redundant') return;
+  if (!worker || worker.state === 'redundant' || isEquivalentWorker(worker)) return;
   waitingWorker = worker;
-  publish({ available: true, activating: Boolean(activationAttempt), reloadRequired: snapshot.reloadRequired });
+  publish(true, Boolean(activationAttempt), snapshot.reloadRequired);
 }
 
 function clearActivationAttempt() {
   const attempt = activationAttempt;
   if (!attempt) return;
-  if (attempt.timeout !== null) window.clearTimeout(attempt.timeout);
+  if (attempt.timeout !== null) clearTimeout(attempt.timeout);
   if (attempt.targetStateChange) attempt.target.removeEventListener('statechange', attempt.targetStateChange);
   activationAttempt = null;
 }
@@ -74,10 +183,12 @@ function clearControllerObservation() {
 
 function scheduleActivationTimer(attempt: ActivationAttempt) {
   if (activationAttempt !== attempt) return;
-  if (attempt.timeout !== null) window.clearTimeout(attempt.timeout);
-  const nextAt = attempt.terminalQuietUntil === null
-    ? attempt.deadline
-    : Math.min(attempt.deadline, attempt.terminalQuietUntil);
+  if (attempt.timeout !== null) clearTimeout(attempt.timeout);
+  const nextAt = Math.min(
+    attempt.deadline,
+    attempt.terminalQuietUntil ?? attempt.deadline,
+    attempt.postRetryAt ?? attempt.deadline
+  );
   const scheduledTimeout = window.setTimeout(
     () => handleActivationTimer(attempt.generation, scheduledTimeout),
     Math.max(0, nextAt - Date.now())
@@ -86,8 +197,9 @@ function scheduleActivationTimer(attempt: ActivationAttempt) {
 }
 
 function cancelTerminalQuiescence(attempt: ActivationAttempt) {
-  if (attempt.terminalQuietUntil === null) return;
+  if (attempt.terminalQuietUntil === null && attempt.terminalController === null) return;
   attempt.terminalQuietUntil = null;
+  attempt.terminalController = null;
   scheduleActivationTimer(attempt);
 }
 
@@ -106,7 +218,7 @@ function beginTerminalQuiescence(attempt: ActivationAttempt) {
     handleActivationDeadline(attempt.generation);
     return;
   }
-  if (attempt.terminalQuietUntil === null) {
+  if (!attempt.terminalReconciliationInFlight && attempt.terminalQuietUntil === null) {
     attempt.terminalQuietUntil = Math.min(
       attempt.deadline,
       Date.now() + terminalQuiescenceMs
@@ -134,8 +246,11 @@ function observeInstalling(worker: ServiceWorker | null) {
   if (observedInstallingWorkers.has(worker)) return;
   observedInstallingWorkers.add(worker);
   const inspect = () => {
-    if (worker.state === 'installed' && navigator.serviceWorker.controller) rememberWaiting(worker);
     const attempt = activationAttempt;
+    if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+      if (attempt) rememberWaiting(worker);
+      else queueWaitingWorkerClassification(worker);
+    }
     if (attempt) {
       if (worker === attempt.target || worker.state === 'redundant') {
         attempt.pendingInstallers.delete(worker);
@@ -153,10 +268,9 @@ function observeInstalling(worker: ServiceWorker | null) {
       if (snapshot.reloadRequired) return;
       const replacement = registration?.waiting || null;
       if (replacement && replacement.state !== 'redundant') {
-        rememberWaiting(replacement);
         observeInstalling(replacement);
       }
-      else publish({ available: false, activating: false, reloadRequired: false });
+      else publish(false);
     }
     if (
       attempt &&
@@ -171,7 +285,6 @@ function observeInstalling(worker: ServiceWorker | null) {
 function observeRegistration(nextRegistration: ServiceWorkerRegistration) {
   registration = nextRegistration;
   if (nextRegistration.waiting) {
-    rememberWaiting(nextRegistration.waiting);
     observeInstalling(nextRegistration.waiting);
   }
   observeInstalling(nextRegistration.installing);
@@ -191,7 +304,7 @@ function reloadOnce() {
 
 function publishReloadRequired() {
   waitingWorker = null;
-  publish({ available: true, activating: false, reloadRequired: true });
+  publish(true, false, true);
 }
 
 function hasPendingSuccessor(attempt: ActivationAttempt): boolean {
@@ -215,7 +328,29 @@ function hasPendingSuccessor(attempt: ActivationAttempt): boolean {
   return attempt.pendingInstallers.size > 0;
 }
 
-function settleOwnController(worker: ServiceWorker, generation: number, quiescenceElapsed = false) {
+function distinctRegistrationSuccessor(attempt: ActivationAttempt): ServiceWorker | null {
+  const liveInstaller = registration?.installing || null;
+  if (
+    liveInstaller &&
+    liveInstaller !== attempt.target &&
+    isUnsettledSuccessor(liveInstaller)
+  ) return liveInstaller;
+  const liveWaiter = registration?.waiting || null;
+  if (
+    liveWaiter &&
+    liveWaiter !== attempt.target &&
+    isUnsettledSuccessor(liveWaiter)
+  ) return liveWaiter;
+  return null;
+}
+
+function failTerminalSettlement(attempt: ActivationAttempt) {
+  if (activationAttempt !== attempt) return;
+  clearActivationAttempt();
+  publishReloadRequired();
+}
+
+function settleOwnController(worker: ServiceWorker, generation: number) {
   const attempt = activationAttempt;
   if (
     !attempt ||
@@ -230,12 +365,38 @@ function settleOwnController(worker: ServiceWorker, generation: number, quiescen
     transferActivationAttempt(attempt);
     return;
   }
+  const distinctUnsettled = distinctRegistrationSuccessor(attempt);
+  if (distinctUnsettled) {
+    cancelTerminalQuiescence(attempt);
+    observeInstalling(distinctUnsettled);
+    return;
+  }
   if (hasPendingSuccessor(attempt)) {
     cancelTerminalQuiescence(attempt);
     return;
   }
-  if (!quiescenceElapsed) {
-    beginTerminalQuiescence(attempt);
+  if (attempt.refreshedTargets.has(worker)) {
+    if (attempt.terminalController === worker && attempt.terminalQuietUntil !== null) return;
+    failTerminalSettlement(attempt);
+    return;
+  }
+  beginTerminalQuiescence(attempt);
+}
+
+function completeTerminalSettlement(attempt: ActivationAttempt, worker: ServiceWorker) {
+  if (
+    activationAttempt !== attempt ||
+    attempt.target !== worker ||
+    attempt.terminalController !== worker ||
+    navigator.serviceWorker.controller !== worker ||
+    registration?.active !== worker ||
+    worker.state !== 'activated' ||
+    registration?.installing !== null ||
+    registration?.waiting !== null ||
+    hasPendingSuccessor(attempt)
+  ) {
+    cancelTerminalQuiescence(attempt);
+    reconcileActivationAttempt(attempt);
     return;
   }
   const shouldReload = (
@@ -248,6 +409,68 @@ function settleOwnController(worker: ServiceWorker, generation: number, quiescen
   waitingWorker = null;
   if (shouldReload) reloadOnce();
   else publishReloadRequired();
+}
+
+function finishTerminalReconciliation(
+  attempt: ActivationAttempt,
+  worker: ServiceWorker,
+  refreshed: boolean
+) {
+  if (activationAttempt !== attempt || attempt.target !== worker) return;
+  attempt.terminalReconciliationInFlight = false;
+  if (Date.now() >= attempt.deadline) {
+    handleActivationDeadline(attempt.generation);
+    return;
+  }
+  if (!refreshed) {
+    failTerminalSettlement(attempt);
+    return;
+  }
+  attempt.refreshedTargets.add(worker);
+  observeInstalling(registration?.installing || null);
+  const replacement = registration?.waiting || null;
+  if (replacement && replacement !== worker && replacement.state === 'installed') {
+    rememberWaiting(replacement);
+    observeInstalling(replacement);
+    transferActivationAttempt(attempt);
+    return;
+  }
+  const distinctUnsettled = distinctRegistrationSuccessor(attempt);
+  if (distinctUnsettled || hasPendingSuccessor(attempt)) {
+    if (distinctUnsettled) observeInstalling(distinctUnsettled);
+    cancelTerminalQuiescence(attempt);
+    return;
+  }
+  if (
+    navigator.serviceWorker.controller !== worker ||
+    registration?.active !== worker ||
+    worker.state !== 'activated'
+  ) {
+    attempt.terminalController = null;
+    cancelTerminalQuiescence(attempt);
+    reconcileActivationAttempt(attempt);
+    return;
+  }
+  attempt.terminalController = worker;
+  beginTerminalQuiescence(attempt);
+}
+
+function refreshRegistrationBeforeSettlement(attempt: ActivationAttempt) {
+  if (activationAttempt !== attempt || attempt.terminalReconciliationInFlight) return;
+  const worker = attempt.target;
+  const activeRegistration = registration;
+  if (!activeRegistration) {
+    failTerminalSettlement(attempt);
+    return;
+  }
+  attempt.terminalReconciliationInFlight = true;
+  scheduleActivationTimer(attempt);
+  void Promise.resolve()
+    .then(() => activeRegistration.update())
+    .then(
+      () => finishTerminalReconciliation(attempt, worker, true),
+      () => finishTerminalReconciliation(attempt, worker, false)
+    );
 }
 
 function observeControllerTerminal(worker: ServiceWorker, observation: ControllerObservation) {
@@ -278,17 +501,58 @@ function postActivation(attempt: ActivationAttempt): boolean {
   if (activationAttempt !== attempt) return false;
   try {
     attempt.target.postMessage({ type: 'SKYJO_ACTIVATE_UPDATE' });
+    attempt.postRetryAt = null;
+    scheduleActivationTimer(attempt);
     return true;
   } catch {
-    const replacement = registration?.waiting || null;
+    if (Date.now() >= attempt.deadline) {
+      handleActivationDeadline(attempt.generation);
+      return false;
+    }
+    if (!attempt.postRetriedTargets.has(attempt.target)) {
+      attempt.postRetriedTargets.add(attempt.target);
+      attempt.postRetryAt = Math.min(attempt.deadline, Date.now() + activationPostRetryMs);
+      scheduleActivationTimer(attempt);
+      return true;
+    }
+    const liveWaiting = registration?.waiting || null;
+    const retryableWaiting = liveWaiting?.state === 'installed'
+      ? liveWaiting
+      : attempt.target.state === 'installed'
+        ? attempt.target
+        : null;
     clearActivationAttempt();
-    waitingWorker = replacement?.state === 'installed' ? replacement : null;
-    publish({ available: Boolean(waitingWorker), activating: false, reloadRequired: snapshot.reloadRequired });
+    waitingWorker = retryableWaiting;
+    publish(Boolean(retryableWaiting) || snapshot.reloadRequired, false, snapshot.reloadRequired);
     return false;
   }
 }
 
-function transferActivationAttempt(attempt: ActivationAttempt, quiescenceElapsed = false) {
+function retryPostActivation(attempt: ActivationAttempt) {
+  if (activationAttempt !== attempt) return;
+  attempt.postRetryAt = null;
+  const liveWaiting = registration?.waiting || null;
+  if (
+    liveWaiting &&
+    liveWaiting !== attempt.target &&
+    liveWaiting.state === 'installed'
+  ) {
+    transferActivationAttempt(attempt);
+    return;
+  }
+  if (attempt.target.state === 'redundant') {
+    transferActivationAttempt(attempt);
+    return;
+  }
+  if (attempt.target.state !== 'installed') {
+    reconcileActivationAttempt(attempt);
+    scheduleActivationTimer(attempt);
+    return;
+  }
+  postActivation(attempt);
+}
+
+function transferActivationAttempt(attempt: ActivationAttempt) {
   if (activationAttempt !== attempt) return;
   const replacement = registration?.waiting || null;
   const retryableReplacement = (
@@ -299,11 +563,7 @@ function transferActivationAttempt(attempt: ActivationAttempt, quiescenceElapsed
   if (Date.now() >= attempt.deadline || (retryableReplacement && attempt.seenTargets.has(retryableReplacement))) {
     clearActivationAttempt();
     waitingWorker = retryableReplacement;
-    publish({
-      available: Boolean(retryableReplacement) || snapshot.reloadRequired,
-      activating: false,
-      reloadRequired: snapshot.reloadRequired
-    });
+    publish(Boolean(retryableReplacement) || snapshot.reloadRequired, false, snapshot.reloadRequired);
     return;
   }
   if (!retryableReplacement) {
@@ -311,19 +571,17 @@ function transferActivationAttempt(attempt: ActivationAttempt, quiescenceElapsed
       cancelTerminalQuiescence(attempt);
       return;
     }
-    if (!quiescenceElapsed) {
-      beginTerminalQuiescence(attempt);
-      return;
-    }
-    clearActivationAttempt();
-    waitingWorker = null;
-    if (!snapshot.reloadRequired) publish({ available: false, activating: false, reloadRequired: false });
+    cancelTerminalQuiescence(attempt);
+    scheduleActivationTimer(attempt);
     return;
   }
   if (attempt.targetStateChange) attempt.target.removeEventListener('statechange', attempt.targetStateChange);
   attempt.pendingInstallers.delete(retryableReplacement);
   attempt.seenTargets.add(retryableReplacement);
+  attempt.postRetryAt = null;
+  attempt.terminalController = null;
   attempt.terminalQuietUntil = null;
+  attempt.terminalReconciliationInFlight = false;
   attempt.target = retryableReplacement;
   attempt.targetStateChange = null;
   waitingWorker = retryableReplacement;
@@ -333,16 +591,16 @@ function transferActivationAttempt(attempt: ActivationAttempt, quiescenceElapsed
   postActivation(attempt);
 }
 
-function reconcileActivationAttempt(attempt: ActivationAttempt, quiescenceElapsed = false) {
+function reconcileActivationAttempt(attempt: ActivationAttempt) {
   if (activationAttempt !== attempt) return;
   if (attempt.target.state === 'redundant') {
-    transferActivationAttempt(attempt, quiescenceElapsed);
+    transferActivationAttempt(attempt);
     return;
   }
   if (
     attempt.target.state === 'activated' &&
     navigator.serviceWorker.controller === attempt.target
-  ) settleOwnController(attempt.target, attempt.generation, quiescenceElapsed);
+  ) settleOwnController(attempt.target, attempt.generation);
 }
 
 function observeActivationTarget(attempt: ActivationAttempt) {
@@ -374,12 +632,10 @@ function handleActivationDeadline(generation: number) {
   const retryableWaiting = liveWaiting?.state === 'installed' ? liveWaiting : null;
   clearActivationAttempt();
   waitingWorker = retryableWaiting;
-  publish({
-    available: Boolean(retryableWaiting),
-    activating: false,
-    reloadRequired: false
-  });
-  if (passiveController) observeControllerTerminal(passiveController, { kind: 'external' });
+  publish(Boolean(retryableWaiting));
+  if (passiveController) {
+    observeControllerTerminal(passiveController, { kind: 'external' });
+  }
 }
 
 function handleActivationTimer(generation: number, scheduledTimeout: number) {
@@ -395,11 +651,22 @@ function handleActivationTimer(generation: number, scheduledTimeout: number) {
     return;
   }
   if (
+    attempt.postRetryAt !== null &&
+    Date.now() >= attempt.postRetryAt
+  ) {
+    retryPostActivation(attempt);
+    return;
+  }
+  if (
     attempt.terminalQuietUntil !== null &&
     Date.now() >= attempt.terminalQuietUntil
   ) {
     attempt.terminalQuietUntil = null;
-    reconcileActivationAttempt(attempt, true);
+    if (attempt.terminalController) {
+      completeTerminalSettlement(attempt, attempt.terminalController);
+    } else {
+      refreshRegistrationBeforeSettlement(attempt);
+    }
     if (activationAttempt === attempt && attempt.timeout === null) {
       scheduleActivationTimer(attempt);
     }
@@ -429,6 +696,7 @@ export function registerPwaUpdates(reload: () => void = () => window.location.re
     if (!controller) return;
     if (controllerKnown && controller === knownController) return;
     const initialControl = !controllerKnown;
+    controllerEpoch += 1;
     knownController = controller;
     controllerKnown = true;
     if (initialControl && !activationAttempt) {
@@ -457,16 +725,24 @@ export function activatePwaUpdate(): boolean {
     reloadOnce();
     return true;
   }
-  const liveWaiting = registration?.waiting || null;
-  const worker = liveWaiting && liveWaiting.state !== 'redundant'
+  const registrationWaiting = registration?.waiting || null;
+  const liveWaiting = (
+    registrationWaiting &&
+    registrationWaiting.state !== 'redundant' &&
+    !isEquivalentWorker(registrationWaiting) &&
+    !workerClassifications.has(registrationWaiting)
+  ) ? registrationWaiting : null;
+  const worker = liveWaiting
     ? liveWaiting
-    : waitingWorker?.state === 'installed'
+    : waitingWorker?.state === 'installed' &&
+        !isEquivalentWorker(waitingWorker) &&
+        !workerClassifications.has(waitingWorker)
       ? waitingWorker
       : null;
   if (!worker || activationAttempt) {
     if (!worker) {
       waitingWorker = null;
-      publish({ available: false, activating: false, reloadRequired: false });
+      publish(false);
     }
     return false;
   }
@@ -477,17 +753,22 @@ export function activatePwaUpdate(): boolean {
     deadline: Date.now() + activationTimeoutMs,
     generation,
     pendingInstallers: new Set<ServiceWorker>(),
+    postRetriedTargets: new Set<ServiceWorker>(),
+    postRetryAt: null,
+    refreshedTargets: new Set<ServiceWorker>(),
     seenTargets: new Set<ServiceWorker>([worker]),
     target: worker,
     targetStateChange: null,
+    terminalController: null,
     terminalQuietUntil: null,
+    terminalReconciliationInFlight: false,
     timeout: null
   };
   activationAttempt = attempt;
   waitingWorker = worker;
   trackAttemptInstaller(registration?.installing || null);
   observeInstalling(registration?.installing || null);
-  publish({ available: true, activating: true, reloadRequired: false });
+  publish(true, true);
   observeActivationTarget(attempt);
   scheduleActivationTimer(attempt);
   return postActivation(attempt);

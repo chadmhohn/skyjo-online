@@ -4,6 +4,7 @@ const precacheEntries = self.__WB_MANIFEST;
 const cachePrefix = 'skyjo-pwa-v2-';
 const legacyCachePrefixes = ['skyjo-online-v', 'skyjo-static-v'];
 const skipWaitingGraceMs = 50;
+const workerBuildId = '__SKYJO_WORKER_BUILD_ID__';
 
 function requestImmediateActivation(event) {
   // WebKit may finish this message event before its queued skipWaiting task; the independent 50ms grace keeps one bounded scheduling window.
@@ -106,9 +107,31 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('message', (event) => {
   const isActivation = event.data?.type === 'SKYJO_ACTIVATE_UPDATE';
+  const isBuildIdentityRequest = event.data?.type === 'SKYJO_GET_BUILD_ID';
+  const identityRequestId = event.data?.requestId;
   if (event.origin !== self.location.origin) return;
   if (isActivation) {
     requestImmediateActivation(event);
+    return;
+  }
+  if (
+    isBuildIdentityRequest &&
+    event.data?.version === 1 &&
+    typeof identityRequestId === 'string' &&
+    /^[a-z0-9-]{3,64}$/.test(identityRequestId) &&
+    event.ports?.length === 1
+  ) {
+    const replyPort = event.ports[0];
+    try {
+      replyPort.postMessage({
+        type: 'SKYJO_BUILD_ID',
+        version: 1,
+        requestId: identityRequestId,
+        buildId: workerBuildId
+      });
+    } finally {
+      replyPort.close();
+    }
     return;
   }
   if (!event.source) return;
