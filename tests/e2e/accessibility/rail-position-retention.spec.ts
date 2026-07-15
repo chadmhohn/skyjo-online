@@ -158,9 +158,11 @@ async function installRailAudit(page: Page): Promise<void> {
         trusted: event.isTrusted
       };
       audit.gestures.push(gesture);
-      window.setTimeout(() => {
-        audit.checkpoints.push({ ...sample(), gestureId: gesture.id });
-      }, 1500);
+      for (const delayMs of [1500, 1550, 1600, 1650, 1700]) {
+        window.setTimeout(() => {
+          audit.checkpoints.push({ ...sample(), gestureId: gesture.id });
+        }, delayMs);
+      }
     };
 
     element.addEventListener('focusin', recordGesture);
@@ -265,9 +267,15 @@ async function expectRetainedThroughCheckpoint(
   retainedPosition: number,
   settledAt: number
 ) {
-  await expect.poll(async () => (await getRailAudit(page)).checkpoints.some((entry) => entry.gestureId === gesture.id)).toBe(true);
+  const isQualifyingCheckpoint = (entry: AuditedRailSample & { gestureId: number }) =>
+    entry.gestureId === gesture.id &&
+    entry.epochMs - update.epochMs >= 325 &&
+    entry.epochMs - gesture.epochMs < userScrollPauseMs;
+  await expect
+    .poll(async () => (await getRailAudit(page)).checkpoints.some(isQualifyingCheckpoint))
+    .toBe(true);
   const audit = await getRailAudit(page);
-  const checkpoint = audit.checkpoints.find((entry) => entry.gestureId === gesture.id);
+  const checkpoint = audit.checkpoints.find(isQualifyingCheckpoint);
   expect(checkpoint).toBeDefined();
   const retainedCheckpoint = checkpoint as AuditedRailSample & { gestureId: number };
   const scrolls = audit.scrolls.filter(
