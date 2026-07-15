@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type RefObject
+} from 'react';
 import { usePhoneLayout, usePrefersReducedMotion } from './accessibility';
 import { knownCardCount } from './gamePresentation';
 import type { Card, GameState, Player } from './types';
@@ -69,6 +78,8 @@ export interface GameTableLayoutProps {
   localPlayerId?: string;
   localTurn: boolean;
   drawIntent: DrawIntent;
+  centerStartAccessory?: ReactNode;
+  containBoardScroll?: boolean;
   interactionDisabledReason?: string;
   onCardClick: (index: number) => void;
   onChooseDiscard: () => void;
@@ -344,7 +355,9 @@ function PlayerGrid({
       const nextIndex = actionableIndices.find((index) => index > previousIndex) ?? actionableIndices[0];
       if (typeof nextIndex === 'number') {
         setRovingIndex(nextIndex);
-        cardsRef.current?.querySelector<HTMLElement>(`[data-card-index="${nextIndex}"]`)?.focus({ preventScroll: true });
+        const nextCard = cardsRef.current?.querySelector<HTMLElement>(`[data-card-index="${nextIndex}"]`);
+        nextCard?.focus({ preventScroll: true });
+        nextCard?.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
       } else {
         focusFallbackRef?.current?.focus({ preventScroll: true });
       }
@@ -357,7 +370,9 @@ function PlayerGrid({
     if (targetIndex === null || targetIndex === index) return;
     event.preventDefault();
     setRovingIndex(targetIndex);
-    cardsRef.current?.querySelector<HTMLElement>(`[data-card-index="${targetIndex}"]`)?.focus({ preventScroll: true });
+    const targetCard = cardsRef.current?.querySelector<HTMLElement>(`[data-card-index="${targetIndex}"]`);
+    targetCard?.focus({ preventScroll: true });
+    targetCard?.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
   }
 
   function handleCardClick(index: number) {
@@ -486,6 +501,7 @@ interface PlayerBoardGridProps {
   state: GameState;
   localPlayerId?: string;
   drawIntent: DrawIntent;
+  containScroll?: boolean;
   interactionDisabledReason?: string;
   onCardClick: (index: number) => void;
   focusFallbackRef?: RefObject<HTMLElement>;
@@ -496,6 +512,7 @@ export function PlayerBoardGrid({
   state,
   localPlayerId,
   drawIntent,
+  containScroll = false,
   interactionDisabledReason,
   onCardClick,
   focusFallbackRef
@@ -589,7 +606,23 @@ export function PlayerBoardGrid({
     return () => window.cancelAnimationFrame(frame);
   }, [currentOpponentId, isOpponents, reducedMotion, state.log.length, state.phase]);
 
+  function handleBoardKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const verticalKeys = isOpponents ? ['ArrowUp', 'ArrowDown'] : ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'];
+    if (!verticalKeys.includes(event.key)) return;
+    event.preventDefault();
+    const element = event.currentTarget;
+    const pageStep = Math.max(44, Math.round(element.clientHeight * 0.8));
+    const top = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? element.scrollHeight
+        : element.scrollTop + (event.key === 'ArrowUp' ? -44 : event.key === 'ArrowDown' ? 44 : event.key === 'PageUp' ? -pageStep : pageStep);
+    element.scrollTo({ left: element.scrollLeft, top, behavior: 'auto' });
+  }
+
   const isScrollableOpponentRail = isOpponents && players.length > 2;
+  const isKeyboardScrollable = containScroll || isScrollableOpponentRail;
 
   return (
     <div
@@ -597,11 +630,12 @@ export function PlayerBoardGrid({
       className={`skyjo-player-board-grid ${playerBoardVariantClasses[variant]} ${boardCountClass}`.trim()}
       data-entry-count={players.length}
       data-layout-variant={variant}
-      data-scroll-contained={isOpponents ? 'true' : undefined}
+      data-scroll-contained={isOpponents || containScroll ? 'true' : undefined}
       data-testid={isOpponents ? 'opponent-rail' : 'local-board'}
+      onKeyDown={containScroll ? handleBoardKeyDown : undefined}
       ref={boardRef}
-      role={isOpponents ? 'region' : undefined}
-      tabIndex={isScrollableOpponentRail ? 0 : undefined}
+      role={isOpponents || containScroll ? 'region' : undefined}
+      tabIndex={isKeyboardScrollable ? 0 : undefined}
     >
       {players.map((player) => {
         const index = state.players.findIndex((item) => item.id === player.id);
@@ -657,6 +691,7 @@ interface TableControlsProps {
   state: GameState;
   localTurn: boolean;
   drawIntent: DrawIntent;
+  centerStartAccessory?: ReactNode;
   interactionDisabledReason?: string;
   localPlayerId?: string;
   onChooseDiscard: () => void;
@@ -742,9 +777,18 @@ function turnAnnouncement(
     return { key: 'selected-discard', message: 'Discard selected. Choose a highlighted board card, or put the discard back.' };
   }
   if (state.phase === 'choose-replacement' && state.selectedSource === 'draw' && state.drawnCard) {
+    const drawnValue = state.drawnCard.value < 0
+      ? `minus ${Math.abs(state.drawnCard.value)}`
+      : String(state.drawnCard.value);
     return drawIntent === 'discard'
-      ? { key: 'drawn:discard', message: 'Discard mode selected. Choose a highlighted face-down card to reveal.' }
-      : { key: 'drawn:place', message: 'Place mode selected. Choose a highlighted board card to replace.' };
+      ? {
+          key: `drawn:${drawnValue}:discard`,
+          message: `You drew ${drawnValue}. Discard mode selected. Choose a highlighted face-down card to reveal.`
+        }
+      : {
+          key: `drawn:${drawnValue}:place`,
+          message: `You drew ${drawnValue}. Place mode selected. Choose a highlighted board card to replace.`
+        };
   }
   return { key: `${state.phase}:${status.title}`, message: `${status.title}. ${status.description}` };
 }
@@ -785,6 +829,7 @@ function TableControls({
   state,
   localTurn,
   drawIntent,
+  centerStartAccessory,
   interactionDisabledReason,
   localPlayerId,
   onChooseDiscard,
@@ -812,6 +857,9 @@ function TableControls({
       ? 'Opening reveal progress'
       : undefined;
   const progressRef = useRef<HTMLDivElement | null>(null);
+  const deckButtonRef = useRef<HTMLButtonElement | null>(null);
+  const placeDrawnButtonRef = useRef<HTMLButtonElement | null>(null);
+  const restoreDrawDecisionFocusRef = useRef(false);
   const discardButtonDisabled = Boolean(interactionDisabledReason || (discardDisabledReason && !selectedDiscard));
   const discardButtonTitle = selectedDiscard
     ? 'Put the discard card back.'
@@ -824,6 +872,14 @@ function TableControls({
     }
   }, [focusFallbackRef, progressRegionLabel]);
 
+  useLayoutEffect(() => {
+    if (!hasLocalDrawnDecision || !restoreDrawDecisionFocusRef.current) return;
+    restoreDrawDecisionFocusRef.current = false;
+    if (document.activeElement === document.body || document.activeElement === deckButtonRef.current) {
+      placeDrawnButtonRef.current?.focus({ preventScroll: true });
+    }
+  }, [hasLocalDrawnDecision]);
+
   return (
     <section className="skyjo-panel skyjo-table-controls skyjo-table-glow" data-testid="table-center">
       <div
@@ -833,6 +889,7 @@ function TableControls({
         role={progressRegionLabel ? 'region' : undefined}
         tabIndex={progressRegionLabel ? 0 : -1}
       >
+        {centerStartAccessory}
         <FinalTurnCallout localPlayerId={localPlayerId} state={state} />
         <div className="skyjo-table-header flex items-center justify-between gap-3">
           <h2 className="skyjo-serif text-xl font-semibold">Table</h2>
@@ -857,7 +914,11 @@ function TableControls({
         <button
           className="skyjo-button skyjo-pile-button text-center"
           disabled={Boolean(deckDisabledReason)}
-          onClick={onDraw}
+          onClick={() => {
+            restoreDrawDecisionFocusRef.current = document.activeElement === deckButtonRef.current;
+            onDraw();
+          }}
+          ref={deckButtonRef}
           title={deckDisabledReason || 'Draw blind from the deck.'}
           type="button"
         >
@@ -899,21 +960,31 @@ function TableControls({
         {hasLocalDrawnDecision && state.drawnCard ? (
           <div className="skyjo-drawn-decision">
             <div className="flex justify-end">
-              <div className={`${cardClass(state.drawnCard, false)} skyjo-drawn-card shrink-0`}>{cardLabel(state.drawnCard)}</div>
+              <div
+                aria-label={`Drawn card ${cardLabel(state.drawnCard)}`}
+                className={`${cardClass(state.drawnCard, false)} skyjo-drawn-card shrink-0`}
+                role="img"
+              >
+                {cardLabel(state.drawnCard)}
+              </div>
             </div>
             <div className="skyjo-drawn-action-grid">
               <button
+                aria-label="Place drawn card"
                 aria-pressed={drawIntent === 'place'}
                 className={`skyjo-choice-button ${drawIntent === 'place' ? 'skyjo-choice-button-active' : ''}`}
                 disabled={Boolean(interactionDisabledReason)}
                 onClick={() => onSetDrawIntent('place')}
+                ref={placeDrawnButtonRef}
                 title={interactionDisabledReason || 'Replace a card with the drawn card.'}
                 type="button"
               >
-                <span>Place drawn card</span>
+                <span className="skyjo-choice-label-full">Place drawn card</span>
+                <span aria-hidden="true" className="skyjo-choice-label-compact">Place</span>
                 <small className="skyjo-choice-help">Replace any non-cleared card.</small>
               </button>
               <button
+                aria-label="Discard + reveal drawn card"
                 aria-pressed={drawIntent === 'discard'}
                 className={`skyjo-choice-button ${drawIntent === 'discard' ? 'skyjo-choice-button-active' : ''}`}
                 disabled={Boolean(interactionDisabledReason) || !hasHiddenCard}
@@ -924,7 +995,8 @@ function TableControls({
                 }
                 type="button"
               >
-                <span>Discard + reveal</span>
+                <span className="skyjo-choice-label-full">Discard + reveal</span>
+                <span aria-hidden="true" className="skyjo-choice-label-compact">Reveal</span>
                 <small className="skyjo-choice-help">{hasHiddenCard ? 'Reveal one hidden card.' : 'No hidden cards remain.'}</small>
               </button>
             </div>
@@ -952,6 +1024,8 @@ export function GameTableLayout({
   localPlayerId,
   localTurn,
   drawIntent,
+  centerStartAccessory,
+  containBoardScroll = false,
   interactionDisabledReason,
   onCardClick,
   onChooseDiscard,
@@ -989,6 +1063,7 @@ export function GameTableLayout({
         data-testid="shared-game-table"
       >
         <PlayerBoardGrid
+          containScroll={containBoardScroll}
           drawIntent={drawIntent}
           interactionDisabledReason={interactionDisabledReason}
           localPlayerId={localPlayerId}
@@ -998,6 +1073,7 @@ export function GameTableLayout({
         />
         <div className="skyjo-table-center-band" data-testid="table-center-band">
           <TableControls
+            centerStartAccessory={centerStartAccessory}
             drawIntent={drawIntent}
             focusFallbackRef={focusFallbackRef}
             guidanceRef={sideGuidanceRef}
@@ -1013,6 +1089,7 @@ export function GameTableLayout({
           />
         </div>
         <PlayerBoardGrid
+          containScroll={containBoardScroll}
           drawIntent={drawIntent}
           focusFallbackRef={focusFallbackRef}
           interactionDisabledReason={interactionDisabledReason}

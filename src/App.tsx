@@ -15,7 +15,10 @@ import {
 } from './game';
 import { GameTableLayout, type DrawIntent } from './GameTableLayout';
 import { useModalFocus, usePhoneLayout, usePrefersReducedMotion } from './accessibility';
-import { knownCardCount } from './gamePresentation';
+import {
+  ActiveRoomOptionsLoadFallback,
+  RoundSummaryLoadFallback
+} from './CriticalLoadFallbacks';
 import {
   AccountProvider,
   createAdminUser,
@@ -71,7 +74,7 @@ import {
   type SoloPersistenceWarning,
   type SoloSessionRecord
 } from './soloDurability';
-import type { GameState, MultiplayerRoom, RoomChatMessage } from './types';
+import type { GameState, MultiplayerRoom } from './types';
 import { advanceSoloAiOpeningSeat, drainSoloAiOpening, soloAiOpeningSeatDelayMs } from './soloAiOpening';
 
 const singlePlayerAiCounts = Array.from(
@@ -321,6 +324,11 @@ const loadPushSettingsControls = () => import('./PushSettingsControls').catch(()
   )
 }));
 const PushSettingsControls = lazy(loadPushSettingsControls);
+const RoundSummary = lazy(() => import('./RoundSummary').catch(() => ({ default: RoundSummaryLoadFallback })));
+const RoomChat = lazy(() => import('./RoomChat').catch(() => import('./RoomChatLoadFallback')));
+const ActiveRoomOptionsDialog = lazy(() => import('./ActiveRoomOptionsDialog').catch(() => ({
+  default: ActiveRoomOptionsLoadFallback
+})));
 
 function Home() {
   return (
@@ -1195,297 +1203,6 @@ function MoveLogList({ state }: { state: GameState }) {
   );
 }
 
-function formatChatTime(createdAt: number) {
-  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(createdAt));
-}
-
-interface RoomChatProps {
-  messages: RoomChatMessage[];
-  playerId: string;
-  isOpen: boolean;
-  state?: GameState | null;
-  unreadCount: number;
-  interactionDisabledReason?: string;
-  onToggle: () => void;
-  onSend: (text: string) => void;
-}
-
-function RoomChat({
-  messages,
-  playerId,
-  isOpen,
-  state,
-  unreadCount,
-  interactionDisabledReason,
-  onToggle,
-  onSend
-}: RoomChatProps) {
-  const [draft, setDraft] = useState('');
-  const messagesRef = useRef<HTMLDivElement | null>(null);
-  const panelRef = useRef<HTMLElement | null>(null);
-  const latestMessage = messages[messages.length - 1];
-
-  useEffect(() => {
-    if (!isOpen) return;
-    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
-  }, [isOpen, messages.length]);
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (interactionDisabledReason) return;
-    const text = draft.trim();
-    if (!text) return;
-    onSend(text);
-    setDraft('');
-  }
-
-  function flippedSummaryForPlayer(messagePlayerId: string) {
-    const player = state?.players.find((item) => item.id === messagePlayerId);
-    return player ? `${knownCardCount(player)}/12` : '';
-  }
-
-  function handleInputFocus() {
-    window.requestAnimationFrame(() => {
-      panelRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    });
-  }
-
-  return (
-    <section
-      className={`skyjo-panel skyjo-room-chat-panel ${isOpen ? 'skyjo-room-chat-panel-open' : 'skyjo-room-chat-panel-closed'}`}
-      ref={panelRef}
-    >
-      <button
-        aria-expanded={isOpen}
-        className="skyjo-chat-toggle flex w-full items-center justify-between gap-3 text-left"
-        onClick={onToggle}
-        type="button"
-      >
-        <span className="min-w-0">
-          <span className="skyjo-serif block text-xl font-semibold text-[#f5e6c8]">Table Chat</span>
-          <span className="mt-1 block truncate text-sm text-[#f5e6c8]/55">
-            {latestMessage ? `${latestMessage.playerName}: ${latestMessage.text}` : 'No messages yet'}
-          </span>
-        </span>
-        <span className="flex shrink-0 items-center gap-2">
-          {unreadCount > 0 ? (
-            <span className="rounded-full border border-amber-200/35 bg-amber-400/18 px-2 py-1 text-xs font-black text-amber-100">
-              {unreadCount}
-            </span>
-          ) : null}
-          <span className="skyjo-kicker">{isOpen ? 'Hide' : 'Open'}</span>
-          <span className={`skyjo-disclosure-caret ${isOpen ? 'skyjo-disclosure-caret-open' : ''}`} aria-hidden="true" />
-        </span>
-      </button>
-
-      {isOpen ? (
-        <div className="skyjo-chat-body mt-3 grid gap-3">
-          <div
-            aria-atomic="false"
-            aria-label="Table chat messages"
-            aria-live="polite"
-            aria-relevant="additions"
-            className="skyjo-chat-messages max-h-64 space-y-2 overflow-y-auto rounded-xl border border-[#f5e6c8]/10 bg-black/10 p-2"
-            ref={messagesRef}
-            role="log"
-          >
-            {messages.length > 0 ? (
-              messages.map((message) => {
-                const mine = message.playerId === playerId;
-                const flippedSummary = flippedSummaryForPlayer(message.playerId);
-                return (
-                  <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`} key={message.id}>
-                    <div
-                      className={`max-w-[88%] rounded-xl border px-3 py-2 text-sm ${
-                        mine
-                          ? 'border-amber-200/24 bg-amber-300/12 text-amber-50'
-                          : 'border-[#f5e6c8]/10 bg-white/[0.035] text-[#f5e6c8]/82'
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                        <span className="font-black text-[#f5e6c8]">{mine ? 'You' : message.playerName}</span>
-                        {flippedSummary ? (
-                          <span className="skyjo-chat-flipped-pill" title={`${flippedSummary} cards flipped`} aria-label={`${flippedSummary} cards flipped`}>
-                            {flippedSummary}
-                          </span>
-                        ) : null}
-                        <time className="text-xs font-bold text-[#f5e6c8]/42" dateTime={new Date(message.createdAt).toISOString()}>
-                          {formatChatTime(message.createdAt)}
-                        </time>
-                      </div>
-                      <p className="mt-1 break-words leading-5">{message.text}</p>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="rounded-lg border border-dashed border-[#f5e6c8]/14 px-3 py-5 text-center text-sm font-bold text-[#f5e6c8]/45">
-                Say hello when people join the table.
-              </div>
-            )}
-          </div>
-
-          <form className="skyjo-chat-form flex gap-2" onSubmit={handleSubmit}>
-            <input
-              aria-label="Message"
-              className="skyjo-input min-w-0 flex-1 px-3 py-2 text-sm"
-              disabled={Boolean(interactionDisabledReason)}
-              maxLength={280}
-              onChange={(event) => setDraft(event.target.value)}
-              onFocus={handleInputFocus}
-              placeholder="Message players"
-              title={interactionDisabledReason || 'Message players'}
-              value={draft}
-            />
-            <button
-              className="skyjo-button skyjo-button-primary px-4 py-2 text-sm"
-              disabled={Boolean(interactionDisabledReason) || !draft.trim()}
-              title={interactionDisabledReason || 'Send message'}
-              type="submit"
-            >
-              Send
-            </button>
-          </form>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-interface RoundSummaryProps {
-  state: GameState;
-  actionLabel?: string;
-  actionDisabledReason?: string;
-  onAction?: () => void;
-  onMinimize?: () => void;
-  restoreFocusFallback?: () => HTMLElement | null;
-  children?: ReactNode;
-}
-
-function RoundSummary({
-  state,
-  actionLabel,
-  actionDisabledReason,
-  onAction,
-  onMinimize,
-  restoreFocusFallback,
-  children
-}: RoundSummaryProps) {
-  const phoneLayout = usePhoneLayout();
-  const dialogRef = useRef<HTMLElement | null>(null);
-  const titleRef = useRef<HTMLHeadingElement | null>(null);
-  useModalFocus({
-    open: true,
-    dialogRef,
-    initialFocusRef: titleRef,
-    onDismiss: onMinimize,
-    closeOnEscape: Boolean(onMinimize),
-    containFocus: phoneLayout,
-    inertBackground: phoneLayout,
-    lockScroll: phoneLayout,
-    restoreFocusFallback: () =>
-      document.querySelector<HTMLElement>('[data-testid="round-summary-restore"]') ??
-      restoreFocusFallback?.() ??
-      document.querySelector<HTMLElement>('[aria-label="Open game settings"]')
-  });
-  useEffect(() => {
-    if (!phoneLayout) titleRef.current?.scrollIntoView?.({ block: 'nearest' });
-  }, [phoneLayout]);
-  const rankedPlayers = [...state.players].sort((a, b) => a.totalScore - b.totalScore || a.roundScore - b.roundScore);
-  const leader = rankedPlayers[0];
-  const winner = state.winnerId ? state.players.find((player) => player.id === state.winnerId) : null;
-  const headline = state.phase === 'game-over' ? `${winner?.name || leader.name} wins the game.` : 'Round complete.';
-  const outcome =
-    state.phase === 'game-over'
-      ? `${winner?.name || leader.name} finished lowest at ${(winner || leader).totalScore} total.`
-      : `${leader.name} leads at ${leader.totalScore} total.`;
-  const latestScoringNote = state.log[0];
-
-  const summary = (
-    <section
-      aria-labelledby="skyjo-round-summary-title"
-      aria-modal={phoneLayout ? true : undefined}
-      className="skyjo-panel skyjo-score-panel skyjo-round-summary-panel"
-      ref={dialogRef}
-      role={phoneLayout ? 'dialog' : undefined}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="skyjo-kicker">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</div>
-          <h2
-            className="skyjo-serif mt-1 text-2xl font-bold leading-tight text-[#f5e6c8]"
-            id="skyjo-round-summary-title"
-            ref={titleRef}
-            tabIndex={-1}
-          >
-            {headline}
-          </h2>
-          <p className="mt-2 text-sm font-bold text-[#f5e6c8]/78">{outcome}</p>
-          {latestScoringNote ? <p className="mt-1 text-xs leading-5 text-[#f5e6c8]/58">{latestScoringNote}</p> : null}
-        </div>
-        {onMinimize ? (
-          <button className="skyjo-button skyjo-round-summary-minimize px-3 py-2 text-xs" onClick={onMinimize} type="button">
-            Minimize
-          </button>
-        ) : null}
-      </div>
-
-      <div className="skyjo-score-list mt-4" aria-label="Round score and total score">
-        {rankedPlayers.map((player, index) => {
-          const isWinner = winner ? player.id === winner.id : index === 0;
-          return (
-            <div className={`skyjo-score-row ${isWinner ? 'skyjo-score-row-leader' : ''}`} key={player.id}>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="skyjo-score-rank">#{index + 1}</span>
-                  <span className="skyjo-score-player-name font-extrabold text-[#f5e6c8]">{player.name}</span>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-right tabular-nums">
-                <div>
-                  <div className="skyjo-score-label">Round score</div>
-                  <div className="font-black text-[#f5e6c8]">{player.roundScore}</div>
-                </div>
-                <div>
-                  <div className="skyjo-score-label">Total score</div>
-                  <div className="font-black text-[#f5e6c8]">{player.totalScore}</div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {children}
-
-      {actionLabel && onAction ? (
-        <button
-          className="skyjo-button skyjo-button-primary mt-4 w-full px-4 py-3"
-          disabled={Boolean(actionDisabledReason)}
-          onClick={onAction}
-          title={actionDisabledReason || actionLabel}
-          type="button"
-        >
-          {actionLabel}
-        </button>
-      ) : null}
-      {actionDisabledReason ? (
-        <p className="skyjo-disabled-note mt-4">
-          <span>Action unavailable:</span> {actionDisabledReason}
-        </p>
-      ) : null}
-    </section>
-  );
-  return phoneLayout
-    ? createPortal(
-        <div className="skyjo-round-summary-overlay" data-modal-overlay>
-          {summary}
-        </div>,
-        document.body
-      )
-    : summary;
-}
-
 function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameState; meta?: string; onRestore: () => void }) {
   return (
     <button className="skyjo-round-summary-chip" data-testid="round-summary-restore" onClick={onRestore} type="button">
@@ -1860,13 +1577,15 @@ function SinglePlayer() {
 
         <aside className="skyjo-secondary-stack space-y-4">
           {isScoringPhase && roundSummaryOpen ? (
-            <RoundSummary
-              actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
-              onMinimize={() => setRoundSummaryOpen(false)}
-              onAction={() => (state.phase === 'game-over' ? startSelectedGame() : setState(startNextRound(state)))}
-              restoreFocusFallback={() => document.querySelector<HTMLElement>('[aria-label="Action guidance"]')}
-              state={state}
-            />
+            <Suspense fallback={null}>
+              <RoundSummary
+                actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
+                onMinimize={() => setRoundSummaryOpen(false)}
+                onAction={() => (state.phase === 'game-over' ? startSelectedGame() : setState(startNextRound(state)))}
+                restoreFocusFallback={() => document.querySelector<HTMLElement>('[aria-label="Action guidance"]')}
+                state={state}
+              />
+            </Suspense>
           ) : null}
         </aside>
       </div>
@@ -1986,12 +1705,15 @@ function Lobby() {
   const accountUserId = accountUser?.id ?? '';
   const accountDisplayName = accountUser?.displayName ?? '';
   const location = useLocation();
+  const phoneLayout = usePhoneLayout();
+  const pwaUpdate = useSyncExternalStore(subscribeToPwaUpdates, getPwaUpdateSnapshot, getPwaUpdateSnapshot);
   const initialLobbyRef = useRef<InitialLobbySession | null>(null);
   if (!initialLobbyRef.current) initialLobbyRef.current = getInitialLobbySession();
   const initialLobby = initialLobbyRef.current;
   const connectionControllerRef = useRef<RoomConnectionController | null>(null);
   const frameHandlerRef = useRef<(frame: RoomConnectionFrame) => void>(() => {});
   const shareStatusTimerRef = useRef<number | null>(null);
+  const roomOptionsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const roomCodeRef = useRef(initialLobby.roomCode);
   const playerIdRef = useRef(initialLobby.playerId);
   const terminalSessionRetiredRef = useRef(false);
@@ -2019,6 +1741,7 @@ function Lobby() {
   const [shareStatus, setShareStatus] = useState('');
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const [chatOpen, setChatOpen] = useState(false);
+  const [roomOptionsOpen, setRoomOptionsOpen] = useState(false);
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
   const [lastSeenChatMessageId, setLastSeenChatMessageId] = useState('');
   const lastSeenChatRoomCodeRef = useRef('');
@@ -2559,6 +2282,7 @@ function Lobby() {
       : `${room.status === 'waiting' ? 'Waiting-room' : 'Active-game'} host handoff is pending. The oldest connected player will become host when available.`
     : '';
   const roomState = room?.state;
+  const activePhoneLayout = phoneLayout && Boolean(roomState);
   const roomInteractionDisabledReason =
     room && (localPlayer?.controller || 'human') === 'ai'
       ? 'AI is controlling your seat. Keep this tab visible to reclaim it.'
@@ -2595,6 +2319,10 @@ function Lobby() {
     return () => window.clearInterval(timer);
   }, [hasActiveLifecycleCountdown]);
 
+  useEffect(() => {
+    if (!activePhoneLayout) setRoomOptionsOpen(false);
+  }, [activePhoneLayout]);
+
   useGameAudio(roomState);
 
   function chooseDiscardForRoom() {
@@ -2614,36 +2342,96 @@ function Lobby() {
     sendCommand({ type: 'draw-blind' });
   }
 
+  const roomChat = room ? (
+    <Suspense fallback={null}>
+      <RoomChat
+        interactionDisabledReason={roomInteractionDisabledReason}
+        isOpen={chatOpen}
+        messages={chatMessages}
+        onSend={sendChatMessage}
+        onToggle={() => setChatOpen((current) => !current)}
+        playerId={playerId}
+        state={roomState}
+        unreadCount={unreadChatCount}
+        variant={activePhoneLayout ? 'dock' : 'panel'}
+      />
+    </Suspense>
+  ) : null;
+
   if (accountLoading) return null;
   if (!accountUser) return <RequireAccountPanel next={`/lobby${location.search}`} title="Sign in to play multiplayer" />;
 
   return (
     <main
-      className={`skyjo-surface px-4 py-8 ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}
+      className={`skyjo-surface px-4 py-8 ${activePhoneLayout ? 'skyjo-active-phone-surface' : ''} ${summaryModalOpen ? 'skyjo-round-summary-surface' : ''}`}
       data-testid="game-table"
     >
-      <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} ${summaryModalOpen ? 'skyjo-round-summary-mode' : ''} space-y-5`}>
+      <div className={`skyjo-shell ${roomState ? 'skyjo-active-mobile-shell' : ''} ${activePhoneLayout ? 'skyjo-active-phone-shell' : ''} ${summaryModalOpen ? 'skyjo-round-summary-mode' : ''} space-y-5`}>
         {roomScoringPhase && roomState && !roundSummaryOpen ? (
           <RoundSummaryRestoreButton meta={readySummary} state={roomState} onRestore={() => setRoundSummaryOpen(true)} />
         ) : null}
 
-        <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
-          <div className="skyjo-game-heading min-w-0">
-            <Link aria-label="Back to home" className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
+        {activePhoneLayout && room ? (
+          <header className="skyjo-active-room-toolbar" data-connection-state={connection} data-testid="active-room-toolbar">
+            <h1 className="sr-only">Skyjo multiplayer room {room.code}</h1>
+            <Link aria-label="Back to home" className="skyjo-back-link" to="/">
               Back
             </Link>
-            <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Multiplayer Lobby</h1>
-            <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Create a private room and share the code with friends.</p>
-          </div>
-          <div className="skyjo-header-actions flex items-start justify-end gap-2">
+            <div className="skyjo-active-room-identity">
+              <strong aria-label={`Room code ${room.code}`}>{room.code}</strong>
+              <span>
+                {multiplayerConnectionCopy[connection].label}{pwaUpdate.available ? ' · Update ready' : ''}
+              </span>
+              <span aria-live="polite" className="sr-only" role="status">
+                {pwaUpdate.available ? 'Skyjo update ready. This active game will not reload.' : ''}
+              </span>
+            </div>
+            <button
+              aria-label={`Share room ${room.code}`}
+              className="skyjo-button skyjo-icon-button skyjo-toolbar-share"
+              onClick={shareRoomLink}
+              title="Share room"
+              type="button"
+            >
+            </button>
+            <button
+              aria-controls="skyjo-room-options-dialog"
+              aria-expanded={roomOptionsOpen}
+              aria-haspopup="dialog"
+              aria-label="Open room options"
+              className="skyjo-button skyjo-icon-button skyjo-toolbar-more"
+              onClick={() => setRoomOptionsOpen(true)}
+              ref={roomOptionsTriggerRef}
+              title="Room options"
+              type="button"
+            >
+            </button>
             <GameSettingsButton state={roomState} />
+            {shareStatus ? <span className="skyjo-active-share-status" role="status">{shareStatus}</span> : null}
+          </header>
+        ) : (
+          <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
+            <div className="skyjo-game-heading min-w-0">
+              <Link aria-label="Back to home" className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
+                Back
+              </Link>
+              <h1 className="skyjo-title skyjo-game-title mt-2 text-5xl">Multiplayer Lobby</h1>
+              <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Create a private room and share the code with friends.</p>
+            </div>
+            <div className="skyjo-header-actions flex items-start justify-end gap-2">
+              <GameSettingsButton state={roomState} />
+            </div>
           </div>
-        </div>
+        )}
 
-        <MultiplayerConnectionStatus roomActive={Boolean(room)} state={connection} />
+        {!activePhoneLayout || connection !== 'connected' ? (
+          <div className={activePhoneLayout ? 'skyjo-active-room-notice' : undefined}>
+            <MultiplayerConnectionStatus roomActive={Boolean(room)} state={connection} />
+          </div>
+        ) : null}
 
         {room && (connection === 'error' || connection === 'idle') ? (
-          <section className="skyjo-panel flex flex-wrap items-center justify-between gap-3 p-4" aria-label="Room recovery actions">
+          <section className={`skyjo-panel flex flex-wrap items-center justify-between gap-3 p-4 ${activePhoneLayout ? 'skyjo-active-room-recovery' : ''}`} aria-label="Room recovery actions">
             <p className="text-sm font-bold text-[#f5e6c8]/72">Your last synchronized room is still visible and read-only.</p>
             <div className="flex flex-wrap gap-2">
               <button className="skyjo-button skyjo-button-primary px-4 py-2" onClick={retrySavedRoom} type="button">
@@ -2697,7 +2485,7 @@ function Lobby() {
         {error ? (
           <div
             aria-live="assertive"
-            className="rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-3 text-red-100"
+            className={`rounded-xl border border-red-400/40 bg-red-950/70 px-4 py-3 text-red-100 ${activePhoneLayout ? 'skyjo-active-room-error' : ''}`}
             role="alert"
           >
             {error}
@@ -2707,7 +2495,15 @@ function Lobby() {
         {room ? (
           <div className="skyjo-active-room-grid grid gap-5">
             <section className="skyjo-room-primary-stack space-y-4">
-              <div className={`skyjo-panel skyjo-room-status-panel ${roomState ? 'skyjo-room-status-panel-active' : ''}`}>
+              <Suspense fallback={null}>
+                <ActiveRoomOptionsDialog
+                  active={activePhoneLayout}
+                  onDismiss={() => setRoomOptionsOpen(false)}
+                  open={roomOptionsOpen}
+                  roomCode={room.code}
+                  triggerRef={roomOptionsTriggerRef}
+                >
+                <div className={`skyjo-panel skyjo-room-status-panel ${roomState ? 'skyjo-room-status-panel-active' : ''}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="skyjo-kicker">Room code</div>
@@ -2748,7 +2544,10 @@ function Lobby() {
                       <button
                         className="skyjo-button px-4 py-2"
                         disabled={Boolean(roomInteractionDisabledReason)}
-                        onClick={() => sendCommand({ type: 'reset-room' })}
+                        onClick={() => {
+                          if (!window.confirm('Reset this room for every player? The current game will be discarded.')) return;
+                          sendCommand({ type: 'reset-room' });
+                        }}
                         title={roomInteractionDisabledReason || 'Reset this room.'}
                         type="button"
                       >
@@ -2757,7 +2556,7 @@ function Lobby() {
                     ) : null}
                   </div>
                 </div>
-                {shareStatus ? <p className="skyjo-share-status mt-3 text-sm font-extrabold text-[#f5e6c8]/72">{shareStatus}</p> : null}
+                {shareStatus ? <p className="skyjo-share-status mt-3 text-sm font-extrabold text-[#f5e6c8]/72" role="status">{shareStatus}</p> : null}
                 {hostTransferCopy ? (
                   <p className="mt-3 text-sm font-bold text-amber-100" data-testid="host-transfer-status">
                     {hostTransferCopy}
@@ -2837,10 +2636,14 @@ function Lobby() {
                     <span>Action unavailable:</span> {startGameDisabledReason}
                   </p>
                 ) : null}
-              </div>
+                </div>
+                </ActiveRoomOptionsDialog>
+              </Suspense>
 
               {roomState ? (
                 <GameTableLayout
+                  centerStartAccessory={activePhoneLayout ? roomChat : undefined}
+                  containBoardScroll={activePhoneLayout}
                   drawIntent={drawIntent}
                   interactionDisabledReason={roomInteractionDisabledReason}
                   localPlayerId={playerId}
@@ -2861,18 +2664,10 @@ function Lobby() {
 
             {roomState ? (
               <aside className={`skyjo-secondary-stack ${chatOpen ? 'skyjo-secondary-stack-chat-open' : ''} space-y-4`}>
-                  <RoomChat
-                    isOpen={chatOpen}
-                    interactionDisabledReason={roomInteractionDisabledReason}
-                    messages={chatMessages}
-                    onSend={sendChatMessage}
-                    onToggle={() => setChatOpen((current) => !current)}
-                    playerId={playerId}
-                    state={roomState}
-                    unreadCount={unreadChatCount}
-                  />
+                  {!activePhoneLayout ? roomChat : null}
                   {roomScoringPhase && roundSummaryOpen ? (
-                    <RoundSummary
+                    <Suspense fallback={null}>
+                      <RoundSummary
                       actionDisabledReason={
                         roomInteractionDisabledReason ||
                         (localIsHost
@@ -2909,21 +2704,14 @@ function Lobby() {
                           {localReadyForNextRound ? 'Ready' : "I'm Ready"}
                         </button>
                       </div>
-                    </RoundSummary>
+                      </RoundSummary>
+                    </Suspense>
                   ) : null}
               </aside>
             ) : (
               <aside className="skyjo-secondary-stack space-y-4">
                 <section className="skyjo-panel skyjo-waiting-note-panel text-sm text-[#f5e6c8]/70">Keep this tab open while friends join.</section>
-                <RoomChat
-                  isOpen={chatOpen}
-                  interactionDisabledReason={roomInteractionDisabledReason}
-                  messages={chatMessages}
-                  onSend={sendChatMessage}
-                  onToggle={() => setChatOpen((current) => !current)}
-                  playerId={playerId}
-                  unreadCount={unreadChatCount}
-                />
+                {roomChat}
               </aside>
             )}
           </div>
@@ -2961,7 +2749,7 @@ function PwaUpdateBanner() {
   if (!update.available) return null;
   const deferred = isPwaUpdateDeferredPath(location.pathname);
   return (
-    <aside aria-live="polite" className="skyjo-update-banner" data-testid="pwa-update-banner">
+    <aside aria-live="polite" className="skyjo-update-banner" data-deferred={deferred ? 'true' : 'false'} data-testid="pwa-update-banner">
       <div>
         <strong>Skyjo update ready</strong>
         <span>{deferred ? ' It will wait until you leave this game.' : update.reloadRequired ? ' Reload once to use it.' : ' Apply it when you are ready.'}</span>

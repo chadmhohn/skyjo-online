@@ -198,6 +198,9 @@ export function usePrefersReducedMotion(): boolean {
   return useMediaQuery('(prefers-reduced-motion: reduce)');
 }
 
+export const PHONE_LAYOUT_MEDIA_QUERY =
+  '(max-width: 640px), (max-height: 640px) and (pointer: coarse) and (hover: none)';
+
 export function usePhoneLayout(): boolean {
-  return useMediaQuery('(max-width: 640px)');
+  return useMediaQuery(PHONE_LAYOUT_MEDIA_QUERY);
 }

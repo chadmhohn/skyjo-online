@@ -6,7 +6,7 @@ export default defineConfig({
   build: {
     minify: 'terser',
     terserOptions: {
-      compress: { passes: 2 },
+      compress: { passes: 5 },
       format: { comments: false }
     }
   }
