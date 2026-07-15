@@ -2,6 +2,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import App from '../../../src/App';
+import { PHONE_LAYOUT_MEDIA_QUERY } from '../../../src/accessibility';
 import {
   RESET_RECOVERY_MAX_SERIALIZED_LENGTH,
   RESET_RECOVERY_STORAGE_KEY,
@@ -369,6 +370,7 @@ beforeEach(() => {
     configurable: true,
     value: { writeText: vi.fn(async () => undefined) }
   });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -498,6 +500,24 @@ describe('multiplayer lobby', () => {
     });
     expect(lastFrame(socket)).not.toHaveProperty('recoveryExpectedRevision');
     expect(window.localStorage.getItem(RESET_RECOVERY_STORAGE_KEY)).toBe(serialized);
+  });
+
+  it('does not reset the room until the host confirms the destructive action', async () => {
+    const { socket, user } = await createJoinedRoom(makeResetCapableRoom());
+    const confirmReset = vi.mocked(window.confirm);
+    confirmReset.mockReturnValueOnce(false);
+    const sentBeforeReset = socket.sent.length;
+
+    await user.click(screen.getByRole('button', { name: 'Reset Room' }));
+
+    expect(confirmReset).toHaveBeenCalledWith(
+      'Reset this room for every player? The current game will be discarded.'
+    );
+    expect(socket.sent).toHaveLength(sentBeforeReset);
+
+    confirmReset.mockReturnValueOnce(true);
+    await user.click(screen.getByRole('button', { name: 'Reset Room' }));
+    expectCommand(socket, { type: 'reset-room' }, 0);
   });
 
   it('recovers an advanced reset target after every live reply is lost and a hard reload', async () => {
@@ -1294,8 +1314,8 @@ describe('multiplayer lobby', () => {
     Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
     act(() => window.dispatchEvent(new Event('offline')));
     await user.click(screen.getByRole('button', { name: /Round scoring.*Open/ }));
-    expect(screen.getByRole('button', { name: 'Ready' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Next Round' })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: 'Ready' })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: 'Next Round' })).toBeDisabled();
   });
 
   it('retains initial hidden visibility and publishes it immediately after the reconnect snapshot', async () => {
@@ -1499,7 +1519,7 @@ describe('multiplayer game table', () => {
   });
 
   it('renders one shared four-player table with opponent waits, final-lap states, and completed-round readiness controls', async () => {
-    setMediaQueryMatches('(max-width: 640px)', true);
+    setMediaQueryMatches(PHONE_LAYOUT_MEDIA_QUERY, true);
     const fourPlayers = [
       makePlayer('p1', 'Alice'),
       makePlayer('p2', 'Bob'),
@@ -1533,9 +1553,14 @@ describe('multiplayer game table', () => {
     expect(screen.getByTestId('local-board')).toHaveAttribute('data-entry-count', '1');
     expect(screen.getByText('Waiting on Bob')).toBeInTheDocument();
     expect(screen.getByText('Bob is taking a final turn.')).toBeInTheDocument();
-    expect(screen.getByText(/Carol away/)).toBeInTheDocument();
     expect(screen.getAllByTitle('Waiting for Bob.')).toHaveLength(2);
     expect(screen.getByRole('heading', { name: 'Drew' })).toBeInTheDocument();
+    const roomOptionsTrigger = screen.getByRole('button', { name: 'Open room options' });
+    await user.click(roomOptionsTrigger);
+    expect(screen.getByRole('dialog', { name: 'Room ABCDE' })).toBeInTheDocument();
+    expect(screen.getByText(/Carol away/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close room options' }));
+    expect(roomOptionsTrigger).toHaveFocus();
 
     const roundOverPlayers = fourPlayers.map((player, index) => ({
       ...player,

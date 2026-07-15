@@ -8,6 +8,518 @@ body {
   background: #060c0a;
 }
 
+.skyjo-chat-overlay,
+.skyjo-room-options-overlay {
+  z-index: 150;
+}
+
+.skyjo-chat-dialog,
+.skyjo-room-options-dialog {
+  display: grid;
+  width: min(100%, 38rem);
+  max-height: min(88dvh, 42rem);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  color: #f5e6c8;
+}
+
+.skyjo-chat-dialog {
+  height: min(72dvh, 34rem);
+}
+
+.skyjo-chat-dialog-header,
+.skyjo-room-options-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid rgba(245, 230, 200, 0.12);
+  padding: 0.85rem;
+}
+
+.skyjo-chat-dialog .skyjo-chat-body {
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+  padding: 0.75rem;
+}
+
+.skyjo-chat-dialog .skyjo-chat-messages {
+  height: 100%;
+  max-height: none;
+}
+
+.skyjo-room-options-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.75rem;
+}
+
+.skyjo-room-options-body > .skyjo-room-status-panel {
+  box-shadow: none;
+}
+
+.skyjo-chat-dock-button {
+  position: relative;
+}
+
+.skyjo-chat-dock-badge {
+  position: absolute;
+  top: -0.3rem;
+  right: -0.3rem;
+  display: grid;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  place-items: center;
+  border: 1px solid rgba(254, 243, 199, 0.7);
+  border-radius: 999px;
+  background: #b45309;
+  color: #fff7ed;
+  font-size: 0.65rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.skyjo-choice-label-compact {
+  display: none;
+}
+
+@media (max-width: 640px), (max-height: 640px) and (pointer: coarse) and (hover: none) {
+  html:has(main.skyjo-active-phone-surface),
+  body:has(main.skyjo-active-phone-surface),
+  #root:has(main.skyjo-active-phone-surface) {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  main.skyjo-active-phone-surface {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+    padding-top: max(0.25rem, env(safe-area-inset-top)) !important;
+    padding-right: max(0.35rem, env(safe-area-inset-right)) !important;
+    padding-bottom: max(0.25rem, env(safe-area-inset-bottom)) !important;
+    padding-left: max(0.35rem, env(safe-area-inset-left)) !important;
+  }
+
+  .skyjo-active-phone-shell {
+    display: grid;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    grid-template-rows: 44px minmax(0, 1fr);
+    gap: 0.35rem;
+    overflow: hidden;
+  }
+
+  .skyjo-active-phone-shell > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+
+  .skyjo-active-room-toolbar {
+    position: relative;
+    z-index: 45;
+    display: grid;
+    min-width: 0;
+    height: 44px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px 44px 44px;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .skyjo-active-room-toolbar .skyjo-back-link {
+    width: 44px;
+    height: 44px;
+  }
+
+  .skyjo-active-room-identity {
+    display: grid;
+    min-width: 0;
+    align-content: center;
+    line-height: 1;
+  }
+
+  .skyjo-active-room-identity strong {
+    overflow: hidden;
+    color: #f5e6c8;
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: min(1rem, 16px);
+    letter-spacing: 0.05em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .skyjo-active-room-identity span {
+    overflow: hidden;
+    margin-top: 1px;
+    color: rgba(245, 230, 200, 0.58);
+    font-size: min(0.62rem, 10px);
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .skyjo-active-room-toolbar[data-connection-state='offline'] .skyjo-active-room-identity span,
+  .skyjo-active-room-toolbar[data-connection-state='error'] .skyjo-active-room-identity span {
+    color: #fecaca;
+  }
+
+  .skyjo-active-share-status {
+    position: absolute;
+    top: calc(100% + 0.25rem);
+    right: 0;
+    z-index: 80;
+    border: 1px solid rgba(245, 230, 200, 0.18);
+    border-radius: 999px;
+    background: rgba(6, 12, 10, 0.96);
+    padding: 0.35rem 0.55rem;
+    color: #f5e6c8;
+    font-size: 0.7rem;
+    font-weight: 900;
+    white-space: nowrap;
+  }
+
+  .skyjo-active-phone-shell > .skyjo-active-room-grid {
+    display: grid;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    max-width: none;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+    overflow: hidden;
+  }
+
+  .skyjo-active-phone-shell .skyjo-room-primary-stack {
+    display: grid;
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+    overflow: hidden;
+  }
+
+  .skyjo-active-phone-shell .skyjo-room-primary-stack > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+
+  .skyjo-active-phone-shell .skyjo-game-table-shell {
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.35rem;
+    overflow: hidden;
+  }
+
+  .skyjo-active-phone-shell .skyjo-phone-action-guidance {
+    position: relative;
+    top: auto;
+    z-index: 20;
+    display: block;
+  }
+
+  .skyjo-active-phone-shell .skyjo-phone-action-guidance .skyjo-action-guidance {
+    padding: 0.4rem 0.55rem;
+  }
+
+  .skyjo-active-phone-shell .skyjo-phone-action-guidance .skyjo-action-guidance-title {
+    font-size: min(0.88rem, 16px);
+  }
+
+  .skyjo-active-phone-shell .skyjo-phone-action-guidance .skyjo-kicker {
+    font-size: min(0.68rem, 11px);
+  }
+
+  .skyjo-active-phone-shell .skyjo-phone-action-guidance .skyjo-action-guidance-instruction,
+  .skyjo-active-phone-shell .skyjo-phone-action-guidance .skyjo-disabled-note {
+    display: none;
+  }
+
+  .skyjo-active-phone-shell .skyjo-game-table-layout {
+    --skyjo-board-track: 100%;
+    --skyjo-table-gap: 0.3rem;
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr) 110px minmax(0, 1fr);
+    gap: var(--skyjo-table-gap);
+    padding: 0.35rem;
+  }
+
+  .skyjo-active-phone-shell .skyjo-table-center-band,
+  .skyjo-active-phone-shell .skyjo-table-controls {
+    height: 110px;
+    min-height: 110px;
+    max-height: 110px;
+  }
+
+  .skyjo-active-phone-shell .skyjo-table-controls {
+    grid-template-columns: minmax(44px, 1fr) 92px minmax(94px, 1fr);
+    gap: 4px;
+    padding: 4px;
+    overflow: hidden;
+  }
+
+  .skyjo-active-phone-shell .skyjo-table-band-side {
+    height: 102px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .skyjo-active-phone-shell .skyjo-table-piles {
+    width: 100%;
+    justify-self: stretch;
+    gap: 4px;
+  }
+
+  .skyjo-active-phone-shell .skyjo-pile-button {
+    width: 100%;
+    min-width: 0;
+    height: 102px;
+    min-height: 102px;
+    overflow: hidden;
+    padding: 3px;
+  }
+
+  .skyjo-active-phone-shell .skyjo-pile-button .skyjo-kicker {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 8px;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .skyjo-active-phone-shell .skyjo-table-card {
+    width: 34px;
+    min-height: 43px;
+    border-radius: 7px;
+    font-size: 18px;
+  }
+
+  .skyjo-active-phone-shell .skyjo-table-card.skyjo-card-hidden {
+    font-size: 7px;
+    letter-spacing: 0;
+  }
+
+  .skyjo-active-phone-shell .skyjo-table-header {
+    display: none;
+  }
+
+  .skyjo-active-phone-shell .skyjo-player-board-grid {
+    height: 100%;
+    min-height: 0;
+    align-items: flex-start;
+    overflow-y: auto;
+    overscroll-behavior-block: contain;
+    scrollbar-width: thin;
+  }
+
+  .skyjo-active-phone-shell .skyjo-player-board-grid > .skyjo-player-grid {
+    height: max-content;
+    min-height: 100%;
+    overflow: visible;
+  }
+
+  .skyjo-active-phone-shell .skyjo-player-grid {
+    padding: 0.4rem;
+  }
+
+  .skyjo-active-phone-shell .skyjo-player-grid-header {
+    flex-wrap: wrap;
+    margin-bottom: 0.2rem;
+  }
+
+  .skyjo-active-phone-shell .skyjo-player-card-rows,
+  .skyjo-active-phone-shell .skyjo-player-card-row {
+    gap: 0.12rem;
+  }
+
+  .skyjo-active-phone-shell .skyjo-player-card-rows {
+    flex: 0 0 auto;
+  }
+
+  .skyjo-active-phone-shell .skyjo-player-grid .skyjo-card {
+    width: min(100%, 46px);
+    min-width: 0;
+    min-height: 44px;
+  }
+
+  .skyjo-active-phone-shell .skyjo-side-action-guidance,
+  .skyjo-active-phone-shell .skyjo-opening-tracker {
+    display: none;
+  }
+
+  .skyjo-active-phone-shell .skyjo-secondary-stack {
+    display: contents;
+  }
+
+  .skyjo-active-phone-shell .skyjo-drawn-decision {
+    display: grid;
+    height: 102px;
+    grid-template-columns: 44px minmax(44px, 1fr);
+    grid-template-rows: 1fr;
+    align-items: center;
+    gap: 2px;
+    overflow: hidden;
+    padding: 2px;
+  }
+
+  .skyjo-active-phone-shell .skyjo-drawn-decision > .flex {
+    display: flex;
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .skyjo-active-phone-shell .skyjo-drawn-card {
+    width: 42px;
+    min-height: 44px;
+    font-size: 18px;
+  }
+
+  .skyjo-active-phone-shell .skyjo-drawn-action-grid {
+    min-width: 0;
+  }
+
+  .skyjo-active-phone-shell .skyjo-drawn-decision .skyjo-choice-button {
+    min-width: 0;
+    padding: 2px;
+  }
+
+  .skyjo-active-phone-shell .skyjo-drawn-decision .skyjo-choice-button span {
+    font-size: min(0.58rem, 14px);
+  }
+
+  .skyjo-active-phone-shell .skyjo-choice-label-full {
+    display: none;
+  }
+
+  .skyjo-active-phone-shell .skyjo-choice-label-compact {
+    display: inline;
+  }
+
+  .skyjo-active-phone-shell .skyjo-table-band-side-start > .skyjo-chat-dock-button {
+    margin: 0.1rem 0 0 0.1rem;
+  }
+
+  .skyjo-active-room-notice,
+  .skyjo-active-room-error,
+  .skyjo-active-room-recovery {
+    position: fixed;
+    right: max(0.5rem, env(safe-area-inset-right));
+    left: max(0.5rem, env(safe-area-inset-left));
+    z-index: 100;
+    max-height: min(45dvh, 20rem);
+    overflow-y: auto;
+  }
+
+  .skyjo-active-room-notice {
+    top: calc(max(0.25rem, env(safe-area-inset-top)) + 48px);
+  }
+
+  .skyjo-active-room-error {
+    top: calc(max(0.25rem, env(safe-area-inset-top)) + 104px);
+  }
+
+  .skyjo-active-room-recovery {
+    top: calc(max(0.25rem, env(safe-area-inset-top)) + 48px);
+    transform: none;
+  }
+
+  .skyjo-active-phone-shell:has(.skyjo-active-room-recovery) .skyjo-active-room-notice {
+    display: none;
+  }
+
+  .skyjo-active-phone-shell:has(.skyjo-active-room-recovery) .skyjo-active-room-error {
+    top: auto;
+    bottom: max(0.5rem, env(safe-area-inset-bottom));
+    max-height: 30dvh;
+  }
+
+  .skyjo-active-room-toolbar .skyjo-icon,
+  .skyjo-active-room-toolbar .skyjo-settings-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .skyjo-active-room-toolbar .skyjo-back-link::before {
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .skyjo-toolbar-share::before {
+    content: '\21E7';
+    font-size: 23px;
+    font-weight: 900;
+    line-height: 1;
+  }
+
+  .skyjo-toolbar-more::before {
+    content: '\2022\2022\2022';
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: 1px;
+    line-height: 1;
+  }
+
+  .skyjo-chat-overlay,
+  .skyjo-room-options-overlay {
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+  }
+
+  .skyjo-room-options-dialog {
+    height: min(88dvh, 44rem);
+  }
+
+  .skyjo-room-options-body .skyjo-room-status-panel {
+    padding: 0.65rem;
+  }
+
+  .skyjo-room-options-body .skyjo-room-code {
+    font-size: 1.7rem !important;
+  }
+
+  .skyjo-chat-dialog .skyjo-chat-form .skyjo-input {
+    font-size: 16px;
+  }
+
+  .skyjo-active-phone-shell > [data-testid='round-summary-restore'] {
+    position: fixed;
+    right: max(0.5rem, env(safe-area-inset-right));
+    bottom: max(0.5rem, env(safe-area-inset-bottom));
+    z-index: 70;
+  }
+
+  .skyjo-update-banner[data-deferred='true'] {
+    top: calc(max(0.25rem, env(safe-area-inset-top)) + 48px);
+    right: max(0.5rem, env(safe-area-inset-right));
+    bottom: auto;
+    left: auto;
+    width: auto;
+    min-height: 44px;
+    flex-direction: row;
+    gap: 0.45rem;
+    padding: 0.4rem 0.55rem;
+  }
+
+  .skyjo-update-banner[data-deferred='true'] > div > span {
+    display: none;
+  }
+
+  body:has(.skyjo-active-phone-shell) .skyjo-update-banner[data-deferred='true'] {
+    display: none;
+  }
+
+}
+
 html.skyjo-test-text-scale-200 {
   font-size: 200%;
 }

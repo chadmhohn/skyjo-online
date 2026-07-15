@@ -517,6 +517,7 @@ test('a reset survives dropped resync and ack frames, then recovers the same sea
   const oldCode = await page.locator('.skyjo-room-code').innerText();
   const playerId = await page.evaluate(() => localStorage.getItem('skyjo-player-id') || '');
 
+  page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: 'Reset Room' }).click();
   let recoveryHint = '';
   await expect

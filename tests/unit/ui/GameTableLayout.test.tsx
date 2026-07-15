@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { PHONE_LAYOUT_MEDIA_QUERY } from '../../../src/accessibility';
 import { GameTableLayout, type DrawIntent } from '../../../src/GameTableLayout';
 import { revealOpeningCard } from '../../../src/game';
 import type { Card, GameState, Player } from '../../../src/types';
@@ -105,6 +106,98 @@ describe('GameTableLayout', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders an optional center start accessory without disturbing the existing table controls', async () => {
+    const user = userEvent.setup();
+    const actions = handlers();
+    const chooseSource = stateFor(2, {
+      phase: 'choose-source',
+      openingRevealCounts: { p1: 2, p2: 2 }
+    });
+    const { container, rerender } = render(
+      <GameTableLayout
+        {...actions}
+        centerStartAccessory={<div data-testid="center-start-accessory">Room tools</div>}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={chooseSource}
+      />
+    );
+
+    const startSide = container.querySelector<HTMLElement>('.skyjo-table-band-side-start');
+    const accessory = screen.getByTestId('center-start-accessory');
+    const piles = screen.getByTestId('table-piles');
+    const deck = screen.getByRole('button', { name: /^Deck/ });
+    const discard = screen.getByTitle('Take the top discard card.');
+    expect(startSide).toContainElement(accessory);
+    expect(screen.getByTestId('table-center')).toContainElement(piles);
+    expect(deck).toBeEnabled();
+    expect(discard).toBeEnabled();
+
+    await user.click(deck);
+    await user.click(discard);
+    expect(actions.onDraw).toHaveBeenCalledOnce();
+    expect(actions.onChooseDiscard).toHaveBeenCalledOnce();
+
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={chooseSource}
+      />
+    );
+    expect(screen.queryByTestId('center-start-accessory')).not.toBeInTheDocument();
+    expect(screen.getByTestId('table-piles')).toBe(piles);
+    expect(screen.getByRole('button', { name: /^Deck/ })).toBeEnabled();
+  });
+
+  it('makes both boards keyboard-scrollable only for a contained fixed table', () => {
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrollTo
+    });
+    const actions = handlers();
+    const { rerender } = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(2)}
+      />
+    );
+    const opponentRail = screen.getByTestId('opponent-rail');
+    const localBoard = screen.getByTestId('local-board');
+    expect(opponentRail).toHaveAttribute('role', 'region');
+    expect(opponentRail).not.toHaveAttribute('tabindex');
+    expect(localBoard).not.toHaveAttribute('role');
+    expect(localBoard).not.toHaveAttribute('tabindex');
+    rerender(
+      <GameTableLayout
+        {...actions}
+        containBoardScroll
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(2)}
+      />
+    );
+    expect(opponentRail).toHaveAttribute('tabindex', '0');
+    expect(localBoard).toHaveAttribute('data-scroll-contained', 'true');
+    expect(localBoard).toHaveAttribute('role', 'region');
+    expect(localBoard).toHaveAttribute('tabindex', '0');
+    Object.defineProperties(localBoard, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollLeft: { configurable: true, value: 0, writable: true },
+      scrollTop: { configurable: true, value: 0, writable: true }
+    });
+    expect(fireEvent.keyDown(localBoard, { key: 'ArrowDown' })).toBe(false);
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 0, top: 44, behavior: 'auto' });
+  });
+
   it('routes local card and centered pile decisions through the supplied callbacks', async () => {
     const user = userEvent.setup();
     const actions = handlers();
@@ -177,8 +270,54 @@ describe('GameTableLayout', () => {
     expect(actions.onSetDrawIntent).toHaveBeenCalledWith('discard');
   });
 
+  it('announces the private drawn value and moves keyboard focus to its decision controls', async () => {
+    const user = userEvent.setup();
+    const actions = handlers();
+    const chooseSource = stateFor(2, {
+      phase: 'choose-source',
+      openingRevealCounts: { p1: 2, p2: 2 }
+    });
+    const { rerender } = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={chooseSource}
+      />
+    );
+    const deck = screen.getByRole('button', { name: /^Deck/ });
+    deck.focus();
+    await user.keyboard('{Enter}');
+    expect(actions.onDraw).toHaveBeenCalledOnce();
+    document.documentElement.setAttribute('tabindex', '-1');
+    document.documentElement.focus();
+    expect(document.documentElement).toHaveFocus();
+
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={{
+          ...chooseSource,
+          phase: 'choose-replacement',
+          selectedSource: 'draw',
+          drawnCard: { ...card('blind', 0, true), value: -2 }
+        }}
+      />
+    );
+    document.documentElement.removeAttribute('tabindex');
+
+    expect(screen.getByRole('button', { name: 'Place drawn card' })).toHaveFocus();
+    await waitFor(() => expect(screen.getByTestId('turn-announcer')).toHaveTextContent(
+      'You drew minus 2. Place mode selected.'
+    ));
+  });
+
   it('keeps structural phone table bands out of the accessibility tree and exposes final-lap status once', async () => {
-    act(() => setMediaQueryMatches('(max-width: 640px)', true));
+    act(() => setMediaQueryMatches(PHONE_LAYOUT_MEDIA_QUERY, true));
     const actions = handlers();
     const opening = stateFor(2);
     const { container, rerender } = render(
@@ -271,7 +410,7 @@ describe('GameTableLayout', () => {
   });
 
   it('keeps visible desktop opening progress named and keyboard reachable', () => {
-    act(() => setMediaQueryMatches('(max-width: 640px)', false));
+    act(() => setMediaQueryMatches(PHONE_LAYOUT_MEDIA_QUERY, false));
     render(
       <GameTableLayout
         {...handlers()}
@@ -459,7 +598,7 @@ describe('GameTableLayout', () => {
   });
 
   it('renders one complete phone guidance region outside the geometry anchor, including disabled reasons', () => {
-    act(() => setMediaQueryMatches('(max-width: 640px)', true));
+    act(() => setMediaQueryMatches(PHONE_LAYOUT_MEDIA_QUERY, true));
     const actions = handlers();
     render(
       <GameTableLayout
