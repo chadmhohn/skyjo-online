@@ -290,6 +290,9 @@ describe('GameTableLayout', () => {
     deck.focus();
     await user.keyboard('{Enter}');
     expect(actions.onDraw).toHaveBeenCalledOnce();
+    document.documentElement.setAttribute('tabindex', '-1');
+    document.documentElement.focus();
+    expect(document.documentElement).toHaveFocus();
 
     rerender(
       <GameTableLayout
@@ -305,6 +308,7 @@ describe('GameTableLayout', () => {
         }}
       />
     );
+    document.documentElement.removeAttribute('tabindex');
 
     expect(screen.getByRole('button', { name: 'Place drawn card' })).toHaveFocus();
     await waitFor(() => expect(screen.getByTestId('turn-announcer')).toHaveTextContent(

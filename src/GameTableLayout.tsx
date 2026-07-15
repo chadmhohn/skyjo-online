@@ -875,7 +875,11 @@ function TableControls({
   useLayoutEffect(() => {
     if (!hasLocalDrawnDecision || !restoreDrawDecisionFocusRef.current) return;
     restoreDrawDecisionFocusRef.current = false;
-    if (document.activeElement === document.body || document.activeElement === deckButtonRef.current) {
+    if (
+      document.activeElement === document.body ||
+      document.activeElement === document.documentElement ||
+      document.activeElement === deckButtonRef.current
+    ) {
       placeDrawnButtonRef.current?.focus({ preventScroll: true });
     }
   }, [hasLocalDrawnDecision]);

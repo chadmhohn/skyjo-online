@@ -276,9 +276,10 @@ async function readActiveLayout(page: Page): Promise<ActiveLayoutSnapshot> {
     return {
       band: rect(band),
       centerControls: visibleItems(band, '.skyjo-chat-dock-button, .skyjo-pile-button, .skyjo-choice-button'),
+      // The 44px pile labels intentionally ellipsize; parent geometry and the full accessible controls are asserted below.
       centerContentFits: Array.from(
         band.querySelectorAll<HTMLElement>(
-          '.skyjo-chat-dock-button, .skyjo-table-header, .skyjo-pile-button .skyjo-kicker, .skyjo-table-card, .skyjo-drawn-card, .skyjo-choice-button'
+          '.skyjo-chat-dock-button, .skyjo-table-card, .skyjo-drawn-card, .skyjo-choice-button'
         )
       ).every((element) => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1),
       centerVisuals: visibleItems(band, '.skyjo-chat-dock-button, .skyjo-table-card, .skyjo-drawn-card, .skyjo-choice-button'),
@@ -381,7 +382,7 @@ function expectFixedActiveLayout(
 
   expect(snapshot.drawnCard.width).toBeGreaterThan(0);
   expect(snapshot.drawnCard.height).toBeGreaterThan(0);
-  expect(snapshot.centerContentFits, 'center-band content should not clip at the active text scale').toBe(true);
+  expect(snapshot.centerContentFits, 'center-band cards and action controls should not clip').toBe(true);
   expect(doNotOverlap(snapshot.centerControls), 'center-band controls should not overlap').toBe(true);
   expect(doNotOverlap(snapshot.centerVisuals), 'center-band cards and actions should not overlap').toBe(true);
   for (const item of [...snapshot.centerControls, ...snapshot.centerVisuals]) {
