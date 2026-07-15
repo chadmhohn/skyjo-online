@@ -3,6 +3,9 @@ import { expect, installSeededBrowserRuntime, test } from '../fixtures';
 
 const phoneViewport = { width: 390, height: 844 };
 const retainedPositionTolerance = 1;
+const retainedObservationMs = 325;
+const finalRetentionCheckpointMs = 1700;
+const openingUpdateSchedulingBudgetMs = 100;
 const userScrollPauseMs = 1800;
 
 type AuditedGesture = {
@@ -228,10 +231,18 @@ async function waitForSettledRail(page: Page, gesture: AuditedGesture) {
       const current = element.scrollLeft;
       stableSamples = Math.abs(current - previous) <= 0.25 ? stableSamples + 1 : 0;
       const scrollEnd = audit.scrollEnds.find((entry) => entry.at >= trustedGesture.at);
+      if (scrollEnd && Math.abs(current - scrollEnd.scrollLeft) <= 0.25) {
+        return {
+          at: performance.now(),
+          mode: 'scrollend',
+          scrollLeft: current,
+          stableSamples
+        };
+      }
       if (stableSamples >= 10) {
         return {
           at: performance.now(),
-          mode: scrollEnd ? 'scrollend-and-stable-samples' : 'stable-samples',
+          mode: 'stable-samples',
           scrollLeft: current,
           stableSamples
         };
@@ -248,6 +259,17 @@ function latestTrustedGesture(audit: RailAudit, kind: string, key = ''): Audited
     .find((entry) => entry.kind === kind && entry.key === key && entry.trusted);
   expect(gesture, `A trusted ${kind}${key ? ` ${key}` : ''} event should be recorded in-page.`).toBeDefined();
   return gesture as AuditedGesture;
+}
+
+async function expectOpeningUpdateObservationBudget(page: Page, gesture: AuditedGesture): Promise<void> {
+  const elapsedMs = await page.evaluate((gestureEpochMs) => Date.now() - gestureEpochMs, gesture.epochMs);
+  const latestSafeStartMs = finalRetentionCheckpointMs - retainedObservationMs - openingUpdateSchedulingBudgetMs;
+  expect(
+    elapsedMs,
+    `Trusted ${gesture.kind} input must settle by ${latestSafeStartMs} ms after the gesture so the opening update has ` +
+      `${openingUpdateSchedulingBudgetMs} ms to render and remains observable for ${retainedObservationMs} ms before ` +
+      `the ${finalRetentionCheckpointMs} ms checkpoint inside the ${userScrollPauseMs} ms pause.`
+  ).toBeLessThanOrEqual(latestSafeStartMs);
 }
 
 function assertUpdateWithinPause(
@@ -269,7 +291,7 @@ async function expectRetainedThroughCheckpoint(
 ) {
   const isQualifyingCheckpoint = (entry: AuditedRailSample & { gestureId: number }) =>
     entry.gestureId === gesture.id &&
-    entry.epochMs - update.epochMs >= 325 &&
+    entry.epochMs - update.epochMs >= retainedObservationMs &&
     entry.epochMs - gesture.epochMs < userScrollPauseMs;
   await expect
     .poll(async () => (await getRailAudit(page)).checkpoints.some(isQualifyingCheckpoint))
@@ -281,7 +303,7 @@ async function expectRetainedThroughCheckpoint(
   const scrolls = audit.scrolls.filter(
     (entry) => entry.at >= settledAt && entry.epochMs <= retainedCheckpoint.epochMs
   );
-  expect(retainedCheckpoint.epochMs - update.epochMs).toBeGreaterThanOrEqual(325);
+  expect(retainedCheckpoint.epochMs - update.epochMs).toBeGreaterThanOrEqual(retainedObservationMs);
   expect(retainedCheckpoint.epochMs - gesture.epochMs).toBeLessThan(userScrollPauseMs);
   expect(Math.abs(retainedCheckpoint.scrollLeft - retainedPosition)).toBeLessThanOrEqual(retainedPositionTolerance);
   for (const sample of scrolls) {
@@ -523,12 +545,17 @@ test('trusted touch retains its settled rail position across a real opening upda
     await expect.poll(async () => (await railSnapshot(page)).scrollLeft).toBeGreaterThan(100);
     const gesture = latestTrustedGesture(await getRailAudit(page), 'touchstart');
     const settled = await waitForSettledRail(page, gesture);
+    await expectOpeningUpdateObservationBudget(page, gesture);
     const cards = await openingCards(page);
     await activateOpeningCardImmediately(page);
     await expect(cards).toHaveCount(11);
     await expect.poll(async () => (await getRailAudit(page)).states.some((entry) => entry.openingCardCount === 11)).toBe(true);
     const update = (await getRailAudit(page)).states.find((entry) => entry.openingCardCount === 11);
     expect(update).toBeDefined();
+    expect(
+      (update as AuditedRailSample).epochMs - gesture.epochMs,
+      `The opening update must leave ${retainedObservationMs} ms before the final retained-position checkpoint.`
+    ).toBeLessThanOrEqual(finalRetentionCheckpointMs - retainedObservationMs);
     assertUpdateWithinPause(gesture, update as AuditedRailSample, settled.scrollLeft);
     await expectRetainedThroughCheckpoint(page, gesture, update as AuditedRailSample, settled.scrollLeft, settled.at);
   } finally {
