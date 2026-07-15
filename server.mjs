@@ -326,23 +326,20 @@ function requestImmediateActivation(event) {
   void self.skipWaiting().catch(() => {});
   event.waitUntil(new Promise((resolve) => setTimeout(resolve, skipWaitingGraceMs)));
 }
-async function requestQueuedTestActivation(event) {
+async function activateTestWorker() {
+  await self.clients.claim();
+  if (version === 'A') return;
   const windows = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
   for (const client of windows) client.postMessage({ type: 'SKYJO_TEST_ACTIVATION_REQUESTED', version });
+  // Keep activation alive long enough for the protected observer to start the next registration update.
   await new Promise((resolve) => setTimeout(resolve, successorQueueDelayMs));
-  void self.skipWaiting().catch(() => {});
-  await new Promise((resolve) => setTimeout(resolve, skipWaitingGraceMs));
 }
 self.addEventListener('install', () => {});
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('activate', (event) => event.waitUntil(activateTestWorker()));
 self.addEventListener('message', (event) => {
   const isActivation = event.data?.type === 'SKYJO_ACTIVATE_UPDATE';
   if (event.origin !== self.location.origin) return;
   if (isActivation) {
-    if (version !== 'A') {
-      event.waitUntil(requestQueuedTestActivation(event));
-      return;
-    }
     requestImmediateActivation(event);
     return;
   }

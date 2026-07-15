@@ -400,20 +400,63 @@ test('cross-tab activation never reloads a protected game and preserves one safe
   await expectWaitingWorker(updater);
   const updaterLoads = Number(await updater.evaluate(() => sessionStorage.getItem('skyjo-updater-loads')));
 
-  const queuedSuccessors = page.evaluate(async () => {
+  const successorHarnessReady = await page.evaluate(async () => {
     const registration = await navigator.serviceWorker.ready;
     const initialTarget = registration.waiting;
     if (!initialTarget) throw new Error('Initial update target was not waiting.');
 
     const activationRequests: string[] = [];
     const activationWaiters = new Map<string, () => void>();
-    navigator.serviceWorker.addEventListener('message', (event) => {
+    const onActivationRequest = (event: MessageEvent) => {
       if (event.data?.type !== 'SKYJO_TEST_ACTIVATION_REQUESTED') return;
       const variant = String(event.data.version || '');
       activationRequests.push(variant);
       activationWaiters.get(variant)?.();
       activationWaiters.delete(variant);
-    });
+    };
+    const harnessWindow = window as typeof window & {
+      __skyjoSuccessorHarness?: {
+        activationRequests: string[];
+        activationWaiters: Map<string, () => void>;
+        initialTarget: ServiceWorker;
+        onActivationRequest: (event: MessageEvent) => void;
+      };
+    };
+    if (harnessWindow.__skyjoSuccessorHarness) {
+      throw new Error('Successor harness was already installed.');
+    }
+    harnessWindow.__skyjoSuccessorHarness = {
+      activationRequests,
+      activationWaiters,
+      initialTarget,
+      onActivationRequest
+    };
+    navigator.serviceWorker.addEventListener('message', onActivationRequest);
+    return {
+      listenerInstalled: true,
+      marker: 'skyjo-successor-harness-ready',
+      targetState: initialTarget.state
+    };
+  });
+  expect(successorHarnessReady).toEqual({
+    listenerInstalled: true,
+    marker: 'skyjo-successor-harness-ready',
+    targetState: 'installed'
+  });
+
+  const queuedSuccessors = page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    const harnessWindow = window as typeof window & {
+      __skyjoSuccessorHarness?: {
+        activationRequests: string[];
+        activationWaiters: Map<string, () => void>;
+        initialTarget: ServiceWorker;
+        onActivationRequest: (event: MessageEvent) => void;
+      };
+    };
+    const harness = harnessWindow.__skyjoSuccessorHarness;
+    if (!harness) throw new Error('Successor harness was not ready.');
+    const { activationRequests, activationWaiters, initialTarget } = harness;
     const waitForActivationRequest = (variant: 'B' | 'C' | 'D') => new Promise<void>((resolve, reject) => {
       if (activationRequests.includes(variant)) {
         resolve();
@@ -452,16 +495,21 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       return worker;
     };
 
-    await waitForActivationRequest('B');
-    const successorC = await installSuccessor('C', [initialTarget]);
-    await waitForActivationRequest('C');
-    const successorD = await installSuccessor('D', [initialTarget, successorC]);
-    await waitForActivationRequest('D');
-    return {
-      activationRequests,
-      successorCIsDistinct: successorC !== initialTarget,
-      successorDIsDistinct: successorD !== initialTarget && successorD !== successorC
-    };
+    try {
+      await waitForActivationRequest('B');
+      const successorC = await installSuccessor('C', [initialTarget]);
+      await waitForActivationRequest('C');
+      const successorD = await installSuccessor('D', [initialTarget, successorC]);
+      await waitForActivationRequest('D');
+      return {
+        activationRequests,
+        successorCIsDistinct: successorC !== initialTarget,
+        successorDIsDistinct: successorD !== initialTarget && successorD !== successorC
+      };
+    } finally {
+      navigator.serviceWorker.removeEventListener('message', harness.onActivationRequest);
+      delete harnessWindow.__skyjoSuccessorHarness;
+    }
   });
 
   const updaterReload = updater.waitForNavigation({ waitUntil: 'domcontentloaded' });
@@ -471,6 +519,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     successorCIsDistinct: true,
     successorDIsDistinct: true
   });
+  expect(await page.evaluate(() => !('__skyjoSuccessorHarness' in window))).toBe(true);
   await updaterReload;
   // Keep the activating tab strict: every queued successor must be drained.
   await expectActiveWorker(updater);
