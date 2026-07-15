@@ -27,6 +27,10 @@ import {
   writeRssStageEvidence
 } from '../../../scripts/certification-lib.mjs';
 import { REQUIRED_CHECKS } from '../../../scripts/github-governance-lib.mjs';
+import {
+  createPropagationArrivalTracker,
+  summarizePropagationSamples
+} from '../../helpers/propagationArrival';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const sourceSha = 'a'.repeat(40);
@@ -70,21 +74,41 @@ function k6Summary() {
 }
 
 function personaEvidence() {
+  const stateMs = Array.from(
+    { length: CERTIFICATION_LIMITS.personaStatePropagationSamples },
+    (_, index) => 100 + index
+  );
+  const chatMs = Array.from(
+    { length: CERTIFICATION_LIMITS.personaChatPropagationSamples },
+    (_, index) => 120 + index
+  );
+  const stateSummary = summarizePropagationSamples(stateMs, CERTIFICATION_LIMITS.personaStatePropagationSamples);
+  const chatSummary = summarizePropagationSamples(chatMs, CERTIFICATION_LIMITS.personaChatPropagationSamples);
   return {
     formatVersion: 1,
     kind: 'skyjo-eight-client-persona',
     release: { version: '0.2.0', sourceSha, protocolVersion: 2 },
-    topology: { rooms: 1, clients: 8, openingReveals: 16 },
+    topology: {
+      rooms: 1,
+      clients: 8,
+      openingReveals: CERTIFICATION_LIMITS.personaOpeningReveals,
+      statePropagationSamples: stateMs.length,
+      chatPropagationSamples: chatMs.length
+    },
     profiles: [...CERTIFICATION_PERSONA_PROFILES],
+    propagation: { chatMs, stateMs },
     measurements: {
+      chatPropagationP95Ms: chatSummary.p95Ms,
       maxHorizontalOverflowPx: 0,
       minimumTargetPx: 44,
       openingSettleMs: 900,
       reconnectBannerMs: 50,
       reconnectRtoMs: 1_000,
-      reducedMotionSettleMs: 200
+      reducedMotionSettleMs: 200,
+      statePropagationP95Ms: stateSummary.p95Ms
     },
     gates: {
+      browserPropagation: true,
       centeredTable: true,
       keyboardComplete: true,
       privacyRedaction: true,
@@ -256,6 +280,52 @@ describe('recovery RPO measurement', () => {
 });
 
 describe('v0.2.0 certification evidence', () => {
+  it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
+    async function sampleWithDiagnosticHistory(historyLength: number) {
+      const tracker = createPropagationArrivalTracker(8, () => 100);
+      const diagnosticHistory = Array.from({ length: historyLength }, (_, index) => ({ index }));
+      const probe = tracker.beginRevision(7);
+      for (let clientIndex = 0; clientIndex < 8; clientIndex += 1) {
+        tracker.recordFrame(clientIndex, {
+          type: 'snapshot',
+          revision: 7,
+          room: { revision: 7, chatMessages: [] }
+        }, 110 + clientIndex);
+      }
+      const latencyMs = await probe.promise;
+      expect(diagnosticHistory).toHaveLength(historyLength);
+      expect(tracker.pendingCount()).toBe(0);
+      return latencyMs;
+    }
+
+    expect(await sampleWithDiagnosticHistory(0)).toBe(17);
+    expect(await sampleWithDiagnosticHistory(10_000)).toBe(17);
+
+    const skippedRevision = createPropagationArrivalTracker(8, () => 100);
+    const revisionProbe = skippedRevision.beginRevision(7);
+    skippedRevision.recordFrame(0, {
+      type: 'snapshot',
+      revision: 8,
+      room: { revision: 8, chatMessages: [] }
+    }, 101);
+    await expect(revisionProbe.promise).rejects.toThrow(/skipped expected revision/i);
+
+    const duplicateChat = createPropagationArrivalTracker(8, () => 100);
+    const chatProbe = duplicateChat.beginChat('cert-chat-01');
+    duplicateChat.recordFrame(0, {
+      type: 'snapshot',
+      revision: 1,
+      room: {
+        revision: 1,
+        chatMessages: [{ text: 'cert-chat-01' }, { text: 'cert-chat-01' }]
+      }
+    }, 101);
+    await expect(chatProbe.promise).rejects.toThrow(/duplicated/i);
+
+    expect(() => summarizePropagationSamples([1, 2, Number.NaN], 3)).toThrow(/finite/i);
+    expect(() => summarizePropagationSamples([1, 2], 3)).toThrow(/exactly 3/i);
+  });
+
   it('accepts only the exact finite release topology and thresholds', () => {
     expect(validateK6CertificationSummary(k6Summary())).toEqual(k6Summary());
     expect(validateRecoveryCertification(recoveryEvidence())).toEqual(recoveryEvidence());
@@ -289,6 +359,23 @@ describe('v0.2.0 certification evidence', () => {
     const persona = personaEvidence();
     persona.measurements.reducedMotionSettleMs = 1_001;
     expect(() => validateEightClientPersonaEvidence(persona)).toThrow(/Reduced-motion/i);
+
+    const missingPropagation = personaEvidence();
+    missingPropagation.propagation.stateMs.pop();
+    expect(() => validateEightClientPersonaEvidence(missingPropagation)).toThrow(/exactly 18/i);
+
+    const nonFinitePropagation = personaEvidence();
+    nonFinitePropagation.propagation.chatMs[0] = Number.NaN;
+    expect(() => validateEightClientPersonaEvidence(nonFinitePropagation)).toThrow(/finite/i);
+
+    const slowPropagation = personaEvidence();
+    slowPropagation.propagation.stateMs[slowPropagation.propagation.stateMs.length - 1] = 251;
+    slowPropagation.measurements.statePropagationP95Ms = 251;
+    expect(() => validateEightClientPersonaEvidence(slowPropagation)).toThrow(/exceeded 250ms/i);
+
+    const mismatchedPropagation = personaEvidence();
+    mismatchedPropagation.measurements.chatPropagationP95Ms += 1;
+    expect(() => validateEightClientPersonaEvidence(mismatchedPropagation)).toThrow(/must equal/i);
 
     expect(() => createAutomatedCertificationEvidence({
       release: releaseIdentity(),

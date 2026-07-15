@@ -22,8 +22,12 @@ export const CERTIFICATION_LIMITS = Object.freeze({
   reconnectRtoMs: 15_000,
   personaReconnectBannerMs: 500,
   personaReconnectRtoMs: 10_000,
+  personaOpeningReveals: 16,
   personaOpeningSettleMs: 3_000,
   personaReducedMotionSettleMs: 1_000,
+  personaStatePropagationSamples: 18,
+  personaChatPropagationSamples: 20,
+  personaPropagationP95Ms: 250,
   targetSizePx: 44
 });
 
@@ -328,29 +332,59 @@ export const CERTIFICATION_PERSONA_PROFILES = Object.freeze([
   'background-reconnect'
 ]);
 
+function validatePersonaPropagationSamples(value, expectedCount, label) {
+  if (!Array.isArray(value) || value.length !== expectedCount) {
+    throw new Error(`${label} must contain exactly ${expectedCount} samples.`);
+  }
+  const samples = value.map((sample, index) => finiteNumber(sample, `${label} sample ${index + 1}`));
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+    samples,
+    p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1]
+  };
+}
+
 export function validateEightClientPersonaEvidence(value) {
-  assertExactKeys(value, ['formatVersion', 'gates', 'kind', 'measurements', 'profiles', 'release', 'topology'], 'Persona evidence');
+  assertExactKeys(value, ['formatVersion', 'gates', 'kind', 'measurements', 'profiles', 'propagation', 'release', 'topology'], 'Persona evidence');
   exactNumber(value.formatVersion, CERTIFICATION_FORMAT_VERSION, 'Persona format version');
   exactString(value.kind, 'skyjo-eight-client-persona', 'Persona evidence kind');
   assertExactKeys(value.release, ['protocolVersion', 'sourceSha', 'version'], 'Persona release identity');
   exactString(value.release.version, CERTIFICATION_RELEASE_VERSION, 'Persona release version');
   if (!fullShaPattern.test(value.release.sourceSha)) throw new Error('Persona source SHA must be a full lowercase commit SHA.');
   exactNumber(value.release.protocolVersion, 2, 'Persona protocol version');
-  assertExactKeys(value.topology, ['clients', 'openingReveals', 'rooms'], 'Persona topology');
+  assertExactKeys(value.topology, [
+    'chatPropagationSamples',
+    'clients',
+    'openingReveals',
+    'rooms',
+    'statePropagationSamples'
+  ], 'Persona topology');
   exactNumber(value.topology.rooms, 1, 'Persona room count');
   exactNumber(value.topology.clients, 8, 'Persona client count');
-  exactNumber(value.topology.openingReveals, 16, 'Persona opening reveal count');
+  exactNumber(value.topology.openingReveals, CERTIFICATION_LIMITS.personaOpeningReveals, 'Persona opening reveal count');
+  exactNumber(
+    value.topology.statePropagationSamples,
+    CERTIFICATION_LIMITS.personaStatePropagationSamples,
+    'Persona state propagation sample count'
+  );
+  exactNumber(
+    value.topology.chatPropagationSamples,
+    CERTIFICATION_LIMITS.personaChatPropagationSamples,
+    'Persona chat propagation sample count'
+  );
   if (!Array.isArray(value.profiles) || value.profiles.length !== CERTIFICATION_PERSONA_PROFILES.length) {
     throw new Error('Persona profile coverage is incomplete.');
   }
   CERTIFICATION_PERSONA_PROFILES.forEach((profile, index) => exactString(value.profiles[index], profile, `Persona profile ${index + 1}`));
   assertExactKeys(value.measurements, [
+    'chatPropagationP95Ms',
     'maxHorizontalOverflowPx',
     'minimumTargetPx',
     'openingSettleMs',
     'reconnectBannerMs',
     'reconnectRtoMs',
-    'reducedMotionSettleMs'
+    'reducedMotionSettleMs',
+    'statePropagationP95Ms'
   ], 'Persona measurements');
   const measurements = value.measurements;
   for (const [label, measurement] of Object.entries(measurements)) finiteNumber(measurement, `Persona ${label}`);
@@ -360,7 +394,26 @@ export function validateEightClientPersonaEvidence(value) {
   if (measurements.reducedMotionSettleMs > CERTIFICATION_LIMITS.personaReducedMotionSettleMs) throw new Error('Reduced-motion opening did not settle within one second.');
   if (measurements.reconnectBannerMs > CERTIFICATION_LIMITS.personaReconnectBannerMs) throw new Error('Reconnect banner exceeded 500ms.');
   if (measurements.reconnectRtoMs > CERTIFICATION_LIMITS.personaReconnectRtoMs) throw new Error('Persona reconnect exceeded ten seconds.');
-  assertExactKeys(value.gates, ['centeredTable', 'keyboardComplete', 'privacyRedaction', 'sameSeatReconnect'], 'Persona gates');
+  assertExactKeys(value.propagation, ['chatMs', 'stateMs'], 'Persona propagation samples');
+  const statePropagation = validatePersonaPropagationSamples(
+    value.propagation.stateMs,
+    CERTIFICATION_LIMITS.personaStatePropagationSamples,
+    'Persona state propagation'
+  );
+  const chatPropagation = validatePersonaPropagationSamples(
+    value.propagation.chatMs,
+    CERTIFICATION_LIMITS.personaChatPropagationSamples,
+    'Persona chat propagation'
+  );
+  exactNumber(measurements.statePropagationP95Ms, statePropagation.p95Ms, 'Persona state propagation p95');
+  exactNumber(measurements.chatPropagationP95Ms, chatPropagation.p95Ms, 'Persona chat propagation p95');
+  if (measurements.statePropagationP95Ms > CERTIFICATION_LIMITS.personaPropagationP95Ms) {
+    throw new Error('Persona state propagation p95 exceeded 250ms.');
+  }
+  if (measurements.chatPropagationP95Ms > CERTIFICATION_LIMITS.personaPropagationP95Ms) {
+    throw new Error('Persona chat propagation p95 exceeded 250ms.');
+  }
+  assertExactKeys(value.gates, ['browserPropagation', 'centeredTable', 'keyboardComplete', 'privacyRedaction', 'sameSeatReconnect'], 'Persona gates');
   for (const [gate, passed] of Object.entries(value.gates)) exactBoolean(passed, true, `Persona ${gate}`);
   assertSanitizedCertificationValue(value);
   return value;
