@@ -92,6 +92,10 @@ const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
 const trustProxyClientIp = process.env.SKYJO_TRUST_PROXY_CLIENT_IP === 'true';
 const testPwaVariantsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_VARIANTS === 'true';
 const testPwaNetworkFaultsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_NETWORK_FAULTS === 'true';
+const testPwaActivationBarrierActiveMs = 6_000;
+const testPwaActivationBarrierLifetimeMs = 30_000;
+const testPwaActivationBarrierMaxRuns = 16;
+const testPwaActivationBarriers = new Map();
 const vapidPublicKeyEnvironment = process.env.SKYJO_VAPID_PUBLIC_KEY || '';
 const vapidPrivateKeyEnvironment = process.env.SKYJO_VAPID_PRIVATE_KEY || '';
 const vapidSubject = process.env.SKYJO_VAPID_SUBJECT || `mailto:${adminEmail}`;
@@ -317,10 +321,310 @@ function sendJsonResponse(res, status, payload, headers = {}) {
   });
 }
 
-function testPwaWorkerSource(variant) {
+function validTestPwaActivationBarrierToken(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{16,80}$/.test(value);
+}
+
+function validTestPwaWorkerVariant(value) {
+  return value === 'A' || value === 'B' || value === 'C' || value === 'D';
+}
+
+function settleTestPwaActivationWaiters(worker, outcome) {
+  if (outcome === 'released') worker.released = true;
+  const settle = worker.settle;
+  worker.settle = null;
+  settle?.(outcome);
+}
+
+function poisonTestPwaActivationBarrier(barrier) {
+  barrier.poisoned = true;
+  for (const worker of barrier.workers.values()) {
+    settleTestPwaActivationWaiters(worker, 'poisoned');
+  }
+}
+
+function deleteTestPwaActivationBarrier(token, barrier, outcome = 'cleanup') {
+  if (testPwaActivationBarriers.get(token) !== barrier) return;
+  clearTimeout(barrier.expiryTimer);
+  for (const worker of barrier.workers.values()) {
+    settleTestPwaActivationWaiters(worker, outcome);
+  }
+  testPwaActivationBarriers.delete(token);
+}
+
+function createTestPwaActivationBarrier(token) {
+  if (testPwaActivationBarriers.size >= testPwaActivationBarrierMaxRuns) return null;
+  const barrier = {
+    arrivals: [],
+    deadlineAt: null,
+    expiryTimer: null,
+    poisoned: false,
+    releases: [],
+    step: 0,
+    workers: new Map()
+  };
+  barrier.expiryTimer = setTimeout(() => {
+    deleteTestPwaActivationBarrier(token, barrier, 'expired');
+  }, testPwaActivationBarrierLifetimeMs);
+  barrier.expiryTimer.unref?.();
+  testPwaActivationBarriers.set(token, barrier);
+  return barrier;
+}
+
+function beginTestPwaActivationBarrierDeadline(token, barrier) {
+  if (barrier.deadlineAt !== null) return;
+  clearTimeout(barrier.expiryTimer);
+  barrier.deadlineAt = Date.now() + testPwaActivationBarrierActiveMs;
+  barrier.expiryTimer = setTimeout(() => {
+    deleteTestPwaActivationBarrier(token, barrier, 'expired');
+  }, testPwaActivationBarrierActiveMs);
+  barrier.expiryTimer.unref?.();
+}
+
+function testPwaActivationBarrierSnapshot(barrier) {
+  const released = [];
+  const pending = [];
+  for (const variant of barrier.arrivals) {
+    if (barrier.releases.includes(variant)) released.push(variant);
+    else pending.push(variant);
+  }
+  return { arrivals: [...barrier.arrivals], pending, poisoned: barrier.poisoned, released };
+}
+
+async function waitForTestPwaActivationRelease(barrier, worker, req, res) {
+  if (worker.waitStarted) {
+    poisonTestPwaActivationBarrier(barrier);
+    return 'duplicate';
+  }
+  worker.waitStarted = true;
+  if (worker.released) return 'released';
+  const remainingMs = Math.max(0, Number(barrier.deadlineAt) - Date.now());
+  if (remainingMs === 0) return 'timeout';
+  return new Promise((resolve) => {
+    let timeout = null;
+    const onDisconnect = () => settle('disconnected');
+    const settle = (outcome) => {
+      if (timeout !== null) clearTimeout(timeout);
+      req.removeListener('aborted', onDisconnect);
+      res.removeListener('close', onDisconnect);
+      if (worker.settle === settle) worker.settle = null;
+      resolve(outcome);
+    };
+    worker.settle = settle;
+    req.once('aborted', onDisconnect);
+    res.once('close', onDisconnect);
+    timeout = setTimeout(() => settle('timeout'), remainingMs);
+    timeout.unref?.();
+  });
+}
+
+function sendInvalidTestPwaActivationBarrierResponse(res) {
+  sendJsonResponse(res, 400, { error: 'Invalid test activation barrier request.' });
+}
+
+async function handleTestPwaActivationBarrierRequest(req, res, url) {
+  if (url.pathname === '/__test/pwa-activation/init' && req.method === 'POST') {
+    const payload = await readJsonBody(req);
+    const { token } = payload;
+    if (!validTestPwaActivationBarrierToken(token)) {
+      sendInvalidTestPwaActivationBarrierResponse(res);
+      return;
+    }
+    if (testPwaActivationBarriers.has(token)) {
+      sendJsonResponse(res, 409, { error: 'Test activation barrier already exists.' });
+      return;
+    }
+    const barrier = createTestPwaActivationBarrier(token);
+    if (!barrier) {
+      sendJsonResponse(res, 503, { error: 'Test activation barrier capacity reached.' });
+      return;
+    }
+    sendJsonResponse(res, 201, testPwaActivationBarrierSnapshot(barrier));
+    return;
+  }
+
+  if (url.pathname === '/__test/pwa-activation/status' && req.method === 'GET') {
+    const token = url.searchParams.get('token');
+    if (!validTestPwaActivationBarrierToken(token)) {
+      sendInvalidTestPwaActivationBarrierResponse(res);
+      return;
+    }
+    const barrier = testPwaActivationBarriers.get(token);
+    if (!barrier) {
+      sendJsonResponse(res, 404, { error: 'Test activation barrier not found.' });
+      return;
+    }
+    sendJsonResponse(res, 200, testPwaActivationBarrierSnapshot(barrier));
+    return;
+  }
+
+  if (url.pathname === '/__test/pwa-activation/arrive' && req.method === 'POST') {
+    const payload = await readJsonBody(req);
+    const { token, variant } = payload;
+    if (!validTestPwaActivationBarrierToken(token) || !validTestPwaWorkerVariant(variant)) {
+      sendInvalidTestPwaActivationBarrierResponse(res);
+      return;
+    }
+    const barrier = testPwaActivationBarriers.get(token);
+    if (!barrier) {
+      sendJsonResponse(res, 404, { error: 'Test activation barrier not found.' });
+      return;
+    }
+    if (barrier.deadlineAt !== null && Date.now() >= barrier.deadlineAt) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 504, { error: 'Test worker activation barrier timed out.' });
+      return;
+    }
+    const expectedStep = [
+      ['arrive', 'B'],
+      ['release', 'B'],
+      ['arrive', 'C'],
+      ['release', 'C'],
+      ['arrive', 'D'],
+      ['release', 'D']
+    ][barrier.step];
+    if (
+      barrier.poisoned ||
+      expectedStep?.[0] !== 'arrive' ||
+      variant !== expectedStep?.[1] ||
+      barrier.workers.has(variant)
+    ) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 409, { error: 'Unexpected test worker activation arrival.' });
+      return;
+    }
+    if (variant === 'B') beginTestPwaActivationBarrierDeadline(token, barrier);
+    barrier.arrivals.push(variant);
+    barrier.step += 1;
+    barrier.workers.set(variant, {
+      released: false,
+      settle: null,
+      waitStarted: false
+    });
+    sendJsonResponse(res, 201, testPwaActivationBarrierSnapshot(barrier));
+    return;
+  }
+
+  if (url.pathname === '/__test/pwa-activation/wait-release' && req.method === 'GET') {
+    const token = url.searchParams.get('token');
+    const variant = url.searchParams.get('variant');
+    if (!validTestPwaActivationBarrierToken(token) || !validTestPwaWorkerVariant(variant)) {
+      sendInvalidTestPwaActivationBarrierResponse(res);
+      return;
+    }
+    const barrier = testPwaActivationBarriers.get(token);
+    const worker = barrier?.workers.get(variant);
+    if (!barrier) {
+      sendJsonResponse(res, 404, { error: 'Test worker activation arrival not found.' });
+      return;
+    }
+    if (!worker) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 409, { error: 'Unexpected test worker activation wait.' });
+      return;
+    }
+    if (barrier.poisoned) {
+      sendJsonResponse(res, 409, { error: 'Test worker activation barrier is poisoned.' });
+      return;
+    }
+    const outcome = await waitForTestPwaActivationRelease(barrier, worker, req, res);
+    if (outcome === 'timeout' || outcome === 'expired') {
+      poisonTestPwaActivationBarrier(barrier);
+      if (!res.destroyed) sendJsonResponse(res, 504, { error: 'Test worker activation barrier timed out.' });
+      return;
+    }
+    if (outcome !== 'released') {
+      poisonTestPwaActivationBarrier(barrier);
+      if (!res.destroyed) sendJsonResponse(res, 409, { error: 'Test worker activation barrier failed.' });
+      return;
+    }
+    send(res, 204, '');
+    return;
+  }
+
+  if (url.pathname === '/__test/pwa-activation/release' && req.method === 'POST') {
+    const payload = await readJsonBody(req);
+    const { token, variant } = payload;
+    if (!validTestPwaActivationBarrierToken(token) || !validTestPwaWorkerVariant(variant)) {
+      sendInvalidTestPwaActivationBarrierResponse(res);
+      return;
+    }
+    const barrier = testPwaActivationBarriers.get(token);
+    const worker = barrier?.workers.get(variant);
+    if (!barrier) {
+      sendJsonResponse(res, 404, { error: 'Test worker activation arrival not found.' });
+      return;
+    }
+    if (!worker) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 409, { error: 'Unexpected test worker activation release.' });
+      return;
+    }
+    if (barrier.deadlineAt !== null && Date.now() >= barrier.deadlineAt) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 504, { error: 'Test worker activation barrier timed out.' });
+      return;
+    }
+    const expectedStep = [
+      ['arrive', 'B'],
+      ['release', 'B'],
+      ['arrive', 'C'],
+      ['release', 'C'],
+      ['arrive', 'D'],
+      ['release', 'D']
+    ][barrier.step];
+    if (
+      barrier.poisoned ||
+      expectedStep?.[0] !== 'release' ||
+      variant !== expectedStep?.[1] ||
+      worker.released
+    ) {
+      poisonTestPwaActivationBarrier(barrier);
+      sendJsonResponse(res, 409, { error: 'Unexpected test worker activation release.' });
+      return;
+    }
+    settleTestPwaActivationWaiters(worker, 'released');
+    barrier.releases.push(variant);
+    barrier.step += 1;
+    sendJsonResponse(res, 200, testPwaActivationBarrierSnapshot(barrier));
+    return;
+  }
+
+  if (url.pathname === '/__test/pwa-activation/cleanup' && req.method === 'POST') {
+    const payload = await readJsonBody(req);
+    const { token } = payload;
+    if (!validTestPwaActivationBarrierToken(token)) {
+      sendInvalidTestPwaActivationBarrierResponse(res);
+      return;
+    }
+    const barrier = testPwaActivationBarriers.get(token);
+    if (barrier) deleteTestPwaActivationBarrier(token, barrier);
+    send(res, 204, '');
+    return;
+  }
+
+  sendJsonResponse(res, 404, { error: 'Test activation barrier endpoint not found.' });
+}
+
+function testPwaWorkerSource(variant, activationBarrierToken = null) {
+  const activationBarrier = activationBarrierToken && variant !== 'A'
+    ? `\nconst activationBarrierToken=${JSON.stringify(activationBarrierToken)};
+async function waitAtActivationBarrier() {
+  const arrive = await fetch('/__test/pwa-activation/arrive', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: activationBarrierToken, variant: version })
+  });
+  if (!arrive.ok) throw new Error('Test activation arrival failed.');
+  const release = await fetch('/__test/pwa-activation/wait-release?token=' + encodeURIComponent(activationBarrierToken) + '&variant=' + encodeURIComponent(version), {
+    cache: 'no-store'
+  });
+  if (!release.ok) throw new Error('Test activation release failed.');
+}`
+    : '';
   return `const version=${JSON.stringify(variant)};
 const skipWaitingGraceMs = 50;
-const successorQueueDelayMs = 100;
 function requestImmediateActivation(event) {
   // WebKit may finish this message event before its queued skipWaiting task; the independent 50ms grace keeps one bounded scheduling window.
   void self.skipWaiting().catch(() => {});
@@ -328,12 +632,8 @@ function requestImmediateActivation(event) {
 }
 async function activateTestWorker() {
   await self.clients.claim();
-  if (version === 'A') return;
-  const windows = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
-  for (const client of windows) client.postMessage({ type: 'SKYJO_TEST_ACTIVATION_REQUESTED', version });
-  // Keep activation alive long enough for the foreground updater to start the next registration update.
-  await new Promise((resolve) => setTimeout(resolve, successorQueueDelayMs));
-}
+  ${activationBarrierToken && variant !== 'A' ? 'await waitAtActivationBarrier();' : ''}
+}${activationBarrier}
 self.addEventListener('install', () => {});
 self.addEventListener('activate', (event) => event.waitUntil(activateTestWorker()));
 self.addEventListener('message', (event) => {
@@ -1455,15 +1755,29 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (testPwaVariantsEnabled && url.pathname === '/sw.js') {
-      const variant = parseCookies(req.headers.cookie).get('skyjo_sw_test_variant');
-      if (variant === 'A' || variant === 'B' || variant === 'C' || variant === 'D') {
-        send(res, 200, testPwaWorkerSource(variant), {
+      const cookies = parseCookies(req.headers.cookie);
+      const variant = cookies.get('skyjo_sw_test_variant');
+      const activationBarrierToken = cookies.get('skyjo_sw_test_activation_barrier');
+      if (validTestPwaWorkerVariant(variant)) {
+        send(res, 200, testPwaWorkerSource(
+          variant,
+          validTestPwaActivationBarrierToken(activationBarrierToken) ? activationBarrierToken : null
+        ), {
           'Cache-Control': 'no-store',
           'Content-Type': 'application/javascript; charset=utf-8',
           'Service-Worker-Allowed': '/'
         });
         return;
       }
+    }
+
+    if (url.pathname.startsWith('/__test/pwa-activation/')) {
+      if (!testPwaVariantsEnabled) {
+        sendJsonResponse(res, 404, { error: 'Not found.' });
+        return;
+      }
+      await handleTestPwaActivationBarrierRequest(req, res, url);
+      return;
     }
 
     if (isPublicPwaAsset(url.pathname)) {
