@@ -320,10 +320,18 @@ function sendJsonResponse(res, status, payload, headers = {}) {
 function testPwaWorkerSource(variant) {
   return `const version=${JSON.stringify(variant)};
 const skipWaitingGraceMs = 50;
+const successorQueueDelayMs = 100;
 function requestImmediateActivation(event) {
   // WebKit may finish this message event before its queued skipWaiting task; the independent 50ms grace keeps one bounded scheduling window.
   void self.skipWaiting().catch(() => {});
   event.waitUntil(new Promise((resolve) => setTimeout(resolve, skipWaitingGraceMs)));
+}
+async function requestQueuedTestActivation(event) {
+  const windows = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+  for (const client of windows) client.postMessage({ type: 'SKYJO_TEST_ACTIVATION_REQUESTED', version });
+  await new Promise((resolve) => setTimeout(resolve, successorQueueDelayMs));
+  void self.skipWaiting().catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, skipWaitingGraceMs));
 }
 self.addEventListener('install', () => {});
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
@@ -331,6 +339,10 @@ self.addEventListener('message', (event) => {
   const isActivation = event.data?.type === 'SKYJO_ACTIVATE_UPDATE';
   if (event.origin !== self.location.origin) return;
   if (isActivation) {
+    if (version !== 'A') {
+      event.waitUntil(requestQueuedTestActivation(event));
+      return;
+    }
     requestImmediateActivation(event);
     return;
   }
@@ -1447,7 +1459,7 @@ const server = http.createServer(async (req, res) => {
 
     if (testPwaVariantsEnabled && url.pathname === '/sw.js') {
       const variant = parseCookies(req.headers.cookie).get('skyjo_sw_test_variant');
-      if (variant === 'A' || variant === 'B') {
+      if (variant === 'A' || variant === 'B' || variant === 'C' || variant === 'D') {
         send(res, 200, testPwaWorkerSource(variant), {
           'Cache-Control': 'no-store',
           'Content-Type': 'application/javascript; charset=utf-8',

@@ -79,7 +79,7 @@ async function expectSessionStorageNumber(page: Page, key: string, expected: num
   }).toBe(expected);
 }
 
-async function setWorkerVariant(context: BrowserContext, baseURL: string, variant: 'A' | 'B') {
+async function setWorkerVariant(context: BrowserContext, baseURL: string, variant: 'A' | 'B' | 'C' | 'D') {
   await context.addCookies([{
     name: 'skyjo_sw_test_variant',
     value: variant,
@@ -387,18 +387,96 @@ test('cross-tab activation never reloads a protected game and preserves one safe
   const protectedLoads = Number(await page.evaluate(() => sessionStorage.getItem('skyjo-cross-tab-loads')));
 
   const updater = await context.newPage();
+  await updater.addInitScript(() => {
+    const loads = Number(sessionStorage.getItem('skyjo-updater-loads') || '0') + 1;
+    sessionStorage.setItem('skyjo-updater-loads', String(loads));
+  });
   await updater.goto(`${skyjoServer.baseURL}/`);
   await setWorkerVariant(context, skyjoServer.baseURL, 'B');
   await updater.evaluate(async () => {
     const registration = await navigator.serviceWorker.ready;
-    await Promise.all([registration.update(), registration.update(), registration.update()]);
+    await registration.update();
   });
   await expectWaitingWorker(updater);
+  const updaterLoads = Number(await updater.evaluate(() => sessionStorage.getItem('skyjo-updater-loads')));
+
+  const queuedSuccessors = page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    const initialTarget = registration.waiting;
+    if (!initialTarget) throw new Error('Initial update target was not waiting.');
+
+    const activationRequests: string[] = [];
+    const activationWaiters = new Map<string, () => void>();
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data?.type !== 'SKYJO_TEST_ACTIVATION_REQUESTED') return;
+      const variant = String(event.data.version || '');
+      activationRequests.push(variant);
+      activationWaiters.get(variant)?.();
+      activationWaiters.delete(variant);
+    });
+    const waitForActivationRequest = (variant: 'B' | 'C' | 'D') => new Promise<void>((resolve, reject) => {
+      if (activationRequests.includes(variant)) {
+        resolve();
+        return;
+      }
+      const timeout = window.setTimeout(() => {
+        activationWaiters.delete(variant);
+        reject(new Error(`Timed out waiting for worker ${variant} activation request.`));
+      }, 8_000);
+      activationWaiters.set(variant, () => {
+        window.clearTimeout(timeout);
+        resolve();
+      });
+    });
+
+    const installSuccessor = async (variant: 'C' | 'D', priorWorkers: ServiceWorker[]) => {
+      document.cookie = `skyjo_sw_test_variant=${variant}; Path=/; SameSite=Lax`;
+      const discovered = new Promise<ServiceWorker>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          registration.removeEventListener('updatefound', inspect);
+          reject(new Error(`Timed out waiting for worker ${variant} updatefound.`));
+        }, 8_000);
+        const inspect = () => {
+          const worker = registration.installing;
+          if (!worker) return;
+          window.clearTimeout(timeout);
+          registration.removeEventListener('updatefound', inspect);
+          resolve(worker);
+        };
+        registration.addEventListener('updatefound', inspect);
+      });
+      const update = registration.update();
+      const worker = await discovered;
+      await update;
+      if (priorWorkers.includes(worker)) throw new Error(`Worker ${variant} reused an earlier object identity.`);
+      return worker;
+    };
+
+    await waitForActivationRequest('B');
+    const successorC = await installSuccessor('C', [initialTarget]);
+    await waitForActivationRequest('C');
+    const successorD = await installSuccessor('D', [initialTarget, successorC]);
+    await waitForActivationRequest('D');
+    return {
+      activationRequests,
+      successorCIsDistinct: successorC !== initialTarget,
+      successorDIsDistinct: successorD !== initialTarget && successorD !== successorC
+    };
+  });
+
   const updaterReload = updater.waitForNavigation({ waitUntil: 'domcontentloaded' });
   await updater.getByRole('button', { name: 'Update now' }).click();
+  await expect(queuedSuccessors).resolves.toMatchObject({
+    activationRequests: ['B', 'C', 'D'],
+    successorCIsDistinct: true,
+    successorDIsDistinct: true
+  });
   await updaterReload;
-  // Keep the activating tab strict: a successor here is a genuine second update.
+  // Keep the activating tab strict: every queued successor must be drained.
   await expectActiveWorker(updater);
+  await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
+  await updater.waitForTimeout(750);
+  await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
 
   // WebKit can retain an observer-local installing/waiting reference after the
   // newly activated worker already controls this protected tab. That successor

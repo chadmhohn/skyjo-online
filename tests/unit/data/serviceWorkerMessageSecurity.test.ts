@@ -23,7 +23,7 @@ function generatedTestWorkerSource(): string {
   const end = serverSource.indexOf('\n\nfunction makeRoomCode', start);
   if (start < 0 || end < 0) throw new Error('Generated test worker source builder was not found.');
   const context: { workerSource?: string } = {};
-  vm.runInNewContext(`${serverSource.slice(start, end)}\nworkerSource = testPwaWorkerSource('B');`, context);
+  vm.runInNewContext(`${serverSource.slice(start, end)}\nworkerSource = testPwaWorkerSource('A');`, context);
   if (typeof context.workerSource !== 'string') throw new Error('Generated test worker source was not produced.');
   return context.workerSource;
 }
