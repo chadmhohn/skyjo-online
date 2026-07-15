@@ -504,6 +504,54 @@ describe('PWA update coordination', () => {
     }
   });
 
+  it('holds settlement while a distinct successor activates externally before taking control', async () => {
+    const registration = new FakeRegistration();
+    const first = new FakeWorker('installed');
+    registration.waiting = first;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+
+    vi.useFakeTimers();
+    try {
+      expect(module.activatePwaUpdate()).toBe(true);
+      first.transition('activating');
+      registration.waiting = null;
+      container.controller = first;
+      container.dispatchEvent(new Event('controllerchange'));
+      first.transition('activated');
+
+      const successor = new FakeWorker('installing');
+      registration.installing = successor;
+      registration.dispatchEvent(new Event('updatefound'));
+      registration.installing = null;
+      successor.transition('installed');
+      successor.transition('activating');
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(container.controller).toBe(first);
+      expect(reload).not.toHaveBeenCalled();
+      expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+      successor.transition('activated');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(container.controller).toBe(first);
+      expect(reload).not.toHaveBeenCalled();
+      expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+      container.controller = successor;
+      container.dispatchEvent(new Event('controllerchange'));
+      expect(reload).not.toHaveBeenCalled();
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: true,
+        activating: false,
+        reloadRequired: true
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('lets the absolute deadline win over late successor activity and keeps it retryable', async () => {
     const registration = new FakeRegistration();
     const first = new FakeWorker('installed');

@@ -91,6 +91,15 @@ function cancelTerminalQuiescence(attempt: ActivationAttempt) {
   scheduleActivationTimer(attempt);
 }
 
+function isUnsettledSuccessor(worker: ServiceWorker): boolean {
+  return (
+    worker.state === 'installing' ||
+    worker.state === 'installed' ||
+    worker.state === 'activating' ||
+    worker.state === 'activated'
+  );
+}
+
 function beginTerminalQuiescence(attempt: ActivationAttempt) {
   if (activationAttempt !== attempt) return;
   if (Date.now() >= attempt.deadline) {
@@ -112,7 +121,7 @@ function trackAttemptInstaller(worker: ServiceWorker | null) {
     !attempt ||
     !worker ||
     worker === attempt.target ||
-    (worker.state !== 'installing' && worker.state !== 'installed')
+    !isUnsettledSuccessor(worker)
   ) return;
   const isNew = !attempt.pendingInstallers.has(worker);
   attempt.pendingInstallers.add(worker);
@@ -130,7 +139,7 @@ function observeInstalling(worker: ServiceWorker | null) {
     if (attempt) {
       if (worker === attempt.target || worker.state === 'redundant') {
         attempt.pendingInstallers.delete(worker);
-      } else if (worker.state === 'installing' || worker.state === 'installed') {
+      } else if (isUnsettledSuccessor(worker)) {
         const isNew = !attempt.pendingInstallers.has(worker);
         attempt.pendingInstallers.add(worker);
         if (isNew) cancelTerminalQuiescence(attempt);
@@ -190,7 +199,7 @@ function hasPendingSuccessor(attempt: ActivationAttempt): boolean {
   if (
     liveInstaller &&
     liveInstaller !== attempt.target &&
-    (liveInstaller.state === 'installing' || liveInstaller.state === 'installed')
+    isUnsettledSuccessor(liveInstaller)
   ) {
     const isNew = !attempt.pendingInstallers.has(liveInstaller);
     attempt.pendingInstallers.add(liveInstaller);
@@ -200,7 +209,7 @@ function hasPendingSuccessor(attempt: ActivationAttempt): boolean {
   for (const worker of attempt.pendingInstallers) {
     if (
       worker === attempt.target ||
-      (worker.state !== 'installing' && worker.state !== 'installed')
+      !isUnsettledSuccessor(worker)
     ) attempt.pendingInstallers.delete(worker);
   }
   return attempt.pendingInstallers.size > 0;
