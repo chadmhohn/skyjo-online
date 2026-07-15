@@ -127,7 +127,7 @@ function generatedTestPwaWorkerLease(now = 100) {
     clear?: (token?: string | null) => boolean;
     clearTimeout: (timer: TestTimer) => void;
     current?: () => TestPwaWorkerLease | null;
-    request?: (cookies: Map<string, string>) => TestPwaWorkerRequest;
+    request?: (cookies: Map<string, string>, barriers: Map<string, unknown>) => TestPwaWorkerRequest;
     setTimeout: (callback: TimerCallback, delay: number) => TestTimer;
     switchToE?: (
       token: string,
@@ -161,7 +161,9 @@ switchToE = switchTestPwaWorkerLeaseToE;`,
     arm: context.arm,
     clear: context.clear,
     current: context.current,
-    request: context.request,
+    request: (cookies: Map<string, string>, barriers = new Map<string, unknown>()) => (
+      context.request?.(cookies, barriers) ?? null
+    ),
     setNow: (value: number) => { currentTime = value; },
     switchToE: context.switchToE,
     timers
@@ -362,7 +364,9 @@ describe('service worker message trust boundary', () => {
     expect(serverSource).toContain("if (url.pathname.startsWith('/__test/pwa-activation/')) {");
     expect(serverSource).toContain('if (!testPwaVariantsEnabled) {');
     expect(serverSource).toContain("url.pathname === '/__test/pwa-activation/lease'");
-    expect(serverSource).toContain('const workerRequest = testPwaWorkerRequest(cookies);');
+    expect(serverSource).toContain(
+      'const workerRequest = testPwaWorkerRequest(cookies, testPwaActivationBarriers);'
+    );
     expect(workerSource('production')).not.toContain(identityType);
     expect(workerSource('production')).not.toContain('/__test/pwa-activation/');
   });
@@ -375,7 +379,8 @@ describe('service worker message trust boundary', () => {
       testPwaWorkerBarrierFixture(token)
     )).toBeNull();
     const harness = generatedTestPwaWorkerLease();
-    const lease = harness.arm(token, testPwaWorkerBarrierFixture(token));
+    const barrier = testPwaWorkerBarrierFixture(token);
+    const lease = harness.arm(token, barrier);
 
     expect(lease).toMatchObject({
       activationBarrierToken: token,
@@ -383,7 +388,10 @@ describe('service worker message trust boundary', () => {
       variant: 'D',
       workerBuildNonce: 'worker_build_nonce_d'
     });
-    const dRequest = harness.request(new Map([['unrelated_cookie', 'allowed']]));
+    const dRequest = harness.request(
+      new Map([['unrelated_cookie', 'allowed']]),
+      new Map([[token, barrier]])
+    );
     expect(dRequest).toEqual({
       activationBarrierToken: token,
       kind: 'worker',
@@ -510,6 +518,33 @@ describe('service worker message trust boundary', () => {
       ['skyjo_sw_test_activation_barrier', token],
       ['skyjo_sw_test_worker_nonce', 'worker_build_nonce_e']
     ]))).toEqual({ kind: 'error', status: 409 });
+  });
+
+  it('fails cookieless routing closed until every pre-lease barrier is cleaned up', () => {
+    const token = 'activation_barrier_token_1234';
+    const harness = generatedTestPwaWorkerLease();
+    const barrier = testPwaWorkerBarrierFixture(token);
+    const barriers = new Map<string, unknown>([[token, barrier]]);
+
+    expect(harness.request(new Map(), barriers)).toEqual({ kind: 'error', status: 409 });
+    expect(harness.request(new Map([
+      ['skyjo_sw_test_variant', 'A'],
+      ['skyjo_sw_test_worker_nonce', 'worker_build_nonce_a']
+    ]), barriers)).toEqual({
+      activationBarrierToken: null,
+      kind: 'worker',
+      variant: 'A',
+      workerBuildNonce: 'worker_build_nonce_a'
+    });
+    barrier.poisoned = true;
+    expect(harness.request(new Map(), barriers)).toEqual({ kind: 'error', status: 409 });
+    barriers.set('activation_barrier_token_5678', testPwaWorkerBarrierFixture(
+      'activation_barrier_token_5678'
+    ));
+    expect(harness.request(new Map(), barriers)).toEqual({ kind: 'error', status: 409 });
+
+    barriers.clear();
+    expect(harness.request(new Map(), barriers)).toBeNull();
   });
 
   it('clears leases idempotently by owner or independent expiry', () => {

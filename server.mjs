@@ -474,7 +474,7 @@ function switchTestPwaWorkerLeaseToE(token, workerBuildNonce, barrier = null) {
   });
 }
 
-function testPwaWorkerRequest(cookies) {
+function testPwaWorkerRequest(cookies, barriers) {
   const cookieNames = [
     'skyjo_sw_test_variant',
     'skyjo_sw_test_activation_barrier',
@@ -483,12 +483,15 @@ function testPwaWorkerRequest(cookies) {
   const hasTestWorkerCookies = cookieNames.some((name) => cookies.has(name));
   const lease = activeTestPwaWorkerLease();
   if (!hasTestWorkerCookies) {
-    return lease ? {
-      activationBarrierToken: lease.activationBarrierToken,
-      kind: 'worker',
-      variant: lease.variant,
-      workerBuildNonce: lease.workerBuildNonce
-    } : null;
+    if (lease) {
+      return {
+        activationBarrierToken: lease.activationBarrierToken,
+        kind: 'worker',
+        variant: lease.variant,
+        workerBuildNonce: lease.workerBuildNonce
+      };
+    }
+    return barriers.size > 0 ? { kind: 'error', status: 409 } : null;
   }
 
   const variant = cookies.get('skyjo_sw_test_variant');
@@ -2165,7 +2168,7 @@ const server = http.createServer(async (req, res) => {
 
     if (testPwaVariantsEnabled && url.pathname === '/sw.js') {
       const cookies = parseCookies(req.headers.cookie);
-      const workerRequest = testPwaWorkerRequest(cookies);
+      const workerRequest = testPwaWorkerRequest(cookies, testPwaActivationBarriers);
       if (workerRequest?.kind === 'error') {
         send(res, workerRequest.status, 'Invalid test service worker routing.', {
           'Content-Type': 'text/plain; charset=utf-8'
