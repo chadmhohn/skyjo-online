@@ -58,15 +58,12 @@ jobs:
       - name: Run nightly exact-topology certification
         run: npm run certify:automated
 
-      - name: Upload sanitized nightly evidence and failure artifacts
+      - name: Upload checksummed sanitized nightly evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: nightly-certification-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             test-results/certification
-            playwright-report
-            test-results/playwright
-            test-results/server
           if-no-files-found: error
           retention-days: 14

@@ -1,10 +1,18 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { BrowserContext, Page } from '@playwright/test';
+import { performance } from 'node:perf_hooks';
+import type { BrowserContext, Locator, Page } from '@playwright/test';
 import {
+  CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
-  validateEightClientPersonaEvidence
+  PERSONA_EVIDENCE_FORMAT_VERSION,
+  validateEightClientPersonaEvidence,
+  writeEightClientPersonaEvidence
 } from '../../../scripts/certification-lib.mjs';
+import {
+  createPropagationArrivalTracker,
+  summarizePropagationSamples,
+  type PropagationProbe
+} from '../../helpers/propagationArrival';
 import { expect, test } from '../fixtures';
 
 type PersonaFrame = {
@@ -12,6 +20,7 @@ type PersonaFrame = {
   protocolVersion?: number;
   revision?: number;
   room?: {
+    chatMessages?: Array<{ text?: string }>;
     revision?: number;
     state?: null | {
       currentPlayerIndex: number;
@@ -26,9 +35,12 @@ type PersonaFrame = {
 
 type PersonaClient = {
   context: BrowserContext;
+  index: number;
   page: Page;
   profile: string;
 };
+
+type PropagationTracker = ReturnType<typeof createPropagationArrivalTracker>;
 
 const profiles = [
   { profile: 'desktop-keyboard', viewport: { width: 1440, height: 900 } },
@@ -77,6 +89,85 @@ async function installFrameAudit(context: BrowserContext): Promise<void> {
   });
 }
 
+async function installPropagationSendRoute(
+  context: BrowserContext,
+  clientIndex: number,
+  profile: string,
+  tracker: PropagationTracker,
+  runtimeFailures: string[]
+): Promise<void> {
+  await context.routeWebSocket(/\/rooms(?:\?.*)?$/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((payload) => {
+      const observedAt = performance.now();
+      const serialized = typeof payload === 'string' ? payload : payload.toString('utf8');
+      try {
+        tracker.recordSentFrame(clientIndex, JSON.parse(serialized), observedAt);
+      } catch {
+        runtimeFailures.push(`${profile}:invalid-sent-propagation-frame`);
+        tracker.failAll(new Error('A sent propagation WebSocket frame was not valid JSON.'));
+      }
+      server.send(payload);
+    });
+  });
+}
+
+function installPropagationObserver(
+  client: PersonaClient,
+  tracker: PropagationTracker,
+  runtimeFailures: string[]
+): void {
+  client.page.on('websocket', (socket) => {
+    socket.on('framereceived', ({ payload }) => {
+      const observedAt = performance.now();
+      const serialized = typeof payload === 'string' ? payload : payload.toString('utf8');
+      try {
+        tracker.recordFrame(client.index, JSON.parse(serialized) as PersonaFrame, observedAt);
+      } catch {
+        runtimeFailures.push(`${client.profile}:invalid-propagation-frame`);
+        tracker.failAll(new Error('A propagation WebSocket frame was not valid JSON.'));
+      }
+    });
+  });
+}
+
+async function completePropagationProbe(
+  probe: PropagationProbe,
+  action: () => Promise<void>,
+  label: string
+): Promise<number> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new Error(`${label} did not send and reach all eight clients within five seconds.`)), 5_000);
+  });
+  try {
+    const actionPromise = action();
+    void actionPromise.catch(() => {});
+    await Promise.race([actionPromise, timeoutPromise]);
+    return await Promise.race([probe.promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    probe.cancel();
+  }
+}
+
+async function commonRevision(tracker: PropagationTracker): Promise<number> {
+  await expect.poll(() => tracker.commonRevision() ?? -1, { timeout: 5_000 }).toBeGreaterThanOrEqual(0);
+  const revision = tracker.commonRevision();
+  if (revision === null) throw new Error('Eight-client revision convergence was lost.');
+  return revision;
+}
+
+async function requiredCardIndex(target: Locator, label: string): Promise<number> {
+  const value = await target.getAttribute('data-card-index');
+  if (value === null || !/^\d+$/.test(value)) throw new Error(`${label} is missing its card index.`);
+  const cardIndex = Number(value);
+  if (!Number.isSafeInteger(cardIndex) || cardIndex < 0 || cardIndex >= 12) {
+    throw new Error(`${label} has an invalid card index.`);
+  }
+  return cardIndex;
+}
+
 async function authenticateClient(
   client: PersonaClient,
   baseURL: string,
@@ -103,20 +194,29 @@ async function authenticateClient(
   }
 }
 
-async function revealOpeningCard(client: PersonaClient, keyboard: boolean): Promise<void> {
+async function revealOpeningCard(
+  client: PersonaClient,
+  keyboard: boolean,
+  tracker: PropagationTracker,
+  expectedRevision: number
+): Promise<number> {
   const actionable = () => client.page.locator('button[aria-label*="Reveal this opening card"]:visible:not([disabled])').first();
-  await expect(actionable()).toBeVisible();
+  const target = actionable();
+  await expect(target).toBeVisible();
+  const cardIndex = await requiredCardIndex(target, 'Opening reveal target');
   if (keyboard) {
-    await actionable().focus();
-    await client.page.keyboard.press('Enter');
-  } else {
-    await actionable().click();
+    await target.focus();
+    return completePropagationProbe(
+      tracker.beginRevision(expectedRevision, { type: 'reveal-opening-card', cardIndex }, client.index),
+      () => client.page.keyboard.press('Enter'),
+      `Opening revision ${expectedRevision}`
+    );
   }
-}
-
-async function revealOpeningCards(client: PersonaClient, keyboard: boolean): Promise<void> {
-  await revealOpeningCard(client, keyboard);
-  await revealOpeningCard(client, keyboard);
+  return completePropagationProbe(
+    tracker.beginRevision(expectedRevision, { type: 'reveal-opening-card', cardIndex }, client.index),
+    () => target.click(),
+    `Opening revision ${expectedRevision}`
+  );
 }
 
 async function assertPrivacyRedaction(clients: PersonaClient[]): Promise<void> {
@@ -149,7 +249,11 @@ async function assertPrivacyRedaction(clients: PersonaClient[]): Promise<void> {
   }
 }
 
-async function completeKeyboardTurn(clients: PersonaClient[]): Promise<void> {
+async function completeMeasuredReplacementTurn(
+  clients: PersonaClient[],
+  tracker: PropagationTracker,
+  startingRevision: number
+): Promise<{ revision: number; samples: [number, number] }> {
   let active: PersonaClient | undefined;
   await expect.poll(async () => {
     for (const client of clients) {
@@ -162,18 +266,55 @@ async function completeKeyboardTurn(clients: PersonaClient[]): Promise<void> {
     return false;
   }).toBe(true);
   if (!active) throw new Error('No keyboard turn was available.');
-  const deck = active.page.locator('button.skyjo-pile-button:visible:not([disabled])').filter({ hasText: 'Deck' }).first();
+  const activeClient = active;
+  const deck = activeClient.page.locator('button.skyjo-pile-button:visible:not([disabled])').filter({ hasText: 'Deck' }).first();
   await deck.focus();
-  await active.page.keyboard.press('Enter');
-  const discard = active.page.getByRole('button', { name: /Discard \+ reveal/ });
-  await expect(discard).toBeVisible();
-  await discard.focus();
-  await active.page.keyboard.press('Enter');
-  const reveal = active.page.locator('button[aria-label*="Reveal after discarding the drawn card"]:visible:not([disabled])').first();
-  await expect(reveal).toBeVisible();
-  await reveal.focus();
-  await active.page.keyboard.press('Enter');
-  await expect(discard).toBeHidden();
+  const drawRevision = startingRevision + 1;
+  const drawSample = await completePropagationProbe(
+    tracker.beginRevision(drawRevision, { type: 'draw-blind' }, activeClient.index),
+    () => activeClient.page.keyboard.press('Enter'),
+    `Blind-draw revision ${drawRevision}`
+  );
+  await expect(activeClient.page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', 'choose-replacement');
+  const replacement = activeClient.page
+    .getByRole('button', { name: /Replace with the drawn card/ })
+    .filter({ visible: true })
+    .first();
+  await expect(replacement).toBeEnabled();
+  await replacement.focus();
+  const cardIndex = await requiredCardIndex(replacement, 'Replacement target');
+  const replacementRevision = drawRevision + 1;
+  const replacementSample = await completePropagationProbe(
+    tracker.beginRevision(replacementRevision, { type: 'replace-card', cardIndex }, activeClient.index),
+    () => activeClient.page.keyboard.press('Enter'),
+    `Replacement revision ${replacementRevision}`
+  );
+  await expect(activeClient.page.getByTestId('shared-game-table')).not.toHaveAttribute('data-phase', 'choose-replacement');
+  return { revision: replacementRevision, samples: [drawSample, replacementSample] };
+}
+
+async function measureChatPropagation(
+  client: PersonaClient,
+  tracker: PropagationTracker,
+  sampleCount: number
+): Promise<number[]> {
+  const toggle = client.page.getByRole('button', { name: /Table Chat/ }).first();
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  const input = client.page.getByRole('textbox', { name: 'Message', exact: true });
+  const send = client.page.getByRole('button', { name: 'Send', exact: true });
+  const samples: number[] = [];
+  for (let index = 0; index < sampleCount; index += 1) {
+    const marker = `cert-chat-${String(index + 1).padStart(2, '0')}`;
+    await input.fill(marker);
+    await expect(send).toBeEnabled();
+    const expectedRevision = await commonRevision(tracker);
+    samples.push(await completePropagationProbe(
+      tracker.beginChat(marker, expectedRevision, client.index),
+      () => send.click(),
+      `Chat marker ${index + 1}`
+    ));
+  }
+  return samples;
 }
 
 async function geometryAndTargetMetrics(clients: PersonaClient[]) {
@@ -232,6 +373,7 @@ test('eight independent clients cover the release persona matrix without state o
   );
   const clients: PersonaClient[] = [];
   const runtimeFailures: string[] = [];
+  const propagationTracker = createPropagationArrivalTracker(profiles.length);
 
   try {
     for (const profile of profiles) {
@@ -242,12 +384,15 @@ test('eight independent clients cover the release persona matrix without state o
         reducedMotion: profile.reducedMotion
       });
       await installFrameAudit(context);
+      await installPropagationSendRoute(context, clients.length, profile.profile, propagationTracker, runtimeFailures);
       const page = await context.newPage();
+      const client = { context, index: clients.length, page, profile: profile.profile };
+      installPropagationObserver(client, propagationTracker, runtimeFailures);
       page.on('console', (message) => {
         if (message.type() === 'error') runtimeFailures.push(`${profile.profile}:console-error`);
       });
       page.on('pageerror', () => runtimeFailures.push(`${profile.profile}:page-error`));
-      clients.push({ context, page, profile: profile.profile });
+      clients.push(client);
     }
     expect(clients.map((client) => client.profile)).toEqual(CERTIFICATION_PERSONA_PROFILES);
     for (let index = 0; index < clients.length; index += 1) {
@@ -266,14 +411,26 @@ test('eight independent clients cover the release persona matrix without state o
     await clients[0].page.getByRole('button', { name: 'Start Game' }).click();
     await Promise.all(clients.map((client) => expect(client.page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', '8')));
 
+    let revision = await commonRevision(propagationTracker);
+    const statePropagationMs: number[] = [];
     const openingOrder = [0, 1, 2, 3, 4, 5, 6, 7];
-    for (const index of openingOrder.slice(0, -1)) {
-      await revealOpeningCards(clients[index], index === 0 || index === 6);
+    let openingStartedAt = 0;
+    let openingCommand = 0;
+    for (const index of openingOrder) {
+      for (let reveal = 0; reveal < 2; reveal += 1) {
+        openingCommand += 1;
+        revision += 1;
+        if (openingCommand === CERTIFICATION_LIMITS.personaOpeningReveals) openingStartedAt = Date.now();
+        statePropagationMs.push(await revealOpeningCard(
+          clients[index],
+          index === 0 || index === 6,
+          propagationTracker,
+          revision
+        ));
+      }
     }
-    const finalClient = clients[openingOrder.at(-1) as number];
-    await revealOpeningCard(finalClient, false);
-    const openingStartedAt = Date.now();
-    await revealOpeningCard(finalClient, false);
+    expect(openingCommand).toBe(CERTIFICATION_LIMITS.personaOpeningReveals);
+    expect(await commonRevision(propagationTracker)).toBe(revision);
     const reducedMotionSettle = (async () => {
       await expect(clients[3].page.getByTestId('shared-game-table')).not.toHaveAttribute('data-phase', 'opening-reveal');
       return Date.now() - openingStartedAt;
@@ -285,7 +442,26 @@ test('eight independent clients cover the release persona matrix without state o
     const openingSettleMs = Date.now() - openingStartedAt;
     const reducedMotionSettleMs = await reducedMotionSettle;
 
-    await completeKeyboardTurn(clients);
+    const turn = await completeMeasuredReplacementTurn(clients, propagationTracker, revision);
+    revision = turn.revision;
+    statePropagationMs.push(...turn.samples);
+    expect(await commonRevision(propagationTracker)).toBe(revision);
+    expect(statePropagationMs).toHaveLength(CERTIFICATION_LIMITS.personaStatePropagationSamples);
+    const chatPropagationMs = await measureChatPropagation(
+      clients[0],
+      propagationTracker,
+      CERTIFICATION_LIMITS.personaChatPropagationSamples
+    );
+    expect(propagationTracker.pendingCount()).toBe(0);
+    propagationTracker.assertHealthy();
+    const statePropagation = summarizePropagationSamples(
+      statePropagationMs,
+      CERTIFICATION_LIMITS.personaStatePropagationSamples
+    );
+    const chatPropagation = summarizePropagationSamples(
+      chatPropagationMs,
+      CERTIFICATION_LIMITS.personaChatPropagationSamples
+    );
     const reconnectClient = clients[7];
     const originalPlayerId = await reconnectClient.page.evaluate(() => localStorage.getItem('skyjo-player-id'));
     const bannerStartedAt = Date.now();
@@ -301,39 +477,47 @@ test('eight independent clients cover the release persona matrix without state o
 
     await assertPrivacyRedaction(clients);
     const geometry = await geometryAndTargetMetrics(clients);
-    expect(geometry.centered).toBe(true);
-    expect(geometry.maxHorizontalOverflowPx).toBe(0);
-    expect(geometry.minimumTargetPx).toBeGreaterThanOrEqual(44);
-    expect(openingSettleMs).toBeLessThanOrEqual(3_000);
-    expect(reducedMotionSettleMs).toBeLessThanOrEqual(1_000);
-    expect(reconnectBannerMs).toBeLessThanOrEqual(500);
-    expect(reconnectRtoMs).toBeLessThanOrEqual(10_000);
     expect(runtimeFailures).toEqual([]);
+    propagationTracker.assertHealthy();
 
     const evidence = {
-      formatVersion: 1,
+      formatVersion: PERSONA_EVIDENCE_FORMAT_VERSION,
       kind: 'skyjo-eight-client-persona',
       release: { version: '0.2.0', sourceSha, protocolVersion: 2 },
-      topology: { rooms: 1, clients: 8, openingReveals: 16 },
+      topology: {
+        rooms: 1,
+        clients: 8,
+        openingReveals: CERTIFICATION_LIMITS.personaOpeningReveals,
+        statePropagationSamples: statePropagation.count,
+        chatPropagationSamples: chatPropagation.count
+      },
       profiles: [...CERTIFICATION_PERSONA_PROFILES],
+      propagation: {
+        chatMs: chatPropagationMs,
+        stateMs: statePropagationMs
+      },
       measurements: {
+        chatPropagationP95Ms: chatPropagation.p95Ms,
         maxHorizontalOverflowPx: geometry.maxHorizontalOverflowPx,
         minimumTargetPx: geometry.minimumTargetPx,
         openingSettleMs,
         reconnectBannerMs,
         reconnectRtoMs,
-        reducedMotionSettleMs
+        reducedMotionSettleMs,
+        statePropagationP95Ms: statePropagation.p95Ms
       },
       gates: {
-        centeredTable: true,
+        browserPropagation:
+          statePropagation.p95Ms <= CERTIFICATION_LIMITS.personaPropagationP95Ms &&
+          chatPropagation.p95Ms <= CERTIFICATION_LIMITS.personaPropagationP95Ms,
+        centeredTable: geometry.centered,
         keyboardComplete: true,
         privacyRedaction: true,
         sameSeatReconnect: true
       }
     };
+    await writeEightClientPersonaEvidence(evidenceDestination, evidence, { requirePassed: false });
     validateEightClientPersonaEvidence(evidence);
-    await fs.mkdir(path.dirname(evidenceDestination), { recursive: true });
-    await fs.writeFile(evidenceDestination, `${JSON.stringify(evidence, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   } finally {
     await Promise.all(clients.map((client) => client.context.close()));
   }
