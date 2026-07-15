@@ -27,12 +27,23 @@ type ControllerObservation =
   | { kind: 'external' }
   | { kind: 'own'; generation: number };
 
+type EquivalentWorkerContext = {
+  buildId: string;
+  controller: ServiceWorker;
+  controllerEpoch: number;
+};
+
 const activationTimeoutMs = 8_000;
 const activationPostRetryMs = 50;
+const workerBuildIdentityTimeoutMs = 750;
 // Two short quiet windows surround an explicit registration refresh before a safe reload.
 const terminalQuiescenceMs = 250;
 const listeners = new Set<() => void>();
 const observedInstallingWorkers = new WeakSet<ServiceWorker>();
+const workerBuildIds = new WeakMap<ServiceWorker, string>();
+const workerBuildIdRequests = new WeakMap<ServiceWorker, Promise<string | null>>();
+const workerClassifications = new WeakMap<ServiceWorker, Promise<void>>();
+const equivalentWorkerContexts = new WeakMap<ServiceWorker, EquivalentWorkerContext>();
 let snapshot: PwaUpdateSnapshot = Object.freeze({ available: false, activating: false, reloadRequired: false });
 let registration: ServiceWorkerRegistration | null = null;
 let waitingWorker: ServiceWorker | null = null;
@@ -42,6 +53,8 @@ let reloadStarted = false;
 let registrationStarted = false;
 let controllerKnown = false;
 let knownController: ServiceWorker | null = null;
+let controllerEpoch = 0;
+let workerIdentityRequestSequence = 0;
 let observedController: ServiceWorker | null = null;
 let observedControllerStateChange: (() => void) | null = null;
 let reloadPage = () => window.location.reload();
@@ -56,8 +69,168 @@ function publish(next: PwaUpdateSnapshot) {
   for (const listener of listeners) listener();
 }
 
+function validWorkerBuildId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+
+function requestWorkerBuildId(worker: ServiceWorker): Promise<string | null> {
+  const cached = workerBuildIds.get(worker);
+  if (cached) return Promise.resolve(cached);
+  const existing = workerBuildIdRequests.get(worker);
+  if (existing) return existing;
+  const requestId = `${Date.now().toString(36)}-${(++workerIdentityRequestSequence).toString(36)}`;
+  const pending = new Promise<string | null>((resolve) => {
+    if (typeof MessageChannel !== 'function') {
+      resolve(null);
+      return;
+    }
+    const channel = new MessageChannel();
+    let settled = false;
+    const finish = (buildId: string | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      channel.port1.onmessage = null;
+      channel.port1.close();
+      if (buildId) workerBuildIds.set(worker, buildId);
+      resolve(buildId);
+    };
+    const timeout = window.setTimeout(() => finish(null), workerBuildIdentityTimeoutMs);
+    channel.port1.onmessage = (event: MessageEvent<unknown>) => {
+      const value = event.data as {
+        type?: unknown;
+        version?: unknown;
+        requestId?: unknown;
+        buildId?: unknown;
+      } | null;
+      finish(
+        value?.type === 'SKYJO_BUILD_ID' &&
+          value.version === 1 &&
+          value.requestId === requestId &&
+          validWorkerBuildId(value.buildId)
+          ? value.buildId
+          : null
+      );
+    };
+    channel.port1.start();
+    try {
+      worker.postMessage({ type: 'SKYJO_GET_BUILD_ID', version: 1, requestId }, [channel.port2]);
+    } catch {
+      channel.port2.close();
+      finish(null);
+    }
+  });
+  const request = pending.finally(() => workerBuildIdRequests.delete(worker));
+  workerBuildIdRequests.set(worker, request);
+  return request;
+}
+
+function equivalentWorkerContext(worker: ServiceWorker): EquivalentWorkerContext | null {
+  const context = equivalentWorkerContexts.get(worker) || null;
+  if (
+    !context ||
+    workerBuildIds.get(worker) !== context.buildId ||
+    context.controllerEpoch !== controllerEpoch ||
+    navigator.serviceWorker.controller !== context.controller ||
+    registration?.active !== context.controller ||
+    context.controller.state !== 'activated'
+  ) return null;
+  return context;
+}
+
+function isCurrentRegistrationCandidate(
+  candidate: ServiceWorker,
+  expectedRegistration: ServiceWorkerRegistration
+): boolean {
+  return (
+    registration === expectedRegistration &&
+    candidate.state === 'installed' &&
+    (expectedRegistration.waiting === candidate || expectedRegistration.installing === candidate)
+  );
+}
+
+async function classifyWaitingWorker(
+  candidate: ServiceWorker,
+  expectedRegistration: ServiceWorkerRegistration,
+  expectedControllerEpoch: number
+): Promise<boolean> {
+  const controller = navigator.serviceWorker.controller;
+  const active = expectedRegistration.active;
+  const canCompare = Boolean(controller && active === controller && controller.state === 'activated');
+  const [activeBuildId, candidateBuildId] = canCompare && controller
+    ? await Promise.all([requestWorkerBuildId(controller), requestWorkerBuildId(candidate)])
+    : [null, null];
+  if (!isCurrentRegistrationCandidate(candidate, expectedRegistration)) return false;
+  if (!canCompare) {
+    rememberWaiting(candidate);
+    return false;
+  }
+  const unchangedActiveController = (
+    controllerEpoch === expectedControllerEpoch &&
+    controller !== null &&
+    navigator.serviceWorker.controller === controller &&
+    expectedRegistration.active === controller &&
+    controller.state === 'activated'
+  );
+  if (
+    unchangedActiveController &&
+    validWorkerBuildId(activeBuildId) &&
+    activeBuildId === candidateBuildId
+  ) {
+    equivalentWorkerContexts.set(candidate, {
+      buildId: activeBuildId,
+      controller,
+      controllerEpoch: expectedControllerEpoch
+    });
+    if (waitingWorker === candidate) {
+      waitingWorker = null;
+      if (!activationAttempt && !snapshot.reloadRequired) {
+        publish({ available: false, activating: false, reloadRequired: false });
+      }
+    }
+    return false;
+  }
+  if (!unchangedActiveController) return true;
+  rememberWaiting(candidate);
+  return false;
+}
+
+function queueWaitingWorkerClassification(worker: ServiceWorker | null) {
+  const expectedRegistration = registration;
+  if (
+    !worker ||
+    !expectedRegistration ||
+    worker.state !== 'installed' ||
+    activationAttempt ||
+    equivalentWorkerContext(worker) !== null ||
+    workerClassifications.has(worker) ||
+    (
+      expectedRegistration.waiting !== worker &&
+      expectedRegistration.installing !== worker
+    )
+  ) return;
+  const expectedControllerEpoch = controllerEpoch;
+  const classification = (async () => {
+    let retry = false;
+    try {
+      retry = await classifyWaitingWorker(worker, expectedRegistration, expectedControllerEpoch);
+    } catch {
+      if (isCurrentRegistrationCandidate(worker, expectedRegistration)) rememberWaiting(worker);
+    } finally {
+      workerClassifications.delete(worker);
+      if (retry && isCurrentRegistrationCandidate(worker, expectedRegistration)) {
+        queueWaitingWorkerClassification(worker);
+      } else if (!isCurrentRegistrationCandidate(worker, expectedRegistration)) {
+        queueWaitingWorkerClassification(expectedRegistration.waiting);
+        queueWaitingWorkerClassification(expectedRegistration.installing);
+      }
+    }
+  })();
+  workerClassifications.set(worker, classification);
+}
+
 function rememberWaiting(worker: ServiceWorker | null) {
-  if (!worker || worker.state === 'redundant') return;
+  if (!worker || worker.state === 'redundant' || equivalentWorkerContext(worker)) return;
   waitingWorker = worker;
   publish({ available: true, activating: Boolean(activationAttempt), reloadRequired: snapshot.reloadRequired });
 }
@@ -143,8 +316,11 @@ function observeInstalling(worker: ServiceWorker | null) {
   if (observedInstallingWorkers.has(worker)) return;
   observedInstallingWorkers.add(worker);
   const inspect = () => {
-    if (worker.state === 'installed' && navigator.serviceWorker.controller) rememberWaiting(worker);
     const attempt = activationAttempt;
+    if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+      if (attempt) rememberWaiting(worker);
+      else queueWaitingWorkerClassification(worker);
+    }
     if (attempt) {
       if (worker === attempt.target || worker.state === 'redundant') {
         attempt.pendingInstallers.delete(worker);
@@ -162,7 +338,6 @@ function observeInstalling(worker: ServiceWorker | null) {
       if (snapshot.reloadRequired) return;
       const replacement = registration?.waiting || null;
       if (replacement && replacement.state !== 'redundant') {
-        rememberWaiting(replacement);
         observeInstalling(replacement);
       }
       else publish({ available: false, activating: false, reloadRequired: false });
@@ -180,7 +355,6 @@ function observeInstalling(worker: ServiceWorker | null) {
 function observeRegistration(nextRegistration: ServiceWorkerRegistration) {
   registration = nextRegistration;
   if (nextRegistration.waiting) {
-    rememberWaiting(nextRegistration.waiting);
     observeInstalling(nextRegistration.waiting);
   }
   observeInstalling(nextRegistration.installing);
@@ -541,7 +715,9 @@ function handleActivationDeadline(generation: number) {
     activating: false,
     reloadRequired: false
   });
-  if (passiveController) observeControllerTerminal(passiveController, { kind: 'external' });
+  if (passiveController) {
+    observeControllerTerminal(passiveController, { kind: 'external' });
+  }
 }
 
 function handleActivationTimer(generation: number, scheduledTimeout: number) {
@@ -596,12 +772,14 @@ export function registerPwaUpdates(reload: () => void = () => window.location.re
   reloadPage = reload;
   knownController = navigator.serviceWorker.controller;
   controllerKnown = Boolean(knownController);
+  if (knownController) void requestWorkerBuildId(knownController);
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (reloadStarted) return;
     const controller = navigator.serviceWorker.controller;
     if (!controller) return;
     if (controllerKnown && controller === knownController) return;
     const initialControl = !controllerKnown;
+    controllerEpoch += 1;
     knownController = controller;
     controllerKnown = true;
     if (initialControl && !activationAttempt) {
@@ -630,10 +808,18 @@ export function activatePwaUpdate(): boolean {
     reloadOnce();
     return true;
   }
-  const liveWaiting = registration?.waiting || null;
-  const worker = liveWaiting && liveWaiting.state !== 'redundant'
+  const registrationWaiting = registration?.waiting || null;
+  const liveWaiting = (
+    registrationWaiting &&
+    registrationWaiting.state !== 'redundant' &&
+    !equivalentWorkerContext(registrationWaiting) &&
+    !workerClassifications.has(registrationWaiting)
+  ) ? registrationWaiting : null;
+  const worker = liveWaiting
     ? liveWaiting
-    : waitingWorker?.state === 'installed'
+    : waitingWorker?.state === 'installed' &&
+        !equivalentWorkerContext(waitingWorker) &&
+        !workerClassifications.has(waitingWorker)
       ? waitingWorker
       : null;
   if (!worker || activationAttempt) {

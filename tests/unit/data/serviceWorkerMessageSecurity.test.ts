@@ -1,10 +1,15 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { SERVICE_WORKER_BUILD_ID_MARKER } from '../../../scripts/service-worker-build-identity.mjs';
 
 type WorkerMessage = {
-  data: { type: string };
+  data: { type: string; requestId?: unknown; version?: unknown };
   origin: string;
-  ports?: Array<{ postMessage: ReturnType<typeof vi.fn> }>;
+  ports?: Array<{
+    close?: ReturnType<typeof vi.fn>;
+    postMessage: ReturnType<typeof vi.fn>;
+  }>;
   source: object | null;
 };
 
@@ -14,6 +19,8 @@ type TimerCallback = () => void;
 
 const appOrigin = 'https://skyjo.example';
 const activationType = 'SKYJO_ACTIVATE_UPDATE';
+const buildIdentityRequestType = 'SKYJO_GET_BUILD_ID';
+const buildIdentityResponseType = 'SKYJO_BUILD_ID';
 const identityType = 'SKYJO_TEST_WORKER_IDENTITY';
 const sanitizerType = 'SKYJO_SANITIZE_CACHE';
 const workerSourceKinds: WorkerSourceKind[] = ['generated', 'production'];
@@ -29,7 +36,7 @@ function generatedTestWorkerSource(
   );
   const end = serverSource.indexOf('\n\nfunction makeRoomCode', start);
   if (start < 0 || end < 0) throw new Error('Generated test worker source builder was not found.');
-  const context: { workerSource?: string } = {};
+  const context: { crypto: typeof crypto; workerSource?: string } = { crypto };
   vm.runInNewContext(
     `${serverSource.slice(start, end)}\nworkerSource = testPwaWorkerSource(${JSON.stringify(variant)}, ${JSON.stringify(activationBarrierToken)}, ${JSON.stringify(workerBuildNonce)});`,
     context
@@ -64,11 +71,29 @@ function workerSource(kind: WorkerSourceKind): string {
     : fs.readFileSync('src/service-worker.js', 'utf8');
 }
 
+function buildIdentityFixture(kind: WorkerSourceKind, buildNonce = 'worker_build_nonce_identity') {
+  if (kind === 'generated') {
+    return {
+      buildId: crypto
+        .createHash('sha256')
+        .update(`skyjo-test-worker:${buildNonce}`, 'utf8')
+        .digest('hex'),
+      source: generatedTestWorkerSource('D', null, buildNonce)
+    };
+  }
+  const buildId = 'b'.repeat(64);
+  return {
+    buildId,
+    source: workerSource('production').replace(SERVICE_WORKER_BUILD_ID_MARKER, buildId)
+  };
+}
+
 function loadMessageHandler(
   kind: WorkerSourceKind = 'production',
   options: {
     onTimerScheduled?: (delay: number) => void;
     skipWaiting?: () => Promise<unknown>;
+    source?: string;
   } = {}
 ) {
   const handlers = new Map<string, (...args: never[]) => unknown>();
@@ -97,7 +122,8 @@ function loadMessageHandler(
     location: { origin: appOrigin },
     skipWaiting
   };
-  vm.runInNewContext(workerSource(kind), { caches, self, setTimeout: scheduleTimer });
+  const source = options.source || workerSource(kind);
+  vm.runInNewContext(source, { caches, self, setTimeout: scheduleTimer });
   const handler = handlers.get('message') as WorkerMessageHandler | undefined;
   if (!handler) throw new Error('Service worker message handler was not registered.');
   return { cache, caches, handler, skipWaiting };
@@ -274,6 +300,112 @@ describe('service worker message trust boundary', () => {
       deadlineAt: 100,
       poisoned: true
     }, { released: true, waitStarted: false }, request, response)).resolves.toBe('poisoned');
+  });
+
+  it.each(workerSourceKinds)(
+    '%s worker returns its durable build identity through the versioned null-source port contract',
+    async (kind) => {
+      const requestId = 'request-123';
+      const fixture = buildIdentityFixture(kind);
+      for (const source of [null, { id: 'same-origin-client' }]) {
+        const postMessage = vi.fn();
+        const close = vi.fn();
+        const { handler } = loadMessageHandler(kind, { source: fixture.source });
+        await dispatchMessage(handler, {
+          data: { type: buildIdentityRequestType, version: 1, requestId },
+          origin: appOrigin,
+          ports: [{ close, postMessage }],
+          source
+        });
+
+        expect(postMessage).toHaveBeenCalledTimes(1);
+        expect(postMessage).toHaveBeenCalledWith({
+          type: buildIdentityResponseType,
+          version: 1,
+          requestId,
+          buildId: fixture.buildId
+        });
+        expect(close).toHaveBeenCalledTimes(1);
+      }
+    }
+  );
+
+  it.each(workerSourceKinds)(
+    '%s worker rejects malformed, unversioned, cross-origin, and non-single-port build identity requests',
+    async (kind) => {
+      const fixture = buildIdentityFixture(kind);
+      const invalidRequests = [
+        { data: { type: buildIdentityRequestType, version: 1, requestId: 'request-123' }, origin: '' },
+        {
+          data: { type: buildIdentityRequestType, version: 1, requestId: 'request-123' },
+          origin: 'https://attacker.example'
+        },
+        { data: { type: buildIdentityRequestType, version: 2, requestId: 'request-123' }, origin: appOrigin },
+        { data: { type: buildIdentityRequestType, version: 1 }, origin: appOrigin },
+        { data: { type: buildIdentityRequestType, version: 1, requestId: 'x' }, origin: appOrigin }
+      ];
+
+      for (const request of invalidRequests) {
+        const postMessage = vi.fn();
+        const close = vi.fn();
+        const { handler } = loadMessageHandler(kind, { source: fixture.source });
+        await dispatchMessage(handler, {
+          ...request,
+          ports: [{ close, postMessage }],
+          source: null
+        });
+        expect(postMessage).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+      }
+
+      for (const ports of [[], [
+        { close: vi.fn(), postMessage: vi.fn() },
+        { close: vi.fn(), postMessage: vi.fn() }
+      ]]) {
+        const { handler } = loadMessageHandler(kind, { source: fixture.source });
+        await dispatchMessage(handler, {
+          data: { type: buildIdentityRequestType, version: 1, requestId: 'request-123' },
+          origin: appOrigin,
+          ports,
+          source: null
+        });
+        for (const port of ports) {
+          expect(port.postMessage).not.toHaveBeenCalled();
+          expect(port.close).not.toHaveBeenCalled();
+        }
+      }
+    }
+  );
+
+  it('derives generated worker build identity only from the stable build nonce', async () => {
+    const nonce = 'stable_build_nonce';
+    const first = buildIdentityFixture('generated', nonce);
+    const repeated = buildIdentityFixture('generated', nonce);
+    const changed = buildIdentityFixture('generated', 'changed_build_nonce');
+
+    expect(repeated.buildId).toBe(first.buildId);
+    expect(changed.buildId).not.toBe(first.buildId);
+    expect(first.buildId).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.source).toContain(`const workerBuildId=${JSON.stringify(first.buildId)};`);
+
+    const responses: unknown[] = [];
+    for (const fixture of [first, repeated, changed]) {
+      const { handler } = loadMessageHandler('generated', { source: fixture.source });
+      await dispatchMessage(handler, {
+        data: { type: buildIdentityRequestType, version: 1, requestId: 'request-456' },
+        origin: appOrigin,
+        ports: [{ close: vi.fn(), postMessage: vi.fn((value) => responses.push(value)) }],
+        source: null
+      });
+    }
+    expect(responses).toEqual([
+      expect.objectContaining({ buildId: first.buildId }),
+      expect.objectContaining({ buildId: first.buildId }),
+      expect.objectContaining({ buildId: changed.buildId })
+    ]);
+    expect(responses).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ instanceNonce: expect.anything() })
+    ]));
   });
 
   it('generated test workers disclose their exact identity only to an exact-origin message port', async () => {

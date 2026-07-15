@@ -327,7 +327,7 @@ function validTestPwaActivationBarrierToken(value) {
 }
 
 function validTestPwaWorkerVariant(value) {
-  return value === 'A' || value === 'B' || value === 'C' || value === 'D';
+  return value === 'A' || value === 'B' || value === 'C' || value === 'D' || value === 'E';
 }
 
 function validTestPwaWorkerBuildNonce(value) {
@@ -764,6 +764,10 @@ async function handleTestPwaActivationBarrierRequest(req, res, url) {
 }
 
 function testPwaWorkerSource(variant, activationBarrierToken = null, workerBuildNonce = null) {
+  const workerBuildId = crypto
+    .createHash('sha256')
+    .update(`skyjo-test-worker:${workerBuildNonce}`, 'utf8')
+    .digest('hex');
   const activationBarrier = activationBarrierToken && variant !== 'A'
     ? `\nconst activationBarrierToken=${JSON.stringify(activationBarrierToken)};
 async function waitAtActivationBarrier() {
@@ -787,6 +791,7 @@ async function waitAtActivationBarrier() {
     : '';
   return `const version=${JSON.stringify(variant)};
 const workerBuildNonce=${JSON.stringify(workerBuildNonce)};
+const workerBuildId=${JSON.stringify(workerBuildId)};
 const workerInstanceNonce=Array.from(self.crypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(16).padStart(8, '0')).join('');
 const skipWaitingGraceMs = 50;
 function requestImmediateActivation(event) {
@@ -802,10 +807,32 @@ self.addEventListener('install', () => {});
 self.addEventListener('activate', (event) => event.waitUntil(activateTestWorker()));
 self.addEventListener('message', (event) => {
   const isActivation = event.data?.type === 'SKYJO_ACTIVATE_UPDATE';
+  const isBuildIdentityRequest = event.data?.type === 'SKYJO_GET_BUILD_ID';
   const isIdentityRequest = event.data?.type === 'SKYJO_TEST_WORKER_IDENTITY';
+  const identityRequestId = event.data?.requestId;
   if (event.origin !== self.location.origin) return;
   if (isActivation) {
     requestImmediateActivation(event);
+    return;
+  }
+  if (
+    isBuildIdentityRequest &&
+    event.data?.version === 1 &&
+    typeof identityRequestId === 'string' &&
+    /^[a-z0-9-]{3,64}$/.test(identityRequestId) &&
+    event.ports?.length === 1
+  ) {
+    const replyPort = event.ports[0];
+    try {
+      replyPort.postMessage({
+        type: 'SKYJO_BUILD_ID',
+        version: 1,
+        requestId: identityRequestId,
+        buildId: workerBuildId
+      });
+    } finally {
+      replyPort.close();
+    }
     return;
   }
   if (isIdentityRequest && event.ports?.[0]) {

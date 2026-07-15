@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { BrowserContext, Page } from '@playwright/test';
 import { expect, test } from '../fixtures';
 
 const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
-type TestPwaWorkerVariant = 'A' | 'B' | 'C' | 'D';
+type TestPwaWorkerVariant = 'A' | 'B' | 'C' | 'D' | 'E';
 type TestPwaWorkerIdentity = {
   variant: TestPwaWorkerVariant;
   buildNonce: string;
@@ -95,6 +95,100 @@ async function expectSessionStorageNumber(page: Page, key: string, expected: num
     timeout: 15_000,
     intervals: [100, 250, 500, 1_000]
   }).toBe(expected);
+}
+
+function testWorkerBuildId(buildNonce: string) {
+  return createHash('sha256').update(`skyjo-test-worker:${buildNonce}`, 'utf8').digest('hex');
+}
+
+async function logicalServiceWorkerSettlement(page: Page, expectedBuildId: string) {
+  return page.evaluate(async (expected) => {
+    const registration = await navigator.serviceWorker.getRegistration('/');
+    const controller = navigator.serviceWorker.controller;
+    const identify = async (worker: ServiceWorker | null) => {
+      if (!worker) return null;
+      return new Promise<string | null>((resolve) => {
+        const channel = new MessageChannel();
+        const requestId = `test-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        let settled = false;
+        const finish = (buildId: string | null) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          channel.port1.onmessage = null;
+          channel.port1.close();
+          resolve(buildId);
+        };
+        const timeout = window.setTimeout(() => finish(null), 2_000);
+        channel.port1.onmessage = (event: MessageEvent<unknown>) => {
+          const value = event.data as {
+            type?: unknown;
+            version?: unknown;
+            requestId?: unknown;
+            buildId?: unknown;
+          } | null;
+          finish(
+            value?.type === 'SKYJO_BUILD_ID' &&
+              value.version === 1 &&
+              value.requestId === requestId &&
+              typeof value.buildId === 'string' &&
+              /^[a-f0-9]{64}$/.test(value.buildId)
+              ? value.buildId
+              : null
+          );
+        };
+        channel.port1.start();
+        try {
+          worker.postMessage({ type: 'SKYJO_GET_BUILD_ID', version: 1, requestId }, [channel.port2]);
+        } catch {
+          channel.port2.close();
+          finish(null);
+        }
+      });
+    };
+    const active = registration?.active || null;
+    const waiting = registration?.waiting || null;
+    const [activeBuildId, waitingBuildId] = await Promise.all([
+      identify(active),
+      identify(waiting)
+    ]);
+    const controllerIsActive = Boolean(active && controller === active);
+    const rawSettled = !registration?.installing && !waiting;
+    const equivalentWaiting = Boolean(
+      waiting?.state === 'installed' &&
+      activeBuildId === expected &&
+      waitingBuildId === expected
+    );
+    return {
+      active: active?.state ?? null,
+      activeBuildId,
+      controller: controller?.state ?? null,
+      controllerIsActive,
+      installing: registration?.installing?.state ?? null,
+      logicallySettled: controllerIsActive && (rawSettled || equivalentWaiting),
+      waiting: waiting?.state ?? null,
+      waitingBuildId
+    };
+  }, expectedBuildId).catch(() => null);
+}
+
+async function expectLogicallySettledWorker(page: Page, expectedBuildId: string) {
+  await expect.poll(() => logicalServiceWorkerSettlement(page, expectedBuildId), {
+    timeout: 15_000,
+    intervals: [100, 250, 500, 1_000]
+  }).toMatchObject({
+    active: 'activated',
+    activeBuildId: expectedBuildId,
+    controller: 'activated',
+    controllerIsActive: true,
+    installing: null,
+    logicallySettled: true
+  });
+  const settled = await logicalServiceWorkerSettlement(page, expectedBuildId);
+  expect(settled).not.toBeNull();
+  expect([null, 'installed']).toContain(settled?.waiting);
+  if (settled?.waiting === 'installed') expect(settled.waitingBuildId).toBe(expectedBuildId);
+  return settled;
 }
 
 async function activeControllerIdentity(page: Page) {
@@ -681,7 +775,8 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     A: randomUUID(),
     B: randomUUID(),
     C: randomUUID(),
-    D: randomUUID()
+    D: randomUUID(),
+    E: randomUUID()
   } satisfies Record<TestPwaWorkerVariant, string>;
   const expectedSuccessors = (['B', 'C', 'D'] as const).map((variant) => ({
     variant,
@@ -925,9 +1020,10 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       released: ['B', 'C', 'D']
     });
     await updaterReload;
-    // Keep the activating tab strict: every queued successor must be drained,
-    // and the released D identity must be the exact active controller.
-    await expectActiveWorker(updater);
+    // Keep the activating tab strict: raw drain and an observer-local same-build
+    // D waiter are both settled, but the exact active controller must be D.
+    const expectedDBuildId = testWorkerBuildId(workerBuildNonces.D);
+    await expectLogicallySettledWorker(updater, expectedDBuildId);
     const finalControllerIdentity = await activeControllerIdentity(updater);
     expect(finalControllerIdentity).toMatchObject({
       controllerIsActive: true,
@@ -941,7 +1037,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
     await expect(updater.getByRole('button', { name: /Updating|Update now|Reload now/ })).toHaveCount(0);
     await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
     await updater.waitForTimeout(750);
-    await expectActiveWorker(updater);
+    const settledAfterObservationWindow = await expectLogicallySettledWorker(updater, expectedDBuildId);
     await expect(updater.getByTestId('pwa-update-banner')).toHaveCount(0);
     await expect(updater.getByRole('button', { name: /Updating|Update now|Reload now/ })).toHaveCount(0);
     expect(await updater.evaluate(() => ({
@@ -949,6 +1045,23 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       watch: sessionStorage.getItem('skyjo-updater-reprompt-watch')
     }))).toEqual({ observed: null, watch: 'watching' });
     await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
+
+    await setWorkerVariant(context, skyjoServer.baseURL, 'E', workerBuildNonces.E);
+    await updater.evaluate(async () => {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.update();
+    });
+    await expectWaitingWorker(updater);
+    await expect(updater.getByRole('button', { name: 'Update now' })).toBeVisible();
+    const distinctE = await logicalServiceWorkerSettlement(updater, expectedDBuildId);
+    expect(distinctE).toMatchObject({
+      activeBuildId: expectedDBuildId,
+      controllerIsActive: true,
+      logicallySettled: false,
+      waiting: 'installed',
+      waitingBuildId: testWorkerBuildId(workerBuildNonces.E)
+    });
+    expect(settledAfterObservationWindow?.activeBuildId).toBe(expectedDBuildId);
 
     // WebKit can retain an observer-local installing/waiting reference after the
     // newly activated worker already controls this protected tab. That successor

@@ -1,16 +1,95 @@
+type IdentityBehavior = 'valid' | 'malformed' | 'silent' | 'throw' | 'deferred';
+
+class MemoryMessagePort extends EventTarget {
+  onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+  private closed = false;
+  peer: MemoryMessagePort | null = null;
+
+  postMessage(data: unknown) {
+    const recipient = this.peer;
+    queueMicrotask(() => {
+      if (!recipient || recipient.closed) return;
+      const event = new MessageEvent('message', { data });
+      recipient.onmessage?.(event);
+      recipient.dispatchEvent(event);
+    });
+  }
+
+  start() {}
+
+  close() {
+    this.closed = true;
+  }
+}
+
+class MemoryMessageChannel {
+  readonly port1 = new MemoryMessagePort();
+  readonly port2 = new MemoryMessagePort();
+
+  constructor() {
+    this.port1.peer = this.port2;
+    this.port2.peer = this.port1;
+  }
+}
+
+let fakeBuildSequence = 0;
+
+function nextFakeBuildId() {
+  fakeBuildSequence += 1;
+  return fakeBuildSequence.toString(16).padStart(64, '0');
+}
+
 class FakeWorker extends EventTarget {
+  readonly buildId: string;
+  identityBehavior: IdentityBehavior = 'valid';
+  identityPostCalls = 0;
+  identityReplyCalls = 0;
+  readonly deferredIdentityReplies: Array<() => void> = [];
   state: ServiceWorkerState;
   readonly messages: unknown[] = [];
   postCalls = 0;
   postFailuresRemaining = 0;
   throwOnPost = false;
 
-  constructor(state: ServiceWorkerState) {
+  constructor(state: ServiceWorkerState, buildId = nextFakeBuildId()) {
     super();
     this.state = state;
+    this.buildId = buildId;
   }
 
-  postMessage(message: unknown) {
+  postMessage(message: unknown, transfer?: Transferable[]) {
+    const value = message as { type?: unknown; version?: unknown; requestId?: unknown } | null;
+    if (value?.type === 'SKYJO_GET_BUILD_ID') {
+      this.identityPostCalls += 1;
+      const port = transfer?.[0] as MessagePort | undefined;
+      if (this.identityBehavior === 'throw') {
+        port?.close();
+        throw new Error('identity postMessage failed');
+      }
+      if (this.identityBehavior === 'silent') {
+        port?.close();
+        return;
+      }
+      if (!port) return;
+      const reply = () => {
+        this.identityReplyCalls += 1;
+        try {
+          port.postMessage(this.identityBehavior === 'malformed'
+            ? { type: 'SKYJO_BUILD_ID', version: 1, requestId: value.requestId, buildId: 'invalid' }
+            : {
+                type: 'SKYJO_BUILD_ID',
+                version: value.version,
+                requestId: value.requestId,
+                buildId: this.buildId
+              });
+        } finally {
+          port.close();
+        }
+      };
+      if (this.identityBehavior === 'deferred') this.deferredIdentityReplies.push(reply);
+      else queueMicrotask(reply);
+      return;
+    }
     this.postCalls += 1;
     if (this.throwOnPost || this.postFailuresRemaining > 0) {
       if (this.postFailuresRemaining > 0) this.postFailuresRemaining -= 1;
@@ -23,6 +102,10 @@ class FakeWorker extends EventTarget {
     this.state = state;
     this.dispatchEvent(new Event('statechange'));
   }
+
+  releaseIdentity() {
+    this.deferredIdentityReplies.shift()?.();
+  }
 }
 
 class FakeRegistration extends EventTarget {
@@ -33,7 +116,7 @@ class FakeRegistration extends EventTarget {
 }
 
 class FakeServiceWorkerContainer extends EventTarget {
-  private readonly registration: FakeRegistration;
+  readonly registration: FakeRegistration;
   private controllerValue: FakeWorker | null = null;
   readonly register: ReturnType<typeof vi.fn>;
 
@@ -55,6 +138,15 @@ class FakeServiceWorkerContainer extends EventTarget {
 }
 
 const originalServiceWorker = Object.getOwnPropertyDescriptor(Navigator.prototype, 'serviceWorker');
+const originalMessageChannel = Object.getOwnPropertyDescriptor(globalThis, 'MessageChannel');
+
+beforeEach(() => {
+  Object.defineProperty(globalThis, 'MessageChannel', {
+    configurable: true,
+    value: MemoryMessageChannel,
+    writable: true
+  });
+});
 
 function installContainer(container: FakeServiceWorkerContainer) {
   Object.defineProperty(navigator, 'serviceWorker', {
@@ -69,18 +161,134 @@ async function beginRegistration(container: FakeServiceWorkerContainer, reload =
   module.registerPwaUpdates(reload);
   window.dispatchEvent(new Event('load'));
   await vi.waitFor(() => expect(container.register).toHaveBeenCalledTimes(1));
+  const registration = container.registration;
+  const candidate = registration.waiting?.state === 'installed'
+    ? registration.waiting
+    : registration.installing?.state === 'installed'
+      ? registration.installing
+      : null;
+  const active = registration.active;
+  if (
+    candidate &&
+    active &&
+    active === container.controller &&
+    candidate.identityBehavior === 'valid' &&
+    active.identityBehavior === 'valid'
+  ) {
+    await vi.waitFor(() => expect(candidate.identityPostCalls).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(candidate.identityReplyCalls).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(module.getPwaUpdateSnapshot().available).toBe(candidate.buildId !== active.buildId));
+  }
   return module;
 }
 
 afterEach(() => {
+  fakeBuildSequence = 0;
   vi.resetModules();
   vi.restoreAllMocks();
   window.history.replaceState(null, '', '/');
   Reflect.deleteProperty(navigator, 'serviceWorker');
   if (originalServiceWorker) Object.defineProperty(Navigator.prototype, 'serviceWorker', originalServiceWorker);
+  Reflect.deleteProperty(globalThis, 'MessageChannel');
+  if (originalMessageChannel) Object.defineProperty(globalThis, 'MessageChannel', originalMessageChannel);
 });
 
 describe('PWA update coordination', () => {
+  it('suppresses an installed wrapper with the same durable build ID as the active controller', async () => {
+    const buildId = 'd'.repeat(64);
+    const registration = new FakeRegistration();
+    const active = new FakeWorker('activated', buildId);
+    const equivalentWaiting = new FakeWorker('installed', buildId);
+    registration.waiting = equivalentWaiting;
+    const container = new FakeServiceWorkerContainer(registration, active);
+    const module = await beginRegistration(container);
+
+    expect(active).not.toBe(equivalentWaiting);
+    expect(module.getPwaUpdateSnapshot()).toEqual({
+      available: false,
+      activating: false,
+      reloadRequired: false
+    });
+    expect(module.activatePwaUpdate()).toBe(false);
+    expect(equivalentWaiting.messages).toEqual([]);
+    expect(registration.waiting).toBe(equivalentWaiting);
+  });
+
+  it.each([
+    ['malformed response', 'malformed'],
+    ['identity timeout', 'silent'],
+    ['postMessage error', 'throw']
+  ] as const)('fails %s closed and shows the installed update', async (_label, behavior) => {
+    const registration = new FakeRegistration();
+    const waiting = new FakeWorker('installed', 'e'.repeat(64));
+    waiting.identityBehavior = behavior;
+    registration.waiting = waiting;
+    const container = new FakeServiceWorkerContainer(
+      registration,
+      new FakeWorker('activated', 'd'.repeat(64))
+    );
+    const module = await beginRegistration(container);
+
+    await vi.waitFor(() => {
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: true,
+        activating: false,
+        reloadRequired: false
+      });
+    }, { timeout: 2_000 });
+    expect(waiting.identityPostCalls).toBe(1);
+    expect(waiting.messages).toEqual([]);
+  });
+
+  it('ignores a late same-build D classification after a distinct E waiter replaces it', async () => {
+    const activeBuildId = 'd'.repeat(64);
+    const registration = new FakeRegistration();
+    const active = new FakeWorker('activated', activeBuildId);
+    const staleD = new FakeWorker('installed', activeBuildId);
+    staleD.identityBehavior = 'deferred';
+    registration.waiting = staleD;
+    const container = new FakeServiceWorkerContainer(registration, active);
+    const module = await beginRegistration(container);
+    await vi.waitFor(() => expect(staleD.identityPostCalls).toBe(1));
+
+    const replacementE = new FakeWorker('installed', 'e'.repeat(64));
+    registration.waiting = replacementE;
+    staleD.transition('redundant');
+    staleD.releaseIdentity();
+    await vi.waitFor(() => expect(module.getPwaUpdateSnapshot().available).toBe(true));
+    expect(replacementE.identityPostCalls).toBe(1);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(module.getPwaUpdateSnapshot()).toEqual({
+      available: true,
+      activating: false,
+      reloadRequired: false
+    });
+    expect(registration.waiting).toBe(replacementE);
+    expect(replacementE.messages).toEqual([]);
+  });
+
+  it('fails a persistent active/controller mismatch closed without requeueing identity work', async () => {
+    const registration = new FakeRegistration();
+    const controller = new FakeWorker('activated', 'c'.repeat(64));
+    const mismatchedActive = new FakeWorker('activated', 'a'.repeat(64));
+    const waiting = new FakeWorker('installed', 'e'.repeat(64));
+    registration.waiting = waiting;
+    const container = new FakeServiceWorkerContainer(registration, controller);
+    registration.active = mismatchedActive;
+    const module = await beginRegistration(container);
+
+    await vi.waitFor(() => expect(module.getPwaUpdateSnapshot()).toEqual({
+      available: true,
+      activating: false,
+      reloadRequired: false
+    }));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(waiting.identityPostCalls).toBe(0);
+    expect(mismatchedActive.identityPostCalls).toBe(0);
+    expect(waiting.messages).toEqual([]);
+  });
+
   it('waits for the exact activating controller before reloading exactly once', async () => {
     const registration = new FakeRegistration();
     const waiting = new FakeWorker('installed');
@@ -647,10 +855,12 @@ describe('PWA update coordination', () => {
       registration.waiting = successor;
       successor.transition('installed');
       expect(successor.messages).toEqual([]);
-      expect(module.getPwaUpdateSnapshot()).toEqual({
-        available: true,
-        activating: false,
-        reloadRequired: false
+      await vi.waitFor(() => {
+        expect(module.getPwaUpdateSnapshot()).toEqual({
+          available: true,
+          activating: false,
+          reloadRequired: false
+        });
       });
       expect(module.activatePwaUpdate()).toBe(true);
       expect(successor.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
@@ -699,10 +909,12 @@ describe('PWA update coordination', () => {
     const module = await beginRegistration(container);
 
     installing.transition('installed');
-    expect(module.getPwaUpdateSnapshot()).toEqual({
-      available: true,
-      activating: false,
-      reloadRequired: false
+    await vi.waitFor(() => {
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: true,
+        activating: false,
+        reloadRequired: false
+      });
     });
   });
 
@@ -714,7 +926,7 @@ describe('PWA update coordination', () => {
     registration.installing = future;
     registration.dispatchEvent(new Event('updatefound'));
     future.transition('installed');
-    expect(module.getPwaUpdateSnapshot().available).toBe(true);
+    await vi.waitFor(() => expect(module.getPwaUpdateSnapshot().available).toBe(true));
     expect(module.isPwaUpdateDeferredPath('/single-player')).toBe(true);
     expect(module.isPwaUpdateDeferredPath('/lobby')).toBe(true);
     expect(module.isPwaUpdateDeferredPath('/')).toBe(false);
@@ -892,6 +1104,7 @@ describe('PWA update coordination', () => {
     registration.installing = throwing;
     registration.dispatchEvent(new Event('updatefound'));
     throwing.dispatchEvent(new Event('statechange'));
+    await vi.waitFor(() => expect(module.getPwaUpdateSnapshot().available).toBe(true));
     vi.useFakeTimers();
     try {
       expect(module.activatePwaUpdate()).toBe(true);
