@@ -220,7 +220,7 @@ async function setWorkerVariant(
   context: BrowserContext,
   baseURL: string,
   variant: TestPwaWorkerVariant,
-  buildNonce?: string
+  buildNonce: string
 ) {
   await context.addCookies([
     {
@@ -229,12 +229,12 @@ async function setWorkerVariant(
       url: baseURL,
       sameSite: 'Lax'
     },
-    ...(buildNonce ? [{
+    {
       name: 'skyjo_sw_test_worker_nonce',
       value: buildNonce,
       url: baseURL,
-      sameSite: 'Lax' as const
-    }] : [])
+      sameSite: 'Lax'
+    }
   ]);
 }
 
@@ -629,6 +629,7 @@ test('a cold offline solo restore stays partitioned across owner A, owner B, and
 
 test('a changed worker defers on solo and lobby routes, then applies once from a safe route', async ({ context, page, skyjoServer }) => {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const workerBuildNonces = { A: randomUUID(), B: randomUUID() } as const;
   const signup = await context.request.post(`${skyjoServer.baseURL}/api/account/signup`, {
     data: {
       email: `pwa-update-${suffix}@example.test`,
@@ -642,12 +643,12 @@ test('a changed worker defers on solo and lobby routes, then applies once from a
     const loads = Number(sessionStorage.getItem('skyjo-test-page-loads') || '0') + 1;
     sessionStorage.setItem('skyjo-test-page-loads', String(loads));
   });
-  await setWorkerVariant(context, skyjoServer.baseURL, 'A');
+  await setWorkerVariant(context, skyjoServer.baseURL, 'A', workerBuildNonces.A);
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   await waitForServiceWorkerControl(page);
   await expectActiveWorker(page);
 
-  await setWorkerVariant(context, skyjoServer.baseURL, 'B');
+  await setWorkerVariant(context, skyjoServer.baseURL, 'B', workerBuildNonces.B);
   await page.evaluate(async () => {
     const registration = await navigator.serviceWorker.ready;
     await registration.update();
