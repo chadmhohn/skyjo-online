@@ -630,18 +630,11 @@ function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPla
 
   const closer = state.players.find((player) => player.id === state.roundCloserId);
   const currentPlayer = state.players[state.currentPlayerIndex];
-  const currentPlayerHasFinalTurn = Boolean(currentPlayer && state.finalTurnPlayerIds.includes(currentPlayer.id));
-  const localPlayerHasFinalTurn = Boolean(localPlayerId && state.finalTurnPlayerIds.includes(localPlayerId));
   const closerName = closer?.name || 'A player';
-  let turnMessage = 'Everyone else gets one final turn before scoring.';
-
-  if (currentPlayerHasFinalTurn && currentPlayer?.id === localPlayerId) {
-    turnMessage = 'This is your last move of the round.';
-  } else if (currentPlayerHasFinalTurn && currentPlayer) {
-    turnMessage = `${currentPlayer.name} is taking a final turn.`;
-  } else if (localPlayerHasFinalTurn) {
-    turnMessage = 'Your final turn is still coming up.';
-  }
+  const turnMessage =
+    currentPlayer.id === localPlayerId
+      ? 'This is your last move of the round.'
+      : `${currentPlayer.name} is taking a final turn.`;
 
   return (
     <div className="skyjo-final-turn-callout">
@@ -826,10 +819,9 @@ function TableControls({
   const guidanceDisabledReason = actionGuidanceDisabledReason(state, localTurn, interactionDisabledReason);
 
   useLayoutEffect(() => {
-    if (progressRegionLabel) return undefined;
-    if (document.activeElement !== progressRef.current || !focusFallbackRef.current) return undefined;
-    focusFallbackRef.current.focus({ preventScroll: true });
-    return undefined;
+    if (!progressRegionLabel && document.activeElement === progressRef.current) {
+      focusFallbackRef.current?.focus({ preventScroll: true });
+    }
   }, [focusFallbackRef, progressRegionLabel]);
 
   return (

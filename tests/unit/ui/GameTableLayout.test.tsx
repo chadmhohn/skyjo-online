@@ -288,6 +288,30 @@ describe('GameTableLayout', () => {
     expect(progress).toHaveTextContent('0/2');
   });
 
+  it('names the authoritative current player while a waiting player watches the final lap', () => {
+    const finalTurn = stateFor(3, {
+      currentPlayerIndex: 1,
+      phase: 'choose-source',
+      roundCloserId: 'p1',
+      finalTurnPlayerIds: ['p2', 'p3'],
+      openingRevealCounts: { p1: 2, p2: 2, p3: 2 }
+    });
+
+    render(
+      <GameTableLayout
+        {...handlers()}
+        drawIntent="place"
+        localPlayerId="p3"
+        localTurn={false}
+        state={finalTurn}
+      />
+    );
+
+    expect(screen.getByRole('region', { name: 'Final lap status' })).toHaveTextContent(
+      'Opponent 1 is taking a final turn.'
+    );
+  });
+
   it('keeps one actionable card in the tab order and moves it with grid arrow keys', async () => {
     const user = userEvent.setup();
     const actions = handlers();
