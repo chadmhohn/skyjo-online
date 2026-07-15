@@ -378,6 +378,101 @@ describe('GameTableLayout', () => {
     expect(screen.getByTestId('opponent-rail')).toHaveAttribute('data-scroll-contained', 'true');
   });
 
+  it('cancels contained auto-follow for every supported trusted rail gesture', () => {
+    const actions = handlers();
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrollTo
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(1);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const { unmount } = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn={false}
+        state={stateFor(8, { currentPlayerIndex: 2 })}
+      />
+    );
+    const rail = screen.getByTestId('opponent-rail');
+    Object.defineProperty(rail, 'scrollLeft', { configurable: true, value: 173, writable: true });
+    scrollTo.mockClear();
+
+    fireEvent.focusIn(rail);
+    for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']) {
+      fireEvent.keyDown(rail, { key });
+    }
+    fireEvent.wheel(rail, { deltaX: 80 });
+    fireEvent.pointerDown(rail);
+    fireEvent.touchStart(rail, { touches: [{ clientX: 200, clientY: 100 }] });
+
+    expect(scrollTo).toHaveBeenCalledTimes(10);
+    expect(scrollTo).toHaveBeenNthCalledWith(10, { left: 173, behavior: 'auto' });
+    fireEvent.keyDown(rail, { key: 'Enter' });
+    fireEvent.wheel(screen.getByTestId('local-board'), { deltaX: 80 });
+    expect(scrollTo).toHaveBeenCalledTimes(10);
+    unmount();
+  });
+
+  it('retains the rail through state updates and follows the latest opponent after the gesture pause', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-15T00:00:00Z'));
+    const actions = handlers();
+    const scrollTo = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrollTo
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(1);
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const rendered = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn={false}
+        state={stateFor(8, { currentPlayerIndex: 2 })}
+      />
+    );
+    const rail = screen.getByTestId('opponent-rail');
+    Object.defineProperty(rail, 'clientWidth', { configurable: true, value: 100 });
+    Object.defineProperty(rail, 'scrollLeft', { configurable: true, value: 173, writable: true });
+    rail.getBoundingClientRect = () => ({ left: 0, width: 100 }) as DOMRect;
+    const latestOpponent = rail.querySelector<HTMLElement>('[data-player-id="p4"]');
+    if (!latestOpponent) throw new Error('Missing latest opponent test board.');
+    latestOpponent.getBoundingClientRect = () => ({ left: 300, width: 100 }) as DOMRect;
+    scrollTo.mockClear();
+
+    fireEvent.wheel(rail, { deltaX: 80 });
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 173, behavior: 'auto' });
+    rendered.rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn={false}
+        state={stateFor(8, { currentPlayerIndex: 3, log: ['Turn advanced'] })}
+      />
+    );
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+
+    act(() => vi.advanceTimersByTime(1_799));
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(scrollTo).toHaveBeenLastCalledWith({ left: 473, behavior: 'smooth' });
+
+    rendered.unmount();
+    vi.useRealTimers();
+  });
+
   it('switches contained opponent scrolling to auto when reduced motion changes live', () => {
     const actions = handlers();
     const scrollTo = vi.fn();

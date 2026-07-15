@@ -25,6 +25,23 @@ const opponentBoardCountClasses = [
   'skyjo-opponents-count-7'
 ] as const;
 
+function scrollOpponentIntoView(
+  element: HTMLElement,
+  playerId: string,
+  reducedMotion: boolean
+) {
+  const target = Array.from(element.querySelectorAll<HTMLElement>('[data-player-id]')).find(
+    (item) => item.dataset.playerId === playerId
+  );
+  if (!target) return;
+
+  const railRect = element.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const targetCenter = element.scrollLeft + targetRect.left - railRect.left + targetRect.width / 2;
+  const left = Math.max(0, targetCenter - element.clientWidth / 2);
+  element.scrollTo({ left, behavior: reducedMotion ? 'auto' : 'smooth' });
+}
+
 type TurnStatusTone = 'local' | 'waiting' | 'neutral';
 type TurnStatus = {
   eyebrow: string;
@@ -480,6 +497,10 @@ export function PlayerBoardGrid({
     ? currentPlayer.id
     : '';
   const reducedMotion = usePrefersReducedMotion();
+  const currentOpponentIdRef = useRef(currentOpponentId);
+  const reducedMotionRef = useRef(reducedMotion);
+  currentOpponentIdRef.current = currentOpponentId;
+  reducedMotionRef.current = reducedMotion;
   const boardCountClass = isOpponents
     ? opponentBoardCountClasses[players.length] ?? opponentBoardCountClasses[7]
     : '';
@@ -490,8 +511,29 @@ export function PlayerBoardGrid({
     const element = boardRef.current;
     if (!element) return undefined;
 
+    let resumeTimer: number | undefined;
+    let resumeFrame: number | undefined;
+
+    const scheduleCurrentPlayerScrollResume = () => {
+      const remaining = userScrollPausedUntilRef.current - Date.now();
+      if (remaining > 0) {
+        resumeTimer = window.setTimeout(scheduleCurrentPlayerScrollResume, remaining);
+        return;
+      }
+
+      resumeFrame = window.requestAnimationFrame(() => {
+        resumeFrame = undefined;
+        if (Date.now() < userScrollPausedUntilRef.current) return;
+        scrollOpponentIntoView(element, currentOpponentIdRef.current, reducedMotionRef.current);
+      });
+    };
+
     const pauseCurrentPlayerScroll = () => {
       userScrollPausedUntilRef.current = Date.now() + currentPlayerScrollPauseMs;
+      element.scrollTo({ left: element.scrollLeft, behavior: 'auto' });
+      if (resumeTimer !== undefined) window.clearTimeout(resumeTimer);
+      if (resumeFrame !== undefined) window.cancelAnimationFrame(resumeFrame);
+      resumeTimer = window.setTimeout(scheduleCurrentPlayerScrollResume, currentPlayerScrollPauseMs);
     };
     const pauseCurrentPlayerScrollFromKeyboard = (event: KeyboardEvent) => {
       if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
@@ -506,6 +548,8 @@ export function PlayerBoardGrid({
     element.addEventListener('pointerdown', pauseCurrentPlayerScroll, { passive: true });
 
     return () => {
+      if (resumeTimer !== undefined) window.clearTimeout(resumeTimer);
+      if (resumeFrame !== undefined) window.cancelAnimationFrame(resumeFrame);
       element.removeEventListener('focusin', pauseCurrentPlayerScroll);
       element.removeEventListener('keydown', pauseCurrentPlayerScrollFromKeyboard);
       element.removeEventListener('wheel', pauseCurrentPlayerScroll);
@@ -520,18 +564,9 @@ export function PlayerBoardGrid({
     const element = boardRef.current;
     if (!element || Date.now() < userScrollPausedUntilRef.current) return undefined;
 
-    const target = Array.from(element.querySelectorAll<HTMLElement>('[data-player-id]')).find(
-      (item) => item.dataset.playerId === currentOpponentId
-    );
-    if (!target) return undefined;
-
     const frame = window.requestAnimationFrame(() => {
       if (Date.now() < userScrollPausedUntilRef.current) return;
-      const railRect = element.getBoundingClientRect();
-      const targetRect = target.getBoundingClientRect();
-      const targetCenter = element.scrollLeft + targetRect.left - railRect.left + targetRect.width / 2;
-      const left = Math.max(0, targetCenter - element.clientWidth / 2);
-      element.scrollTo({ left, behavior: reducedMotion ? 'auto' : 'smooth' });
+      scrollOpponentIntoView(element, currentOpponentId, reducedMotion);
     });
 
     return () => window.cancelAnimationFrame(frame);
