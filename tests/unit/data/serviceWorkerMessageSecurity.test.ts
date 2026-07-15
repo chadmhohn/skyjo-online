@@ -17,13 +17,16 @@ const activationType = 'SKYJO_ACTIVATE_UPDATE';
 const sanitizerType = 'SKYJO_SANITIZE_CACHE';
 const workerSourceKinds: WorkerSourceKind[] = ['generated', 'production'];
 
-function generatedTestWorkerSource(): string {
+function generatedTestWorkerSource(variant = 'A', activationBarrierToken: string | null = null): string {
   const serverSource = fs.readFileSync('server.mjs', 'utf8');
-  const start = serverSource.indexOf('function testPwaWorkerSource(variant) {');
+  const start = serverSource.indexOf('function testPwaWorkerSource(variant, activationBarrierToken = null) {');
   const end = serverSource.indexOf('\n\nfunction makeRoomCode', start);
   if (start < 0 || end < 0) throw new Error('Generated test worker source builder was not found.');
   const context: { workerSource?: string } = {};
-  vm.runInNewContext(`${serverSource.slice(start, end)}\nworkerSource = testPwaWorkerSource('B');`, context);
+  vm.runInNewContext(
+    `${serverSource.slice(start, end)}\nworkerSource = testPwaWorkerSource(${JSON.stringify(variant)}, ${JSON.stringify(activationBarrierToken)});`,
+    context
+  );
   if (typeof context.workerSource !== 'string') throw new Error('Generated test worker source was not produced.');
   return context.workerSource;
 }
@@ -169,6 +172,20 @@ describe('service worker message trust boundary', () => {
     expect(source).toContain('void self.skipWaiting().catch(() => {});');
     expect(source).toContain('setTimeout(resolve, skipWaitingGraceMs)');
     expect(source).not.toContain('waitUntil(self.skipWaiting())');
+  });
+
+  it('generated successor workers use the scoped activation barrier only when explicitly requested', () => {
+    const token = 'barrier_test_token_1234';
+    const initialSource = generatedTestWorkerSource('A', token);
+    const successorSource = generatedTestWorkerSource('B', token);
+
+    expect(initialSource).not.toContain('/__test/pwa-activation/');
+    expect(initialSource).not.toContain(token);
+    expect(successorSource).toContain(`const activationBarrierToken=${JSON.stringify(token)};`);
+    expect(successorSource).toContain("fetch('/__test/pwa-activation/arrive'");
+    expect(successorSource).toContain("fetch('/__test/pwa-activation/wait-release?");
+    expect(successorSource).toContain('variant: version');
+    expect(successorSource).toContain('await waitAtActivationBarrier();');
   });
 
   it.each([

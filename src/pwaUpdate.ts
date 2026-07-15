@@ -9,10 +9,12 @@ type ActivationAttempt = {
   baselineController: ServiceWorker | null;
   deadline: number;
   generation: number;
+  pendingInstallers: Set<ServiceWorker>;
+  seenTargets: Set<ServiceWorker>;
   target: ServiceWorker;
   targetStateChange: (() => void) | null;
+  terminalQuietUntil: number | null;
   timeout: number | null;
-  transferUsed: boolean;
 };
 
 type ControllerObservation =
@@ -21,7 +23,10 @@ type ControllerObservation =
   | { kind: 'own'; generation: number };
 
 const activationTimeoutMs = 8_000;
+// One short quiet window catches queued WebKit updatefound work before a safe reload.
+const terminalQuiescenceMs = 250;
 const listeners = new Set<() => void>();
+const observedInstallingWorkers = new WeakSet<ServiceWorker>();
 let snapshot: PwaUpdateSnapshot = Object.freeze({ available: false, activating: false, reloadRequired: false });
 let registration: ServiceWorkerRegistration | null = null;
 let waitingWorker: ServiceWorker | null = null;
@@ -67,10 +72,81 @@ function clearControllerObservation() {
   observedControllerStateChange = null;
 }
 
+function scheduleActivationTimer(attempt: ActivationAttempt) {
+  if (activationAttempt !== attempt) return;
+  if (attempt.timeout !== null) window.clearTimeout(attempt.timeout);
+  const nextAt = attempt.terminalQuietUntil === null
+    ? attempt.deadline
+    : Math.min(attempt.deadline, attempt.terminalQuietUntil);
+  const scheduledTimeout = window.setTimeout(
+    () => handleActivationTimer(attempt.generation, scheduledTimeout),
+    Math.max(0, nextAt - Date.now())
+  );
+  attempt.timeout = scheduledTimeout;
+}
+
+function cancelTerminalQuiescence(attempt: ActivationAttempt) {
+  if (attempt.terminalQuietUntil === null) return;
+  attempt.terminalQuietUntil = null;
+  scheduleActivationTimer(attempt);
+}
+
+function isUnsettledSuccessor(worker: ServiceWorker): boolean {
+  return (
+    worker.state === 'installing' ||
+    worker.state === 'installed' ||
+    worker.state === 'activating' ||
+    worker.state === 'activated'
+  );
+}
+
+function beginTerminalQuiescence(attempt: ActivationAttempt) {
+  if (activationAttempt !== attempt) return;
+  if (Date.now() >= attempt.deadline) {
+    handleActivationDeadline(attempt.generation);
+    return;
+  }
+  if (attempt.terminalQuietUntil === null) {
+    attempt.terminalQuietUntil = Math.min(
+      attempt.deadline,
+      Date.now() + terminalQuiescenceMs
+    );
+  }
+  scheduleActivationTimer(attempt);
+}
+
+function trackAttemptInstaller(worker: ServiceWorker | null) {
+  const attempt = activationAttempt;
+  if (
+    !attempt ||
+    !worker ||
+    worker === attempt.target ||
+    !isUnsettledSuccessor(worker)
+  ) return;
+  const isNew = !attempt.pendingInstallers.has(worker);
+  attempt.pendingInstallers.add(worker);
+  if (isNew) cancelTerminalQuiescence(attempt);
+}
+
 function observeInstalling(worker: ServiceWorker | null) {
   if (!worker) return;
+  trackAttemptInstaller(worker);
+  if (observedInstallingWorkers.has(worker)) return;
+  observedInstallingWorkers.add(worker);
   const inspect = () => {
     if (worker.state === 'installed' && navigator.serviceWorker.controller) rememberWaiting(worker);
+    const attempt = activationAttempt;
+    if (attempt) {
+      if (worker === attempt.target || worker.state === 'redundant') {
+        attempt.pendingInstallers.delete(worker);
+      } else if (isUnsettledSuccessor(worker)) {
+        const isNew = !attempt.pendingInstallers.has(worker);
+        attempt.pendingInstallers.add(worker);
+        if (isNew) cancelTerminalQuiescence(attempt);
+      } else {
+        attempt.pendingInstallers.delete(worker);
+      }
+    }
     if (worker.state === 'redundant' && waitingWorker === worker) {
       if (activationAttempt?.target === worker) return;
       waitingWorker = null;
@@ -82,6 +158,11 @@ function observeInstalling(worker: ServiceWorker | null) {
       }
       else publish({ available: false, activating: false, reloadRequired: false });
     }
+    if (
+      attempt &&
+      activationAttempt === attempt &&
+      worker.state !== 'installing'
+    ) reconcileActivationAttempt(attempt);
   };
   inspect();
   worker.addEventListener('statechange', inspect);
@@ -94,7 +175,12 @@ function observeRegistration(nextRegistration: ServiceWorkerRegistration) {
     observeInstalling(nextRegistration.waiting);
   }
   observeInstalling(nextRegistration.installing);
-  nextRegistration.addEventListener('updatefound', () => observeInstalling(nextRegistration.installing));
+  nextRegistration.addEventListener('updatefound', () => {
+    const attempt = activationAttempt;
+    if (attempt) cancelTerminalQuiescence(attempt);
+    observeInstalling(nextRegistration.installing);
+    if (attempt && activationAttempt === attempt) reconcileActivationAttempt(attempt);
+  });
 }
 
 function reloadOnce() {
@@ -108,7 +194,28 @@ function publishReloadRequired() {
   publish({ available: true, activating: false, reloadRequired: true });
 }
 
-function settleOwnController(worker: ServiceWorker, generation: number) {
+function hasPendingSuccessor(attempt: ActivationAttempt): boolean {
+  const liveInstaller = registration?.installing || null;
+  if (
+    liveInstaller &&
+    liveInstaller !== attempt.target &&
+    isUnsettledSuccessor(liveInstaller)
+  ) {
+    const isNew = !attempt.pendingInstallers.has(liveInstaller);
+    attempt.pendingInstallers.add(liveInstaller);
+    if (isNew) cancelTerminalQuiescence(attempt);
+    if (liveInstaller.state === 'installing') observeInstalling(liveInstaller);
+  }
+  for (const worker of attempt.pendingInstallers) {
+    if (
+      worker === attempt.target ||
+      !isUnsettledSuccessor(worker)
+    ) attempt.pendingInstallers.delete(worker);
+  }
+  return attempt.pendingInstallers.size > 0;
+}
+
+function settleOwnController(worker: ServiceWorker, generation: number, quiescenceElapsed = false) {
   const attempt = activationAttempt;
   if (
     !attempt ||
@@ -121,6 +228,14 @@ function settleOwnController(worker: ServiceWorker, generation: number) {
   const replacement = registration?.waiting || null;
   if (replacement && replacement !== worker && replacement.state === 'installed') {
     transferActivationAttempt(attempt);
+    return;
+  }
+  if (hasPendingSuccessor(attempt)) {
+    cancelTerminalQuiescence(attempt);
+    return;
+  }
+  if (!quiescenceElapsed) {
+    beginTerminalQuiescence(attempt);
     return;
   }
   const shouldReload = (
@@ -173,7 +288,7 @@ function postActivation(attempt: ActivationAttempt): boolean {
   }
 }
 
-function transferActivationAttempt(attempt: ActivationAttempt) {
+function transferActivationAttempt(attempt: ActivationAttempt, quiescenceElapsed = false) {
   if (activationAttempt !== attempt) return;
   const replacement = registration?.waiting || null;
   const retryableReplacement = (
@@ -181,7 +296,7 @@ function transferActivationAttempt(attempt: ActivationAttempt) {
     replacement !== attempt.target &&
     replacement.state === 'installed'
   ) ? replacement : null;
-  if (attempt.transferUsed || Date.now() >= attempt.deadline) {
+  if (Date.now() >= attempt.deadline || (retryableReplacement && attempt.seenTargets.has(retryableReplacement))) {
     clearActivationAttempt();
     waitingWorker = retryableReplacement;
     publish({
@@ -192,19 +307,42 @@ function transferActivationAttempt(attempt: ActivationAttempt) {
     return;
   }
   if (!retryableReplacement) {
+    if (hasPendingSuccessor(attempt)) {
+      cancelTerminalQuiescence(attempt);
+      return;
+    }
+    if (!quiescenceElapsed) {
+      beginTerminalQuiescence(attempt);
+      return;
+    }
     clearActivationAttempt();
     waitingWorker = null;
     if (!snapshot.reloadRequired) publish({ available: false, activating: false, reloadRequired: false });
     return;
   }
-  attempt.transferUsed = true;
   if (attempt.targetStateChange) attempt.target.removeEventListener('statechange', attempt.targetStateChange);
+  attempt.pendingInstallers.delete(retryableReplacement);
+  attempt.seenTargets.add(retryableReplacement);
+  attempt.terminalQuietUntil = null;
   attempt.target = retryableReplacement;
   attempt.targetStateChange = null;
   waitingWorker = retryableReplacement;
   observeInstalling(retryableReplacement);
   observeActivationTarget(attempt);
+  scheduleActivationTimer(attempt);
   postActivation(attempt);
+}
+
+function reconcileActivationAttempt(attempt: ActivationAttempt, quiescenceElapsed = false) {
+  if (activationAttempt !== attempt) return;
+  if (attempt.target.state === 'redundant') {
+    transferActivationAttempt(attempt, quiescenceElapsed);
+    return;
+  }
+  if (
+    attempt.target.state === 'activated' &&
+    navigator.serviceWorker.controller === attempt.target
+  ) settleOwnController(attempt.target, attempt.generation, quiescenceElapsed);
 }
 
 function observeActivationTarget(attempt: ActivationAttempt) {
@@ -242,6 +380,32 @@ function handleActivationDeadline(generation: number) {
     reloadRequired: false
   });
   if (passiveController) observeControllerTerminal(passiveController, { kind: 'external' });
+}
+
+function handleActivationTimer(generation: number, scheduledTimeout: number) {
+  const attempt = activationAttempt;
+  if (
+    !attempt ||
+    attempt.generation !== generation ||
+    attempt.timeout !== scheduledTimeout
+  ) return;
+  attempt.timeout = null;
+  if (Date.now() >= attempt.deadline) {
+    handleActivationDeadline(generation);
+    return;
+  }
+  if (
+    attempt.terminalQuietUntil !== null &&
+    Date.now() >= attempt.terminalQuietUntil
+  ) {
+    attempt.terminalQuietUntil = null;
+    reconcileActivationAttempt(attempt, true);
+    if (activationAttempt === attempt && attempt.timeout === null) {
+      scheduleActivationTimer(attempt);
+    }
+    return;
+  }
+  scheduleActivationTimer(attempt);
 }
 
 export function getPwaUpdateSnapshot(): PwaUpdateSnapshot {
@@ -312,16 +476,20 @@ export function activatePwaUpdate(): boolean {
     baselineController: navigator.serviceWorker.controller,
     deadline: Date.now() + activationTimeoutMs,
     generation,
+    pendingInstallers: new Set<ServiceWorker>(),
+    seenTargets: new Set<ServiceWorker>([worker]),
     target: worker,
     targetStateChange: null,
-    timeout: null,
-    transferUsed: false
+    terminalQuietUntil: null,
+    timeout: null
   };
   activationAttempt = attempt;
   waitingWorker = worker;
+  trackAttemptInstaller(registration?.installing || null);
+  observeInstalling(registration?.installing || null);
   publish({ available: true, activating: true, reloadRequired: false });
   observeActivationTarget(attempt);
-  attempt.timeout = window.setTimeout(() => handleActivationDeadline(generation), activationTimeoutMs);
+  scheduleActivationTimer(attempt);
   return postActivation(attempt);
 }
 

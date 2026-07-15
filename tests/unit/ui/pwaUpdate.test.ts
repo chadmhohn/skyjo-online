@@ -85,7 +85,7 @@ describe('PWA update coordination', () => {
     waiting.transition('activated');
     waiting.dispatchEvent(new Event('statechange'));
     container.dispatchEvent(new Event('controllerchange'));
-    expect(reload).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
   });
 
   it('publishes a cross-tab prompt only after the exact controller activates', async () => {
@@ -209,10 +209,12 @@ describe('PWA update coordination', () => {
     waiting.transition('activated');
 
     expect(reload).not.toHaveBeenCalled();
-    expect(module.getPwaUpdateSnapshot()).toEqual({
-      available: true,
-      activating: false,
-      reloadRequired: true
+    await vi.waitFor(() => {
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: true,
+        activating: false,
+        reloadRequired: true
+      });
     });
   });
 
@@ -238,6 +240,113 @@ describe('PWA update coordination', () => {
       activating: false,
       reloadRequired: true
     });
+  });
+
+  it('keeps the absolute deadline armed when an external controller interrupts terminal quiet', async () => {
+    const registration = new FakeRegistration();
+    const waiting = new FakeWorker('installed');
+    registration.waiting = waiting;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+    vi.useFakeTimers();
+    try {
+      expect(module.activatePwaUpdate()).toBe(true);
+      waiting.transition('activating');
+      registration.waiting = null;
+      container.controller = waiting;
+      container.dispatchEvent(new Event('controllerchange'));
+      waiting.transition('activated');
+
+      const external = new FakeWorker('activating');
+      container.controller = external;
+      container.dispatchEvent(new Event('controllerchange'));
+      await vi.advanceTimersByTimeAsync(250);
+      expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(7_750);
+      expect(reload).not.toHaveBeenCalled();
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: false,
+        activating: false,
+        reloadRequired: false
+      });
+
+      const promptChanges = vi.fn();
+      module.subscribeToPwaUpdates(promptChanges);
+      external.transition('activated');
+      expect(reload).not.toHaveBeenCalled();
+      expect(promptChanges).toHaveBeenCalledTimes(1);
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: true,
+        activating: false,
+        reloadRequired: true
+      });
+
+      external.dispatchEvent(new Event('statechange'));
+      container.dispatchEvent(new Event('controllerchange'));
+      expect(promptChanges).toHaveBeenCalledTimes(1);
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores stale timer callbacks and owns exactly one live timer until the attempt clears', async () => {
+    const registration = new FakeRegistration();
+    const waiting = new FakeWorker('installed');
+    registration.waiting = waiting;
+    const container = new FakeServiceWorkerContainer(registration);
+    const module = await beginRegistration(container);
+    const callbacks = new Map<number, () => void>();
+    const liveTimers = new Set<number>();
+    let nextTimer = 100;
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout').mockImplementation(((handler: TimerHandler) => {
+      const timer = ++nextTimer;
+      callbacks.set(timer, typeof handler === 'function' ? () => handler() : () => undefined);
+      liveTimers.add(timer);
+      return timer;
+    }) as typeof window.setTimeout);
+    vi.spyOn(window, 'clearTimeout').mockImplementation((timer) => {
+      if (typeof timer === 'number') liveTimers.delete(timer);
+    });
+
+    expect(module.activatePwaUpdate()).toBe(true);
+    const [absoluteDeadline] = [...liveTimers];
+    expect(liveTimers.size).toBe(1);
+
+    waiting.transition('activating');
+    registration.waiting = null;
+    container.controller = waiting;
+    container.dispatchEvent(new Event('controllerchange'));
+    waiting.transition('activated');
+    const [quietTimer] = [...liveTimers];
+    expect(liveTimers.size).toBe(1);
+    expect(quietTimer).not.toBe(absoluteDeadline);
+
+    const successor = new FakeWorker('installing');
+    registration.installing = successor;
+    registration.dispatchEvent(new Event('updatefound'));
+    const [rescheduledDeadline] = [...liveTimers];
+    expect(liveTimers.size).toBe(1);
+    expect(rescheduledDeadline).not.toBe(quietTimer);
+
+    const staleTimers = [...callbacks.keys()].filter((timer) => !liveTimers.has(timer));
+    const schedulesBeforeStaleCallbacks = setTimeoutSpy.mock.calls.length;
+    for (const timer of staleTimers) callbacks.get(timer)?.();
+    expect(liveTimers).toEqual(new Set([rescheduledDeadline]));
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(schedulesBeforeStaleCallbacks);
+    expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+    const external = new FakeWorker('activated');
+    container.controller = external;
+    container.dispatchEvent(new Event('controllerchange'));
+    expect(liveTimers.size).toBe(0);
+    expect(module.getPwaUpdateSnapshot().reloadRequired).toBe(true);
+
+    callbacks.get(rescheduledDeadline)?.();
+    expect(liveTimers.size).toBe(0);
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(schedulesBeforeStaleCallbacks);
   });
 
   it('preserves the original deadline when activation transfers once', async () => {
@@ -306,10 +415,10 @@ describe('PWA update coordination', () => {
 
     expect(first.messages).toHaveLength(1);
     expect(replacement.messages).toHaveLength(1);
-    expect(reload).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
   });
 
-  it('caps activated-target transfer at one and leaves a second replacement actionable', async () => {
+  it('drains every distinct installed successor before reloading exactly once', async () => {
     const registration = new FakeRegistration();
     const first = new FakeWorker('installed');
     registration.waiting = first;
@@ -334,16 +443,156 @@ describe('PWA update coordination', () => {
     replacement.transition('activated');
 
     expect(reload).not.toHaveBeenCalled();
-    expect(secondReplacement.messages).toEqual([]);
-    expect(module.getPwaUpdateSnapshot()).toEqual({
-      available: true,
-      activating: false,
-      reloadRequired: false
-    });
-    expect(module.activatePwaUpdate()).toBe(true);
     expect(secondReplacement.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+    expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+    secondReplacement.transition('activating');
+    registration.waiting = null;
+    container.controller = secondReplacement;
+    container.dispatchEvent(new Event('controllerchange'));
+    secondReplacement.transition('activated');
+    secondReplacement.dispatchEvent(new Event('statechange'));
+    container.dispatchEvent(new Event('controllerchange'));
+
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
     expect(first.messages).toHaveLength(1);
     expect(replacement.messages).toHaveLength(1);
+    expect(secondReplacement.messages).toHaveLength(1);
+  });
+
+  it('re-enters settlement when updatefound arrives after terminal but before quiet settlement', async () => {
+    const registration = new FakeRegistration();
+    const first = new FakeWorker('installed');
+    registration.waiting = first;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+
+    vi.useFakeTimers();
+    try {
+      expect(module.activatePwaUpdate()).toBe(true);
+      first.transition('activating');
+      registration.waiting = null;
+      container.controller = first;
+      container.dispatchEvent(new Event('controllerchange'));
+      first.transition('activated');
+
+      await vi.advanceTimersByTimeAsync(249);
+      expect(reload).not.toHaveBeenCalled();
+      const successor = new FakeWorker('installing');
+      registration.installing = successor;
+      registration.dispatchEvent(new Event('updatefound'));
+      registration.installing = null;
+      registration.waiting = successor;
+      successor.transition('installed');
+
+      expect(successor.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+      expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+      successor.transition('activating');
+      registration.waiting = null;
+      container.controller = successor;
+      container.dispatchEvent(new Event('controllerchange'));
+      successor.transition('activated');
+
+      await vi.advanceTimersByTimeAsync(249);
+      expect(reload).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reload).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('holds settlement while a distinct successor activates externally before taking control', async () => {
+    const registration = new FakeRegistration();
+    const first = new FakeWorker('installed');
+    registration.waiting = first;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+
+    vi.useFakeTimers();
+    try {
+      expect(module.activatePwaUpdate()).toBe(true);
+      first.transition('activating');
+      registration.waiting = null;
+      container.controller = first;
+      container.dispatchEvent(new Event('controllerchange'));
+      first.transition('activated');
+
+      const successor = new FakeWorker('installing');
+      registration.installing = successor;
+      registration.dispatchEvent(new Event('updatefound'));
+      registration.installing = null;
+      successor.transition('installed');
+      successor.transition('activating');
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(container.controller).toBe(first);
+      expect(reload).not.toHaveBeenCalled();
+      expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+      successor.transition('activated');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(container.controller).toBe(first);
+      expect(reload).not.toHaveBeenCalled();
+      expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+
+      container.controller = successor;
+      container.dispatchEvent(new Event('controllerchange'));
+      expect(reload).not.toHaveBeenCalled();
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: true,
+        activating: false,
+        reloadRequired: true
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets the absolute deadline win over late successor activity and keeps it retryable', async () => {
+    const registration = new FakeRegistration();
+    const first = new FakeWorker('installed');
+    registration.waiting = first;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+    vi.useFakeTimers();
+    try {
+      expect(module.activatePwaUpdate()).toBe(true);
+      await vi.advanceTimersByTimeAsync(7_800);
+      registration.waiting = null;
+      first.transition('redundant');
+      await vi.advanceTimersByTimeAsync(199);
+
+      const successor = new FakeWorker('installing');
+      registration.installing = successor;
+      registration.dispatchEvent(new Event('updatefound'));
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(reload).not.toHaveBeenCalled();
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: false,
+        activating: false,
+        reloadRequired: false
+      });
+
+      registration.installing = null;
+      registration.waiting = successor;
+      successor.transition('installed');
+      expect(successor.messages).toEqual([]);
+      expect(module.getPwaUpdateSnapshot()).toEqual({
+        available: true,
+        activating: false,
+        reloadRequired: false
+      });
+      expect(module.activatePwaUpdate()).toBe(true);
+      expect(successor.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('leaves an activated-target replacement actionable at the exact original deadline', async () => {
@@ -408,7 +657,7 @@ describe('PWA update coordination', () => {
     expect(module.isPwaUpdateDeferredPath('/account')).toBe(false);
   });
 
-  it('transfers activation to at most one superseding waiter', async () => {
+  it('drains multiple distinct successors when superseded targets become redundant', async () => {
     const registration = new FakeRegistration();
     const first = new FakeWorker('installed');
     registration.waiting = first;
@@ -426,12 +675,60 @@ describe('PWA update coordination', () => {
     const secondReplacement = new FakeWorker('installed');
     registration.waiting = secondReplacement;
     replacement.transition('redundant');
-    expect(secondReplacement.messages).toEqual([]);
+    expect(secondReplacement.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+    expect(module.getPwaUpdateSnapshot()).toEqual({
+      available: true,
+      activating: true,
+      reloadRequired: false
+    });
+  });
+
+  it('does not repost the same installed target when its state is observed repeatedly', async () => {
+    const registration = new FakeRegistration();
+    const waiting = new FakeWorker('installed');
+    registration.waiting = waiting;
+    const container = new FakeServiceWorkerContainer(registration);
+    const module = await beginRegistration(container);
+
+    expect(module.activatePwaUpdate()).toBe(true);
+    waiting.dispatchEvent(new Event('statechange'));
+    waiting.dispatchEvent(new Event('statechange'));
+
+    expect(waiting.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+    expect(module.getPwaUpdateSnapshot().activating).toBe(true);
+  });
+
+  it('fails closed under an adversarial cycle back to an earlier target identity', async () => {
+    const registration = new FakeRegistration();
+    const first = new FakeWorker('installed');
+    // ServiceWorker states are monotonic in browsers. Deliberately resurrecting
+    // this fake exercises cycle defense if a buggy wrapper ever re-exposes an
+    // earlier identity as an installed waiter.
+    registration.waiting = first;
+    const container = new FakeServiceWorkerContainer(registration);
+    const reload = vi.fn();
+    const module = await beginRegistration(container, reload);
+
+    expect(module.activatePwaUpdate()).toBe(true);
+    const second = new FakeWorker('installed');
+    registration.waiting = second;
+    first.transition('redundant');
+    expect(second.messages).toEqual([{ type: 'SKYJO_ACTIVATE_UPDATE' }]);
+
+    registration.waiting = first;
+    first.transition('installed');
+    second.transition('redundant');
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(first.messages).toHaveLength(1);
+    expect(second.messages).toHaveLength(1);
     expect(module.getPwaUpdateSnapshot()).toEqual({
       available: true,
       activating: false,
       reloadRequired: false
     });
+    expect(module.activatePwaUpdate()).toBe(true);
+    expect(first.messages).toHaveLength(2);
   });
 
   it('does not transfer at the exact original deadline and leaves the replacement retryable', async () => {

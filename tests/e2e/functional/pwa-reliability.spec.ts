@@ -1,7 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import type { BrowserContext, Page } from '@playwright/test';
 import { expect, test } from '../fixtures';
 
 const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
+type TestPwaWorkerVariant = 'A' | 'B' | 'C' | 'D';
+type TestPwaActivationBarrierStatus = {
+  arrivals: TestPwaWorkerVariant[];
+  pending: TestPwaWorkerVariant[];
+  poisoned: boolean;
+  released: TestPwaWorkerVariant[];
+};
+type TestPwaSuccessorHarness = {
+  variants: TestPwaWorkerVariant[];
+  workers: ServiceWorker[];
+};
 
 async function waitForServiceWorkerControl(page: Page) {
   await page.evaluate(async () => {
@@ -79,13 +91,145 @@ async function expectSessionStorageNumber(page: Page, key: string, expected: num
   }).toBe(expected);
 }
 
-async function setWorkerVariant(context: BrowserContext, baseURL: string, variant: 'A' | 'B') {
+async function setWorkerVariant(context: BrowserContext, baseURL: string, variant: TestPwaWorkerVariant) {
   await context.addCookies([{
     name: 'skyjo_sw_test_variant',
     value: variant,
     url: baseURL,
     sameSite: 'Lax'
   }]);
+}
+
+function testPwaActivationBarrierUrl(baseURL: string, action: string) {
+  return `${baseURL}/__test/pwa-activation/${action}`;
+}
+
+async function testPwaActivationBarrierStatus(
+  context: BrowserContext,
+  baseURL: string,
+  token: string
+): Promise<TestPwaActivationBarrierStatus | null> {
+  const response = await context.request.get(
+    `${testPwaActivationBarrierUrl(baseURL, 'status')}?token=${encodeURIComponent(token)}`
+  );
+  if (response.status() === 404) return null;
+  if (!response.ok()) throw new Error(`Activation barrier status failed with ${response.status()}.`);
+  return response.json() as Promise<TestPwaActivationBarrierStatus>;
+}
+
+async function expectTestPwaActivationArrivals(
+  context: BrowserContext,
+  baseURL: string,
+  token: string,
+  arrivals: TestPwaWorkerVariant[]
+) {
+  await expect.poll(async () => (
+    await testPwaActivationBarrierStatus(context, baseURL, token)
+  )?.arrivals ?? null, {
+    timeout: 2_000,
+    intervals: [50, 100, 250]
+  }).toEqual(arrivals);
+}
+
+async function initializeTestPwaActivationBarrier(context: BrowserContext, baseURL: string, token: string) {
+  const response = await context.request.post(testPwaActivationBarrierUrl(baseURL, 'init'), {
+    data: { token }
+  });
+  if (!response.ok()) throw new Error(`Activation barrier initialization failed with ${response.status()}.`);
+  return response.json() as Promise<TestPwaActivationBarrierStatus>;
+}
+
+async function releaseTestPwaActivation(
+  context: BrowserContext,
+  baseURL: string,
+  token: string,
+  variant: TestPwaWorkerVariant
+) {
+  const response = await context.request.post(testPwaActivationBarrierUrl(baseURL, 'release'), {
+    data: { token, variant }
+  });
+  if (!response.ok()) throw new Error(`Activation barrier release failed with ${response.status()}.`);
+  return response.json() as Promise<TestPwaActivationBarrierStatus>;
+}
+
+async function cleanupTestPwaActivationBarrier(context: BrowserContext, baseURL: string, token: string) {
+  const response = await context.request.post(testPwaActivationBarrierUrl(baseURL, 'cleanup'), {
+    data: { token }
+  });
+  if (!response.ok()) throw new Error(`Activation barrier cleanup failed with ${response.status()}.`);
+  const status = await context.request.get(
+    `${testPwaActivationBarrierUrl(baseURL, 'status')}?token=${encodeURIComponent(token)}`
+  );
+  if (status.status() !== 404) {
+    throw new Error(`Activation barrier cleanup verification returned ${status.status()}.`);
+  }
+}
+
+async function installTestPwaSuccessor(page: Page, variant: 'C' | 'D') {
+  return page.evaluate(async (nextVariant) => {
+    const registration = await navigator.serviceWorker.ready;
+    const harnessWindow = window as typeof window & {
+      __skyjoSuccessorHarness?: TestPwaSuccessorHarness;
+    };
+    const harness = harnessWindow.__skyjoSuccessorHarness;
+    if (!harness) throw new Error('Successor harness was not ready.');
+    const priorWorkers = [...harness.workers];
+    document.cookie = `skyjo_sw_test_variant=${nextVariant}; Path=/; SameSite=Lax`;
+    let discoveredWorker: ServiceWorker | null = null;
+    let timeout: number | null = null;
+    let onUpdateFound: (() => void) | null = null;
+    let onStateChange: (() => void) | null = null;
+    let settled = false;
+    const cleanup = () => {
+      if (timeout !== null) window.clearTimeout(timeout);
+      if (onUpdateFound) registration.removeEventListener('updatefound', onUpdateFound);
+      if (discoveredWorker && onStateChange) {
+        discoveredWorker.removeEventListener('statechange', onStateChange);
+      }
+    };
+    const installed = new Promise<ServiceWorker>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        const worker = discoveredWorker;
+        cleanup();
+        if (error) reject(error);
+        else if (worker) resolve(worker);
+        else reject(new Error(`Worker ${nextVariant} was not discovered.`));
+      };
+      onStateChange = () => {
+        if (discoveredWorker?.state === 'installed') finish();
+        else if (discoveredWorker?.state === 'redundant') {
+          finish(new Error(`Worker ${nextVariant} became redundant before installation.`));
+        }
+      };
+      timeout = window.setTimeout(() => {
+        finish(new Error(`Timed out waiting for worker ${nextVariant} to install.`));
+      }, 2_000);
+      onUpdateFound = () => {
+        const worker = registration.installing;
+        if (!worker || discoveredWorker) return;
+        discoveredWorker = worker;
+        if (onUpdateFound) registration.removeEventListener('updatefound', onUpdateFound);
+        worker.addEventListener('statechange', onStateChange as () => void);
+        onStateChange?.();
+      };
+      registration.addEventListener('updatefound', onUpdateFound);
+    });
+    let worker: ServiceWorker;
+    try {
+      const update = registration.update();
+      [, worker] = await Promise.all([update, installed]);
+    } finally {
+      cleanup();
+    }
+    if (priorWorkers.includes(worker)) {
+      throw new Error(`Worker ${nextVariant} reused an earlier object identity.`);
+    }
+    harness.variants.push(nextVariant);
+    harness.workers.push(worker);
+    return { state: worker.state, variant: nextVariant };
+  }, variant);
 }
 
 async function setNetworkUnavailable(
@@ -376,45 +520,204 @@ test('a changed worker defers on solo and lobby routes, then applies once from a
 });
 
 test('cross-tab activation never reloads a protected game and preserves one safe reload prompt', async ({ context, page, skyjoServer }) => {
-  await page.addInitScript(() => {
-    const loads = Number(sessionStorage.getItem('skyjo-cross-tab-loads') || '0') + 1;
-    sessionStorage.setItem('skyjo-cross-tab-loads', String(loads));
-  });
-  await setWorkerVariant(context, skyjoServer.baseURL, 'A');
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await waitForServiceWorkerControl(page);
-  await expectActiveWorker(page);
-  const protectedLoads = Number(await page.evaluate(() => sessionStorage.getItem('skyjo-cross-tab-loads')));
+  const activationBarrierToken = randomUUID();
+  await context.addCookies([{
+    name: 'skyjo_sw_test_activation_barrier',
+    value: activationBarrierToken,
+    url: skyjoServer.baseURL,
+    sameSite: 'Lax'
+  }]);
 
-  const updater = await context.newPage();
-  await updater.goto(`${skyjoServer.baseURL}/`);
-  await setWorkerVariant(context, skyjoServer.baseURL, 'B');
-  await updater.evaluate(async () => {
-    const registration = await navigator.serviceWorker.ready;
-    await Promise.all([registration.update(), registration.update(), registration.update()]);
-  });
-  await expectWaitingWorker(updater);
-  const updaterReload = updater.waitForNavigation({ waitUntil: 'domcontentloaded' });
-  await updater.getByRole('button', { name: 'Update now' }).click();
-  await updaterReload;
-  // Keep the activating tab strict: a successor here is a genuine second update.
-  await expectActiveWorker(updater);
+  try {
+    await expect(initializeTestPwaActivationBarrier(
+      context,
+      skyjoServer.baseURL,
+      activationBarrierToken
+    )).resolves.toEqual({
+      arrivals: [],
+      pending: [],
+      poisoned: false,
+      released: []
+    });
+    await page.addInitScript(() => {
+      const loads = Number(sessionStorage.getItem('skyjo-cross-tab-loads') || '0') + 1;
+      sessionStorage.setItem('skyjo-cross-tab-loads', String(loads));
+    });
+    await setWorkerVariant(context, skyjoServer.baseURL, 'A');
+    await page.goto(`${skyjoServer.baseURL}/single-player`);
+    await waitForServiceWorkerControl(page);
+    await expectActiveWorker(page);
+    const protectedLoads = Number(await page.evaluate(() => sessionStorage.getItem('skyjo-cross-tab-loads')));
 
-  // WebKit can retain an observer-local installing/waiting reference after the
-  // newly activated worker already controls this protected tab. That successor
-  // must not weaken any of the protected-game reload and action invariants below.
-  await expectProtectedObserverControlledByActiveWorker(page);
-  expect(await page.evaluate(() => Number(sessionStorage.getItem('skyjo-cross-tab-loads')))).toBe(protectedLoads);
-  await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
-  await expect(page.getByRole('button', { name: /Reload now|Update now/ })).toHaveCount(0);
+    const updater = await context.newPage();
+    await updater.addInitScript(() => {
+      const loads = Number(sessionStorage.getItem('skyjo-updater-loads') || '0') + 1;
+      sessionStorage.setItem('skyjo-updater-loads', String(loads));
+    });
+    await updater.goto(`${skyjoServer.baseURL}/`);
+    await setWorkerVariant(context, skyjoServer.baseURL, 'B');
+    await updater.evaluate(async () => {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.update();
+    });
+    await expectWaitingWorker(updater);
+    const updaterLoads = Number(await updater.evaluate(() => sessionStorage.getItem('skyjo-updater-loads')));
 
-  await page.getByRole('link', { name: 'Back to home' }).click();
-  await expect(page.getByRole('button', { name: 'Reload now' })).toBeVisible();
-  const loadsBeforeReload = Number(await page.evaluate(() => sessionStorage.getItem('skyjo-cross-tab-loads')));
-  const protectedReload = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: 'Reload now' }).click();
-  await protectedReload;
-  await expectSessionStorageNumber(page, 'skyjo-cross-tab-loads', loadsBeforeReload + 1);
-  await page.waitForTimeout(750);
-  await expectSessionStorageNumber(page, 'skyjo-cross-tab-loads', loadsBeforeReload + 1);
+    // WebKit may suspend the protected background page, so the foreground
+    // updater retains exact worker objects while the test server gates activation.
+    await updater.bringToFront();
+    const successorHarnessReady = await updater.evaluate(async () => {
+      const registration = await navigator.serviceWorker.ready;
+      const initialTarget = registration.waiting;
+      if (!initialTarget) throw new Error('Initial update target was not waiting.');
+      const harnessWindow = window as typeof window & {
+        __skyjoSuccessorHarness?: TestPwaSuccessorHarness;
+      };
+      if (harnessWindow.__skyjoSuccessorHarness) {
+        throw new Error('Successor harness was already installed.');
+      }
+      harnessWindow.__skyjoSuccessorHarness = {
+        variants: ['B'],
+        workers: [initialTarget]
+      };
+      return {
+        marker: 'skyjo-successor-harness-ready',
+        targetState: initialTarget.state,
+        workerCount: 1
+      };
+    });
+    expect(successorHarnessReady).toEqual({
+      marker: 'skyjo-successor-harness-ready',
+      targetState: 'installed',
+      workerCount: 1
+    });
+
+    await updater.getByRole('button', { name: 'Update now' }).evaluate((button: HTMLButtonElement) => button.click());
+
+    await expectTestPwaActivationArrivals(context, skyjoServer.baseURL, activationBarrierToken, ['B']);
+    await expect(installTestPwaSuccessor(updater, 'C')).resolves.toEqual({ state: 'installed', variant: 'C' });
+    await expect(releaseTestPwaActivation(
+      context,
+      skyjoServer.baseURL,
+      activationBarrierToken,
+      'B'
+    )).resolves.toEqual({
+      arrivals: ['B'],
+      pending: [],
+      poisoned: false,
+      released: ['B']
+    });
+
+    await expectTestPwaActivationArrivals(context, skyjoServer.baseURL, activationBarrierToken, ['B', 'C']);
+    await expect(installTestPwaSuccessor(updater, 'D')).resolves.toEqual({ state: 'installed', variant: 'D' });
+    await expect(releaseTestPwaActivation(
+      context,
+      skyjoServer.baseURL,
+      activationBarrierToken,
+      'C'
+    )).resolves.toEqual({
+      arrivals: ['B', 'C'],
+      pending: [],
+      poisoned: false,
+      released: ['B', 'C']
+    });
+
+    await expectTestPwaActivationArrivals(
+      context,
+      skyjoServer.baseURL,
+      activationBarrierToken,
+      ['B', 'C', 'D']
+    );
+    const activationStatus = await testPwaActivationBarrierStatus(
+      context,
+      skyjoServer.baseURL,
+      activationBarrierToken
+    );
+    const identityEvidence = await updater.evaluate(() => {
+      const harnessWindow = window as typeof window & {
+        __skyjoSuccessorHarness?: TestPwaSuccessorHarness;
+      };
+      const harness = harnessWindow.__skyjoSuccessorHarness;
+      if (!harness) throw new Error('Successor harness disappeared before identity validation.');
+      const [workerB, workerC, workerD] = harness.workers;
+      return {
+        heldSuccessorState: workerD?.state ?? null,
+        successorCIsDistinct: Boolean(workerB && workerC && workerC !== workerB),
+        successorDIsDistinct: Boolean(
+          workerB && workerC && workerD && workerD !== workerB && workerD !== workerC
+        ),
+        variants: harness.variants,
+        workerCount: harness.workers.length
+      };
+    });
+    const harnessCleanupComplete = await updater.evaluate(() => {
+      const harnessWindow = window as typeof window & {
+        __skyjoSuccessorHarness?: TestPwaSuccessorHarness;
+      };
+      delete harnessWindow.__skyjoSuccessorHarness;
+      return !('__skyjoSuccessorHarness' in harnessWindow);
+    });
+    const updaterLoadsBeforeFinalRelease = Number(
+      await updater.evaluate(() => sessionStorage.getItem('skyjo-updater-loads'))
+    );
+    expect({
+      activationStatus,
+      harnessCleanupComplete,
+      updaterLoadsBeforeFinalRelease,
+      ...identityEvidence
+    }).toEqual({
+      activationStatus: {
+        arrivals: ['B', 'C', 'D'],
+        pending: ['D'],
+        poisoned: false,
+        released: ['B', 'C']
+      },
+      heldSuccessorState: 'activating',
+      harnessCleanupComplete: true,
+      successorCIsDistinct: true,
+      successorDIsDistinct: true,
+      updaterLoadsBeforeFinalRelease: updaterLoads,
+      variants: ['B', 'C', 'D'],
+      workerCount: 3
+    });
+
+    const updaterReload = updater.waitForNavigation({ waitUntil: 'domcontentloaded' });
+    await expect(releaseTestPwaActivation(
+      context,
+      skyjoServer.baseURL,
+      activationBarrierToken,
+      'D'
+    )).resolves.toEqual({
+      arrivals: ['B', 'C', 'D'],
+      pending: [],
+      poisoned: false,
+      released: ['B', 'C', 'D']
+    });
+    await updaterReload;
+    // Keep the activating tab strict: every queued successor must be drained.
+    await expectActiveWorker(updater);
+    await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
+    await updater.waitForTimeout(750);
+    await expectSessionStorageNumber(updater, 'skyjo-updater-loads', updaterLoads + 1);
+
+    // WebKit can retain an observer-local installing/waiting reference after the
+    // newly activated worker already controls this protected tab. That successor
+    // must not weaken any of the protected-game reload and action invariants below.
+    await expectProtectedObserverControlledByActiveWorker(page);
+    expect(await page.evaluate(() => Number(sessionStorage.getItem('skyjo-cross-tab-loads')))).toBe(protectedLoads);
+    await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
+    await expect(page.getByRole('button', { name: /Reload now|Update now/ })).toHaveCount(0);
+
+    await page.getByRole('link', { name: 'Back to home' }).click();
+    await expect(page.getByRole('button', { name: 'Reload now' })).toBeVisible();
+    const loadsBeforeReload = Number(await page.evaluate(() => sessionStorage.getItem('skyjo-cross-tab-loads')));
+    const protectedReload = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: 'Reload now' }).click();
+    await protectedReload;
+    await expectSessionStorageNumber(page, 'skyjo-cross-tab-loads', loadsBeforeReload + 1);
+    await page.waitForTimeout(750);
+    await expectSessionStorageNumber(page, 'skyjo-cross-tab-loads', loadsBeforeReload + 1);
+  } finally {
+    await cleanupTestPwaActivationBarrier(context, skyjoServer.baseURL, activationBarrierToken);
+  }
 });
