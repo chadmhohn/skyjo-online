@@ -1441,6 +1441,7 @@ test('deferred update and minimized round summary share the fixed phone edge wit
       rootFontSize: 32
     });
     expect(geometry.restoreHeight).toBeGreaterThanOrEqual(44);
+    expect(geometry.restoreHeight).toBeLessThanOrEqual(160);
     expect(geometry.restoreWidth).toBeGreaterThanOrEqual(44);
     expect(geometry.strongFontSize).toBeGreaterThanOrEqual(28);
     expect(geometry.protectedFontSize).toBeGreaterThanOrEqual(23);

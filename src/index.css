@@ -948,8 +948,10 @@ body {
 
   :is(.skyjo-active-phone-shell, .skyjo-active-game-layout) > [data-testid='round-summary-restore'] {
     position: fixed;
+    top: auto;
     right: max(0.5rem, env(safe-area-inset-right));
     bottom: max(0.5rem, env(safe-area-inset-bottom));
+    height: max-content;
     z-index: 70;
   }
 
