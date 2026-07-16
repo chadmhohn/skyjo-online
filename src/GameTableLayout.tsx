@@ -315,7 +315,9 @@ function PlayerGrid({
   const openingRemaining = Math.max(0, 2 - openingRevealCount(state, player));
   const knownCards = knownCardCount(player);
   const cardsRef = useRef<HTMLDivElement | null>(null);
+  const openingFocusRecoveryRef = useRef(canSelectOpening);
   const pendingFocusIndexRef = useRef<number | null>(null);
+  openingFocusRecoveryRef.current = canSelectOpening;
   const revealAfterDiscard = state.selectedSource === 'draw' && state.drawnCard && drawIntent === 'discard';
   const actionableIndices = useMemo(
     () =>
@@ -329,7 +331,6 @@ function PlayerGrid({
       }),
     [canSelectOpening, canSelectReplacement, interactionDisabledReason, player.grid, revealAfterDiscard]
   );
-  const actionableKey = actionableIndices.join(',');
   const [rovingIndex, setRovingIndex] = useState(actionableIndices[0] ?? -1);
   const activeRovingIndex = actionableIndices.includes(rovingIndex) ? rovingIndex : actionableIndices[0] ?? -1;
 
@@ -337,14 +338,18 @@ function PlayerGrid({
     if (rovingIndex !== activeRovingIndex) setRovingIndex(activeRovingIndex);
   }, [activeRovingIndex, rovingIndex]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previousIndex = pendingFocusIndexRef.current;
     if (previousIndex === null) return undefined;
     pendingFocusIndexRef.current = null;
+    // Clear and cancel a card-originated recovery in the commit phase. An
+    // authoritative snapshot can otherwise advance to a later interaction
+    // phase before a passive effect runs, letting a stale opening-card frame
+    // focus one of the newly actionable replacement cards.
     const frame = window.requestAnimationFrame(() => {
       const activeElement = document.activeElement;
       if (
-        activeElement instanceof HTMLElement &&
+        activeElement &&
         activeElement !== document.body &&
         activeElement !== document.documentElement &&
         activeElement.isConnected
@@ -352,7 +357,8 @@ function PlayerGrid({
         return;
       }
 
-      const nextIndex = actionableIndices.find((index) => index > previousIndex) ?? actionableIndices[0];
+      const nextIndex = openingFocusRecoveryRef.current &&
+        (actionableIndices.find((index) => index > previousIndex) ?? actionableIndices[0]);
       if (typeof nextIndex === 'number') {
         setRovingIndex(nextIndex);
         const nextCard = cardsRef.current?.querySelector<HTMLElement>(`[data-card-index="${nextIndex}"]`);
@@ -363,7 +369,7 @@ function PlayerGrid({
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [actionableIndices, actionableKey, focusFallbackRef]);
+  }, [actionableIndices, focusFallbackRef]);
 
   function handleCardKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
     const targetIndex = cardIndexInDirection(index, event.key, actionableIndices);

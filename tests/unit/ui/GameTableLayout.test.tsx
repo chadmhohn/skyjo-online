@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PHONE_LAYOUT_MEDIA_QUERY } from '../../../src/accessibility';
@@ -567,6 +567,73 @@ describe('GameTableLayout', () => {
 
     expect(deck).toHaveFocus();
     expect(screen.getByRole('region', { name: 'Action guidance' })).not.toHaveFocus();
+  });
+
+  it('retires opening-card focus recovery before a back-to-back authoritative draw snapshot', async () => {
+    const user = userEvent.setup();
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    // A frame can already be dequeued when a WebKit commit attempts to cancel
+    // it. Keep callbacks runnable to prove that their interaction scope also
+    // prevents stale focus, independent of cancellation timing.
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+
+    function flushFrames() {
+      const pending = [...frames.values()];
+      frames.clear();
+      pending.forEach((callback) => callback(1));
+    }
+
+    function RapidAuthoritativeTable() {
+      const [state, setState] = useState(() => stateFor(2));
+
+      useLayoutEffect(() => {
+        if (state.phase !== 'choose-source') return;
+        setState((current) => ({
+          ...current,
+          phase: 'choose-replacement',
+          selectedSource: 'draw',
+          drawnCard: { ...card('blind', 0, true), value: 7 }
+        }));
+      }, [state.phase]);
+
+      return (
+        <GameTableLayout
+          {...handlers()}
+          drawIntent="place"
+          localPlayerId="p1"
+          localTurn
+          onCardClick={(index) =>
+            setState((current) => {
+              const next = revealOpeningCard(current, index);
+              if ((next.openingRevealCounts.p1 ?? 0) < 2) return next;
+              return {
+                ...next,
+                currentPlayerIndex: 0,
+                phase: 'choose-source',
+                openingRevealCounts: { ...next.openingRevealCounts, p2: 2 }
+              };
+            })
+          }
+          state={state}
+        />
+      );
+    }
+
+    render(<RapidAuthoritativeTable />);
+    await user.click(screen.getAllByRole('button', { name: /Reveal this opening card/ })[0]);
+    const next = screen.getAllByRole('button', { name: /Reveal this opening card/ })[0];
+    await user.click(next);
+    expect(screen.getByRole('region', { name: 'Drawn card decision' })).toBeInTheDocument();
+
+    act(flushFrames);
+
+    expect(document.activeElement).not.toHaveAttribute('data-card-index');
   });
 
   it('uses one atomic turn announcer and deduplicates changing waiting players', async () => {
