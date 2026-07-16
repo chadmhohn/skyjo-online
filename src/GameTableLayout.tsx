@@ -105,8 +105,6 @@ export interface GameTableLayoutProps {
   onCancelDiscard: () => void;
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
-  /** Deferred update state forces a synchronous WebKit guidance relayout. */
-  u?: boolean;
 }
 
 function cardLabel(card: Card) {
@@ -1135,8 +1133,7 @@ export function GameTableLayout({
   onChooseDiscard,
   onCancelDiscard,
   onDraw,
-  onSetDrawIntent,
-  u
+  onSetDrawIntent
 }: GameTableLayoutProps) {
   const playerCount = state.players.length;
   const opponentCount = state.players.filter((player) => player.id !== localPlayerId).length;
@@ -1147,10 +1144,6 @@ export function GameTableLayout({
   const status = getTurnStatus(state, localTurn);
   const guidanceDisabledReason = actionGuidanceDisabledReason(state, localTurn, interactionDisabledReason);
 
-  useLayoutEffect(() => {
-    if (u) void phoneGuidanceRef.current?.offsetHeight;
-  }, [phoneLayout, u]);
-
   return (
     <section aria-label="Game table" className="skyjo-game-table-shell">
       {phoneLayout ? (
@@ -1160,7 +1153,6 @@ export function GameTableLayout({
           onKeyDown={handleScrollableRegionKeyDown}
           ref={phoneGuidanceRef}
           role="region"
-          style={u ? { maxHeight: 'var(--g)' } : {}}
           tabIndex={0}
         >
           <ActionGuidance disabledReason={guidanceDisabledReason} status={status} />

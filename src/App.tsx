@@ -1560,7 +1560,6 @@ function SinglePlayer() {
           onDraw={drawForSinglePlayer}
           onSetDrawIntent={setDrawIntent}
           state={state}
-          u={pwaUpdate.available}
         />
 
         {isScoringPhase && roundSummaryOpen ? (
@@ -2737,10 +2736,10 @@ function PwaUpdateBanner() {
   if (!update.available) return null;
   const deferred = isPwaUpdateDeferredPath(location.pathname);
   return (
-    <aside aria-live="polite" className="skyjo-update-banner" data-deferred={deferred ? 'true' : 'false'} data-testid="pwa-update-banner">
+    <aside aria-atomic aria-live="polite" className="skyjo-update-banner" data-deferred={deferred ? 'true' : 'false'} data-testid="pwa-update-banner">
       <div>
-        <strong>Skyjo update ready</strong>
-        <span>{deferred ? ' It will wait until you leave this game.' : update.reloadRequired ? ' Reload once to use it.' : ' Apply it when you are ready.'}</span>
+        <strong>Update ready</strong>
+        <span>{deferred ? ' After this game.' : update.reloadRequired ? ' Reload once.' : ' Apply.'}</span>
       </div>
       {deferred ? (
         <span className="skyjo-update-deferred">Game protected</span>

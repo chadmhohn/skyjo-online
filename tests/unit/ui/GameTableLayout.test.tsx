@@ -768,8 +768,6 @@ describe('GameTableLayout', () => {
 
     const initialGuidance = screen.getByRole('region', { name: 'Action guidance' });
     const initialContent = initialGuidance.querySelector('.skyjo-action-guidance');
-    const layoutRead = vi.fn(() => 64);
-    Object.defineProperty(initialGuidance, 'offsetHeight', { configurable: true, get: layoutRead });
     initialGuidance.focus();
     rerender(
       <GameTableLayout
@@ -779,7 +777,6 @@ describe('GameTableLayout', () => {
         localPlayerId="p1"
         localTurn
         state={stateFor(2)}
-        u
       />
     );
 
@@ -788,9 +785,7 @@ describe('GameTableLayout', () => {
     expect(guidance).toBe(initialGuidance);
     expect(guidance).toHaveFocus();
     expect(guidance.querySelector('.skyjo-action-guidance')).toBe(initialContent);
-    expect(layoutRead).toHaveBeenCalled();
     expect(guidance).toHaveClass('skyjo-phone-action-guidance');
-    expect(guidance).toHaveStyle({ maxHeight: 'var(--g)' });
     expect(guidance).toHaveTextContent('Choose two face-down cards');
     expect(within(guidance).getByRole('heading', { level: 2, name: 'Choose two face-down cards' })).toBeInTheDocument();
     expect(guidance).toHaveTextContent('Each player reveals exactly two cards');

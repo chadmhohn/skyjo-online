@@ -182,6 +182,8 @@ async function expectTabSequence(page: Page, targets: ReturnType<Page['locator']
 
 for (const viewport of [
   { width: 320, height: 568 },
+  { width: 361, height: 780 },
+  { width: 375, height: 812 },
   { width: 390, height: 844 }
 ]) {
   test(`${viewport.width}x${viewport.height} phone progress semantics stay meaningful through turn and round transitions`, async ({

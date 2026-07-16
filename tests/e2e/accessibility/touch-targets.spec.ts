@@ -120,7 +120,7 @@ function expectScaledTypeOutcome(normal: number, scaled: number, minimum: number
   ).toBe(true);
 }
 
-async function expectEnlargedGuidanceReachable(page: Page) {
+async function expectGuidanceDetailsReachable(page: Page) {
   const guidance = page.getByRole('region', { name: 'Action guidance' });
   await expect(guidance).toBeVisible();
   await expect(guidance).toHaveAttribute('tabindex', '0');
@@ -219,7 +219,13 @@ test('200% text remains operable without horizontal scroll on a short 320px view
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 
   await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await expectPhoneGuidanceFullyVisible(page, 'solo opening at normal text and 320x568');
+  const compactGuidance = page.getByRole('region', { name: 'Action guidance' });
+  await expect(compactGuidance).toBeVisible();
+  await expect(compactGuidance.locator('.skyjo-action-guidance-title')).toBeInViewport();
+  await expect
+    .poll(() => compactGuidance.evaluate((element) => Number.parseFloat(getComputedStyle(element).maxHeight)))
+    .toBe(64);
+  await expectGuidanceDetailsReachable(page);
   const normalType = await phoneTypeSizes(page);
   await enableDoubleText(page);
   const scaledType = await phoneTypeSizes(page);
@@ -227,7 +233,7 @@ test('200% text remains operable without horizontal scroll on a short 320px view
   expectScaledTypeOutcome(normalType.guidanceTitle, scaledType.guidanceTitle, 25.5, 'Guidance heading');
   expectScaledTypeOutcome(normalType.guidanceInstruction, scaledType.guidanceInstruction, 22, 'Guidance instruction');
   expectScaledTypeOutcome(normalType.guidanceNote, scaledType.guidanceNote, 22, 'Guidance disabled note');
-  await expectEnlargedGuidanceReachable(page);
+  await expectGuidanceDetailsReachable(page);
   await expectTouchTargets(page, 'solo at 200% text and 320x568');
   await page.getByRole('button', { name: 'Open game settings' }).click();
   await expectTouchTargets(page, 'settings at 200% text and 320x568');

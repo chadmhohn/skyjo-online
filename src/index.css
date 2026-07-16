@@ -88,12 +88,6 @@ body {
   :root {
     /* Bottom edge for a deferred update plus the minimized score summary. */
     --u: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(48px, 3rem));
-    /* 64px through 360px, then a fast readable ramp; 44px in short landscape. */
-    --g: min(
-      clamp(64px, calc(2400vw - 8576px), 220px),
-      clamp(44px, calc(100vh - 396px), 220px),
-      clamp(120px, 7.5rem, 220px)
-    );
   }
 
   html:has(main.skyjo-active-phone-surface),
@@ -569,7 +563,7 @@ body {
     z-index: 20;
     display: block;
     min-height: 44px;
-    max-height: clamp(120px, 7.5rem, 220px);
+    max-height: 120px;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
@@ -1027,7 +1021,7 @@ body {
     }
 
     .skyjo-active-game-layout .skyjo-phone-action-guidance {
-      max-height: clamp(120px, 7.5rem, 220px);
+      max-height: 64px !important;
       overflow-y: auto;
       overscroll-behavior: contain;
     }
@@ -1045,8 +1039,9 @@ body {
     .skyjo-active-game-layout .skyjo-phone-action-guidance .skyjo-action-guidance-title {
       max-width: 100%;
       overflow: visible;
+      overflow-wrap: anywhere;
       text-overflow: clip;
-      white-space: nowrap;
+      white-space: normal;
       font-size: 0.8rem;
       line-height: 1.1;
     }
@@ -1059,6 +1054,38 @@ body {
       height: calc(max(64px, 4rem) - max(2px, 0.125rem));
     }
 
+  }
+
+  @media (min-width: 361px) and (max-width: 374px) {
+    .skyjo-active-game-layout .skyjo-phone-action-guidance .skyjo-action-guidance {
+      width: 100%;
+      min-width: 0;
+      padding: 4px;
+    }
+
+    .skyjo-active-game-layout .skyjo-phone-action-guidance .skyjo-kicker {
+      display: none;
+    }
+
+    .skyjo-active-game-layout .skyjo-phone-action-guidance .skyjo-action-guidance-title {
+      max-width: 100%;
+      overflow: visible;
+      overflow-wrap: anywhere;
+      text-overflow: clip;
+      white-space: normal;
+      font-size: 0.8rem;
+      line-height: 1.1;
+    }
+
+    .skyjo-active-game-layout .skyjo-phone-action-guidance {
+      max-height: 64px !important;
+    }
+  }
+
+  @media (min-width: 375px) and (max-width: 389px) {
+    .skyjo-active-game-layout .skyjo-phone-action-guidance {
+      max-height: 88px !important;
+    }
   }
 
   @media (max-height: 640px) and (orientation: landscape) {
@@ -1084,7 +1111,7 @@ body {
     .skyjo-active-game-layout .skyjo-phone-action-guidance {
       height: 44px;
       min-height: 44px;
-      max-height: 44px;
+      max-height: 44px !important;
     }
 
     .skyjo-active-game-layout .skyjo-game-table-layout {
@@ -1115,7 +1142,15 @@ body {
   }
 
   .skyjo-update-banner[data-deferred='true'] > div > span {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .skyjo-update-banner[data-deferred='true'] strong {
