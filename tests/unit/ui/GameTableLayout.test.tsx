@@ -755,7 +755,19 @@ describe('GameTableLayout', () => {
   it('renders one complete phone guidance region outside the geometry anchor, including disabled reasons', () => {
     act(() => setMediaQueryMatches(PHONE_LAYOUT_MEDIA_QUERY, true));
     const actions = handlers();
-    render(
+    const { rerender } = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        interactionDisabledReason="Room recovery is still synchronizing."
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(2)}
+      />
+    );
+
+    const initialGuidance = screen.getByRole('region', { name: 'Action guidance' });
+    rerender(
       <GameTableLayout
         {...actions}
         drawIntent="place"
@@ -769,8 +781,9 @@ describe('GameTableLayout', () => {
 
     const guidance = screen.getByRole('region', { name: 'Action guidance' });
     expect(screen.getAllByRole('region', { name: 'Action guidance' })).toHaveLength(1);
+    expect(guidance).not.toBe(initialGuidance);
     expect(guidance).toHaveClass('skyjo-phone-action-guidance');
-    expect(guidance).toHaveStyle({ maxHeight: '64px' });
+    expect(guidance).toHaveStyle({ maxHeight: 'var(--g)' });
     expect(guidance).toHaveTextContent('Choose two face-down cards');
     expect(within(guidance).getByRole('heading', { level: 2, name: 'Choose two face-down cards' })).toBeInTheDocument();
     expect(guidance).toHaveTextContent('Each player reveals exactly two cards');

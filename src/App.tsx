@@ -1503,7 +1503,7 @@ function SinglePlayer() {
         className={`skyjo-shell skyjo-active-game-layout ${
           summaryModalOpen ? 'skyjo-round-summary-mode' : ''
         } grid gap-5`}
-        data-pwa-update-deferred={pwaUpdate.available || undefined}
+        data-pwa-update-deferred={pwaUpdate.available}
       >
         {isScoringPhase && !roundSummaryOpen ? (
           <RoundSummaryRestoreButton

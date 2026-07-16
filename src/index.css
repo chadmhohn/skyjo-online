@@ -88,6 +88,12 @@ body {
   :root {
     /* Bottom edge for a deferred update plus the minimized score summary. */
     --u: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(48px, 3rem));
+    /* 64px through 360px, readable on Pro Max, and 44px in short landscape. */
+    --g: min(
+      clamp(64px, calc(240vw - 800px), 220px),
+      clamp(44px, calc(100vh - 396px), 220px),
+      clamp(120px, 7.5rem, 220px)
+    );
   }
 
   html:has(main.skyjo-active-phone-surface),
@@ -1055,12 +1061,6 @@ body {
 
   }
 
-  @media (min-width: 361px) and (orientation: portrait) {
-    .skyjo-active-game-layout .skyjo-phone-action-guidance {
-      max-height: clamp(120px, 7.5rem, 220px) !important;
-    }
-  }
-
   @media (max-height: 640px) and (orientation: landscape) {
     :root {
       --u: calc(max(0.5rem, env(safe-area-inset-bottom)) + 48px);
@@ -1084,7 +1084,7 @@ body {
     .skyjo-active-game-layout .skyjo-phone-action-guidance {
       height: 44px;
       min-height: 44px;
-      max-height: 44px !important;
+      max-height: 44px;
     }
 
     .skyjo-active-game-layout .skyjo-game-table-layout {

@@ -997,6 +997,11 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
     expect(snapshot.guidanceMaxHeight, `${variant.label} guidance should retain the readable portrait height`).not.toBe(
       '64px'
     );
+  } else {
+    expect(
+      Number.parseFloat(snapshot.guidanceMaxHeight),
+      `${variant.label} guidance should keep the short-landscape height`
+    ).toBeCloseTo(44, 2);
   }
   expect(snapshot.headerTargets, `${variant.label} should retain Back and Settings controls`).toHaveLength(2);
   for (const [index, target] of snapshot.headerTargets.entries()) {

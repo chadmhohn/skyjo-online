@@ -105,7 +105,7 @@ export interface GameTableLayoutProps {
   onCancelDiscard: () => void;
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
-  /** A deferred PWA update should compact the phone guidance region. */
+  /** Deferred update state also remounts guidance to avoid stale WebKit layout. */
   u?: boolean;
 }
 
@@ -1155,10 +1155,11 @@ export function GameTableLayout({
         <div
           aria-label="Action guidance"
           className="skyjo-phone-action-guidance"
+          key={u as unknown as string}
           onKeyDown={handleScrollableRegionKeyDown}
           ref={phoneGuidanceRef}
           role="region"
-          style={u ? { maxHeight: 64 } : {}}
+          style={u ? { maxHeight: 'var(--g)' } : {}}
           tabIndex={0}
         >
           <ActionGuidance disabledReason={guidanceDisabledReason} headingLevel={2} status={status} />
