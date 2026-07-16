@@ -718,6 +718,16 @@ body {
     white-space: nowrap;
   }
 
+  .skyjo-active-game-layout
+    .skyjo-table-controls-drawn
+    .skyjo-pile-button
+    .skyjo-kicker {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    letter-spacing: -0.1em;
+  }
+
   .skyjo-active-game-layout .skyjo-table-card {
     width: 52px;
     min-height: 43px;
