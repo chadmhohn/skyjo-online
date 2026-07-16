@@ -1006,7 +1006,7 @@ function TableControls({
                 type="button"
               >
                 <span className="skyjo-choice-label-full">Discard + reveal</span>
-                <span aria-hidden="true" className="skyjo-choice-label-compact">Reveal</span>
+                <span aria-hidden="true" className="skyjo-choice-label-compact">Discard</span>
                 <small className="skyjo-choice-help">{hasHiddenCard ? 'Reveal one hidden card.' : 'No hidden cards remain.'}</small>
               </button>
             </div>

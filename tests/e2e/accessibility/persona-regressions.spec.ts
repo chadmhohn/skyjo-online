@@ -66,6 +66,15 @@ async function setDoubleText(page: Page, enabled: boolean) {
     .toBe(enabled ? 32 : 16);
 }
 
+function expectScaledTextOutcome(normal: number, scaled: number, scaledMinimum: number, label: string) {
+  expect(scaled, `${label} should meet its readable 200% effective size`).toBeGreaterThanOrEqual(scaledMinimum);
+  expect(scaled + 0.01, `${label} should not shrink when the root font doubles`).toBeGreaterThanOrEqual(normal);
+  expect(
+    scaled / normal >= 1.9 || normal >= scaledMinimum - 0.01,
+    `${label} should either scale with the root or already be browser-inflated to the 200% target: ${JSON.stringify({ normal, scaled })}`
+  ).toBe(true);
+}
+
 async function expectPhoneFocusableContract(
   page: Page,
   state: string,
@@ -383,6 +392,37 @@ async function finishOpeningAndDraw(page: Page) {
   await expect(page.locator('.skyjo-drawn-decision')).toBeVisible();
 }
 
+async function remountPersistedSoloState(page: Page, expectedPhase: string) {
+  await expect.poll(() =>
+    page.evaluate(
+      (phase) => new Promise<boolean>((resolve, reject) => {
+        const request = indexedDB.open('skyjo-pwa', 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const database = request.result;
+          const transaction = database.transaction('soloSessions');
+          const records = transaction.objectStore('soloSessions').index('byOwner').getAll('guest');
+          records.onerror = () => reject(records.error);
+          records.onsuccess = () => {
+            resolve(records.result.some((record) => record.state?.phase === phase));
+            database.close();
+          };
+        };
+      }),
+      expectedPhase
+    )
+  ).toBe(true);
+
+  await page.getByRole('link', { name: 'Back to home' }).click();
+  await expect(page.getByRole('link', { name: 'Single Player', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Single Player', exact: true }).click();
+  const resume = page.getByRole('dialog', { name: 'Continue your solo game?' });
+  await expect(resume).toBeVisible();
+  await resume.getByRole('button', { name: 'Continue Game' }).click();
+  await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', expectedPhase);
+  await page.evaluate(() => window.scrollTo(0, 0));
+}
+
 async function drawnDecisionSnapshot(page: Page) {
   return page.evaluate(() => {
     const required = (selector: string) => {
@@ -425,12 +465,18 @@ async function drawnDecisionSnapshot(page: Page) {
     const drawnCard = required('.skyjo-drawn-card');
     const local = required('[data-testid="local-board"]');
     const buttons = Array.from(actionGrid.querySelectorAll<HTMLElement>('.skyjo-choice-button'));
-    const labels = buttons.map((button) => button.querySelector<HTMLElement>('span'));
+    const labels = buttons.map((button) =>
+      Array.from(button.querySelectorAll<HTMLElement>('span')).find(
+        (label) => window.getComputedStyle(label).display !== 'none'
+      ) ?? null
+    );
     const allScrollable = [region, decision, actionGrid, instruction, ...buttons];
+    const opponentRect = rect(opponent);
+    const localRect = rect(local);
 
     return {
       bandHeight: rect(band).height,
-      boardsDoNotOverlap: rect(opponent).bottom <= rect(band).top + 1 && rect(band).bottom <= rect(local).top + 1,
+      boardsDoNotOverlap: opponentRect.bottom <= rect(band).top + 1 && rect(band).bottom <= localRect.top + 1,
       buttons: buttons.map((button) => ({
         height: rect(button).height,
         width: rect(button).width
@@ -440,7 +486,14 @@ async function drawnDecisionSnapshot(page: Page) {
       controlsContained: contained(controls, band),
       decisionContained: contained(decision, region),
       decisionBox: box(decision),
+      documentFixed:
+        document.documentElement.scrollHeight <= document.documentElement.clientHeight + 1 &&
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1 &&
+        document.documentElement.scrollTop === 0 &&
+        document.documentElement.scrollLeft === 0,
+      drawnFontSize: Number.parseFloat(window.getComputedStyle(drawnCard).fontSize),
       drawnCardVisible: visible(drawnCard),
+      drawnValue: drawnCard.textContent?.trim() ?? '',
       instructionContained: contained(instruction, decision),
       instructionText: instruction.textContent?.trim() ?? '',
       instructionVisible: visible(instruction),
@@ -448,9 +501,25 @@ async function drawnDecisionSnapshot(page: Page) {
         if (!label) return false;
         return contained(label, buttons[index]);
       }),
+      labelFontSizes: labels.map((label) => label ? Number.parseFloat(window.getComputedStyle(label).fontSize) : 0),
+      labelTexts: labels.map((label) => label?.textContent?.trim() ?? ''),
+      localBoard: {
+        clientHeight: local.clientHeight,
+        height: localRect.height,
+        overflowY: window.getComputedStyle(local).overflowY,
+        scrollHeight: local.scrollHeight,
+        scrollTop: local.scrollTop
+      },
       noHorizontalPageScroll: document.documentElement.scrollWidth <= window.innerWidth + 1,
+      opponentBoard: {
+        clientHeight: opponent.clientHeight,
+        height: opponentRect.height,
+        overflowY: window.getComputedStyle(opponent).overflowY,
+        scrollHeight: opponent.scrollHeight
+      },
       regionContained: contained(region, controls),
       regionBox: box(region),
+      rootFontSize: Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize),
       scrollContained: allScrollable.every(scrollContained),
       transitionDurations: buttons.map((button) => window.getComputedStyle(button).transitionDuration)
     };
@@ -829,13 +898,23 @@ test('844x390 drawn decisions replace redundant side guidance with one contained
   const decisionRegion = page.getByRole('region', { name: 'Drawn card decision' });
   const placeChoice = decisionRegion.getByRole('button', { name: /Place drawn card/ });
   const discardChoice = decisionRegion.getByRole('button', { name: /Discard \+ reveal/ });
+  const fixedPhoneContract = await page.evaluate(() =>
+    window.matchMedia('(max-width: 640px), (max-height: 640px) and (pointer: coarse) and (hover: none)').matches
+  );
   await expect(decisionRegion).toHaveCount(1);
-  await expect(page.getByRole('region', { name: 'Action guidance' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Action guidance' })).toHaveCount(fixedPhoneContract ? 1 : 0);
   await expect(page.locator('.skyjo-drawn-card')).toBeVisible();
-  await expect(page.locator('.skyjo-drawn-instruction')).toBeVisible();
-  await expect(page.locator('.skyjo-drawn-instruction')).toContainText('Place selected. Choose a highlighted card.');
+  if (fixedPhoneContract) {
+    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-action-guidance-instruction')).toBeHidden();
+    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-disabled-note')).toBeHidden();
+    await expect(page.locator('.skyjo-drawn-instruction')).toBeHidden();
+  } else {
+    await expect(page.locator('.skyjo-drawn-instruction')).toBeVisible();
+    await expect(page.locator('.skyjo-drawn-instruction')).toContainText('Place selected. Choose a highlighted card.');
+  }
 
   const snapshot = await drawnDecisionSnapshot(page);
+  expect(snapshot.bandHeight).toBe(fixedPhoneContract ? 110 : 150);
   expect(snapshot.boardsDoNotOverlap).toBe(true);
   expect(snapshot.buttons.every((button) => button.width >= minimumTargetSize && button.height >= minimumTargetSize)).toBe(true);
   expect(snapshot.buttonsContained).toBe(true);
@@ -843,9 +922,17 @@ test('844x390 drawn decisions replace redundant side guidance with one contained
   expect(snapshot.controlsContained).toBe(true);
   expect(snapshot.decisionContained).toBe(true);
   expect(snapshot.drawnCardVisible).toBe(true);
-  expect(snapshot.instructionContained).toBe(true);
-  expect(snapshot.instructionVisible).toBe(true);
+  expect(snapshot.instructionContained).toBe(!fixedPhoneContract);
+  expect(snapshot.instructionVisible).toBe(!fixedPhoneContract);
   expect(snapshot.labelsContained).toBe(true);
+  expect(snapshot.labelTexts).toEqual(
+    fixedPhoneContract ? ['Place', 'Discard'] : ['Place drawn card', 'Discard + reveal']
+  );
+  if (fixedPhoneContract) {
+    expect(snapshot.documentFixed).toBe(true);
+    expect(snapshot.opponentBoard.height).toBeGreaterThanOrEqual(minimumTargetSize);
+    expect(snapshot.localBoard.height).toBeGreaterThanOrEqual(minimumTargetSize);
+  }
   expect(snapshot.noHorizontalPageScroll).toBe(true);
   expect(snapshot.regionContained).toBe(true);
   expect(snapshot.scrollContained).toBe(true);
@@ -868,28 +955,51 @@ test('844x390 drawn decisions reflow without internal overflow at 200% text', as
   await page.setViewportSize({ width: 844, height: 390 });
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   await finishOpeningAndDraw(page);
-  await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
+  const fixedPhoneContract = await page.evaluate(() =>
+    window.matchMedia('(max-width: 640px), (max-height: 640px) and (pointer: coarse) and (hover: none)').matches
+  );
+  const normalSnapshot = await drawnDecisionSnapshot(page);
+  await setDoubleText(page, true);
+  // Playwright WebKit does not recalculate existing rem-sized descendants when
+  // only the root class changes. Remount the persisted state so this models a
+  // browser text preference that was active when the game controls appeared.
+  if ((await drawnDecisionSnapshot(page)).labelFontSizes[0] < 20) {
+    await remountPersistedSoloState(page, 'choose-replacement');
+  }
 
   const decisionRegion = page.getByRole('region', { name: 'Drawn card decision' });
   const placeChoice = decisionRegion.getByRole('button', { name: /Place drawn card/ });
   const discardChoice = decisionRegion.getByRole('button', { name: /Discard \+ reveal/ });
   await expect(decisionRegion).toHaveCount(1);
-  await expect(page.getByRole('region', { name: 'Action guidance' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Action guidance' })).toHaveCount(fixedPhoneContract ? 1 : 0);
   await expect(page.locator('.skyjo-drawn-card')).toBeVisible();
-  await expect(page.locator('.skyjo-drawn-instruction')).toBeVisible();
+  if (fixedPhoneContract) {
+    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-action-guidance-instruction')).toBeHidden();
+    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-disabled-note')).toBeHidden();
+    await expect(page.locator('.skyjo-drawn-instruction')).toBeHidden();
+  } else {
+    await expect(page.locator('.skyjo-drawn-instruction')).toBeVisible();
+  }
 
   await expect.poll(async () => {
     const snapshot = await drawnDecisionSnapshot(page);
     return {
-      bandExpanded: snapshot.bandHeight > 150,
+      bandUsesExpectedContract: fixedPhoneContract
+        ? snapshot.bandHeight >= 90 && snapshot.bandHeight <= 110
+        : snapshot.bandHeight > 150,
       boardsDoNotOverlap: snapshot.boardsDoNotOverlap,
       buttonsContained: snapshot.buttonsContained,
       cardContained: snapshot.cardContained,
       controlsContained: snapshot.controlsContained,
       decisionContained: snapshot.decisionContained,
-      instructionContained: snapshot.instructionContained,
+      documentFixed: !fixedPhoneContract || snapshot.documentFixed,
+      instructionContained: fixedPhoneContract ? !snapshot.instructionVisible : snapshot.instructionContained,
+      instructionVisible: snapshot.instructionVisible,
+      labels: snapshot.labelTexts,
       labelsContained: snapshot.labelsContained,
+      localTrackPositive: !fixedPhoneContract || snapshot.localBoard.height >= minimumTargetSize,
       noHorizontalPageScroll: snapshot.noHorizontalPageScroll,
+      opponentTrackPositive: !fixedPhoneContract || snapshot.opponentBoard.height >= minimumTargetSize,
       regionContained: snapshot.regionContained,
       scrollContained: snapshot.scrollContained,
       targetsMeetMinimum: snapshot.buttons.every(
@@ -897,27 +1007,51 @@ test('844x390 drawn decisions reflow without internal overflow at 200% text', as
       )
     };
   }).toEqual({
-    bandExpanded: true,
+    bandUsesExpectedContract: true,
     boardsDoNotOverlap: true,
     buttonsContained: true,
     cardContained: true,
     controlsContained: true,
     decisionContained: true,
+    documentFixed: true,
     instructionContained: true,
+    instructionVisible: !fixedPhoneContract,
+    labels: fixedPhoneContract ? ['Place', 'Discard'] : ['Place drawn card', 'Discard + reveal'],
     labelsContained: true,
+    localTrackPositive: true,
     noHorizontalPageScroll: true,
+    opponentTrackPositive: true,
     regionContained: true,
     scrollContained: true,
     targetsMeetMinimum: true
   });
 
+  const scaledSnapshot = await drawnDecisionSnapshot(page);
+  expect(scaledSnapshot.rootFontSize).toBe(32);
+  expect(scaledSnapshot.drawnValue).toBe(normalSnapshot.drawnValue);
+  await expect(placeChoice).toHaveAttribute('aria-pressed', 'true');
+  expectScaledTextOutcome(normalSnapshot.labelFontSizes[0], scaledSnapshot.labelFontSizes[0], 20, 'Decision label');
+  if (fixedPhoneContract) {
+    expectScaledTextOutcome(normalSnapshot.drawnFontSize, scaledSnapshot.drawnFontSize, 32, 'Drawn value');
+  }
+
   await placeChoice.focus();
   await expect(placeChoice).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(discardChoice).toBeFocused();
+
+  if (fixedPhoneContract) {
+    await placeChoice.click();
+    const replacementCard = page.locator('button.skyjo-card-selectable:not([disabled])').last();
+    await replacementCard.scrollIntoViewIfNeeded();
+    await expect(replacementCard).toBeInViewport();
+    expect(await page.getByTestId('local-board').evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+    await replacementCard.click();
+    await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', 'choose-source', { timeout: 5_000 });
+  }
 });
 
-test('320x568 drawn decisions reflow at 200% text while normal text keeps a compact band', async ({
+test('320x568 keeps compact decisions and internally scrollable boards at 200% text', async ({
   page,
   skyjoServer
 }) => {
@@ -928,71 +1062,62 @@ test('320x568 drawn decisions reflow at 200% text while normal text keeps a comp
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   await finishOpeningAndDraw(page);
 
-  const normalBandHeight = await page.getByTestId('table-center-band').evaluate((band) => band.getBoundingClientRect().height);
-  expect(normalBandHeight).toBeGreaterThanOrEqual(90);
-  expect(normalBandHeight).toBeLessThanOrEqual(110);
+  const normalSnapshot = await drawnDecisionSnapshot(page);
+  expect(normalSnapshot.bandHeight).toBe(110);
+  expect(normalSnapshot.labelTexts).toEqual(['Place', 'Discard']);
 
-  await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
-  await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const rect = (selector: string) => {
-          const element = document.querySelector<HTMLElement>(selector);
-          if (!element) throw new Error(`Missing ${selector}`);
-          return element.getBoundingClientRect();
-        };
-        const opponent = rect('[data-testid="opponent-rail"]');
-        const band = rect('[data-testid="table-center-band"]');
-        const controls = rect('[data-testid="table-center"]');
-        const piles = rect('[data-testid="table-piles"]');
-        const decision = rect('.skyjo-drawn-decision');
-        const local = rect('[data-testid="local-board"]');
-        const choiceElements = Array.from(
-          document.querySelectorAll<HTMLElement>('.skyjo-drawn-decision .skyjo-choice-button')
-        );
-        const choices = choiceElements.map((button) => button.getBoundingClientRect());
-        const values = [opponent, band, controls, piles, decision, local, ...choices]
-          .flatMap((value) => [value.left, value.top, value.right, value.bottom, value.width, value.height]);
-        return {
-          bandExpanded: band.height > 110,
-          boardsDoNotOverlap: opponent.bottom <= band.top + 1 && band.bottom <= local.top + 1,
-          choicesContained: choices.length === 2 && choices.every((choice) =>
-            choice.left >= decision.left - 1 && choice.right <= decision.right + 1 &&
-            choice.top >= decision.top - 1 && choice.bottom <= decision.bottom + 1 &&
-            choice.width >= 43.99 && choice.height >= 43.99
-          ),
-          choiceLabelsContained: choiceElements.every((button) => {
-            const buttonRect = button.getBoundingClientRect();
-            const label = button.querySelector<HTMLElement>('span');
-            if (!label) return false;
-            const labelRect = label.getBoundingClientRect();
-            return button.scrollWidth <= button.clientWidth + 1 && button.scrollHeight <= button.clientHeight + 1 &&
-              labelRect.left >= buttonRect.left - 1 && labelRect.right <= buttonRect.right + 1 &&
-              labelRect.top >= buttonRect.top - 1 && labelRect.bottom <= buttonRect.bottom + 1;
-          }),
-          controlsContained: controls.left >= band.left - 1 && controls.right <= band.right + 1 &&
-            controls.top >= band.top - 1 && controls.bottom <= band.bottom + 1,
-          decisionContained: decision.left >= controls.left - 1 && decision.right <= controls.right + 1 &&
-            decision.top >= controls.top - 1 && decision.bottom <= controls.bottom + 1,
-          finite: values.every(Number.isFinite),
-          noHorizontalPageScroll: document.documentElement.scrollWidth <= window.innerWidth + 1,
-          pilesBeforeDecision: piles.bottom <= decision.top + 1,
-          rootFontSize: Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize)
-        };
-      })
-    )
-    .toEqual({
-      bandExpanded: true,
-      boardsDoNotOverlap: true,
-      choicesContained: true,
-      choiceLabelsContained: true,
-      controlsContained: true,
-      decisionContained: true,
-      finite: true,
-      noHorizontalPageScroll: true,
-      pilesBeforeDecision: true,
-      rootFontSize: 32
-    });
+  // Expanding the center band at 200% pushed the board off the phone. Keep the
+  // visible labels concise while retaining the full accessible button names,
+  // and give both boards their own scroll tracks inside the fixed document.
+  await setDoubleText(page, true);
+  if ((await drawnDecisionSnapshot(page)).labelFontSizes[0] < 20) {
+    await remountPersistedSoloState(page, 'choose-replacement');
+  }
+  await expect.poll(async () => {
+    const snapshot = await drawnDecisionSnapshot(page);
+    return {
+      bandHeight: snapshot.bandHeight,
+      boardsDoNotOverlap: snapshot.boardsDoNotOverlap,
+      buttonsContained: snapshot.buttonsContained,
+      cardContained: snapshot.cardContained,
+      controlsContained: snapshot.controlsContained,
+      decisionContained: snapshot.decisionContained,
+      documentFixed: snapshot.documentFixed,
+      drawnCardVisible: snapshot.drawnCardVisible,
+      labels: snapshot.labelTexts,
+      labelsContained: snapshot.labelsContained,
+      localBoardScrollable:
+        snapshot.localBoard.height >= minimumTargetSize &&
+        snapshot.localBoard.overflowY === 'auto' &&
+        snapshot.localBoard.scrollHeight > snapshot.localBoard.clientHeight,
+      opponentTrackPositive: snapshot.opponentBoard.height >= minimumTargetSize,
+      rootFontSize: snapshot.rootFontSize,
+      targetsMeetMinimum: snapshot.buttons.every(
+        (button) => button.width >= minimumTargetSize && button.height >= minimumTargetSize
+      )
+    };
+  }).toEqual({
+    bandHeight: 110,
+    boardsDoNotOverlap: true,
+    buttonsContained: true,
+    cardContained: true,
+    controlsContained: true,
+    decisionContained: true,
+    documentFixed: true,
+    drawnCardVisible: true,
+    labels: ['Place', 'Discard'],
+    labelsContained: true,
+    localBoardScrollable: true,
+    opponentTrackPositive: true,
+    rootFontSize: 32,
+    targetsMeetMinimum: true
+  });
+
+  const scaledSnapshot = await drawnDecisionSnapshot(page);
+  expect(scaledSnapshot.drawnValue).toBe(normalSnapshot.drawnValue);
+  await expect(page.getByRole('button', { name: 'Place drawn card', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  expectScaledTextOutcome(normalSnapshot.labelFontSizes[0], scaledSnapshot.labelFontSizes[0], 20, 'Decision label');
+  expectScaledTextOutcome(normalSnapshot.drawnFontSize, scaledSnapshot.drawnFontSize, 32, 'Drawn value');
 
   const choiceButtons = await page.locator('.skyjo-drawn-decision .skyjo-choice-button').all();
   expect(choiceButtons).toHaveLength(2);
@@ -1001,8 +1126,8 @@ test('320x568 drawn decisions reflow at 200% text while normal text keeps a comp
     await expect(button).toBeInViewport();
   }
 
-  const discardChoice = page.locator('.skyjo-choice-button').filter({ hasText: 'Discard + reveal' });
-  const placeChoice = page.locator('.skyjo-choice-button').filter({ hasText: 'Place drawn card' });
+  const discardChoice = page.getByRole('button', { name: 'Discard + reveal drawn card', exact: true });
+  const placeChoice = page.getByRole('button', { name: 'Place drawn card', exact: true });
   await expect(discardChoice).toHaveCount(1);
   await expect(placeChoice).toHaveCount(1);
   await discardChoice.click();
@@ -1012,7 +1137,7 @@ test('320x568 drawn decisions reflow at 200% text while normal text keeps a comp
 
   const replacementCards = page.locator('button.skyjo-card-selectable:not([disabled])');
   await expect(replacementCards).toHaveCount(12);
-  const replacementCard = replacementCards.first();
+  const replacementCard = replacementCards.last();
   await replacementCard.scrollIntoViewIfNeeded();
   await expect(replacementCard).toBeInViewport();
   expect(await replacementCard.evaluate((card) => {
@@ -1020,6 +1145,8 @@ test('320x568 drawn decisions reflow at 200% text while normal text keeps a comp
     const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     return rect.width >= 43.99 && rect.height >= 43.99 && (hit === card || card.contains(hit));
   })).toBe(true);
+  expect(await page.getByTestId('local-board').evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+  expect((await drawnDecisionSnapshot(page)).documentFixed).toBe(true);
   await replacementCard.click();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', 'choose-source', { timeout: 5_000 });
 });
