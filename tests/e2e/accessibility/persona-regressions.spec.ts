@@ -1,9 +1,15 @@
-import type { BrowserContext, CDPSession, Page } from '@playwright/test';
+import { devices, type BrowserContext, type CDPSession, type Page } from '@playwright/test';
 import type { GameState } from '../../../src/types';
 import { soloProgressGameStates } from '../../helpers/soloGameState';
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
 
 const minimumTargetSize = 43.99;
+const iphone16ProMax = devices['iPhone 16 Pro Max'];
+const combinedFinalLapVariants = [
+  { label: '320x568 portrait', width: 320, height: 568, safeAreaStress: false },
+  { label: '440x956 portrait', width: 440, height: 956, safeAreaStress: false },
+  { label: '956x440 landscape safe-area', width: 956, height: 440, safeAreaStress: true }
+] as const;
 
 async function stageSoloState(page: Page, baseURL: string, state: GameState, stateIndex: number) {
   await page.goto(baseURL);
@@ -257,6 +263,256 @@ for (const viewport of [
     await expect(page.getByRole('region', { name: 'Action guidance' })).toBeFocused();
     await expect(page.locator('.skyjo-table-band-side-start')).toHaveAttribute('tabindex', '-1');
     await expect(page.locator('.skyjo-table-band-side-start')).not.toHaveAttribute('role');
+  });
+}
+
+for (const [variantIndex, variant] of combinedFinalLapVariants.entries()) {
+  test(`${variant.label} root32 combined final lap and drawn decision stay contained and accessible`, async ({
+    browser,
+    skyjoServer
+  }) => {
+    test.setTimeout(60_000);
+    const viewport = { width: variant.width, height: variant.height };
+    const context = await browser.newContext({
+      ...iphone16ProMax,
+      screen: viewport,
+      serviceWorkers: 'allow',
+      viewport
+    });
+    try {
+      const access = await context.request.post(`${skyjoServer.baseURL}/login`, {
+        form: { next: '/', password: skyjoServer.accessPassword }
+      });
+      expect(access.ok(), `${variant.label} access login returned ${access.status()}`).toBe(true);
+      const page = await context.newPage();
+      const states = soloProgressGameStates();
+      await installSeededBrowserRuntime(page, 448 + variantIndex);
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await stageSoloState(page, skyjoServer.baseURL, states.finalTurn, 12_800 + variantIndex);
+      await setDoubleText(page, true);
+      if (variant.safeAreaStress) {
+        await page.locator('main.skyjo-surface').evaluate((main) => {
+          main.style.setProperty('padding-top', '4px', 'important');
+          main.style.setProperty('padding-right', '62px', 'important');
+          main.style.setProperty('padding-bottom', '21px', 'important');
+          main.style.setProperty('padding-left', '62px', 'important');
+        });
+        await expect.poll(() => page.locator('main.skyjo-surface').evaluate((main) => {
+          const style = window.getComputedStyle(main);
+          return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+        })).toEqual(['4px', '62px', '21px', '62px']);
+      }
+
+      const table = page.getByTestId('shared-game-table');
+      if ((await table.getAttribute('data-phase')) === 'choose-source') {
+        await page.getByTestId('table-piles').getByRole('button', { name: /^Deck/ }).click();
+        await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
+      }
+
+      const finalLap = page.getByRole('region', { name: 'Final lap status' });
+      const combinedState = await finalLap.evaluate((element) => {
+        const region = element as HTMLElement;
+        const required = (selector: string) => {
+          const match = document.querySelector<HTMLElement>(selector);
+          if (!match) throw new Error(`Missing combined final-lap anchor: ${selector}`);
+          return match;
+        };
+        const contained = (child: HTMLElement, parent: HTMLElement) => {
+          const childRect = child.getBoundingClientRect();
+          const parentRect = parent.getBoundingClientRect();
+          return (
+            childRect.left >= parentRect.left - 1 &&
+            childRect.right <= parentRect.right + 1 &&
+            childRect.top >= parentRect.top - 1 &&
+            childRect.bottom <= parentRect.bottom + 1
+          );
+        };
+        const typographyContained = (child: HTMLElement, parent: HTMLElement) =>
+          contained(child, parent) &&
+          child.scrollWidth <= child.clientWidth + 1 &&
+          child.scrollHeight <= child.clientHeight + 1;
+        const inViewport = (element: HTMLElement) => {
+          const rect = element.getBoundingClientRect();
+          return (
+            rect.left >= -1 &&
+            rect.top >= -1 &&
+            rect.right <= window.innerWidth + 1 &&
+            rect.bottom <= window.innerHeight + 1
+          );
+        };
+        const topmostAtRepresentativePoints = (element: HTMLElement) => {
+          const rect = element.getBoundingClientRect();
+          const inset = Math.min(4, rect.width / 4, rect.height / 4);
+          return [
+            [rect.left + inset, rect.top + inset],
+            [rect.left + rect.width / 2, rect.top + rect.height / 2],
+            [rect.right - inset, rect.bottom - inset]
+          ].every(([x, y]) => {
+            const hit = document.elementFromPoint(x, y);
+            return hit === element || Boolean(hit && element.contains(hit));
+          });
+        };
+        const playSurface = required('[data-testid="shared-game-table"]');
+        const callout = required('.skyjo-final-turn-callout');
+        const mark = required('.skyjo-final-turn-mark');
+        const details = required('.skyjo-final-turn-callout > .flex > .min-w-0');
+        const drawnCard = required('.skyjo-drawn-card');
+        const drawnDecision = required('.skyjo-drawn-decision');
+        const piles = required('[data-testid="table-piles"]');
+        const pileButtons = Array.from(
+          piles.querySelectorAll<HTMLElement>('.skyjo-pile-button')
+        );
+        const decisionButtons = Array.from(
+          required('.skyjo-drawn-action-grid').querySelectorAll<HTMLElement>('.skyjo-choice-button')
+        );
+        const visibleLabel = (button: HTMLElement) =>
+          Array.from(button.querySelectorAll<HTMLElement>('span')).find(
+            (label) => window.getComputedStyle(label).display !== 'none'
+          );
+        const regionRect = region.getBoundingClientRect();
+        const detailsRect = details.getBoundingClientRect();
+        const detailsStyle = window.getComputedStyle(details);
+        const markRect = mark.getBoundingClientRect();
+        const markStyle = window.getComputedStyle(mark);
+        const markLabelStyle = window.getComputedStyle(mark, '::before');
+        return {
+          accessibleText: region.textContent?.replace(/\s+/g, ' ').trim() || '',
+          calloutContained: contained(callout, region),
+          decisionButtons: decisionButtons.map((button) => {
+            const label = visibleLabel(button);
+            const rect = button.getBoundingClientRect();
+            return {
+              height: rect.height,
+              labelContained: Boolean(label && typographyContained(label, button)),
+              labelFontSize: label ? Number.parseFloat(window.getComputedStyle(label).fontSize) : 0,
+              text: label?.textContent?.trim() || '',
+              width: rect.width
+            };
+          }),
+          detailsMetrics: {
+            clip: detailsStyle.clip,
+            clipPath: detailsStyle.clipPath,
+            height: detailsRect.height,
+            overflow: detailsStyle.overflow,
+            position: detailsStyle.position,
+            whiteSpace: detailsStyle.whiteSpace,
+            width: detailsRect.width
+          },
+          drawnCardContained: contained(drawnCard, required('.skyjo-drawn-decision')),
+          drawnFontSize: Number.parseFloat(window.getComputedStyle(drawnCard).fontSize),
+          hitTestable: {
+            decisionButtons: decisionButtons.map(topmostAtRepresentativePoints),
+            drawnCard: topmostAtRepresentativePoints(drawnCard),
+            mark: topmostAtRepresentativePoints(mark),
+            pileButtons: pileButtons.map(topmostAtRepresentativePoints)
+          },
+          markContained: contained(mark, callout) && contained(mark, region),
+          markMetrics: {
+            color: markLabelStyle.color,
+            display: markLabelStyle.display,
+            fontSize: Number.parseFloat(markLabelStyle.fontSize),
+            fontWeight: Number.parseInt(markLabelStyle.fontWeight, 10),
+            height: markRect.height,
+            label: markLabelStyle.content.replace(/^['"]|['"]$/g, ''),
+            lineHeight: Number.parseFloat(markLabelStyle.lineHeight),
+            opacity: Number.parseFloat(markLabelStyle.opacity),
+            overflow: markStyle.overflow,
+            scrollContained:
+              mark.scrollWidth <= mark.clientWidth + 1 &&
+              mark.scrollHeight <= mark.clientHeight + 1,
+            typographyContained: typographyContained(mark, callout),
+            visibility: markLabelStyle.visibility,
+            width: markRect.width
+          },
+          pileButtons: pileButtons.map((button) => {
+            const label = button.querySelector<HTMLElement>('.skyjo-kicker');
+            const card = button.querySelector<HTMLElement>('.skyjo-table-card');
+            const rect = button.getBoundingClientRect();
+            return {
+              cardContained: Boolean(card && typographyContained(card, button)),
+              cardFontSize: card ? Number.parseFloat(window.getComputedStyle(card).fontSize) : 0,
+              height: rect.height,
+              labelContained: Boolean(label && typographyContained(label, button)),
+              labelFontSize: label ? Number.parseFloat(window.getComputedStyle(label).fontSize) : 0,
+              labelText: label?.textContent?.trim() || '',
+              width: rect.width
+            };
+          }),
+          regionHeight: regionRect.height,
+          regionScrollContained:
+            region.scrollWidth <= region.clientWidth + 1 &&
+            region.scrollHeight <= region.clientHeight + 1,
+          regionWidth: regionRect.width,
+          rootFontSize: Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize),
+          surfacesContained: {
+            playSurface: [region, callout, piles, drawnDecision, drawnCard, ...pileButtons, ...decisionButtons]
+              .every((item) => contained(item, playSurface)),
+            viewport: [region, callout, piles, drawnDecision, drawnCard, ...pileButtons, ...decisionButtons]
+              .every(inViewport)
+          }
+        };
+      });
+      const accessibilitySnapshot = await finalLap.ariaSnapshot();
+      expect(combinedState.regionWidth).toBeGreaterThanOrEqual(44);
+      expect(combinedState.regionHeight).toBeGreaterThanOrEqual(44);
+      expect(combinedState.regionScrollContained).toBe(true);
+      expect(combinedState.calloutContained).toBe(true);
+      expect(combinedState.markContained).toBe(true);
+      expect(combinedState.rootFontSize).toBe(32);
+      expect(combinedState.markMetrics).toMatchObject({
+        display: 'flex',
+        label: 'LAST',
+        overflow: 'hidden',
+        scrollContained: true,
+        typographyContained: true,
+        visibility: 'visible'
+      });
+      expect(combinedState.markMetrics.width).toBeCloseTo(40, 1);
+      expect(combinedState.markMetrics.height).toBeCloseTo(40, 1);
+      expect(combinedState.markMetrics.width).toBeGreaterThan(0);
+      expect(combinedState.markMetrics.height).toBeGreaterThan(0);
+      expect(combinedState.markMetrics.fontSize).toBeGreaterThanOrEqual(16);
+      expect(combinedState.markMetrics.fontWeight).toBeGreaterThanOrEqual(900);
+      expect(combinedState.markMetrics.lineHeight).toBeGreaterThanOrEqual(16);
+      expect(combinedState.markMetrics.lineHeight).toBeLessThanOrEqual(17);
+      expect(combinedState.markMetrics.opacity).toBeGreaterThan(0);
+      expect(combinedState.markMetrics.color).not.toBe('rgba(0, 0, 0, 0)');
+      expect(combinedState.detailsMetrics).toMatchObject({
+        overflow: 'hidden',
+        position: 'absolute',
+        whiteSpace: 'nowrap'
+      });
+      expect(combinedState.detailsMetrics.width).toBeLessThanOrEqual(1);
+      expect(combinedState.detailsMetrics.height).toBeLessThanOrEqual(1);
+      expect(
+        combinedState.detailsMetrics.clip === 'rect(0px, 0px, 0px, 0px)' ||
+          combinedState.detailsMetrics.clipPath === 'inset(50%)'
+      ).toBe(true);
+      expect(combinedState.accessibleText).toContain('Final lap active');
+      expect(combinedState.accessibleText).toContain('This is your last move of the round.');
+      expect(accessibilitySnapshot).toContain('Final lap active');
+      expect(accessibilitySnapshot).toContain('This is your last move of the round.');
+      expect(combinedState.surfacesContained).toEqual({ playSurface: true, viewport: true });
+      expect(combinedState.hitTestable.mark).toBe(true);
+      expect(combinedState.hitTestable.drawnCard).toBe(true);
+      expect(combinedState.hitTestable.pileButtons.every(Boolean)).toBe(true);
+      expect(combinedState.hitTestable.decisionButtons.every(Boolean)).toBe(true);
+      expect(combinedState.drawnCardContained).toBe(true);
+      expect(combinedState.drawnFontSize).toBeGreaterThanOrEqual(32);
+      expect(combinedState.pileButtons.map(({ labelText }) => labelText)).toEqual(['Deck', 'Discard']);
+      expect(combinedState.pileButtons.every(({ width, height }) => width >= 44 && height >= 44)).toBe(true);
+      expect(
+        combinedState.pileButtons.every(({ cardContained, labelContained }) => cardContained && labelContained)
+      ).toBe(true);
+      expect(combinedState.pileButtons[1]?.labelFontSize).toBeGreaterThanOrEqual(16);
+      expect(combinedState.pileButtons[1]?.cardFontSize).toBeGreaterThanOrEqual(32);
+      expect(combinedState.decisionButtons.map(({ text }) => text)).toEqual(['Place', 'Discard']);
+      expect(combinedState.decisionButtons.every(({ width, height }) => width >= 44 && height >= 44)).toBe(true);
+      expect(combinedState.decisionButtons.every(({ labelContained }) => labelContained)).toBe(true);
+      expect(combinedState.decisionButtons.every(({ labelFontSize }) => labelFontSize >= 20)).toBe(true);
+    } finally {
+      await context.close();
+    }
   });
 }
 

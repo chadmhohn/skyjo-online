@@ -1577,7 +1577,10 @@ test.describe('responsive table settlement stress', () => {
   test.describe.configure({ retries: 0 });
 
   test('repeated desktop and phone transitions converge for every supported roster', async ({ page, skyjoServer }) => {
-    test.setTimeout(90_000);
+    // This exercises 20 serial viewport settlements. Linux WebKit can begin the
+    // twentieth settlement just before 90 seconds under CI load, so retain each
+    // strict 7.5-second gate while allowing the full matrix to finish.
+    test.setTimeout(120_000);
     await installSeededBrowserRuntime(page, 72);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto(`${skyjoServer.baseURL}/single-player`);
