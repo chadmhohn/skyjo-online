@@ -463,17 +463,41 @@ function fixedActiveLayoutCriteria(
 }
 
 async function expectBoardsReachableByInternalScroll(page: Page, includeOpponent = true): Promise<void> {
-  const selectors = includeOpponent
-    ? ['[data-testid="opponent-rail"]', '[data-testid="local-board"]']
-    : ['[data-testid="local-board"]'];
-  for (const selector of selectors) {
-    const board = page.locator(selector);
-    await expect(board).toHaveAttribute('role', 'region');
-    await expect(board).toHaveAttribute('tabindex', '0');
+  const boards: Locator[] = [];
+  if (includeOpponent) {
+    const opponentRail = page.getByTestId('opponent-rail');
+    const opponentBoard = opponentRail.locator(
+      ':scope > [data-player-role="opponent"][data-vertical-scroll-active="true"]'
+    );
+    await expect(opponentRail).toHaveAttribute('role', 'region');
+    await expect(opponentRail).not.toHaveAttribute('tabindex');
+    await expect(opponentBoard).toHaveCount(1);
+    await expect(opponentBoard).toHaveAttribute('aria-label', / board$/);
+    await expect(opponentBoard).toHaveAttribute('tabindex', '0');
+    await expect(opponentBoard).toHaveCSS('overflow-y', 'auto');
+    boards.push(opponentBoard);
+  }
+
+  const localBoard = page.getByTestId('local-board');
+  await expect(localBoard).toHaveAttribute('role', 'region');
+  await expect(localBoard).toHaveAttribute('tabindex', '0');
+  boards.push(localBoard);
+
+  for (const board of boards) {
     await board.evaluate((element) => {
       element.scrollTop = 0;
     });
     await board.focus();
+    const focusStyle = await board.evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      return {
+        boxShadow: style.boxShadow !== 'none',
+        outlineStyle: style.outlineStyle,
+        outlineWidth: Number.parseFloat(style.outlineWidth)
+      };
+    });
+    expect(focusStyle).toMatchObject({ boxShadow: true, outlineStyle: 'solid' });
+    expect(focusStyle.outlineWidth).toBeGreaterThanOrEqual(2);
     for (let step = 0; step < 12; step += 1) await board.press('ArrowDown');
     await expect.poll(() => board.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 

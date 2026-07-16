@@ -18,14 +18,25 @@ test('home page has no serious or critical Axe violations', async ({ page, skyjo
 
 test('solo table has no serious or critical Axe violations', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 60);
+  await page.setViewportSize({ width: 320, height: 568 });
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+  await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
+  await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)))
+    .toBe(32);
+  const opponentRail = page.getByRole('region', { name: 'Opponent boards' });
+  const activeOpponent = opponentRail.locator(':scope > [data-vertical-scroll-active="true"]');
+  await expect(activeOpponent).toHaveCount(1);
+  await expect(opponentRail).not.toHaveAttribute('tabindex');
+  await expect(activeOpponent).toHaveAttribute('tabindex', '0');
+  await expect(activeOpponent).toHaveCSS('overflow-y', 'auto');
+  await expect(page.getByRole('region', { name: 'Your board' })).toHaveAttribute('tabindex', '0');
   await expectNoBlockingViolations(page);
 });
 
 test('eight-player centered table has no serious or critical Axe violations', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 70);
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 320, height: 568 });
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   await page.getByRole('button', { name: 'Open game settings' }).click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
@@ -40,6 +51,80 @@ test('eight-player centered table has no serious or critical Axe violations', as
   await page.keyboard.press('Escape');
   await expect(settings).toBeHidden();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', '8');
+  await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
+  await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)))
+    .toBe(32);
+  const opponentRail = page.getByRole('region', { name: 'Opponent boards' });
+  const activeOpponent = opponentRail.locator(':scope > [data-vertical-scroll-active="true"]');
+  const inactiveOpponents = opponentRail.locator(
+    ':scope > [data-player-role="opponent"]:not([data-vertical-scroll-active="true"])'
+  );
+  await expect(opponentRail).toHaveAttribute('tabindex', '0');
+  await expect(activeOpponent).toHaveCount(1);
+  await expect(activeOpponent).toHaveAttribute('tabindex', '0');
+  await expect(activeOpponent).toHaveCSS('overflow-y', 'auto');
+  expect(await activeOpponent.evaluate((board) => board.scrollHeight - board.clientHeight)).toBeGreaterThan(1);
+  await expect(inactiveOpponents).toHaveCount(6);
+  expect(await inactiveOpponents.evaluateAll((boards) =>
+    boards.every((board) => board.getAttribute('tabindex') === '-1')
+  )).toBe(true);
+  expect(await inactiveOpponents.evaluateAll((boards) =>
+    boards.every((board) => window.getComputedStyle(board).overflowY === 'hidden')
+  )).toBe(true);
+  await expect(page.getByRole('region', { name: 'Your board' })).toHaveAttribute('tabindex', '0');
+  await expect(
+    page.locator(
+      '[data-testid="opponent-rail"][tabindex="0"], ' +
+      '[data-testid="opponent-rail"] > [data-player-role="opponent"][tabindex="0"], ' +
+      '[data-testid="local-board"][tabindex="0"]'
+    )
+  ).toHaveCount(3);
+  await expectNoBlockingViolations(page);
+});
+
+test('three-player compact table exposes both visible opponent boards without Axe violations', async ({
+  page,
+  skyjoServer
+}) => {
+  await installSeededBrowserRuntime(page, 71);
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await page.getByRole('button', { name: 'Open game settings' }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('tab', { name: 'Game' }).click();
+  await settings
+    .getByRole('group', { name: 'Choose AI opponent count' })
+    .getByRole('button', { name: '2', exact: true })
+    .click();
+  await settings.getByRole('button', { name: 'New Game' }).click();
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
+  await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
+  await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)))
+    .toBe(32);
+
+  const guidance = page.getByRole('region', { name: 'Action guidance' });
+  const opponentRail = page.getByRole('region', { name: 'Opponent boards' });
+  const opponentBoards = opponentRail.locator(':scope > [data-vertical-scroll-active="true"]');
+  const localBoard = page.getByRole('region', { name: 'Your board' });
+  await expect(opponentRail).not.toHaveAttribute('tabindex');
+  await expect(opponentBoards).toHaveCount(2);
+  expect(await opponentBoards.evaluateAll((boards) => boards.every((board) =>
+    board.getAttribute('tabindex') === '0' &&
+    getComputedStyle(board).overflowY === 'auto' &&
+    board.scrollHeight > board.clientHeight + 1
+  ))).toBe(true);
+  await guidance.focus();
+  for (const board of await opponentBoards.all()) {
+    await page.keyboard.press('Tab');
+    await expect(board).toBeFocused();
+    await page.keyboard.press('End');
+    await expect.poll(() => board.evaluate((element) =>
+      Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop)
+    )).toBeLessThanOrEqual(1);
+  }
+  await page.keyboard.press('Tab');
+  await expect(localBoard).toBeFocused();
   await expectNoBlockingViolations(page);
 });
 

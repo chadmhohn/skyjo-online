@@ -95,28 +95,57 @@ async function enableDoubleText(page: Page) {
   expect(scaled).toBeCloseTo(baseline * 2, 2);
 }
 
+async function phoneTypeSizes(page: Page) {
+  return page.evaluate(() => {
+    const size = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) throw new Error(`Missing phone type sample: ${selector}`);
+      return Number.parseFloat(window.getComputedStyle(element).fontSize);
+    };
+    return {
+      guidanceInstruction: size('.skyjo-phone-action-guidance .skyjo-action-guidance-instruction'),
+      guidanceNote: size('.skyjo-phone-action-guidance .skyjo-disabled-note'),
+      guidanceTitle: size('.skyjo-phone-action-guidance .skyjo-action-guidance-title'),
+      title: size('.skyjo-game-title')
+    };
+  });
+}
+
+function expectScaledTypeOutcome(normal: number, scaled: number, minimum: number, label: string) {
+  expect(scaled, `${label} should meet its 200% effective size`).toBeGreaterThanOrEqual(minimum);
+  expect(scaled + 0.01, `${label} should not shrink`).toBeGreaterThanOrEqual(normal);
+  expect(
+    scaled / normal >= 1.9 || normal >= minimum - 0.01,
+    `${label} should double or already be browser-inflated: ${JSON.stringify({ normal, scaled })}`
+  ).toBe(true);
+}
+
 async function expectEnlargedGuidanceReachable(page: Page) {
   const guidance = page.getByRole('region', { name: 'Action guidance' });
   await expect(guidance).toBeVisible();
-  for (const selector of [
-    '.skyjo-action-guidance-title',
-    '.skyjo-action-guidance-instruction',
-    '.skyjo-disabled-note'
-  ]) {
-    const content = guidance.locator(selector);
-    await content.scrollIntoViewIfNeeded();
-    await expect(content).toBeVisible();
-    await expect(content).toBeInViewport();
-  }
-  const contentFits = await guidance.evaluate((element) =>
-    [...element.querySelectorAll('.skyjo-action-guidance-title, .skyjo-action-guidance-instruction, .skyjo-disabled-note')]
-      .every((child) => {
-        const container = element.getBoundingClientRect();
-        const rect = child.getBoundingClientRect();
-        return rect.top >= container.top - 0.5 && rect.bottom <= container.bottom + 0.5;
-      })
-  );
-  expect(contentFits).toBe(true);
+  await expect(guidance).toHaveAttribute('tabindex', '0');
+  await guidance.focus();
+  await expect(guidance).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect.poll(() => guidance.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(1);
+  await expect(guidance.locator('.skyjo-action-guidance-title')).toBeInViewport();
+  const maximum = await guidance.evaluate((element) => element.scrollHeight - element.clientHeight);
+  expect(maximum).toBeGreaterThan(1);
+  await page.keyboard.press('PageDown');
+  await expect.poll(() => guidance.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await page.keyboard.press('End');
+  await expect.poll(() =>
+    guidance.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))
+  ).toBeLessThanOrEqual(1);
+  const noteEndVisible = await guidance.locator('.skyjo-disabled-note').evaluate((note) => {
+    const region = note.parentElement?.closest<HTMLElement>('[aria-label="Action guidance"]');
+    if (!region) return false;
+    const regionRect = region.getBoundingClientRect();
+    const noteRect = note.getBoundingClientRect();
+    return noteRect.bottom <= regionRect.bottom + 1 && noteRect.bottom > regionRect.top + 1;
+  });
+  expect(noteEndVisible).toBe(true);
+  expect(await page.evaluate(() => ({ left: window.scrollX, top: window.scrollY }))).toEqual({ left: 0, top: 0 });
 }
 
 test('visible controls meet the 44px target contract across routes and disabled states', async ({ context, page, skyjoServer }) => {
@@ -191,7 +220,13 @@ test('200% text remains operable without horizontal scroll on a short 320px view
 
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   await expectPhoneGuidanceFullyVisible(page, 'solo opening at normal text and 320x568');
+  const normalType = await phoneTypeSizes(page);
   await enableDoubleText(page);
+  const scaledType = await phoneTypeSizes(page);
+  expectScaledTypeOutcome(normalType.title, scaledType.title, 28, 'Single Player heading');
+  expectScaledTypeOutcome(normalType.guidanceTitle, scaledType.guidanceTitle, 25.5, 'Guidance heading');
+  expectScaledTypeOutcome(normalType.guidanceInstruction, scaledType.guidanceInstruction, 22, 'Guidance instruction');
+  expectScaledTypeOutcome(normalType.guidanceNote, scaledType.guidanceNote, 22, 'Guidance disabled note');
   await expectEnlargedGuidanceReachable(page);
   await expectTouchTargets(page, 'solo at 200% text and 320x568');
   await page.getByRole('button', { name: 'Open game settings' }).click();

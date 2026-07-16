@@ -14,7 +14,13 @@ import {
   startNextRound
 } from './game';
 import { GameTableLayout, type DrawIntent } from './GameTableLayout';
-import { useModalFocus, usePhoneLayout, usePrefersReducedMotion } from './accessibility';
+import {
+  handleScrollableRegionKeyDown,
+  noFocusScroll,
+  useModalFocus,
+  usePhoneLayout,
+  usePrefersReducedMotion
+} from './accessibility';
 import {
   ActiveRoomOptionsLoadFallback,
   RoundSummaryLoadFallback
@@ -81,10 +87,6 @@ const singlePlayerAiCounts = Array.from(
   { length: singlePlayerAiOpponentRange.max - singlePlayerAiOpponentRange.min + 1 },
   (_, index) => singlePlayerAiOpponentRange.min + index
 );
-type RulesHelpSection = {
-  title: string;
-  items: string[];
-};
 type SoloStatsCoordinator = ReturnType<typeof createStatsOutboxCoordinator>;
 type SoloStatsFlushResult = Awaited<ReturnType<SoloStatsCoordinator['flush']>>;
 
@@ -105,36 +107,6 @@ function statsSyncUnavailableWarning(): SoloPersistenceWarning {
     message: 'Saved game stats are unavailable in this browser session. Your game can continue safely.'
   };
 }
-
-const rulesHelpSections: RulesHelpSection[] = [
-  {
-    title: 'Starting a round',
-    items: [
-      'Everyone gets 12 face-down cards and chooses two opening cards to reveal.',
-      'For the first round, the highest shown opening-card sum starts.',
-      'After later rounds, the player who ended the previous round starts once opening cards are revealed.'
-    ]
-  },
-  {
-    title: 'Taking a turn',
-    items: [
-      'Take the top discard if you want that card, or draw blind from the deck.',
-      'If you draw blind, either place it on your board or discard it and reveal one hidden card.'
-    ]
-  },
-  {
-    title: 'Clearing columns',
-    items: ['Three matching values in one column clear that column. Cleared cards stop counting against you.']
-  },
-  {
-    title: 'Ending and scoring',
-    items: [
-      'When someone reveals their last card, everyone else gets one final turn.',
-      "If the closer's positive round score is not strictly lowest, that score doubles.",
-      'The game ends when someone reaches 100 or more total points. Lowest total wins.'
-    ]
-  }
-];
 
 function formatDate(timestamp: number) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
@@ -324,6 +296,9 @@ const loadPushSettingsControls = () => import('./PushSettingsControls').catch(()
   )
 }));
 const PushSettingsControls = lazy(loadPushSettingsControls);
+const RulesHelpPanel = lazy(() => import('./RulesHelpPanel').catch(() => ({
+  default: () => <p className="skyjo-disabled-note" role="alert">Rules could not load. Reload Skyjo to try again.</p>
+})));
 const RoundSummary = lazy(() => import('./RoundSummary').catch(() => ({ default: RoundSummaryLoadFallback })));
 const RoomChat = lazy(() => import('./RoomChat').catch(() => import('./RoomChatLoadFallback')));
 const ActiveRoomOptionsDialog = lazy(() => import('./ActiveRoomOptionsDialog').catch(() => ({
@@ -1014,7 +989,7 @@ function GameSettingsButton({
     event.preventDefault();
     const nextPanel = settingsPanels[nextIndex];
     setActivePanel(nextPanel.key);
-    document.getElementById(`skyjo-settings-tab-${nextPanel.key}`)?.focus({ preventScroll: true });
+    document.getElementById(`skyjo-settings-tab-${nextPanel.key}`)?.focus(noFocusScroll);
   }
 
   return (
@@ -1136,26 +1111,9 @@ function GameSettingsButton({
                     ) : null}
 
                     {activePanel === 'rules' ? (
-                      <section className="skyjo-settings-section">
-                        <div className="skyjo-settings-section-heading">
-                          <p className="skyjo-kicker">Help</p>
-                          <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Rules</h3>
-                        </div>
-                        <div className="skyjo-settings-rules-list">
-                          {rulesHelpSections.map((section) => (
-                            <section className="skyjo-rule-card rounded-xl border p-3" key={section.title}>
-                              <h4 className="skyjo-serif text-base font-bold leading-tight text-[#f5e6c8]">{section.title}</h4>
-                              <ul className="skyjo-rule-list mt-2 list-disc space-y-1.5 pl-5 text-sm leading-6">
-                                {section.items.map((item) => (
-                                  <li className="break-words" key={item}>
-                                    {item}
-                                  </li>
-                                ))}
-                              </ul>
-                            </section>
-                          ))}
-                        </div>
-                      </section>
+                      <Suspense fallback={<p className="skyjo-kicker" role="status">Loading rules...</p>}>
+                        <RulesHelpPanel />
+                      </Suspense>
                     ) : null}
 
                     {activePanel === 'log' && state ? (
@@ -1552,7 +1510,13 @@ function SinglePlayer() {
             </div>
           </div>
           {statsSaveStatus || persistenceWarning ? (
-            <div className="skyjo-game-status">
+            <div
+              aria-label="Game status"
+              className="skyjo-game-status"
+              onKeyDown={handleScrollableRegionKeyDown}
+              role="region"
+              tabIndex={0}
+            >
               {statsSaveStatus ? <p className="text-sm font-bold text-[#f5e6c8]/62">{statsSaveStatus}</p> : null}
               {persistenceWarning ? (
                 <p className="text-sm font-bold text-[#f5e6c8]/72" role="status">
@@ -1575,8 +1539,8 @@ function SinglePlayer() {
           state={state}
         />
 
-        <aside className="skyjo-secondary-stack space-y-4">
-          {isScoringPhase && roundSummaryOpen ? (
+        {isScoringPhase && roundSummaryOpen ? (
+          <aside className="skyjo-secondary-stack space-y-4">
             <Suspense fallback={null}>
               <RoundSummary
                 actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
@@ -1586,8 +1550,8 @@ function SinglePlayer() {
                 state={state}
               />
             </Suspense>
-          ) : null}
-        </aside>
+          </aside>
+        ) : null}
       </div>
     </main>
   );

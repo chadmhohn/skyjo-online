@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
+
+export const noFocusScroll = { preventScroll: true };
 
 const focusableSelector = [
   'a[href]',
@@ -121,7 +123,7 @@ export function useModalFocus({
 
     const focusFirst = () => {
       const target = initialFocusRef?.current ?? focusableElements(dialog)[0] ?? dialog;
-      target.focus({ preventScroll: true });
+      target.focus(noFocusScroll);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (modalStack[modalStack.length - 1] !== token) return;
@@ -136,7 +138,7 @@ export function useModalFocus({
       const focusable = focusableElements(dialog);
       if (focusable.length === 0) {
         event.preventDefault();
-        dialog.focus({ preventScroll: true });
+        dialog.focus(noFocusScroll);
         return;
       }
       const first = focusable[0];
@@ -145,10 +147,10 @@ export function useModalFocus({
       const activeIsOutsideTabOrder = !(active instanceof HTMLElement) || !focusable.includes(active);
       if (event.shiftKey && (document.activeElement === first || activeIsOutsideTabOrder)) {
         event.preventDefault();
-        last.focus({ preventScroll: true });
+        last.focus(noFocusScroll);
       } else if (!event.shiftKey && (document.activeElement === last || activeIsOutsideTabOrder)) {
         event.preventDefault();
-        first.focus({ preventScroll: true });
+        first.focus(noFocusScroll);
       }
     };
     const handleFocusIn = (event: FocusEvent) => {
@@ -172,7 +174,7 @@ export function useModalFocus({
         if (activeSessionRef.current !== null) return;
         const fallback = restoreFocusFallbackRef.current?.() ?? null;
         const target = opener && opener !== document.body && opener.isConnected ? opener : fallback;
-        target?.focus({ preventScroll: true });
+        target?.focus(noFocusScroll);
       });
     };
   }, [closeOnEscape, containFocus, dialogRef, inertBackground, initialFocusRef, lockScroll, open, triggerRef]);
@@ -196,6 +198,31 @@ export function useMediaQuery(query: string): boolean {
 
 export function usePrefersReducedMotion(): boolean {
   return useMediaQuery('(prefers-reduced-motion: reduce)');
+}
+
+export function scrollElementByKey(element: HTMLElement, key: string): boolean {
+  const top = key === 'Home'
+    ? 0
+    : key === 'End'
+      ? element.scrollHeight
+      : element.scrollTop + (key === 'ArrowUp' ? -44 : key === 'ArrowDown' ? 44 : key === 'PageUp' ? -element.clientHeight : key === 'PageDown' ? element.clientHeight : Number.NaN);
+  if (Number.isNaN(top)) return false;
+  element.scrollTo({ top });
+  return true;
+}
+
+export function handleScrollableRegionKeyDown(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (
+    event.target !== event.currentTarget ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    !scrollElementByKey(event.currentTarget, event.key)
+  ) {
+    return;
+  }
+  event.preventDefault();
 }
 
 export const PHONE_LAYOUT_MEDIA_QUERY =

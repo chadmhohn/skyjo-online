@@ -331,7 +331,7 @@ describe('application routes and solo controls', () => {
     await actor.click(screen.getByRole('button', { name: '3' }));
     await actor.click(screen.getByRole('button', { name: 'New Game' }));
     await actor.click(screen.getByRole('tab', { name: 'Rules' }));
-    expect(screen.getByRole('heading', { name: 'Ending and scoring' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Ending and scoring' })).toBeInTheDocument();
     await actor.click(screen.getByRole('tab', { name: 'Log' }));
     expect(screen.getByRole('heading', { name: 'Move Log' })).toBeInTheDocument();
     await actor.click(screen.getByRole('button', { name: 'Done' }));
