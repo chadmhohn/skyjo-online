@@ -51,6 +51,7 @@ type SoloDrawnCardLayoutSnapshot = {
   gameStatusText: string;
   guidance: DOMRectSnapshot;
   guidanceInstructionFontSize: number;
+  guidanceMaxHeight: string;
   guidanceNoteFontSize: number;
   guidanceTitle: DOMRectSnapshot;
   guidanceTitleContentFits: boolean;
@@ -518,7 +519,6 @@ async function stageSoloPwaUpdate(context: BrowserContext, page: Page, baseURL: 
     .toBe('installed');
   await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
   await expect(activeLayout).toHaveAttribute('data-pwa-update-deferred', 'true');
-  await expect(page.locator('.skyjo-phone-action-guidance')).toHaveAttribute('data-pwa-update-deferred', 'true');
 }
 
 async function forceSoloQuotaWarning(page: Page): Promise<void> {
@@ -778,6 +778,7 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
       gameStatusText: gameStatusParagraph.textContent?.trim() || '',
       guidance: rect(guidance),
       guidanceInstructionFontSize: Number.parseFloat(window.getComputedStyle(guidanceInstruction).fontSize),
+      guidanceMaxHeight: window.getComputedStyle(guidance).maxHeight,
       guidanceNoteFontSize: Number.parseFloat(window.getComputedStyle(guidanceNote).fontSize),
       guidanceTitle: rect(guidanceTitle),
       guidanceTitleContentFits:
@@ -989,6 +990,9 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
   );
   if (variant.width <= 360) {
     expect(snapshot.guidanceOverflowY, `${variant.label} guidance should use bounded internal overflow`).toBe('auto');
+    expect(snapshot.guidanceMaxHeight, `${variant.label} guidance should keep the compact static height contract`).toBe(
+      '64px'
+    );
   }
   expect(snapshot.headerTargets, `${variant.label} should retain Back and Settings controls`).toHaveLength(2);
   for (const [index, target] of snapshot.headerTargets.entries()) {
@@ -1389,6 +1393,7 @@ test('deferred update and minimized round summary share the fixed phone edge wit
     const updateBanner = page.getByTestId('pwa-update-banner');
     await expect(restore).toBeVisible();
     await expect(restore).toBeFocused();
+    await expect.poll(() => restore.evaluate((element) => element.style.bottom)).toBe('var(--skyjo-update-bottom)');
     await expect(updateBanner).toContainText('Game protected');
 
     const geometry = await page.evaluate(() => {

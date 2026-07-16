@@ -1161,9 +1161,25 @@ function MoveLogList({ state }: { state: GameState }) {
   );
 }
 
-function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameState; meta?: string; onRestore: () => void }) {
+function RoundSummaryRestoreButton({
+  state,
+  deferredPwaUpdate,
+  meta,
+  onRestore
+}: {
+  state: GameState;
+  deferredPwaUpdate?: boolean;
+  meta?: string;
+  onRestore: () => void;
+}) {
   return (
-    <button className="skyjo-round-summary-chip" data-testid="round-summary-restore" onClick={onRestore} type="button">
+    <button
+      className="skyjo-round-summary-chip"
+      data-testid="round-summary-restore"
+      onClick={onRestore}
+      style={deferredPwaUpdate ? { bottom: 'var(--skyjo-update-bottom)' } : undefined}
+      type="button"
+    >
       <span className="min-w-0">
         <span className="skyjo-kicker block">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</span>
         <span className="block truncate text-sm font-black text-[#f5e6c8]">{meta || 'Review scores'}</span>
@@ -1489,7 +1505,11 @@ function SinglePlayer() {
         data-pwa-update-deferred={pwaUpdate.available || undefined}
       >
         {isScoringPhase && !roundSummaryOpen ? (
-          <RoundSummaryRestoreButton state={state} onRestore={() => setRoundSummaryOpen(true)} />
+          <RoundSummaryRestoreButton
+            deferredPwaUpdate={pwaUpdate.available}
+            state={state}
+            onRestore={() => setRoundSummaryOpen(true)}
+          />
         ) : null}
 
         <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
@@ -1530,7 +1550,6 @@ function SinglePlayer() {
         </div>
 
         <GameTableLayout
-          deferredPwaUpdate={pwaUpdate.available}
           drawIntent={drawIntent}
           localPlayerId={localPlayerId}
           localTurn={humanTurn}
