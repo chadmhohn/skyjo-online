@@ -1179,6 +1179,7 @@ function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameStat
 function SinglePlayer() {
   const { loading: accountLoading, localSoloOwnerId, user } = useAccount();
   const navigate = useNavigate();
+  const pwaUpdate = useSyncExternalStore(subscribeToPwaUpdates, getPwaUpdateSnapshot, getPwaUpdateSnapshot);
   const prefersReducedMotion = usePrefersReducedMotion();
   const ownerKey = soloOwnerKey(user?.id ?? localSoloOwnerId);
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
@@ -1485,6 +1486,7 @@ function SinglePlayer() {
         className={`skyjo-shell skyjo-active-game-layout ${
           summaryModalOpen ? 'skyjo-round-summary-mode' : ''
         } grid gap-5`}
+        data-pwa-update-deferred={pwaUpdate.available ? 'true' : 'false'}
       >
         {isScoringPhase && !roundSummaryOpen ? (
           <RoundSummaryRestoreButton state={state} onRestore={() => setRoundSummaryOpen(true)} />

@@ -500,6 +500,7 @@ async function waitForSoloServiceWorkerControl(page: Page): Promise<void> {
 }
 
 async function stageSoloPwaUpdate(context: BrowserContext, page: Page, baseURL: string): Promise<void> {
+  const activeLayout = page.locator('.skyjo-active-game-layout');
   await setSoloWorkerVariant(context, baseURL, 'B', randomUUID());
   await page.evaluate(async () => {
     const registration = await navigator.serviceWorker.ready;
@@ -516,6 +517,7 @@ async function stageSoloPwaUpdate(context: BrowserContext, page: Page, baseURL: 
     )
     .toBe('installed');
   await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
+  await expect(activeLayout).toHaveAttribute('data-pwa-update-deferred', 'true');
 }
 
 async function forceSoloQuotaWarning(page: Page): Promise<void> {

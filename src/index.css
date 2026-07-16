@@ -216,7 +216,7 @@ body {
     line-height: 1;
   }
 
-  body:has(.skyjo-update-banner[data-deferred='true']) main.skyjo-surface > .skyjo-active-game-layout {
+  main.skyjo-surface > .skyjo-active-game-layout[data-pwa-update-deferred='true'] {
     grid-template-rows: auto minmax(0, 1fr) max(48px, 3rem);
   }
 
@@ -949,9 +949,7 @@ body {
     z-index: 70;
   }
 
-  body:has(.skyjo-update-banner[data-deferred='true'])
-    .skyjo-active-game-layout
-    > [data-testid='round-summary-restore'] {
+  .skyjo-active-game-layout[data-pwa-update-deferred='true'] > [data-testid='round-summary-restore'] {
     bottom: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(48px, 3rem));
   }
 
@@ -1040,13 +1038,11 @@ body {
       line-height: 1.1;
     }
 
-    body:has(.skyjo-update-banner[data-deferred='true']) main.skyjo-surface > .skyjo-active-game-layout {
+    main.skyjo-surface > .skyjo-active-game-layout[data-pwa-update-deferred='true'] {
       grid-template-rows: auto minmax(0, 1fr) max(64px, 4rem);
     }
 
-    body:has(.skyjo-update-banner[data-deferred='true'])
-      .skyjo-active-game-layout
-      > [data-testid='round-summary-restore'] {
+    .skyjo-active-game-layout[data-pwa-update-deferred='true'] > [data-testid='round-summary-restore'] {
       bottom: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(64px, 4rem));
     }
 
@@ -1054,11 +1050,7 @@ body {
       height: calc(max(64px, 4rem) - max(2px, 0.125rem));
     }
 
-    #root
-      > .skyjo-update-banner[data-deferred='true']
-      ~ main.skyjo-surface
-      .skyjo-active-game-layout
-      .skyjo-phone-action-guidance {
+    .skyjo-active-game-layout[data-pwa-update-deferred='true'] .skyjo-phone-action-guidance {
       max-height: 64px;
     }
   }
@@ -1098,13 +1090,11 @@ body {
       margin-top: 0 !important;
     }
 
-    body:has(.skyjo-update-banner[data-deferred='true']) main.skyjo-surface > .skyjo-active-game-layout {
+    main.skyjo-surface > .skyjo-active-game-layout[data-pwa-update-deferred='true'] {
       grid-template-rows: auto minmax(0, 1fr) 48px;
     }
 
-    body:has(.skyjo-update-banner[data-deferred='true'])
-      .skyjo-active-game-layout
-      > [data-testid='round-summary-restore'] {
+    .skyjo-active-game-layout[data-pwa-update-deferred='true'] > [data-testid='round-summary-restore'] {
       bottom: calc(max(0.5rem, env(safe-area-inset-bottom)) + 48px);
     }
 
