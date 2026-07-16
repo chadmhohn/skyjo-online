@@ -51,6 +51,7 @@ type SoloDrawnCardLayoutSnapshot = {
   gameStatusText: string;
   guidance: DOMRectSnapshot;
   guidanceInstructionFontSize: number;
+  guidanceMaxHeight: string;
   guidanceNoteFontSize: number;
   guidanceTitle: DOMRectSnapshot;
   guidanceTitleContentFits: boolean;
@@ -118,6 +119,11 @@ const soloDrawnCardViewports: ReadonlyArray<SoloPhoneVariant> = [
     safeAreaStress: true,
     textScale: true
   },
+  { label: 'compact 361px at 200% text', width: 361, height: 780, textScale: true },
+  { label: 'compact 374px boundary at 200% text', width: 374, height: 812, textScale: true },
+  { label: 'first readable portrait at 200% text', width: 375, height: 812, textScale: true },
+  { label: 'standard phone at 200% text', width: 390, height: 844, textScale: true },
+  { label: 'large phone at 200% text', width: 430, height: 932, textScale: true },
   { label: 'compact phone floor', width: 320, height: 568 },
   { label: 'compact phone floor at 200% text', width: 320, height: 568, textScale: true }
 ] as const;
@@ -500,6 +506,7 @@ async function waitForSoloServiceWorkerControl(page: Page): Promise<void> {
 }
 
 async function stageSoloPwaUpdate(context: BrowserContext, page: Page, baseURL: string): Promise<void> {
+  const activeLayout = page.locator('.skyjo-active-game-layout');
   await setSoloWorkerVariant(context, baseURL, 'B', randomUUID());
   await page.evaluate(async () => {
     const registration = await navigator.serviceWorker.ready;
@@ -516,6 +523,13 @@ async function stageSoloPwaUpdate(context: BrowserContext, page: Page, baseURL: 
     )
     .toBe('installed');
   await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
+  await expect(page.getByTestId('pwa-update-banner')).toHaveAttribute('aria-atomic', 'true');
+  const deferredDetail = page.getByTestId('pwa-update-banner').locator('div > span');
+  await expect(deferredDetail).toContainText('After this game.');
+  await expect(deferredDetail).not.toHaveCSS('display', 'none');
+  await expect(deferredDetail).not.toHaveCSS('visibility', 'hidden');
+  await expect(deferredDetail).not.toHaveAttribute('aria-hidden', 'true');
+  await expect(activeLayout).toHaveAttribute('data-pwa-update-deferred', 'true');
 }
 
 async function forceSoloQuotaWarning(page: Page): Promise<void> {
@@ -579,11 +593,26 @@ async function openSoloPhone(
     expect(access.ok(), `Test access login returned ${access.status()}: ${await access.text()}`).toBe(true);
     const page = await context.newPage();
     await installSeededBrowserRuntime(page, seed);
+    if (variant.textScale) {
+      await page.addInitScript(() => {
+        // Model iOS text size before startup; late root scaling can leave WebKit with mixed rem used values.
+        const applyTextScale = () => {
+          if (!document.documentElement) return false;
+          document.documentElement.classList.add('skyjo-test-text-scale-200');
+          return true;
+        };
+        if (!applyTextScale()) {
+          const observer = new MutationObserver(() => {
+            if (applyTextScale()) observer.disconnect();
+          });
+          observer.observe(document, { childList: true });
+        }
+      });
+    }
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto(`${baseURL}/single-player`);
     await waitForSoloServiceWorkerControl(page);
     if (variant.textScale) {
-      await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
       await expect(page.locator('html')).toHaveClass(/skyjo-test-text-scale-200/);
     }
     await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
@@ -694,7 +723,7 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
     const updateBanner = required('[data-testid="pwa-update-banner"]');
     const updateProtected = required('.skyjo-update-deferred');
     const updateStrong = required('[data-testid="pwa-update-banner"] strong');
-    const updateContent = Array.from(updateBanner.querySelectorAll<HTMLElement>('strong, span')).filter(
+    const updateContent = Array.from(updateBanner.querySelectorAll<HTMLElement>('strong, .skyjo-update-deferred')).filter(
       (element) => window.getComputedStyle(element).display !== 'none'
     );
     const pileButtons = Array.from(
@@ -775,6 +804,7 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
       gameStatusText: gameStatusParagraph.textContent?.trim() || '',
       guidance: rect(guidance),
       guidanceInstructionFontSize: Number.parseFloat(window.getComputedStyle(guidanceInstruction).fontSize),
+      guidanceMaxHeight: window.getComputedStyle(guidance).maxHeight,
       guidanceNoteFontSize: Number.parseFloat(window.getComputedStyle(guidanceNote).fontSize),
       guidanceTitle: rect(guidanceTitle),
       guidanceTitleContentFits:
@@ -921,6 +951,13 @@ async function expectKeyboardReachableRegionEnd(
   expect(await page.evaluate(() => ({ left: window.scrollX, top: window.scrollY }))).toEqual({ left: 0, top: 0 });
 }
 
+function expectedDeferredGuidanceMaxHeight(variant: SoloPhoneVariant): number {
+  if (variant.height < variant.width) return 44;
+  if (variant.width <= 374) return 64;
+  if (variant.width <= 389) return 88;
+  return 120;
+}
+
 function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, variant: SoloPhoneVariant): void {
   const viewport: DOMRectSnapshot = {
     bottom: variant.height,
@@ -984,9 +1021,13 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
   expect(snapshot.guidanceText, `${variant.label} action guidance should remain available to VoiceOver`).toContain(
     'Drawn card waiting'
   );
-  if (variant.width <= 360) {
+  if (variant.width <= 374) {
     expect(snapshot.guidanceOverflowY, `${variant.label} guidance should use bounded internal overflow`).toBe('auto');
   }
+  expect(
+    Number.parseFloat(snapshot.guidanceMaxHeight),
+    `${variant.label} guidance should use the deterministic breakpoint height`
+  ).toBeCloseTo(expectedDeferredGuidanceMaxHeight(variant), 2);
   expect(snapshot.headerTargets, `${variant.label} should retain Back and Settings controls`).toHaveLength(2);
   for (const [index, target] of snapshot.headerTargets.entries()) {
     expect(target.width + 0.01, `${variant.label} header target ${index + 1} should be at least 44px wide`).toBeGreaterThanOrEqual(
@@ -1353,6 +1394,102 @@ test('solo drawn-card decisions stay visible and fixed across the supported phon
   );
 });
 
+test('deferred guidance survives same-page rotation and width changes without hiding the drawn decision', async ({
+  browser,
+  skyjoServer
+}) => {
+  test.setTimeout(90_000);
+  const portrait: SoloPhoneVariant = {
+    label: 'iPhone 16 Pro Max portrait before rotation at 200% text',
+    width: 440,
+    height: 956,
+    textScale: true
+  };
+  const landscape: SoloPhoneVariant = {
+    label: 'iPhone 16 Pro Max landscape after rotation at 200% text',
+    width: 956,
+    height: 440,
+    textScale: true
+  };
+  const portraitAfterRotation: SoloPhoneVariant = {
+    ...portrait,
+    label: 'iPhone 16 Pro Max portrait after rotation at 200% text'
+  };
+  const compactBoundary: SoloPhoneVariant = {
+    label: '374px compact boundary after live resize at 200% text',
+    width: 374,
+    height: 812,
+    textScale: true
+  };
+  const standardBoundary: SoloPhoneVariant = {
+    label: '390px standard boundary after live resize at 200% text',
+    width: 390,
+    height: 844,
+    textScale: true
+  };
+  const { context, page } = await openSoloPhone(
+    browser,
+    skyjoServer.baseURL,
+    skyjoServer.accessPassword,
+    portrait,
+    152
+  );
+
+  try {
+    await forceSoloQuotaWarning(page);
+    const table = page.getByTestId('shared-game-table');
+    const openingCards = page
+      .getByRole('button', { name: /face-down\. Reveal this opening card/ })
+      .filter({ visible: true });
+    for (let reveal = 0; reveal < 2; reveal += 1) {
+      const nextCard = openingCards.first();
+      await expect(nextCard).toBeEnabled();
+      await nextCard.focus();
+      await page.keyboard.press('Enter');
+    }
+    await expect(
+      page.getByText(
+        'This device is low on storage. You can keep playing, but this game may not restore after closing Skyjo.'
+      )
+    ).toBeVisible();
+    await expect(table).not.toHaveAttribute('data-phase', 'opening-reveal', { timeout: 5_000 });
+
+    const deck = page.getByRole('button', { name: /^Deck/ }).filter({ visible: true });
+    await expect(deck).toBeEnabled({ timeout: 15_000 });
+    await deck.focus();
+    await page.keyboard.press('Enter');
+    await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
+    await stageSoloPwaUpdate(context, page, skyjoServer.baseURL);
+
+    const placeDecision = page.getByRole('button', { name: 'Place drawn card', exact: true });
+    await expect(placeDecision).toBeFocused();
+
+    for (const [index, variant] of [
+      portrait,
+      landscape,
+      portraitAfterRotation,
+      compactBoundary,
+      standardBoundary
+    ].entries()) {
+      if (index > 0) await page.setViewportSize({ width: variant.width, height: variant.height });
+      await expect
+        .poll(() => page.evaluate(() => ({ height: window.innerHeight, width: window.innerWidth })))
+        .toEqual({ height: variant.height, width: variant.width });
+      await expect
+        .poll(() =>
+          page.locator('.skyjo-phone-action-guidance').evaluate((element) =>
+            Number.parseFloat(window.getComputedStyle(element).maxHeight)
+          )
+        )
+        .toBe(expectedDeferredGuidanceMaxHeight(variant));
+      await expect(placeDecision, `${variant.label} should preserve the pending keyboard decision`).toBeFocused();
+      expectSoloDrawnCardLayout(await readSoloDrawnCardLayout(page), variant);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 test('deferred update and minimized round summary share the fixed phone edge without overlap', async ({
   browser,
   skyjoServer
@@ -1386,6 +1523,7 @@ test('deferred update and minimized round summary share the fixed phone edge wit
     const updateBanner = page.getByTestId('pwa-update-banner');
     await expect(restore).toBeVisible();
     await expect(restore).toBeFocused();
+    await expect.poll(() => restore.evaluate((element) => element.style.bottom)).toBe('var(--u)');
     await expect(updateBanner).toContainText('Game protected');
 
     const geometry = await page.evaluate(() => {
@@ -1433,6 +1571,7 @@ test('deferred update and minimized round summary share the fixed phone edge wit
       rootFontSize: 32
     });
     expect(geometry.restoreHeight).toBeGreaterThanOrEqual(44);
+    expect(geometry.restoreHeight).toBeLessThanOrEqual(160);
     expect(geometry.restoreWidth).toBeGreaterThanOrEqual(44);
     expect(geometry.strongFontSize).toBeGreaterThanOrEqual(28);
     expect(geometry.protectedFontSize).toBeGreaterThanOrEqual(23);

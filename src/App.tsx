@@ -1161,9 +1161,26 @@ function MoveLogList({ state }: { state: GameState }) {
   );
 }
 
-function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameState; meta?: string; onRestore: () => void }) {
+function RoundSummaryRestoreButton({
+  state,
+  u,
+  meta,
+  onRestore
+}: {
+  state: GameState;
+  /** A deferred PWA update is reserving the mobile bottom edge. */
+  u?: boolean;
+  meta?: string;
+  onRestore: () => void;
+}) {
   return (
-    <button className="skyjo-round-summary-chip" data-testid="round-summary-restore" onClick={onRestore} type="button">
+    <button
+      className="skyjo-round-summary-chip"
+      data-testid="round-summary-restore"
+      onClick={onRestore}
+      style={u ? { bottom: 'var(--u)' } : {}}
+      type="button"
+    >
       <span className="min-w-0">
         <span className="skyjo-kicker block">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</span>
         <span className="block truncate text-sm font-black text-[#f5e6c8]">{meta || 'Review scores'}</span>
@@ -1179,6 +1196,7 @@ function RoundSummaryRestoreButton({ state, meta, onRestore }: { state: GameStat
 function SinglePlayer() {
   const { loading: accountLoading, localSoloOwnerId, user } = useAccount();
   const navigate = useNavigate();
+  const pwaUpdate = useSyncExternalStore(subscribeToPwaUpdates, getPwaUpdateSnapshot, getPwaUpdateSnapshot);
   const prefersReducedMotion = usePrefersReducedMotion();
   const ownerKey = soloOwnerKey(user?.id ?? localSoloOwnerId);
   const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
@@ -1485,9 +1503,14 @@ function SinglePlayer() {
         className={`skyjo-shell skyjo-active-game-layout ${
           summaryModalOpen ? 'skyjo-round-summary-mode' : ''
         } grid gap-5`}
+        data-pwa-update-deferred={pwaUpdate.available}
       >
         {isScoringPhase && !roundSummaryOpen ? (
-          <RoundSummaryRestoreButton state={state} onRestore={() => setRoundSummaryOpen(true)} />
+          <RoundSummaryRestoreButton
+            state={state}
+            u={pwaUpdate.available}
+            onRestore={() => setRoundSummaryOpen(true)}
+          />
         ) : null}
 
         <div className="skyjo-game-header flex flex-wrap items-start justify-between gap-3">
@@ -2713,10 +2736,10 @@ function PwaUpdateBanner() {
   if (!update.available) return null;
   const deferred = isPwaUpdateDeferredPath(location.pathname);
   return (
-    <aside aria-live="polite" className="skyjo-update-banner" data-deferred={deferred ? 'true' : 'false'} data-testid="pwa-update-banner">
+    <aside aria-atomic aria-live="polite" className="skyjo-update-banner" data-deferred={deferred ? 'true' : 'false'} data-testid="pwa-update-banner">
       <div>
-        <strong>Skyjo update ready</strong>
-        <span>{deferred ? ' It will wait until you leave this game.' : update.reloadRequired ? ' Reload once to use it.' : ' Apply it when you are ready.'}</span>
+        <strong>Update ready</strong>
+        <span>{deferred ? ' After this game.' : update.reloadRequired ? ' Reload once.' : ' Apply.'}</span>
       </div>
       {deferred ? (
         <span className="skyjo-update-deferred">Game protected</span>

@@ -755,7 +755,21 @@ describe('GameTableLayout', () => {
   it('renders one complete phone guidance region outside the geometry anchor, including disabled reasons', () => {
     act(() => setMediaQueryMatches(PHONE_LAYOUT_MEDIA_QUERY, true));
     const actions = handlers();
-    render(
+    const { rerender } = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        interactionDisabledReason="Room recovery is still synchronizing."
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(2)}
+      />
+    );
+
+    const initialGuidance = screen.getByRole('region', { name: 'Action guidance' });
+    const initialContent = initialGuidance.querySelector('.skyjo-action-guidance');
+    initialGuidance.focus();
+    rerender(
       <GameTableLayout
         {...actions}
         drawIntent="place"
@@ -768,6 +782,9 @@ describe('GameTableLayout', () => {
 
     const guidance = screen.getByRole('region', { name: 'Action guidance' });
     expect(screen.getAllByRole('region', { name: 'Action guidance' })).toHaveLength(1);
+    expect(guidance).toBe(initialGuidance);
+    expect(guidance).toHaveFocus();
+    expect(guidance.querySelector('.skyjo-action-guidance')).toBe(initialContent);
     expect(guidance).toHaveClass('skyjo-phone-action-guidance');
     expect(guidance).toHaveTextContent('Choose two face-down cards');
     expect(within(guidance).getByRole('heading', { level: 2, name: 'Choose two face-down cards' })).toBeInTheDocument();
