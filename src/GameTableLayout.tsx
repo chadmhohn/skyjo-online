@@ -10,6 +10,7 @@ import {
 } from 'react';
 import {
   handleScrollableRegionKeyDown,
+  noFocusScroll,
   scrollElementByKey,
   usePhoneLayout,
   usePrefersReducedMotion
@@ -382,10 +383,10 @@ function PlayerGrid({
       if (typeof nextIndex === 'number') {
         setRovingIndex(nextIndex);
         const nextCard = cardsRef.current?.querySelector<HTMLElement>(`[data-card-index="${nextIndex}"]`);
-        nextCard?.focus({ preventScroll: true });
+        nextCard?.focus(noFocusScroll);
         nextCard?.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
       } else {
-        focusFallbackRef?.current?.focus({ preventScroll: true });
+        focusFallbackRef?.current?.focus(noFocusScroll);
       }
     });
     return () => window.cancelAnimationFrame(frame);
@@ -397,7 +398,7 @@ function PlayerGrid({
     event.preventDefault();
     setRovingIndex(targetIndex);
     const targetCard = cardsRef.current?.querySelector<HTMLElement>(`[data-card-index="${targetIndex}"]`);
-    targetCard?.focus({ preventScroll: true });
+    targetCard?.focus(noFocusScroll);
     targetCard?.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
   }
 
@@ -950,7 +951,6 @@ function TableControls({
       : undefined;
   const progressRef = useRef<HTMLDivElement | null>(null);
   const deckButtonRef = useRef<HTMLButtonElement | null>(null);
-  const placeDrawnButtonRef = useRef<HTMLButtonElement | null>(null);
   const restoreDrawDecisionFocusRef = useRef(false);
   const discardButtonDisabled = Boolean(interactionDisabledReason || (discardDisabledReason && !selectedDiscard));
   const discardButtonTitle = selectedDiscard
@@ -960,21 +960,9 @@ function TableControls({
 
   useLayoutEffect(() => {
     if (!progressRegionLabel && document.activeElement === progressRef.current) {
-      focusFallbackRef.current?.focus({ preventScroll: true });
+      focusFallbackRef.current?.focus(noFocusScroll);
     }
   }, [focusFallbackRef, progressRegionLabel]);
-
-  useLayoutEffect(() => {
-    if (!hasLocalDrawnDecision || !restoreDrawDecisionFocusRef.current) return;
-    restoreDrawDecisionFocusRef.current = false;
-    if (
-      document.activeElement === document.body ||
-      document.activeElement === document.documentElement ||
-      document.activeElement === deckButtonRef.current
-    ) {
-      placeDrawnButtonRef.current?.focus({ preventScroll: true });
-    }
-  }, [hasLocalDrawnDecision]);
 
   return (
     <section
@@ -1079,7 +1067,18 @@ function TableControls({
                 className={`skyjo-choice-button ${drawIntent === 'place' ? 'skyjo-choice-button-active' : ''}`}
                 disabled={Boolean(interactionDisabledReason)}
                 onClick={() => onSetDrawIntent('place')}
-                ref={placeDrawnButtonRef}
+                ref={(target) => {
+                  if (!target || target.disabled || !restoreDrawDecisionFocusRef.current) return;
+                  restoreDrawDecisionFocusRef.current = false;
+                  const active = document.activeElement;
+                  if (
+                    active === document.body ||
+                    active === document.documentElement ||
+                    active === deckButtonRef.current
+                  ) {
+                    target.focus(noFocusScroll);
+                  }
+                }}
                 title={interactionDisabledReason || 'Replace a card with the drawn card.'}
                 type="button"
               >

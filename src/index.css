@@ -1054,7 +1054,9 @@ body {
       height: calc(max(64px, 4rem) - max(2px, 0.125rem));
     }
 
-    body:has(.skyjo-update-banner[data-deferred='true'])
+    #root
+      > .skyjo-update-banner[data-deferred='true']
+      ~ main.skyjo-surface
       .skyjo-active-game-layout
       .skyjo-phone-action-guidance {
       max-height: 64px;

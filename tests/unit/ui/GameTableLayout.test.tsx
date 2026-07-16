@@ -349,6 +349,59 @@ describe('GameTableLayout', () => {
     ));
   });
 
+  it('waits for an authoritative draw acknowledgement before restoring focus to Place', async () => {
+    const user = userEvent.setup();
+    const actions = handlers();
+    const chooseSource = stateFor(2, {
+      phase: 'choose-source',
+      openingRevealCounts: { p1: 2, p2: 2 }
+    });
+    const drawnState = {
+      ...chooseSource,
+      phase: 'choose-replacement' as const,
+      selectedSource: 'draw' as const,
+      drawnCard: { ...card('blind', 0, true), value: 4 }
+    };
+    const { rerender } = render(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={chooseSource}
+      />
+    );
+    const deck = screen.getByRole('button', { name: /^Deck/ });
+    deck.focus();
+    await user.keyboard('{Enter}');
+
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        interactionDisabledReason="Waiting for the server to confirm the previous action."
+        localPlayerId="p1"
+        localTurn
+        state={drawnState}
+      />
+    );
+    const placeDecision = screen.getByRole('button', { name: 'Place drawn card' });
+    expect(placeDecision).toBeDisabled();
+    expect(placeDecision).not.toHaveFocus();
+
+    rerender(
+      <GameTableLayout
+        {...actions}
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={drawnState}
+      />
+    );
+
+    expect(placeDecision).toHaveFocus();
+  });
+
   it('keeps structural phone table bands out of the accessibility tree and exposes final-lap status once', async () => {
     act(() => setMediaQueryMatches(PHONE_LAYOUT_MEDIA_QUERY, true));
     const actions = handlers();

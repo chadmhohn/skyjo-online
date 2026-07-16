@@ -14,7 +14,13 @@ import {
   startNextRound
 } from './game';
 import { GameTableLayout, type DrawIntent } from './GameTableLayout';
-import { handleScrollableRegionKeyDown, useModalFocus, usePhoneLayout, usePrefersReducedMotion } from './accessibility';
+import {
+  handleScrollableRegionKeyDown,
+  noFocusScroll,
+  useModalFocus,
+  usePhoneLayout,
+  usePrefersReducedMotion
+} from './accessibility';
 import {
   ActiveRoomOptionsLoadFallback,
   RoundSummaryLoadFallback
@@ -983,7 +989,7 @@ function GameSettingsButton({
     event.preventDefault();
     const nextPanel = settingsPanels[nextIndex];
     setActivePanel(nextPanel.key);
-    document.getElementById(`skyjo-settings-tab-${nextPanel.key}`)?.focus({ preventScroll: true });
+    document.getElementById(`skyjo-settings-tab-${nextPanel.key}`)?.focus(noFocusScroll);
   }
 
   return (
