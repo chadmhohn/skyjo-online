@@ -763,12 +763,14 @@ describe('GameTableLayout', () => {
         localPlayerId="p1"
         localTurn
         state={stateFor(2)}
+        u
       />
     );
 
     const guidance = screen.getByRole('region', { name: 'Action guidance' });
     expect(screen.getAllByRole('region', { name: 'Action guidance' })).toHaveLength(1);
     expect(guidance).toHaveClass('skyjo-phone-action-guidance');
+    expect(guidance).toHaveStyle({ maxHeight: '64px' });
     expect(guidance).toHaveTextContent('Choose two face-down cards');
     expect(within(guidance).getByRole('heading', { level: 2, name: 'Choose two face-down cards' })).toBeInTheDocument();
     expect(guidance).toHaveTextContent('Each player reveals exactly two cards');

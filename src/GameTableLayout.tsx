@@ -105,6 +105,8 @@ export interface GameTableLayoutProps {
   onCancelDiscard: () => void;
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
+  /** A deferred PWA update should compact the phone guidance region. */
+  u?: boolean;
 }
 
 function cardLabel(card: Card) {
@@ -1129,13 +1131,14 @@ export function GameTableLayout({
   localTurn,
   drawIntent,
   centerStartAccessory,
-  containBoardScroll = false,
+  containBoardScroll,
   interactionDisabledReason,
   onCardClick,
   onChooseDiscard,
   onCancelDiscard,
   onDraw,
-  onSetDrawIntent
+  onSetDrawIntent,
+  u
 }: GameTableLayoutProps) {
   const playerCount = state.players.length;
   const opponentCount = state.players.filter((player) => player.id !== localPlayerId).length;
@@ -1155,6 +1158,7 @@ export function GameTableLayout({
           onKeyDown={handleScrollableRegionKeyDown}
           ref={phoneGuidanceRef}
           role="region"
+          style={u ? { maxHeight: 64 } : {}}
           tabIndex={0}
         >
           <ActionGuidance disabledReason={guidanceDisabledReason} headingLevel={2} status={status} />

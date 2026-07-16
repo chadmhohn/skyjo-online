@@ -1163,12 +1163,13 @@ function MoveLogList({ state }: { state: GameState }) {
 
 function RoundSummaryRestoreButton({
   state,
-  deferredPwaUpdate,
+  u,
   meta,
   onRestore
 }: {
   state: GameState;
-  deferredPwaUpdate?: boolean;
+  /** A deferred PWA update is reserving the mobile bottom edge. */
+  u?: boolean;
   meta?: string;
   onRestore: () => void;
 }) {
@@ -1177,7 +1178,7 @@ function RoundSummaryRestoreButton({
       className="skyjo-round-summary-chip"
       data-testid="round-summary-restore"
       onClick={onRestore}
-      style={deferredPwaUpdate ? { bottom: 'var(--skyjo-update-bottom)' } : undefined}
+      style={u ? { bottom: 'var(--u)' } : {}}
       type="button"
     >
       <span className="min-w-0">
@@ -1506,8 +1507,8 @@ function SinglePlayer() {
       >
         {isScoringPhase && !roundSummaryOpen ? (
           <RoundSummaryRestoreButton
-            deferredPwaUpdate={pwaUpdate.available}
             state={state}
+            u={pwaUpdate.available}
             onRestore={() => setRoundSummaryOpen(true)}
           />
         ) : null}
@@ -1559,6 +1560,7 @@ function SinglePlayer() {
           onDraw={drawForSinglePlayer}
           onSetDrawIntent={setDrawIntent}
           state={state}
+          u={pwaUpdate.available}
         />
 
         {isScoringPhase && roundSummaryOpen ? (

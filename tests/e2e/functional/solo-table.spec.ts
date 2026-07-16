@@ -993,6 +993,10 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
     expect(snapshot.guidanceMaxHeight, `${variant.label} guidance should keep the compact static height contract`).toBe(
       '64px'
     );
+  } else if (variant.height > variant.width) {
+    expect(snapshot.guidanceMaxHeight, `${variant.label} guidance should retain the readable portrait height`).not.toBe(
+      '64px'
+    );
   }
   expect(snapshot.headerTargets, `${variant.label} should retain Back and Settings controls`).toHaveLength(2);
   for (const [index, target] of snapshot.headerTargets.entries()) {
@@ -1393,7 +1397,7 @@ test('deferred update and minimized round summary share the fixed phone edge wit
     const updateBanner = page.getByTestId('pwa-update-banner');
     await expect(restore).toBeVisible();
     await expect(restore).toBeFocused();
-    await expect.poll(() => restore.evaluate((element) => element.style.bottom)).toBe('var(--skyjo-update-bottom)');
+    await expect.poll(() => restore.evaluate((element) => element.style.bottom)).toBe('var(--u)');
     await expect(updateBanner).toContainText('Game protected');
 
     const geometry = await page.evaluate(() => {

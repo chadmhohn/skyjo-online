@@ -86,7 +86,8 @@ body {
 
 @media (max-width: 640px), (max-height: 640px) and (pointer: coarse) and (hover: none) {
   :root {
-    --skyjo-update-bottom: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(48px, 3rem));
+    /* Bottom edge for a deferred update plus the minimized score summary. */
+    --u: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(48px, 3rem));
   }
 
   html:has(main.skyjo-active-phone-surface),
@@ -998,7 +999,7 @@ body {
 
   @media (max-width: 360px) {
     :root {
-      --skyjo-update-bottom: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(64px, 4rem));
+      --u: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(64px, 4rem));
     }
 
     .skyjo-active-game-layout .skyjo-game-header,
@@ -1020,7 +1021,7 @@ body {
     }
 
     .skyjo-active-game-layout .skyjo-phone-action-guidance {
-      max-height: 64px;
+      max-height: clamp(120px, 7.5rem, 220px);
       overflow-y: auto;
       overscroll-behavior: contain;
     }
@@ -1054,9 +1055,15 @@ body {
 
   }
 
+  @media (min-width: 361px) and (orientation: portrait) {
+    .skyjo-active-game-layout .skyjo-phone-action-guidance {
+      max-height: clamp(120px, 7.5rem, 220px) !important;
+    }
+  }
+
   @media (max-height: 640px) and (orientation: landscape) {
     :root {
-      --skyjo-update-bottom: calc(max(0.5rem, env(safe-area-inset-bottom)) + 48px);
+      --u: calc(max(0.5rem, env(safe-area-inset-bottom)) + 48px);
     }
 
     main.skyjo-surface > .skyjo-active-game-layout,
@@ -1077,7 +1084,7 @@ body {
     .skyjo-active-game-layout .skyjo-phone-action-guidance {
       height: 44px;
       min-height: 44px;
-      max-height: 44px;
+      max-height: 44px !important;
     }
 
     .skyjo-active-game-layout .skyjo-game-table-layout {
