@@ -88,9 +88,9 @@ body {
   :root {
     /* Bottom edge for a deferred update plus the minimized score summary. */
     --u: calc(max(0.5rem, env(safe-area-inset-bottom)) + max(48px, 3rem));
-    /* 64px through 360px, readable on Pro Max, and 44px in short landscape. */
+    /* 64px through 360px, then a fast readable ramp; 44px in short landscape. */
     --g: min(
-      clamp(64px, calc(240vw - 800px), 220px),
+      clamp(64px, calc(2400vw - 8576px), 220px),
       clamp(44px, calc(100vh - 396px), 220px),
       clamp(120px, 7.5rem, 220px)
     );

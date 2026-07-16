@@ -767,6 +767,8 @@ describe('GameTableLayout', () => {
     );
 
     const initialGuidance = screen.getByRole('region', { name: 'Action guidance' });
+    const initialContent = initialGuidance.querySelector('.skyjo-action-guidance');
+    initialGuidance.focus();
     rerender(
       <GameTableLayout
         {...actions}
@@ -781,7 +783,9 @@ describe('GameTableLayout', () => {
 
     const guidance = screen.getByRole('region', { name: 'Action guidance' });
     expect(screen.getAllByRole('region', { name: 'Action guidance' })).toHaveLength(1);
-    expect(guidance).not.toBe(initialGuidance);
+    expect(guidance).toBe(initialGuidance);
+    expect(guidance).toHaveFocus();
+    expect(guidance.querySelector('.skyjo-action-guidance')).not.toBe(initialContent);
     expect(guidance).toHaveClass('skyjo-phone-action-guidance');
     expect(guidance).toHaveStyle({ maxHeight: 'var(--g)' });
     expect(guidance).toHaveTextContent('Choose two face-down cards');

@@ -105,7 +105,7 @@ export interface GameTableLayoutProps {
   onCancelDiscard: () => void;
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
-  /** Deferred update state also remounts guidance to avoid stale WebKit layout. */
+  /** Deferred update state remounts guidance content to avoid stale WebKit layout. */
   u?: boolean;
 }
 
@@ -801,17 +801,15 @@ interface TableControlsProps {
 function ActionGuidance({
   status,
   disabledReason,
-  className = '',
-  headingLevel = 3
+  side = false
 }: {
   status: TurnStatus;
   disabledReason?: string;
-  className?: string;
-  headingLevel?: 2 | 3;
+  side?: boolean;
 }) {
-  const Heading = headingLevel === 2 ? 'h2' : 'h3';
+  const Heading = side ? 'h3' : 'h2';
   return (
-    <div className={`skyjo-table-guidance skyjo-action-guidance skyjo-action-guidance-${status.tone} ${className}`}>
+    <div className={`skyjo-table-guidance skyjo-action-guidance skyjo-action-guidance-${status.tone} ${side ? 'skyjo-side-action-guidance' : ''}`}>
       <div className="skyjo-kicker">{status.eyebrow}</div>
       <Heading className="skyjo-serif skyjo-action-guidance-title mt-1 font-bold leading-tight text-[#f5e6c8]">{status.title}</Heading>
       <p className="skyjo-action-guidance-instruction mt-2 text-sm font-bold leading-6 text-[#f5e6c8]/72">
@@ -1049,7 +1047,7 @@ function TableControls({
           tabIndex={0}
         >
           {showResolvedSideGuidance ? (
-            <ActionGuidance className="skyjo-side-action-guidance" disabledReason={guidanceDisabledReason} status={status} />
+            <ActionGuidance side disabledReason={guidanceDisabledReason} status={status} />
           ) : null}
           {hasLocalDrawnDecision && state.drawnCard ? (
             <div className="skyjo-drawn-decision">
@@ -1155,14 +1153,13 @@ export function GameTableLayout({
         <div
           aria-label="Action guidance"
           className="skyjo-phone-action-guidance"
-          key={u as unknown as string}
           onKeyDown={handleScrollableRegionKeyDown}
           ref={phoneGuidanceRef}
           role="region"
           style={u ? { maxHeight: 'var(--g)' } : {}}
           tabIndex={0}
         >
-          <ActionGuidance disabledReason={guidanceDisabledReason} headingLevel={2} status={status} />
+          <ActionGuidance key={u ? 1 : 0} disabledReason={guidanceDisabledReason} status={status} />
         </div>
       ) : null}
       <div

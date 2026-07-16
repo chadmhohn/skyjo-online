@@ -119,6 +119,7 @@ const soloDrawnCardViewports: ReadonlyArray<SoloPhoneVariant> = [
     safeAreaStress: true,
     textScale: true
   },
+  { label: 'post-compact boundary at 200% text', width: 361, height: 780, textScale: true },
   { label: 'compact phone floor', width: 320, height: 568 },
   { label: 'compact phone floor at 200% text', width: 320, height: 568, textScale: true }
 ] as const;
