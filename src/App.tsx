@@ -1486,7 +1486,7 @@ function SinglePlayer() {
         className={`skyjo-shell skyjo-active-game-layout ${
           summaryModalOpen ? 'skyjo-round-summary-mode' : ''
         } grid gap-5`}
-        data-pwa-update-deferred={pwaUpdate.available ? 'true' : 'false'}
+        data-pwa-update-deferred={pwaUpdate.available || undefined}
       >
         {isScoringPhase && !roundSummaryOpen ? (
           <RoundSummaryRestoreButton state={state} onRestore={() => setRoundSummaryOpen(true)} />
@@ -1530,6 +1530,7 @@ function SinglePlayer() {
         </div>
 
         <GameTableLayout
+          deferredPwaUpdate={pwaUpdate.available}
           drawIntent={drawIntent}
           localPlayerId={localPlayerId}
           localTurn={humanTurn}

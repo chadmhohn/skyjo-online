@@ -99,6 +99,7 @@ export interface GameTableLayoutProps {
   drawIntent: DrawIntent;
   centerStartAccessory?: ReactNode;
   containBoardScroll?: boolean;
+  deferredPwaUpdate?: boolean;
   interactionDisabledReason?: string;
   onCardClick: (index: number) => void;
   onChooseDiscard: () => void;
@@ -1130,6 +1131,7 @@ export function GameTableLayout({
   drawIntent,
   centerStartAccessory,
   containBoardScroll = false,
+  deferredPwaUpdate = false,
   interactionDisabledReason,
   onCardClick,
   onChooseDiscard,
@@ -1152,6 +1154,7 @@ export function GameTableLayout({
         <div
           aria-label="Action guidance"
           className="skyjo-phone-action-guidance"
+          data-pwa-update-deferred={deferredPwaUpdate || undefined}
           onKeyDown={handleScrollableRegionKeyDown}
           ref={phoneGuidanceRef}
           role="region"

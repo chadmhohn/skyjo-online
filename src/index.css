@@ -1050,7 +1050,7 @@ body {
       height: calc(max(64px, 4rem) - max(2px, 0.125rem));
     }
 
-    .skyjo-active-game-layout[data-pwa-update-deferred='true'] .skyjo-phone-action-guidance {
+    .skyjo-phone-action-guidance[data-pwa-update-deferred='true'] {
       max-height: 64px;
     }
   }

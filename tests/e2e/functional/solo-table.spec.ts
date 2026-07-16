@@ -518,6 +518,7 @@ async function stageSoloPwaUpdate(context: BrowserContext, page: Page, baseURL: 
     .toBe('installed');
   await expect(page.getByTestId('pwa-update-banner')).toContainText('Game protected');
   await expect(activeLayout).toHaveAttribute('data-pwa-update-deferred', 'true');
+  await expect(page.locator('.skyjo-phone-action-guidance')).toHaveAttribute('data-pwa-update-deferred', 'true');
 }
 
 async function forceSoloQuotaWarning(page: Page): Promise<void> {
