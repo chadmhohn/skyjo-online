@@ -593,11 +593,26 @@ async function openSoloPhone(
     expect(access.ok(), `Test access login returned ${access.status()}: ${await access.text()}`).toBe(true);
     const page = await context.newPage();
     await installSeededBrowserRuntime(page, seed);
+    if (variant.textScale) {
+      await page.addInitScript(() => {
+        // Model iOS text size before startup; late root scaling can leave WebKit with mixed rem used values.
+        const applyTextScale = () => {
+          if (!document.documentElement) return false;
+          document.documentElement.classList.add('skyjo-test-text-scale-200');
+          return true;
+        };
+        if (!applyTextScale()) {
+          const observer = new MutationObserver(() => {
+            if (applyTextScale()) observer.disconnect();
+          });
+          observer.observe(document, { childList: true });
+        }
+      });
+    }
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto(`${baseURL}/single-player`);
     await waitForSoloServiceWorkerControl(page);
     if (variant.textScale) {
-      await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
       await expect(page.locator('html')).toHaveClass(/skyjo-test-text-scale-200/);
     }
     await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
