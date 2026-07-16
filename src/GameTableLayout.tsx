@@ -105,7 +105,7 @@ export interface GameTableLayoutProps {
   onCancelDiscard: () => void;
   onDraw: () => void;
   onSetDrawIntent: (intent: DrawIntent) => void;
-  /** Deferred update state remounts guidance content to avoid stale WebKit layout. */
+  /** Deferred update state forces a synchronous WebKit guidance relayout. */
   u?: boolean;
 }
 
@@ -1147,6 +1147,10 @@ export function GameTableLayout({
   const status = getTurnStatus(state, localTurn);
   const guidanceDisabledReason = actionGuidanceDisabledReason(state, localTurn, interactionDisabledReason);
 
+  useLayoutEffect(() => {
+    if (u) void phoneGuidanceRef.current?.offsetHeight;
+  }, [phoneLayout, u]);
+
   return (
     <section aria-label="Game table" className="skyjo-game-table-shell">
       {phoneLayout ? (
@@ -1159,7 +1163,7 @@ export function GameTableLayout({
           style={u ? { maxHeight: 'var(--g)' } : {}}
           tabIndex={0}
         >
-          <ActionGuidance key={u ? 1 : 0} disabledReason={guidanceDisabledReason} status={status} />
+          <ActionGuidance disabledReason={guidanceDisabledReason} status={status} />
         </div>
       ) : null}
       <div
