@@ -185,7 +185,11 @@ describe('GameTableLayout', () => {
         state={stateFor(2)}
       />
     );
-    expect(opponentRail).toHaveAttribute('tabindex', '0');
+    expect(opponentRail).not.toHaveAttribute('tabindex');
+    const activeOpponent = opponentRail.querySelector<HTMLElement>('[data-vertical-scroll-active="true"]');
+    expect(activeOpponent).not.toBeNull();
+    expect(activeOpponent).toHaveAttribute('tabindex', '0');
+    expect(activeOpponent).toHaveAccessibleName('Opponent 1 board');
     expect(localBoard).toHaveAttribute('data-scroll-contained', 'true');
     expect(localBoard).toHaveAttribute('role', 'region');
     expect(localBoard).toHaveAttribute('tabindex', '0');
@@ -195,7 +199,36 @@ describe('GameTableLayout', () => {
       scrollTop: { configurable: true, value: 0, writable: true }
     });
     expect(fireEvent.keyDown(localBoard, { key: 'ArrowDown' })).toBe(false);
-    expect(scrollTo).toHaveBeenLastCalledWith({ left: 0, top: 44, behavior: 'auto' });
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 44 });
+
+    rerender(
+      <GameTableLayout
+        {...actions}
+        containBoardScroll
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(3)}
+      />
+    );
+    expect(opponentRail).not.toHaveAttribute('tabindex');
+    expect(opponentRail.querySelectorAll('[data-vertical-scroll-active="true"]')).toHaveLength(2);
+    expect(opponentRail.querySelectorAll('[data-player-role="opponent"][tabindex="0"]')).toHaveLength(2);
+
+    rerender(
+      <GameTableLayout
+        {...actions}
+        containBoardScroll
+        drawIntent="place"
+        localPlayerId="p1"
+        localTurn
+        state={stateFor(8)}
+      />
+    );
+    expect(opponentRail).toHaveAttribute('tabindex', '0');
+    expect(opponentRail.querySelectorAll('[data-vertical-scroll-active="true"]')).toHaveLength(1);
+    expect(opponentRail.querySelectorAll('[data-player-role="opponent"][tabindex="0"]')).toHaveLength(1);
+    expect(opponentRail.querySelectorAll('[data-player-role="opponent"][tabindex="-1"]')).toHaveLength(6);
   });
 
   it('routes local card and centered pile decisions through the supplied callbacks', async () => {
@@ -367,8 +400,10 @@ describe('GameTableLayout', () => {
         }}
       />
     );
-    expect(progressBand).not.toHaveAttribute('role');
-    expect(progressBand).toHaveAttribute('tabindex', '-1');
+    const drawnProgressBand = container.querySelector<HTMLElement>('.skyjo-table-band-side-start');
+    expect(drawnProgressBand).not.toBeNull();
+    expect(drawnProgressBand).not.toHaveAttribute('role');
+    expect(drawnProgressBand).toHaveAttribute('tabindex', '-1');
     expect(screen.getByRole('region', { name: 'Drawn card decision' })).toBeInTheDocument();
 
     const finalTurn = {
@@ -387,7 +422,7 @@ describe('GameTableLayout', () => {
     );
     const finalLap = screen.getByRole('region', { name: 'Final lap status' });
     expect(screen.getAllByRole('region', { name: 'Final lap status' })).toHaveLength(1);
-    expect(finalLap).toBe(progressBand);
+    expect(finalLap).toBe(container.querySelector('.skyjo-table-band-side-start'));
     expect(finalLap).toHaveAttribute('tabindex', '0');
     expect(finalLap).toHaveTextContent('Opponent 1 went out.');
     expect(finalLap).toHaveTextContent('This is your last move of the round.');
@@ -404,9 +439,9 @@ describe('GameTableLayout', () => {
       />
     );
     await waitFor(() => expect(screen.getByRole('region', { name: 'Action guidance' })).toHaveFocus());
-    expect(progressBand).not.toHaveAttribute('role');
-    expect(progressBand).not.toHaveAttribute('aria-label');
-    expect(progressBand).toHaveAttribute('tabindex', '-1');
+    expect(finalLap).not.toHaveAttribute('role');
+    expect(finalLap).not.toHaveAttribute('aria-label');
+    expect(finalLap).toHaveAttribute('tabindex', '-1');
   });
 
   it('keeps visible desktop opening progress named and keyboard reachable', () => {

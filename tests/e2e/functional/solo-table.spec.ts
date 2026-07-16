@@ -8,6 +8,7 @@ type Viewport = { width: number; height: number };
 
 type SoloPhoneVariant = Viewport & {
   label: string;
+  safeAreaStress?: boolean;
   textScale?: boolean;
 };
 
@@ -17,6 +18,7 @@ type SoloDrawnCardLayoutSnapshot = {
   backPseudoContent: string;
   band: DOMRectSnapshot;
   decisionButtons: DOMRectSnapshot[];
+  decisionHitTargets: boolean[];
   decisionLabels: Array<{ contained: boolean; fontSize: number; text: string }>;
   document: {
     clientHeight: number;
@@ -31,35 +33,54 @@ type SoloDrawnCardLayoutSnapshot = {
   drawnCardText: string;
   drawnDisplay: string;
   drawnFontSize: number;
+  drawnHitTarget: boolean;
   drawnOpacity: string;
   drawnParentDisplay: string;
   drawnTopmost: boolean;
+  drawnTopmostIdentity: string;
   drawnVisibility: string;
   gameHeader: DOMRectSnapshot;
   gameStatus: DOMRectSnapshot;
   gameStatusClientHeight: number;
   gameStatusClientWidth: number;
   gameStatusFontSize: number;
-  gameStatusOverflowReachable: boolean;
   gameStatusOverflowY: string;
   gameStatusRole: string;
   gameStatusScrollHeight: number;
   gameStatusScrollWidth: number;
   gameStatusText: string;
   guidance: DOMRectSnapshot;
+  guidanceInstructionFontSize: number;
+  guidanceNoteFontSize: number;
   guidanceTitle: DOMRectSnapshot;
   guidanceTitleContentFits: boolean;
+  guidanceTitleFontSize: number;
   guidanceTitleText: string;
-  guidanceOverflowReachable: boolean;
   guidanceOverflowY: string;
   guidanceText: string;
   headerTargets: DOMRectSnapshot[];
   localBoard: DOMRectSnapshot;
+  localBoardHitTarget: boolean;
   opponentRail: DOMRectSnapshot;
+  opponentRailHitTarget: boolean;
+  pileTypography: Array<{
+    cardContained: boolean;
+    cardFontSize: number;
+    cardText: string;
+    labelContained: boolean;
+    labelFontSize: number;
+    labelText: string;
+  }>;
+  pileHitTargets: boolean[];
   sharedTable: DOMRectSnapshot;
+  tableCenterColumns: string;
+  tableCenterDrawnClass: boolean;
+  tableCenterDrawnDecision: string;
   tableShell: DOMRectSnapshot;
   title: DOMRectSnapshot;
   titleContentFits: boolean;
+  titleContentMetrics: { clientHeight: number; clientWidth: number; scrollHeight: number; scrollWidth: number };
+  titleFontSize: number;
   titleText: string;
   updateBanner: DOMRectSnapshot;
   updateBannerContentFits: boolean;
@@ -90,6 +111,13 @@ const soloDrawnCardViewports: ReadonlyArray<SoloPhoneVariant> = [
   { label: 'iPhone 16 Pro Max at 200% text', width: 440, height: 956, textScale: true },
   { label: 'iPhone 16 Pro Max landscape', width: 956, height: 440 },
   { label: 'iPhone 16 Pro Max landscape at 200% text', width: 956, height: 440, textScale: true },
+  {
+    label: 'iPhone 16 Pro Max landscape safe-area stress at 200% text',
+    width: 956,
+    height: 440,
+    safeAreaStress: true,
+    textScale: true
+  },
   { label: 'compact phone floor', width: 320, height: 568 },
   { label: 'compact phone floor at 200% text', width: 320, height: 568, textScale: true }
 ] as const;
@@ -511,6 +539,21 @@ async function forceSoloQuotaWarning(page: Page): Promise<void> {
   });
 }
 
+async function applyLandscapeSafeAreaFixedOffsets(page: Page): Promise<void> {
+  const banner = page.getByTestId('pwa-update-banner');
+  await banner.evaluate((element) => {
+    element.style.setProperty('right', '62px', 'important');
+    element.style.setProperty('bottom', '21px', 'important');
+    element.style.setProperty('left', '62px', 'important');
+    const restore = document.querySelector<HTMLElement>('[data-testid="round-summary-restore"]');
+    restore?.style.setProperty('bottom', '69px', 'important');
+  });
+  await expect.poll(() => banner.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return [style.right, style.bottom, style.left];
+  })).toEqual(['62px', '21px', '62px']);
+}
+
 async function openSoloPhone(
   browser: Browser,
   baseURL: string,
@@ -544,6 +587,18 @@ async function openSoloPhone(
       await expect(page.locator('html')).toHaveClass(/skyjo-test-text-scale-200/);
     }
     await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+    if (variant.safeAreaStress) {
+      await page.locator('main.skyjo-surface').evaluate((main) => {
+        main.style.setProperty('padding-top', '4px', 'important');
+        main.style.setProperty('padding-right', '62px', 'important');
+        main.style.setProperty('padding-bottom', '21px', 'important');
+        main.style.setProperty('padding-left', '62px', 'important');
+      });
+      await expect.poll(() => page.locator('main.skyjo-surface').evaluate((main) => {
+        const style = getComputedStyle(main);
+        return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+      })).toEqual(['4px', '62px', '21px', '62px']);
+    }
     return { context, page };
   } catch (error) {
     await context.close();
@@ -607,6 +662,20 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
         width: value.width
       };
     };
+    const insetPointsHit = (element: HTMLElement) => {
+      const value = element.getBoundingClientRect();
+      const inset = Math.min(4, value.width / 4, value.height / 4);
+      return [
+        [value.left + inset, value.top + inset],
+        [value.right - inset, value.top + inset],
+        [value.left + value.width / 2, value.top + value.height / 2],
+        [value.left + inset, value.bottom - inset],
+        [value.right - inset, value.bottom - inset]
+      ].every(([x, y]) => {
+        const hit = document.elementFromPoint(x, y);
+        return hit === element || Boolean(hit && element.contains(hit));
+      });
+    };
     const scrolling = document.scrollingElement;
     if (!scrolling) throw new Error('Document scrolling element was unavailable.');
     const band = required('[data-testid="table-center-band"]');
@@ -616,14 +685,20 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
     const gameStatus = required('.skyjo-game-status');
     const gameStatusParagraph = required('.skyjo-game-status p');
     const guidance = required('.skyjo-phone-action-guidance');
+    const guidanceInstruction = required('.skyjo-phone-action-guidance .skyjo-action-guidance-instruction');
+    const guidanceNote = required('.skyjo-phone-action-guidance .skyjo-disabled-note');
     const guidanceTitle = required('.skyjo-phone-action-guidance .skyjo-action-guidance-title');
     const tableShell = required('.skyjo-game-table-shell');
+    const tableCenter = required('[data-testid="table-center"]');
     const title = required('.skyjo-game-title');
     const updateBanner = required('[data-testid="pwa-update-banner"]');
     const updateProtected = required('.skyjo-update-deferred');
     const updateStrong = required('[data-testid="pwa-update-banner"] strong');
     const updateContent = Array.from(updateBanner.querySelectorAll<HTMLElement>('strong, span')).filter(
       (element) => window.getComputedStyle(element).display !== 'none'
+    );
+    const pileButtons = Array.from(
+      required('[data-testid="table-piles"]').querySelectorAll<HTMLButtonElement>('.skyjo-pile-button')
     );
     const drawnRect = drawnCard.getBoundingClientRect();
     const topmost = document.elementFromPoint(
@@ -634,16 +709,11 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
     const decisionLabels = Array.from(
       band.querySelectorAll<HTMLElement>('.skyjo-drawn-decision .skyjo-choice-label-compact')
     ).filter((element) => window.getComputedStyle(element).display !== 'none');
-
-    const gameStatusInitialScrollTop = gameStatus.scrollTop;
-    gameStatus.scrollTop = gameStatus.scrollHeight;
-    const gameStatusOverflowReachable =
-      Math.abs(gameStatus.scrollHeight - gameStatus.clientHeight - gameStatus.scrollTop) <= 1;
-    gameStatus.scrollTop = gameStatusInitialScrollTop;
-    const guidanceInitialScrollTop = guidance.scrollTop;
-    guidance.scrollTop = guidance.scrollHeight;
-    const guidanceOverflowReachable = Math.abs(guidance.scrollHeight - guidance.clientHeight - guidance.scrollTop) <= 1;
-    guidance.scrollTop = guidanceInitialScrollTop;
+    const decisionButtons = Array.from(
+      band.querySelectorAll<HTMLElement>('.skyjo-drawn-decision .skyjo-choice-button')
+    );
+    const localBoard = required('[data-testid="local-board"]');
+    const opponentRail = required('[data-testid="opponent-rail"]');
 
     return {
       backContentFits: back.scrollWidth <= back.clientWidth + 1 && back.scrollHeight <= back.clientHeight + 1,
@@ -655,9 +725,8 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
       },
       backPseudoContent: window.getComputedStyle(back, '::before').content,
       band: rect(band),
-      decisionButtons: Array.from(
-        band.querySelectorAll<HTMLElement>('.skyjo-drawn-decision .skyjo-choice-button')
-      ).map(rect),
+      decisionButtons: decisionButtons.map(rect),
+      decisionHitTargets: decisionButtons.map(insetPointsHit),
       decisionLabels: decisionLabels.map((label) => {
         const labelRect = label.getBoundingClientRect();
         const buttonRect = label.closest('button')?.getBoundingClientRect();
@@ -686,39 +755,78 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
       drawnCardText: drawnCard.textContent?.trim() || '',
       drawnDisplay: style.display,
       drawnFontSize: Number.parseFloat(style.fontSize),
+      drawnHitTarget: insetPointsHit(drawnCard),
       drawnOpacity: style.opacity,
       drawnParentDisplay: window.getComputedStyle(drawnCard.parentElement as HTMLElement).display,
       drawnTopmost: topmost === drawnCard || Boolean(topmost && drawnCard.contains(topmost)),
+      drawnTopmostIdentity: topmost instanceof HTMLElement
+        ? `${topmost.tagName}.${topmost.className}#${topmost.id}`
+        : String(topmost),
       drawnVisibility: style.visibility,
       gameHeader: rect(gameHeader),
       gameStatus: rect(gameStatus),
       gameStatusClientHeight: gameStatus.clientHeight,
       gameStatusClientWidth: gameStatus.clientWidth,
       gameStatusFontSize: Number.parseFloat(window.getComputedStyle(gameStatusParagraph).fontSize),
-      gameStatusOverflowReachable,
       gameStatusOverflowY: window.getComputedStyle(gameStatus).overflowY,
       gameStatusRole: gameStatusParagraph.getAttribute('role') || '',
       gameStatusScrollHeight: gameStatus.scrollHeight,
       gameStatusScrollWidth: gameStatus.scrollWidth,
       gameStatusText: gameStatusParagraph.textContent?.trim() || '',
       guidance: rect(guidance),
+      guidanceInstructionFontSize: Number.parseFloat(window.getComputedStyle(guidanceInstruction).fontSize),
+      guidanceNoteFontSize: Number.parseFloat(window.getComputedStyle(guidanceNote).fontSize),
       guidanceTitle: rect(guidanceTitle),
       guidanceTitleContentFits:
         guidanceTitle.scrollWidth <= guidanceTitle.clientWidth + 1 &&
         guidanceTitle.scrollHeight <= guidanceTitle.clientHeight + 1,
       guidanceTitleText: guidanceTitle.textContent?.trim() || '',
-      guidanceOverflowReachable,
+      guidanceTitleFontSize: Number.parseFloat(window.getComputedStyle(guidanceTitle).fontSize),
       guidanceOverflowY: window.getComputedStyle(guidance).overflowY,
       guidanceText: guidance.textContent?.trim().replace(/\s+/g, ' ') || '',
       headerTargets: Array.from(
         gameHeader.querySelectorAll<HTMLElement>('.skyjo-back-link, .skyjo-header-controls button')
       ).map(rect),
-      localBoard: rect(required('[data-testid="local-board"]')),
-      opponentRail: rect(required('[data-testid="opponent-rail"]')),
+      localBoard: rect(localBoard),
+      localBoardHitTarget: insetPointsHit(localBoard),
+      opponentRail: rect(opponentRail),
+      opponentRailHitTarget: insetPointsHit(opponentRail),
+      pileTypography: pileButtons.map((button) => {
+        const buttonRect = button.getBoundingClientRect();
+        const card = button.querySelector<HTMLElement>('.skyjo-table-card');
+        const label = button.querySelector<HTMLElement>('.skyjo-kicker');
+        if (!card || !label) throw new Error('Missing visible pile typography.');
+        const cardRect = card.getBoundingClientRect();
+        const labelRect = label.getBoundingClientRect();
+        const contained = (child: DOMRect) =>
+          child.left >= buttonRect.left - 1 &&
+          child.right <= buttonRect.right + 1 &&
+          child.top >= buttonRect.top - 1 &&
+          child.bottom <= buttonRect.bottom + 1;
+        return {
+          cardContained: contained(cardRect) && card.scrollWidth <= card.clientWidth + 1,
+          cardFontSize: Number.parseFloat(window.getComputedStyle(card).fontSize),
+          cardText: card.textContent?.trim() || '',
+          labelContained: contained(labelRect) && label.scrollWidth <= label.clientWidth + 1,
+          labelFontSize: Number.parseFloat(window.getComputedStyle(label).fontSize),
+          labelText: label.textContent?.trim() || ''
+        };
+      }),
+      pileHitTargets: pileButtons.map(insetPointsHit),
       sharedTable: rect(required('[data-testid="shared-game-table"]')),
+      tableCenterColumns: window.getComputedStyle(tableCenter).gridTemplateColumns,
+      tableCenterDrawnClass: tableCenter.classList.contains('skyjo-table-controls-drawn'),
+      tableCenterDrawnDecision: tableCenter.getAttribute('data-drawn-decision') || '',
       tableShell: rect(tableShell),
       title: rect(title),
       titleContentFits: title.scrollWidth <= title.clientWidth + 1 && title.scrollHeight <= title.clientHeight + 1,
+      titleContentMetrics: {
+        clientHeight: title.clientHeight,
+        clientWidth: title.clientWidth,
+        scrollHeight: title.scrollHeight,
+        scrollWidth: title.scrollWidth
+      },
+      titleFontSize: Number.parseFloat(window.getComputedStyle(title).fontSize),
       titleText: title.textContent?.trim() || '',
       updateBanner: rect(updateBanner),
       updateBannerContentFits: updateContent.every((element) => {
@@ -773,6 +881,46 @@ function expectPhoneScaledTextOutcome(normal: number, scaled: number, scaledMini
   ).toBe(true);
 }
 
+async function expectKeyboardReachableRegionEnd(
+  page: Page,
+  regionSelector: string,
+  finalContentSelector: string,
+  label: string
+): Promise<void> {
+  const region = page.locator(regionSelector);
+  await expect(region, `${label} should be a keyboard-focusable region`).toHaveAttribute('tabindex', '0');
+  await region.focus();
+  await expect(region).toBeFocused();
+  const focusIndicator = await region.evaluate((element) => {
+    const style = window.getComputedStyle(element);
+    return [style.outlineStyle, Number.parseFloat(style.outlineWidth), style.boxShadow !== 'none'];
+  }) as [string, number, boolean];
+  expect(focusIndicator[0], `${label} should retain a solid authored focus indicator`).toBe('solid');
+  expect(focusIndicator[1], `${label} focus indicator should be at least 2px`).toBeGreaterThanOrEqual(2);
+  expect(focusIndicator[2], `${label} should retain its inset high-contrast ring`).toBe(true);
+  await page.keyboard.press('Home');
+  await expect.poll(() => region.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(1);
+  const maximum = await region.evaluate((element) => element.scrollHeight - element.clientHeight);
+  expect(maximum, `${label} should have real internal overflow at the compact 200% floor`).toBeGreaterThan(1);
+  await page.keyboard.press('PageDown');
+  await expect.poll(() => region.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await page.keyboard.press('End');
+  await expect.poll(() =>
+    region.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))
+  ).toBeLessThanOrEqual(1);
+  const endIsExposed = await page.locator(finalContentSelector).evaluate((content, selector) => {
+    const region = document.querySelector<HTMLElement>(selector);
+    if (!region) return false;
+    const regionRect = region.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    return contentRect.bottom <= regionRect.bottom + 1 && contentRect.bottom > regionRect.top + 1;
+  }, regionSelector);
+  expect(endIsExposed, `${label} End should expose its final content line`).toBe(true);
+  await page.keyboard.press('Home');
+  await expect.poll(() => region.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => ({ left: window.scrollX, top: window.scrollY }))).toEqual({ left: 0, top: 0 });
+}
+
 function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, variant: SoloPhoneVariant): void {
   const viewport: DOMRectSnapshot = {
     bottom: variant.height,
@@ -811,7 +959,10 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
     `${variant.label} Back icon should stay inside its 44px target: ${JSON.stringify(snapshot.backMetrics)}`
   ).toBe(true);
   expect(snapshot.titleText, `${variant.label} heading should retain its full accessible and visible name`).toBe('Single Player');
-  expect(snapshot.titleContentFits, `${variant.label} visible title should stay inside its header allocation`).toBe(true);
+  expect(
+    snapshot.titleContentFits,
+    `${variant.label} visible title should stay inside its header allocation: ${JSON.stringify(snapshot.titleContentMetrics)}`
+  ).toBe(true);
   expect(rectIsInside(snapshot.guidanceTitle, snapshot.guidance), `${variant.label} guidance title should stay in its region`).toBe(
     true
   );
@@ -830,13 +981,11 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
   expect(snapshot.gameStatusScrollWidth, `${variant.label} status text should wrap without horizontal clipping`).toBeLessThanOrEqual(
     snapshot.gameStatusClientWidth + 1
   );
-  expect(snapshot.gameStatusOverflowReachable, `${variant.label} bounded status overflow should remain reachable`).toBe(true);
   expect(snapshot.guidanceText, `${variant.label} action guidance should remain available to VoiceOver`).toContain(
     'Drawn card waiting'
   );
   if (variant.width <= 360) {
     expect(snapshot.guidanceOverflowY, `${variant.label} guidance should use bounded internal overflow`).toBe('auto');
-    expect(snapshot.guidanceOverflowReachable, `${variant.label} action guidance should remain scroll-reachable`).toBe(true);
   }
   expect(snapshot.headerTargets, `${variant.label} should retain Back and Settings controls`).toHaveLength(2);
   for (const [index, target] of snapshot.headerTargets.entries()) {
@@ -875,7 +1024,11 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
   expect(snapshot.drawnCard.height, `${variant.label} drawn card should have height`).toBeGreaterThan(0);
   expect(snapshot.drawnCardText, `${variant.label} should show the private drawn value`).toMatch(/^-?\d+$/);
   expect(snapshot.drawnCardLabel, `${variant.label} should expose the drawn-card label`).toMatch(/^Drawn card -?\d+$/);
-  expect(snapshot.drawnTopmost, `${variant.label} drawn card should not be visually occluded`).toBe(true);
+  expect(snapshot.drawnHitTarget, `${variant.label} drawn card should remain fully hit-testable`).toBe(true);
+  expect(
+    snapshot.drawnTopmost,
+    `${variant.label} drawn card should not be visually occluded; topmost=${snapshot.drawnTopmostIdentity}`
+  ).toBe(true);
   expect(rectIsInside(snapshot.band, viewport), `${variant.label} center band should remain in the viewport`).toBe(true);
   expect(rectIsInside(snapshot.drawnCard, snapshot.band), `${variant.label} drawn card should stay in the center band`).toBe(
     true
@@ -885,18 +1038,50 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
     snapshot.opponentRail.bottom <= snapshot.band.top + 1,
     `${variant.label} opponent rail should not overlap the center band`
   ).toBe(true);
+  expect(snapshot.opponentRailHitTarget, `${variant.label} opponent rail should remain fully hit-testable`).toBe(true);
   expect(
     snapshot.band.bottom <= snapshot.localBoard.top + 1,
     `${variant.label} center band should not overlap the local board`
   ).toBe(true);
+  expect(snapshot.localBoardHitTarget, `${variant.label} local board should remain fully hit-testable`).toBe(true);
+  expect(snapshot.pileTypography, `${variant.label} should render both visible pile labels and cards`).toHaveLength(2);
+  expect(snapshot.pileHitTargets.every(Boolean), `${variant.label} both pile controls should remain fully hit-testable`).toBe(true);
+  expect(snapshot.pileTypography.map(({ labelText }) => labelText), `${variant.label} pile names should remain complete`).toEqual([
+    'Deck',
+    'Discard'
+  ]);
+  expect(snapshot.pileTypography[0]?.cardText, `${variant.label} deck face should remain visibly identified`).toBe('SKYJO');
+  expect(snapshot.pileTypography[1]?.cardText, `${variant.label} discard value should remain visible`).toMatch(/^-?\d+$/);
+  expect(
+    snapshot.pileTypography.every(({ cardContained, labelContained }) => cardContained && labelContained),
+    `${variant.label} visible pile typography should remain inside its button: ${JSON.stringify(snapshot.pileTypography)}`
+  ).toBe(true);
   expect(snapshot.decisionButtons, `${variant.label} should render both drawn-card decisions`).toHaveLength(2);
+  expect(
+    snapshot.decisionHitTargets.every(Boolean),
+    `${variant.label} both decision targets should remain fully hit-testable`
+  ).toBe(true);
+  expect(
+    snapshot.tableCenterDrawnDecision,
+    `${variant.label} center should expose drawn-decision state; columns=${snapshot.tableCenterColumns}`
+  ).toBe('true');
+  expect(
+    snapshot.tableCenterDrawnClass,
+    `${variant.label} center should apply the drawn-decision layout class; columns=${snapshot.tableCenterColumns}`
+  ).toBe(true);
   expect(
     snapshot.decisionLabels.map(({ text }) => text),
     `${variant.label} should show unambiguous compact decision copy`
   ).toEqual(['Place', 'Discard']);
   expect(
     snapshot.decisionLabels.every(({ contained }) => contained),
-    `${variant.label} compact decision copy should stay inside its hit target`
+    `${variant.label} compact decision copy should stay inside its hit target: ${JSON.stringify({
+      columns: snapshot.tableCenterColumns,
+      decisionButtons: snapshot.decisionButtons,
+      decisionLabels: snapshot.decisionLabels,
+      drawnClass: snapshot.tableCenterDrawnClass,
+      drawnDecision: snapshot.tableCenterDrawnDecision
+    })}`
   ).toBe(true);
   for (const [index, button] of snapshot.decisionButtons.entries()) {
     expect(button.width + 0.01, `${variant.label} decision ${index + 1} should be at least 44px wide`).toBeGreaterThanOrEqual(
@@ -1006,6 +1191,9 @@ test('a complete solo turn is keyboard operable and restores actionable controls
   await expect(deck).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
+  const placeDecision = page.getByRole('button', { name: 'Place drawn card', exact: true });
+  await expect(placeDecision, 'drawing from a focused deck should move focus into the remounted decision controls').toBeFocused();
+  await expect(page.getByTestId('turn-announcer')).toContainText(/You drew (?:minus )?\d+\. Place mode selected\./);
 
   const replacement = page.getByRole('button', { name: /Replace with the drawn card/ }).filter({ visible: true }).first();
   await replacement.focus();
@@ -1016,6 +1204,7 @@ test('a complete solo turn is keyboard operable and restores actionable controls
 
   await expect(deck).toBeEnabled({ timeout: 15_000 });
   await expect(table).toHaveAttribute('data-phase', 'choose-source');
+  await expect(page.getByTestId('turn-announcer')).toContainText('Your turn. Choose the discard pile or draw blind from the deck.');
 });
 
 test('solo drawn-card decisions stay visible and fixed across the supported phone floor', async ({
@@ -1060,6 +1249,7 @@ test('solo drawn-card decisions stay visible and fixed across the supported phon
       await page.keyboard.press('Enter');
       await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
       await stageSoloPwaUpdate(context, page, skyjoServer.baseURL);
+      if (variant.safeAreaStress) await applyLandscapeSafeAreaFixedOffsets(page);
 
       const drawnCard = page.getByRole('img', { name: /^Drawn card -?\d+$/ });
       const placeDecision = page.getByRole('button', { name: 'Place drawn card', exact: true });
@@ -1071,6 +1261,21 @@ test('solo drawn-card decisions stay visible and fixed across the supported phon
       const placeSnapshot = await readSoloDrawnCardLayout(page);
       fontSamples.set(variant.label, placeSnapshot);
       expectSoloDrawnCardLayout(placeSnapshot, variant);
+
+      if (variant.width === 320 && variant.textScale) {
+        await expectKeyboardReachableRegionEnd(
+          page,
+          '.skyjo-game-status',
+          '.skyjo-game-status p:last-child',
+          `${variant.label} game status`
+        );
+        await expectKeyboardReachableRegionEnd(
+          page,
+          '.skyjo-phone-action-guidance',
+          '.skyjo-phone-action-guidance .skyjo-disabled-note',
+          `${variant.label} action guidance`
+        );
+      }
 
       await discardDecision.focus();
       await expect(discardDecision).toBeFocused();
@@ -1089,6 +1294,25 @@ test('solo drawn-card decisions stay visible and fixed across the supported phon
   expect(normal, 'normal iPhone font sample should be recorded').toBeDefined();
   expect(scaled, '200% iPhone font sample should be recorded').toBeDefined();
   expectPhoneScaledTextOutcome(normal?.gameStatusFontSize ?? 0, scaled?.gameStatusFontSize ?? 0, 22, 'Game status');
+  expectPhoneScaledTextOutcome(normal?.titleFontSize ?? 0, scaled?.titleFontSize ?? 0, 28, 'Single Player heading');
+  expectPhoneScaledTextOutcome(
+    normal?.guidanceInstructionFontSize ?? 0,
+    scaled?.guidanceInstructionFontSize ?? 0,
+    22,
+    'Guidance instruction'
+  );
+  expectPhoneScaledTextOutcome(
+    normal?.guidanceNoteFontSize ?? 0,
+    scaled?.guidanceNoteFontSize ?? 0,
+    22,
+    'Guidance disabled note'
+  );
+  expectPhoneScaledTextOutcome(
+    normal?.guidanceTitleFontSize ?? 0,
+    scaled?.guidanceTitleFontSize ?? 0,
+    25.5,
+    'Guidance heading'
+  );
   expectPhoneScaledTextOutcome(normal?.updateStrongFontSize ?? 0, scaled?.updateStrongFontSize ?? 0, 28, 'Update heading');
   expectPhoneScaledTextOutcome(
     normal?.updateProtectedFontSize ?? 0,
@@ -1103,6 +1327,30 @@ test('solo drawn-card decisions stay visible and fixed across the supported phon
     'Decision label'
   );
   expectPhoneScaledTextOutcome(normal?.drawnFontSize ?? 0, scaled?.drawnFontSize ?? 0, 32, 'Drawn value');
+  expectPhoneScaledTextOutcome(
+    normal?.pileTypography[0]?.labelFontSize ?? 0,
+    scaled?.pileTypography[0]?.labelFontSize ?? 0,
+    16,
+    'Deck label'
+  );
+  expectPhoneScaledTextOutcome(
+    normal?.pileTypography[1]?.labelFontSize ?? 0,
+    scaled?.pileTypography[1]?.labelFontSize ?? 0,
+    16,
+    'Discard label'
+  );
+  expectPhoneScaledTextOutcome(
+    normal?.pileTypography[0]?.cardFontSize ?? 0,
+    scaled?.pileTypography[0]?.cardFontSize ?? 0,
+    14,
+    'Deck face label'
+  );
+  expectPhoneScaledTextOutcome(
+    normal?.pileTypography[1]?.cardFontSize ?? 0,
+    scaled?.pileTypography[1]?.cardFontSize ?? 0,
+    32,
+    'Discard value'
+  );
 });
 
 test('deferred update and minimized round summary share the fixed phone edge without overlap', async ({
@@ -1110,7 +1358,7 @@ test('deferred update and minimized round summary share the fixed phone edge wit
   skyjoServer
 }) => {
   test.setTimeout(90_000);
-  const variant = { label: 'iPhone 16 Pro Max scoring state', width: 440, height: 956 };
+  const variant = { label: 'compact phone scoring state', width: 320, height: 568 };
   const { context, page } = await openSoloPhone(
     browser,
     skyjoServer.baseURL,

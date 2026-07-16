@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 
 const focusableSelector = [
   'a[href]',
@@ -196,6 +196,31 @@ export function useMediaQuery(query: string): boolean {
 
 export function usePrefersReducedMotion(): boolean {
   return useMediaQuery('(prefers-reduced-motion: reduce)');
+}
+
+export function scrollElementByKey(element: HTMLElement, key: string): boolean {
+  const top = key === 'Home'
+    ? 0
+    : key === 'End'
+      ? element.scrollHeight
+      : element.scrollTop + (key === 'ArrowUp' ? -44 : key === 'ArrowDown' ? 44 : key === 'PageUp' ? -element.clientHeight : key === 'PageDown' ? element.clientHeight : Number.NaN);
+  if (Number.isNaN(top)) return false;
+  element.scrollTo({ top });
+  return true;
+}
+
+export function handleScrollableRegionKeyDown(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (
+    event.target !== event.currentTarget ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    !scrollElementByKey(event.currentTarget, event.key)
+  ) {
+    return;
+  }
+  event.preventDefault();
 }
 
 export const PHONE_LAYOUT_MEDIA_QUERY =

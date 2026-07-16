@@ -8,7 +8,12 @@ import {
   type ReactNode,
   type RefObject
 } from 'react';
-import { usePhoneLayout, usePrefersReducedMotion } from './accessibility';
+import {
+  handleScrollableRegionKeyDown,
+  scrollElementByKey,
+  usePhoneLayout,
+  usePrefersReducedMotion
+} from './accessibility';
 import { knownCardCount } from './gamePresentation';
 import type { Card, GameState, Player } from './types';
 
@@ -63,6 +68,19 @@ function opponentRailKeyboardTarget(element: HTMLElement, key: string): number {
   else if (key === 'PageUp') target -= pageStep;
   else if (key === 'PageDown') target += pageStep;
   return Math.max(0, Math.min(maximum, target));
+}
+
+function centeredOpponentBoard(element: HTMLElement): HTMLElement | undefined {
+  const boards = [...element.children] as HTMLElement[];
+  const railRect = element.getBoundingClientRect();
+  const railCenter = railRect.left + railRect.width / 2;
+  return boards.find((board) => {
+    const rect = board.getBoundingClientRect();
+    return rect.left <= railCenter && rect.right >= railCenter;
+  }) ?? boards.find((board) => {
+    const rect = board.getBoundingClientRect();
+    return rect.right > railRect.left + 1 && rect.left < railRect.right - 1;
+  });
 }
 
 type TurnStatusTone = 'local' | 'waiting' | 'neutral';
@@ -287,6 +305,7 @@ interface PlayerGridProps {
   interactionDisabledReason?: string;
   onCardClick?: (index: number) => void;
   focusFallbackRef?: RefObject<HTMLElement>;
+  opponentScrollActive?: boolean;
 }
 
 function PlayerGrid({
@@ -297,7 +316,8 @@ function PlayerGrid({
   drawIntent = 'place',
   interactionDisabledReason,
   onCardClick,
-  focusFallbackRef
+  focusFallbackRef,
+  opponentScrollActive
 }: PlayerGridProps) {
   const canSelectOpening =
     isLocal &&
@@ -388,11 +408,15 @@ function PlayerGrid({
 
   return (
     <section
+      aria-label={opponentScrollActive ? `${player.name} board` : undefined}
       className={`skyjo-panel skyjo-player-grid ${
         isLocal ? 'skyjo-player-grid-local' : 'skyjo-player-grid-opponent'
       } ${isCurrent ? 'skyjo-panel-current' : ''}`}
       data-player-id={player.id}
       data-player-role={isLocal ? 'local' : 'opponent'}
+      data-vertical-scroll-active={opponentScrollActive ? 'true' : undefined}
+      onKeyDown={opponentScrollActive ? handleScrollableRegionKeyDown : undefined}
+      tabIndex={opponentScrollActive ? 0 : -1}
     >
       <div className="skyjo-player-grid-header mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
@@ -533,6 +557,11 @@ export function PlayerBoardGrid({
   const currentOpponentId = isOpponents && players.some((player) => player.id === currentPlayer?.id)
     ? currentPlayer.id
     : '';
+  const defaultActiveOpponentId = currentOpponentId || players[0]?.id || '';
+  const [activeOpponentId, setActiveOpponentId] = useState(defaultActiveOpponentId);
+  const resolvedActiveOpponentId = players.some((player) => player.id === activeOpponentId)
+    ? activeOpponentId
+    : defaultActiveOpponentId;
   const reducedMotion = usePrefersReducedMotion();
   const currentOpponentIdRef = useRef(currentOpponentId);
   const reducedMotionRef = useRef(reducedMotion);
@@ -543,6 +572,11 @@ export function PlayerBoardGrid({
     : '';
 
   useEffect(() => {
+    if (!isOpponents || activeOpponentId === resolvedActiveOpponentId) return;
+    setActiveOpponentId(resolvedActiveOpponentId);
+  }, [activeOpponentId, isOpponents, resolvedActiveOpponentId]);
+
+  useEffect(() => {
     if (!isOpponents) return undefined;
 
     const element = boardRef.current;
@@ -550,8 +584,26 @@ export function PlayerBoardGrid({
 
     let resumeTimer: number | undefined;
     let resumeFrame: number | undefined;
+    let activeBoardFrame: number | undefined;
+
+    const updateActiveBoardFromView = () => {
+      if (activeBoardFrame !== undefined) window.cancelAnimationFrame(activeBoardFrame);
+      activeBoardFrame = window.requestAnimationFrame(() => {
+        const activeBoard = centeredOpponentBoard(element);
+        if (activeBoard?.dataset.playerId) setActiveOpponentId(activeBoard.dataset.playerId);
+      });
+    };
+
+    const activateEventBoard = (event: Event) => {
+      const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-player-id]') : null;
+      if (target?.dataset.playerId) setActiveOpponentId(target.dataset.playerId);
+    };
 
     const scheduleCurrentPlayerScrollResume = () => {
+      if (element.contains(document.activeElement)) {
+        resumeTimer = window.setTimeout(scheduleCurrentPlayerScrollResume, 100);
+        return;
+      }
       const remaining = userScrollPausedUntilRef.current - Date.now();
       if (remaining > 0) {
         resumeTimer = window.setTimeout(scheduleCurrentPlayerScrollResume, remaining);
@@ -560,7 +612,8 @@ export function PlayerBoardGrid({
 
       resumeFrame = window.requestAnimationFrame(() => {
         resumeFrame = undefined;
-        if (Date.now() < userScrollPausedUntilRef.current) return;
+        if (Date.now() < userScrollPausedUntilRef.current || element.contains(document.activeElement)) return;
+        if (currentOpponentIdRef.current) setActiveOpponentId(currentOpponentIdRef.current);
         scrollOpponentIntoView(element, currentOpponentIdRef.current, reducedMotionRef.current);
       });
     };
@@ -573,28 +626,51 @@ export function PlayerBoardGrid({
       resumeTimer = window.setTimeout(scheduleCurrentPlayerScrollResume, currentPlayerScrollPauseMs);
     };
     const pauseCurrentPlayerScrollFromKeyboard = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (
+        event.target !== element ||
+        event.defaultPrevented ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) return;
       if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) {
         event.preventDefault();
         pauseCurrentPlayerScroll();
         element.scrollTo({ left: opponentRailKeyboardTarget(element, event.key), behavior: 'auto' });
+        updateActiveBoardFromView();
       }
     };
 
-    element.addEventListener('focusin', pauseCurrentPlayerScroll);
+    const pauseCurrentPlayerScrollFromPointer = (event: Event) => {
+      activateEventBoard(event);
+      pauseCurrentPlayerScroll();
+    };
+    const resumeCurrentPlayerScrollAfterFocus = (event: FocusEvent) => {
+      if (element.contains(event.relatedTarget as Node)) return;
+      if (resumeTimer !== undefined) window.clearTimeout(resumeTimer);
+      scheduleCurrentPlayerScrollResume();
+    };
+
+    element.addEventListener('focusin', pauseCurrentPlayerScrollFromPointer);
+    element.addEventListener('focusout', resumeCurrentPlayerScrollAfterFocus);
     element.addEventListener('keydown', pauseCurrentPlayerScrollFromKeyboard);
-    element.addEventListener('wheel', pauseCurrentPlayerScroll, { passive: true });
-    element.addEventListener('touchstart', pauseCurrentPlayerScroll, { passive: true });
-    element.addEventListener('pointerdown', pauseCurrentPlayerScroll, { passive: true });
+    element.addEventListener('scroll', updateActiveBoardFromView, { passive: true });
+    element.addEventListener('wheel', pauseCurrentPlayerScrollFromPointer, { passive: true });
+    element.addEventListener('touchstart', pauseCurrentPlayerScrollFromPointer, { passive: true });
+    element.addEventListener('pointerdown', pauseCurrentPlayerScrollFromPointer, { passive: true });
 
     return () => {
       if (resumeTimer !== undefined) window.clearTimeout(resumeTimer);
       if (resumeFrame !== undefined) window.cancelAnimationFrame(resumeFrame);
-      element.removeEventListener('focusin', pauseCurrentPlayerScroll);
+      if (activeBoardFrame !== undefined) window.cancelAnimationFrame(activeBoardFrame);
+      element.removeEventListener('focusin', pauseCurrentPlayerScrollFromPointer);
+      element.removeEventListener('focusout', resumeCurrentPlayerScrollAfterFocus);
       element.removeEventListener('keydown', pauseCurrentPlayerScrollFromKeyboard);
-      element.removeEventListener('wheel', pauseCurrentPlayerScroll);
-      element.removeEventListener('touchstart', pauseCurrentPlayerScroll);
-      element.removeEventListener('pointerdown', pauseCurrentPlayerScroll);
+      element.removeEventListener('scroll', updateActiveBoardFromView);
+      element.removeEventListener('wheel', pauseCurrentPlayerScrollFromPointer);
+      element.removeEventListener('touchstart', pauseCurrentPlayerScrollFromPointer);
+      element.removeEventListener('pointerdown', pauseCurrentPlayerScrollFromPointer);
     };
   }, [isOpponents]);
 
@@ -602,10 +678,15 @@ export function PlayerBoardGrid({
     if (!isOpponents || !currentOpponentId) return undefined;
 
     const element = boardRef.current;
-    if (!element || Date.now() < userScrollPausedUntilRef.current) return undefined;
+    if (
+      !element ||
+      Date.now() < userScrollPausedUntilRef.current ||
+      element.contains(document.activeElement)
+    ) return undefined;
 
     const frame = window.requestAnimationFrame(() => {
-      if (Date.now() < userScrollPausedUntilRef.current) return;
+      if (Date.now() < userScrollPausedUntilRef.current || element.contains(document.activeElement)) return;
+      setActiveOpponentId(currentOpponentId);
       scrollOpponentIntoView(element, currentOpponentId, reducedMotion);
     });
 
@@ -613,22 +694,24 @@ export function PlayerBoardGrid({
   }, [currentOpponentId, isOpponents, reducedMotion, state.log.length, state.phase]);
 
   function handleBoardKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    const verticalKeys = isOpponents ? ['ArrowUp', 'ArrowDown'] : ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'];
-    if (!verticalKeys.includes(event.key)) return;
-    event.preventDefault();
-    const element = event.currentTarget;
-    const pageStep = Math.max(44, Math.round(element.clientHeight * 0.8));
-    const top = event.key === 'Home'
-      ? 0
-      : event.key === 'End'
-        ? element.scrollHeight
-        : element.scrollTop + (event.key === 'ArrowUp' ? -44 : event.key === 'ArrowDown' ? 44 : event.key === 'PageUp' ? -pageStep : pageStep);
-    element.scrollTo({ left: element.scrollLeft, top, behavior: 'auto' });
+    if (!isOpponents) {
+      handleScrollableRegionKeyDown(event);
+      return;
+    }
+    if (
+      event.target !== event.currentTarget ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      !['ArrowUp', 'ArrowDown'].includes(event.key)
+    ) return;
+    const activeBoard = event.currentTarget.querySelector<HTMLElement>('[data-vertical-scroll-active]');
+    if (activeBoard && scrollElementByKey(activeBoard, event.key)) event.preventDefault();
   }
 
   const isScrollableOpponentRail = isOpponents && players.length > 2;
-  const isKeyboardScrollable = containScroll || isScrollableOpponentRail;
+  const isKeyboardScrollable = isOpponents ? isScrollableOpponentRail : containScroll;
 
   return (
     <div
@@ -654,6 +737,9 @@ export function PlayerBoardGrid({
             isLocal={!isOpponents}
             key={player.id}
             onCardClick={onCardClick}
+            opponentScrollActive={
+              isOpponents && containScroll && (!players[2] || player.id === resolvedActiveOpponentId)
+            }
             player={player}
             state={state}
           />
@@ -891,7 +977,14 @@ function TableControls({
   }, [hasLocalDrawnDecision]);
 
   return (
-    <section className="skyjo-panel skyjo-table-controls skyjo-table-glow" data-testid="table-center">
+    <section
+      className={`skyjo-panel skyjo-table-controls skyjo-table-glow${
+        hasLocalDrawnDecision ? ' skyjo-table-controls-drawn' : ''
+      }`}
+      data-drawn-decision={hasLocalDrawnDecision ? 'true' : undefined}
+      data-testid="table-center"
+      key={hasLocalDrawnDecision ? 'drawn-decision' : 'table-controls'}
+    >
       <div
         aria-label={progressRegionLabel}
         className="skyjo-table-band-side skyjo-table-band-side-start"
@@ -957,18 +1050,19 @@ function TableControls({
         </button>
       </div>
 
-      <div
-        aria-label={hasLocalDrawnDecision ? 'Drawn card decision' : showResolvedSideGuidance ? 'Action guidance' : undefined}
-        className="skyjo-table-band-side skyjo-table-band-side-end"
-        ref={guidanceRef}
-        role={showResolvedSideGuidance || hasLocalDrawnDecision ? 'region' : undefined}
-        tabIndex={showResolvedSideGuidance || hasLocalDrawnDecision ? 0 : undefined}
-      >
-        {showResolvedSideGuidance ? (
-          <ActionGuidance className="skyjo-side-action-guidance" disabledReason={guidanceDisabledReason} status={status} />
-        ) : null}
-        {hasLocalDrawnDecision && state.drawnCard ? (
-          <div className="skyjo-drawn-decision">
+      {showResolvedSideGuidance || hasLocalDrawnDecision ? (
+        <div
+          aria-label={hasLocalDrawnDecision ? 'Drawn card decision' : 'Action guidance'}
+          className="skyjo-table-band-side skyjo-table-band-side-end"
+          ref={guidanceRef}
+          role="region"
+          tabIndex={0}
+        >
+          {showResolvedSideGuidance ? (
+            <ActionGuidance className="skyjo-side-action-guidance" disabledReason={guidanceDisabledReason} status={status} />
+          ) : null}
+          {hasLocalDrawnDecision && state.drawnCard ? (
+            <div className="skyjo-drawn-decision">
             <div className="flex justify-end">
               <div
                 aria-label={`Drawn card ${cardLabel(state.drawnCard)}`}
@@ -1015,9 +1109,10 @@ function TableControls({
                 ? 'Discard + reveal selected. Choose a highlighted hidden card.'
                 : 'Place selected. Choose a highlighted card.'}
             </p>
-          </div>
-        ) : null}
-      </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <TurnAnnouncer
         drawIntent={drawIntent}
         interactionDisabledReason={interactionDisabledReason}
@@ -1058,6 +1153,7 @@ export function GameTableLayout({
         <div
           aria-label="Action guidance"
           className="skyjo-phone-action-guidance"
+          onKeyDown={handleScrollableRegionKeyDown}
           ref={phoneGuidanceRef}
           role="region"
           tabIndex={0}
@@ -1073,7 +1169,7 @@ export function GameTableLayout({
         data-testid="shared-game-table"
       >
         <PlayerBoardGrid
-          containScroll={containBoardScroll}
+          containScroll={containBoardScroll || phoneLayout}
           drawIntent={drawIntent}
           interactionDisabledReason={interactionDisabledReason}
           localPlayerId={localPlayerId}
@@ -1099,7 +1195,7 @@ export function GameTableLayout({
           />
         </div>
         <PlayerBoardGrid
-          containScroll={containBoardScroll}
+          containScroll={containBoardScroll || phoneLayout}
           drawIntent={drawIntent}
           focusFallbackRef={focusFallbackRef}
           interactionDisabledReason={interactionDisabledReason}

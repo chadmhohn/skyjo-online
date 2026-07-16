@@ -208,23 +208,28 @@ for (const viewport of [
         await expect(page.getByRole('region', { name: 'Opening and final-turn progress' })).toHaveCount(0);
 
         const guidance = page.getByRole('region', { name: 'Action guidance' });
+        const opponentRail = page.getByRole('region', { name: 'Opponent boards' });
+        const activeOpponentBoard = opponentRail.locator(':scope > [data-vertical-scroll-active="true"]');
+        const boardPrefix = [guidance, activeOpponentBoard];
+        await expect(activeOpponentBoard).toHaveCount(1);
         if (scenario.key === 'opening') {
           await expect(guidance.getByRole('heading', { level: 2, name: 'Choose two face-down cards' })).toBeVisible();
           await expect(page.locator('.skyjo-opening-tracker')).toHaveCount(0);
           await expectTabSequence(page, [
-            guidance,
+            ...boardPrefix,
+            page.getByRole('region', { name: 'Your board' }),
             page.getByRole('button', { name: /Reveal this opening card/ }).first()
           ]);
         } else if (scenario.key === 'choose source') {
           await expectTabSequence(page, [
-            guidance,
+            ...boardPrefix,
             page.getByTestId('table-piles').getByRole('button', { name: /^Deck/ }),
             page.getByTestId('table-piles').getByRole('button', { name: /^Discard/ })
           ]);
         } else if (scenario.key === 'drawn card') {
           const decision = page.getByRole('region', { name: 'Drawn card decision' });
           await expectTabSequence(page, [
-            guidance,
+            ...boardPrefix,
             decision,
             decision.getByRole('button', { name: /Place drawn card/ }),
             decision.getByRole('button', { name: /Discard \+ reveal/ })
@@ -234,7 +239,7 @@ for (const viewport of [
           await expect(finalLap).toHaveCount(1);
           await expect(finalLap.getByText('Final lap active')).toBeVisible();
           await expect(finalLap.getByRole('heading', { name: /went out\./ })).toBeVisible();
-          await expectTabSequence(page, [guidance, finalLap]);
+          await expectTabSequence(page, [...boardPrefix, finalLap]);
         } else {
           const summary = page.getByRole('dialog', { name: 'Round complete.' });
           await expect(summary).toBeVisible();
@@ -284,7 +289,6 @@ test('320x568 200% focused final lap restores guidance without focus-induced scr
       '[data-testid="table-center-band"]',
       '[data-testid="table-center"]',
       '.skyjo-table-band-side-start',
-      '.skyjo-table-band-side-end',
       '[data-testid="local-board"]'
     ];
     const scrollSnapshot = () => ({
@@ -321,7 +325,6 @@ test('320x568 200% focused final lap restores guidance without focus-induced scr
         '[data-testid="table-center-band"]',
         '[data-testid="table-center"]',
         '.skyjo-table-band-side-start',
-        '.skyjo-table-band-side-end',
         '[data-testid="local-board"]'
       ];
       return {
@@ -572,6 +575,34 @@ async function swipeOpponentRailByTouch(page: Page, session: CDPSession) {
   await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
 }
 
+async function swipeRegionUpByTrustedTouch(page: Page, session: CDPSession, selector: string) {
+  const region = page.locator(selector);
+  const box = await region.boundingBox();
+  if (!box) throw new Error(`Scrollable region has no touchable box: ${selector}`);
+  await region.evaluate((element) => {
+    element.removeAttribute('data-touch-trusted');
+    element.addEventListener('touchstart', (event) => {
+      element.setAttribute('data-touch-trusted', String(event.isTrusted));
+    }, { once: true });
+  });
+  const x = box.x + box.width / 2;
+  const startY = box.y + box.height - Math.min(10, box.height * 0.15);
+  const endY = box.y + Math.min(10, box.height * 0.15);
+  await session.send('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [{ x, y: startY }]
+  });
+  for (let step = 1; step <= 5; step += 1) {
+    await session.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x, y: startY + ((endY - startY) * step) / 5 }]
+    });
+    await page.waitForTimeout(16);
+  }
+  await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect(region).toHaveAttribute('data-touch-trusted', 'true');
+}
+
 const railViewports = [
   { width: 390, height: 844 },
   { width: 820, height: 1180 },
@@ -644,7 +675,8 @@ async function expectWheelExposure(page: Page, viewport: { width: number; height
 }
 
 async function expectKeyboardExposure(page: Page) {
-  await page.setViewportSize(railViewports[0]);
+  await page.setViewportSize({ width: 320, height: 568 });
+  await setDoubleText(page, true);
   const guidance = page.getByRole('region', { name: 'Action guidance' });
   const rail = page.getByRole('region', { name: 'Opponent boards' });
   const followingCard = page.getByRole('button', { name: /Reveal this opening card/ }).first();
@@ -672,8 +704,62 @@ async function expectKeyboardExposure(page: Page) {
     'keyboard scrolling should expose a later opponent board'
   ).toBe(true);
 
+  await page.keyboard.press('End');
+  const activeBoards = rail.locator(':scope > [data-vertical-scroll-active="true"]');
+  await expect(activeBoards).toHaveCount(1);
+  await expect.poll(async () => {
+    const activeId = await activeBoards.getAttribute('data-player-id');
+    return (await railSnapshot(page)).visibleIds.includes(activeId || '');
+  }).toBe(true);
+  const atEnd = await railSnapshot(page);
+  const visibleBoard = activeBoards.first();
+  const visibleId = await visibleBoard.getAttribute('data-player-id');
+  expect(visibleId, 'horizontal End should select one visible opponent board').toBeTruthy();
+  expect(atEnd.visibleIds).toContain(visibleId);
+  await expect(visibleBoard).toHaveAttribute('tabindex', '0');
+  await expect(visibleBoard).toHaveAccessibleName(/board$/);
+  await expect(visibleBoard).toHaveCSS('overflow-y', 'auto');
+  const inactiveBoards = rail.locator(':scope > [data-player-id]:not([data-vertical-scroll-active="true"])');
+  await expect(inactiveBoards).toHaveCount(6);
+  expect(await inactiveBoards.evaluateAll((boards) =>
+    boards.every((board) => board.getAttribute('tabindex') === '-1')
+  )).toBe(true);
+  expect(await inactiveBoards.evaluateAll((boards) =>
+    boards.every((board) => window.getComputedStyle(board).overflowY === 'hidden')
+  )).toBe(true);
+  expect(await visibleBoard.evaluate((board) => board.scrollHeight - board.clientHeight)).toBeGreaterThan(1);
+  for (let press = 0; press < 12; press += 1) await page.keyboard.press('ArrowDown');
+  await expect.poll(() => visibleBoard.evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+  const firstBoard = rail.locator(':scope > [data-player-id]').first();
+  if ((await firstBoard.getAttribute('data-player-id')) !== visibleId) {
+    expect(await firstBoard.evaluate((board) => board.scrollTop), 'offscreen opponent content should not scroll').toBe(0);
+  }
+
   await page.keyboard.press('Tab');
-  await expect(rail).not.toBeFocused();
+  await expect(visibleBoard).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect.poll(() => visibleBoard.evaluate((board) => board.scrollTop)).toBeLessThanOrEqual(1);
+  await page.keyboard.press('PageDown');
+  await expect.poll(() => visibleBoard.evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+  await page.keyboard.press('End');
+  await expect.poll(() =>
+    visibleBoard.evaluate((board) => Math.abs(board.scrollHeight - board.clientHeight - board.scrollTop))
+  ).toBeLessThanOrEqual(1);
+  await page.keyboard.press('Tab');
+  expect(await page.evaluate(() => {
+    const active = document.activeElement as HTMLElement | null;
+    return {
+      ariaLabel: active?.getAttribute('aria-label') || '',
+      tag: active?.tagName || '',
+      testId: active?.dataset.testid || ''
+    };
+  }), 'Tab after the active opponent board should reach the local board scroll region').toEqual({
+    ariaLabel: 'Your board',
+    tag: 'DIV',
+    testId: 'local-board'
+  });
+  await expect(page.getByRole('region', { name: 'Your board' })).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(followingCard).toBeFocused();
 }
 
@@ -737,11 +823,20 @@ test('compiled opponent rail CSS preserves seven-seat geometry and trusted Chrom
   await installSeededBrowserRuntime(page, 81);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await expect(page.getByTestId('opponent-rail')).not.toHaveAttribute('tabindex');
-  await expect(page.getByTestId('local-board')).not.toHaveAttribute('tabindex');
+  const fixedPhoneContract = await page.evaluate(() =>
+    window.matchMedia('(max-width: 640px), (max-height: 640px) and (pointer: coarse) and (hover: none)').matches
+  );
+  if (fixedPhoneContract) {
+    await expect(page.getByTestId('opponent-rail')).not.toHaveAttribute('tabindex');
+    await expect(page.getByTestId('local-board')).toHaveAttribute('tabindex', '0');
+  } else {
+    await expect(page.getByTestId('opponent-rail')).not.toHaveAttribute('tabindex');
+    await expect(page.getByTestId('local-board')).not.toHaveAttribute('tabindex');
+  }
   await configureSoloRoster(page, 8);
   await expect(page.getByTestId('opponent-rail')).toHaveAttribute('tabindex', '0');
-  await expect(page.getByTestId('local-board')).not.toHaveAttribute('tabindex');
+  if (fixedPhoneContract) await expect(page.getByTestId('local-board')).toHaveAttribute('tabindex', '0');
+  else await expect(page.getByTestId('local-board')).not.toHaveAttribute('tabindex');
   await expectCompiledOpponentOverflow(page);
   for (const viewport of railViewports) await expectRailGeometry(page, viewport);
   if (testInfo.project.name !== 'chromium') return;
@@ -905,8 +1000,8 @@ test('844x390 drawn decisions replace redundant side guidance with one contained
   await expect(page.getByRole('region', { name: 'Action guidance' })).toHaveCount(fixedPhoneContract ? 1 : 0);
   await expect(page.locator('.skyjo-drawn-card')).toBeVisible();
   if (fixedPhoneContract) {
-    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-action-guidance-instruction')).toBeHidden();
-    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-disabled-note')).toBeHidden();
+    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-action-guidance-instruction')).toBeVisible();
+    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-disabled-note')).toBeVisible();
     await expect(page.locator('.skyjo-drawn-instruction')).toBeHidden();
   } else {
     await expect(page.locator('.skyjo-drawn-instruction')).toBeVisible();
@@ -974,8 +1069,8 @@ test('844x390 drawn decisions reflow without internal overflow at 200% text', as
   await expect(page.getByRole('region', { name: 'Action guidance' })).toHaveCount(fixedPhoneContract ? 1 : 0);
   await expect(page.locator('.skyjo-drawn-card')).toBeVisible();
   if (fixedPhoneContract) {
-    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-action-guidance-instruction')).toBeHidden();
-    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-disabled-note')).toBeHidden();
+    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-action-guidance-instruction')).toBeVisible();
+    await expect(page.locator('.skyjo-phone-action-guidance .skyjo-disabled-note')).toBeVisible();
     await expect(page.locator('.skyjo-drawn-instruction')).toBeHidden();
   } else {
     await expect(page.locator('.skyjo-drawn-instruction')).toBeVisible();
@@ -1052,9 +1147,10 @@ test('844x390 drawn decisions reflow without internal overflow at 200% text', as
 });
 
 test('320x568 keeps compact decisions and internally scrollable boards at 200% text', async ({
+  context,
   page,
   skyjoServer
-}) => {
+}, testInfo) => {
   test.setTimeout(45_000);
   await installSeededBrowserRuntime(page, 82);
   await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -1138,14 +1234,94 @@ test('320x568 keeps compact decisions and internally scrollable boards at 200% t
   const replacementCards = page.locator('button.skyjo-card-selectable:not([disabled])');
   await expect(replacementCards).toHaveCount(12);
   const replacementCard = replacementCards.last();
-  await replacementCard.scrollIntoViewIfNeeded();
+  const opponentRail = page.getByRole('region', { name: 'Opponent boards' });
+  const opponentBoard = opponentRail.locator(':scope > [data-vertical-scroll-active="true"]');
+  await expect(opponentRail).not.toHaveAttribute('tabindex');
+  await expect(opponentBoard).toHaveCount(1);
+  await expect(opponentBoard).toHaveAccessibleName(/board$/);
+  await expect(opponentBoard).toHaveAttribute('tabindex', '0');
+  await expect(opponentBoard).toHaveCSS('overflow-y', 'auto');
+  expect(await opponentBoard.evaluate((board) => board.scrollHeight - board.clientHeight)).toBeGreaterThan(1);
+  await page.getByRole('region', { name: 'Action guidance' }).focus();
+  await page.keyboard.press('Tab');
+  await expect(opponentBoard).toBeFocused();
+  const innerOpponentFocus = await opponentBoard.evaluate((board) => {
+    const style = window.getComputedStyle(board);
+    return [style.outlineStyle, Number.parseFloat(style.outlineWidth), style.boxShadow !== 'none'];
+  }) as [string, number, boolean];
+  expect(innerOpponentFocus[0]).toBe('solid');
+  expect(innerOpponentFocus[1]).toBeGreaterThanOrEqual(2);
+  expect(innerOpponentFocus[2]).toBe(true);
+  await page.keyboard.press('Home');
+  await expect.poll(() => opponentBoard.evaluate((board) => board.scrollTop)).toBeLessThanOrEqual(1);
+  await page.keyboard.press('PageDown');
+  await expect.poll(() => opponentBoard.evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+  await page.keyboard.press('End');
+  await expect.poll(() =>
+    opponentBoard.evaluate((board) => Math.abs(board.scrollHeight - board.clientHeight - board.scrollTop))
+  ).toBeLessThanOrEqual(1);
+  expect(await opponentBoard.locator('.skyjo-player-card-row').last().evaluate((row) => {
+    const board = row.closest<HTMLElement>('[data-player-role="opponent"]');
+    if (!board) return false;
+    const boardRect = board.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    return rowRect.bottom <= boardRect.bottom + 1 && rowRect.bottom > boardRect.top + 1;
+  })).toBe(true);
+
+  const localBoard = page.getByRole('region', { name: 'Your board' });
+  await expect(localBoard).toHaveAttribute('tabindex', '0');
+  await discardChoice.focus();
+  await page.keyboard.press('Tab');
+  await expect(localBoard).toBeFocused();
+  const localFocus = await localBoard.evaluate((board) => {
+    const style = window.getComputedStyle(board);
+    return [style.outlineStyle, Number.parseFloat(style.outlineWidth), style.boxShadow !== 'none'];
+  }) as [string, number, boolean];
+  expect(localFocus[0]).toBe('solid');
+  expect(localFocus[1]).toBeGreaterThanOrEqual(2);
+  expect(localFocus[2]).toBe(true);
+  await page.keyboard.press('Home');
+  await expect.poll(() => localBoard.evaluate((board) => board.scrollTop)).toBeLessThanOrEqual(1);
+  await page.keyboard.press('PageDown');
+  await expect.poll(() => localBoard.evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+  await page.keyboard.press('End');
+  await expect.poll(() =>
+    localBoard.evaluate((board) => Math.abs(board.scrollHeight - board.clientHeight - board.scrollTop))
+  ).toBeLessThanOrEqual(1);
   await expect(replacementCard).toBeInViewport();
   expect(await replacementCard.evaluate((card) => {
     const rect = card.getBoundingClientRect();
     const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     return rect.width >= 43.99 && rect.height >= 43.99 && (hit === card || card.contains(hit));
   })).toBe(true);
-  expect(await page.getByTestId('local-board').evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+  expect(await localBoard.evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => ({ left: window.scrollX, top: window.scrollY }))).toEqual({ left: 0, top: 0 });
+
+  if (testInfo.project.name === 'chromium') {
+    const session = await context.newCDPSession(page);
+    try {
+      await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+      await localBoard.focus();
+      await page.keyboard.press('Home');
+      await swipeRegionUpByTrustedTouch(page, session, '[data-testid="local-board"]');
+      await expect.poll(() => localBoard.evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+      await opponentBoard.focus();
+      for (let press = 0; press < 12; press += 1) await page.keyboard.press('ArrowUp');
+      await expect.poll(() => opponentBoard.evaluate((board) => board.scrollTop)).toBeLessThanOrEqual(1);
+      await swipeRegionUpByTrustedTouch(
+        page,
+        session,
+        '[data-testid="opponent-rail"] > [data-player-role="opponent"]'
+      );
+      await expect.poll(() => opponentBoard.evaluate((board) => board.scrollTop)).toBeGreaterThan(0);
+    } finally {
+      await session.detach();
+    }
+  }
+
+  await localBoard.focus();
+  await page.keyboard.press('End');
+  await expect(replacementCard).toBeInViewport();
   expect((await drawnDecisionSnapshot(page)).documentFixed).toBe(true);
   await replacementCard.click();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', 'choose-source', { timeout: 5_000 });
