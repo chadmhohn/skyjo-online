@@ -53,6 +53,20 @@ type LayoutItem = {
   rect: Rect;
 };
 
+type PileGeometrySnapshot = {
+  band: Rect;
+  buttons: Rect[];
+  documentScroll: { left: number; top: number };
+  labels: Array<{
+    clientWidth: number;
+    fits: boolean;
+    scrollWidth: number;
+    text: string;
+  }>;
+  midpointDelta: number;
+  piles: Rect;
+};
+
 type ActiveLayoutSnapshot = {
   band: Rect;
   controls: Rect;
@@ -276,10 +290,9 @@ async function readActiveLayout(page: Page): Promise<ActiveLayoutSnapshot> {
     return {
       band: rect(band),
       centerControls: visibleItems(band, '.skyjo-chat-dock-button, .skyjo-pile-button, .skyjo-choice-button'),
-      // The 44px pile labels intentionally ellipsize; parent geometry and the full accessible controls are asserted below.
       centerContentFits: Array.from(
         band.querySelectorAll<HTMLElement>(
-          '.skyjo-chat-dock-button, .skyjo-table-card, .skyjo-drawn-card, .skyjo-choice-button'
+          '.skyjo-chat-dock-button, .skyjo-pile-button .skyjo-kicker, .skyjo-table-card, .skyjo-drawn-card, .skyjo-choice-button'
         )
       ).every((element) => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1),
       centerVisuals: visibleItems(band, '.skyjo-chat-dock-button, .skyjo-table-card, .skyjo-drawn-card, .skyjo-choice-button'),
@@ -312,6 +325,63 @@ async function readActiveLayout(page: Page): Promise<ActiveLayoutSnapshot> {
         ':scope > .skyjo-back-link, :scope > .skyjo-active-room-identity, :scope > button'
       ),
       viewport: { height: window.innerHeight, width: window.innerWidth }
+    };
+  });
+}
+
+async function readPileGeometry(page: Page): Promise<PileGeometrySnapshot> {
+  return page.evaluate(() => {
+    const required = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) throw new Error(`Missing phone pile geometry anchor: ${selector}`);
+      return element;
+    };
+    const rect = (element: Element): Rect => {
+      const value = element.getBoundingClientRect();
+      return {
+        bottom: value.bottom,
+        height: value.height,
+        left: value.left,
+        right: value.right,
+        top: value.top,
+        width: value.width
+      };
+    };
+    const band = required('[data-testid="table-center-band"]');
+    const piles = required('[data-testid="table-piles"]');
+    const pileRect = piles.getBoundingClientRect();
+    const bandRect = band.getBoundingClientRect();
+    const buttons = Array.from(piles.querySelectorAll<HTMLElement>('.skyjo-pile-button'));
+    const scrolling = document.scrollingElement;
+    if (!scrolling) throw new Error('Document scrolling element was unavailable.');
+
+    return {
+      band: rect(band),
+      buttons: buttons.map(rect),
+      documentScroll: { left: scrolling.scrollLeft, top: scrolling.scrollTop },
+      labels: buttons.map((button) => {
+        const label = button.querySelector<HTMLElement>('.skyjo-kicker');
+        if (!label) throw new Error('Pile label was unavailable.');
+        const labelRect = label.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(label);
+        const textRect = range.getBoundingClientRect();
+        return {
+          clientWidth: label.clientWidth,
+          fits:
+            label.scrollWidth <= label.clientWidth + 1 &&
+            textRect.left >= labelRect.left - 1 &&
+            textRect.right <= labelRect.right + 1 &&
+            textRect.top >= labelRect.top - 1 &&
+            textRect.bottom <= labelRect.bottom + 1,
+          scrollWidth: label.scrollWidth,
+          text: label.textContent?.trim() ?? ''
+        };
+      }),
+      midpointDelta: Math.abs(
+        pileRect.left + pileRect.width / 2 - (bandRect.left + bandRect.width / 2)
+      ),
+      piles: rect(piles)
     };
   });
 }
@@ -585,6 +655,44 @@ function expectRectStable(before: Rect, after: Rect, label: string): void {
   }
 }
 
+function expectPhonePileGeometry(
+  snapshot: PileGeometrySnapshot,
+  portrait: PortraitVariant,
+  expectedLabels: string[]
+): void {
+  expect(snapshot.documentScroll).toEqual({ left: 0, top: 0 });
+  expect(snapshot.labels.map(({ text }) => text)).toEqual(expectedLabels);
+  expect(
+    snapshot.labels.every(({ fits }) => fits),
+    `${portrait.label} pile labels should render in full: ${JSON.stringify(snapshot.labels)}`
+  ).toBe(true);
+  expect(snapshot.buttons).toHaveLength(2);
+  for (const [index, button] of snapshot.buttons.entries()) {
+    expect(button.width + targetRoundingTolerance, `pile ${index + 1} should be at least 44px wide`).toBeGreaterThanOrEqual(
+      minimumTargetSize
+    );
+    expect(button.height + targetRoundingTolerance, `pile ${index + 1} should be at least 44px high`).toBeGreaterThanOrEqual(
+      minimumTargetSize
+    );
+    expect(isInside(button, snapshot.band), `pile ${index + 1} should remain inside the center band`).toBe(true);
+  }
+  if (portrait.width >= 390) {
+    expect(snapshot.midpointDelta, `${portrait.label} piles should remain centered in the phone band`).toBeLessThanOrEqual(8);
+  }
+}
+
+function expectPileGeometryStable(
+  before: PileGeometrySnapshot,
+  after: PileGeometrySnapshot,
+  label: string
+): void {
+  expectRectStable(before.piles, after.piles, `${label} pile group`);
+  expect(after.buttons).toHaveLength(before.buttons.length);
+  for (const [index, button] of after.buttons.entries()) {
+    expectRectStable(before.buttons[index], button, `${label} pile ${index + 1}`);
+  }
+}
+
 async function expectRoomOptionsInternalScroll(
   page: Page,
   roomOptionsDialog: Locator,
@@ -714,6 +822,8 @@ for (const portrait of iphonePortraits) test(`issue #138 keeps the ${portrait.la
     );
 
     const active = await activeTurnClient(clients);
+    const beforeDrawPiles = await readPileGeometry(active.page);
+    expectPhonePileGeometry(beforeDrawPiles, portrait, ['Deck', 'Discard']);
     const deckButton = active.page.getByRole('button', { name: /^Deck/ }).filter({ visible: true });
     await deckButton.focus();
     await expect(deckButton).toBeFocused();
@@ -722,6 +832,9 @@ for (const portrait of iphonePortraits) test(`issue #138 keeps the ${portrait.la
     const drawnCard = active.page.locator('.skyjo-drawn-card');
     await expect(drawnCard).toBeVisible();
     await expect(active.page.getByRole('button', { name: 'Place drawn card' })).toBeFocused();
+    const afterDrawPiles = await readPileGeometry(active.page);
+    expectPhonePileGeometry(afterDrawPiles, portrait, ['Deck', 'Discard']);
+    expectPileGeometryStable(beforeDrawPiles, afterDrawPiles, `${portrait.label} idle-to-drawn`);
     const drawnValue = (await drawnCard.innerText()).trim();
     const announcedDrawnValue = drawnValue.startsWith('-') ? `minus ${drawnValue.slice(1)}` : drawnValue;
     await expect(active.page.getByTestId('turn-announcer')).toContainText(`You drew ${announcedDrawnValue}.`);
@@ -835,7 +948,10 @@ for (const portrait of iphonePortraits) test(`issue #138 keeps the ${portrait.la
     ).toBe('auto');
 
     const openChat = await readActiveLayout(active.page);
+    const openChatPiles = await readPileGeometry(active.page);
     expectFixedActiveLayout(openChat, portrait, (playerCount - 1) * 12);
+    expectPhonePileGeometry(openChatPiles, portrait, ['Deck', 'Discard']);
+    expectPileGeometryStable(afterDrawPiles, openChatPiles, `${portrait.label} open chat`);
     expect(openChat.document).toEqual(beforeChat.document);
     expectRectStable(beforeChat.table, openChat.table, 'shared table');
     expectRectStable(beforeChat.opponentRail, openChat.opponentRail, 'opponent rail');
@@ -862,7 +978,10 @@ for (const portrait of iphonePortraits) test(`issue #138 keeps the ${portrait.la
     await expect(dialog).toBeHidden();
     await expect(chatTrigger).toBeFocused();
     const afterChat = await readActiveLayout(active.page);
+    const afterChatPiles = await readPileGeometry(active.page);
     expectFixedActiveLayout(afterChat, portrait, (playerCount - 1) * 12);
+    expectPhonePileGeometry(afterChatPiles, portrait, ['Deck', 'Discard']);
+    expectPileGeometryStable(afterDrawPiles, afterChatPiles, `${portrait.label} close chat`);
     expect(afterChat.document).toEqual(beforeChat.document);
     expectRectStable(beforeChat.table, afterChat.table, 'shared table after chat close');
     expectRectStable(beforeChat.opponentRail, afterChat.opponentRail, 'opponent rail after chat close');

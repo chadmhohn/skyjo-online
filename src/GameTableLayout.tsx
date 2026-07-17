@@ -969,7 +969,6 @@ function TableControls({
       }`}
       data-drawn-decision={hasLocalDrawnDecision ? 'true' : undefined}
       data-testid="table-center"
-      key={hasLocalDrawnDecision ? 'drawn-decision' : 'table-controls'}
     >
       <div
         aria-label={progressRegionLabel}

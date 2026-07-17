@@ -383,7 +383,7 @@ body {
   }
 
   .skyjo-active-phone-shell .skyjo-table-controls {
-    grid-template-columns: minmax(44px, 1fr) 92px minmax(94px, 1fr);
+    grid-template-columns: minmax(44px, 1fr) 120px minmax(94px, 1fr);
     gap: 4px;
     padding: 4px;
     overflow: hidden;
@@ -412,10 +412,10 @@ body {
 
   .skyjo-active-phone-shell .skyjo-pile-button .skyjo-kicker {
     max-width: 100%;
-    overflow: hidden;
+    overflow: visible;
     font-size: 8px;
     letter-spacing: 0;
-    text-overflow: ellipsis;
+    text-overflow: clip;
     white-space: nowrap;
   }
 
@@ -562,6 +562,7 @@ body {
     top: auto;
     z-index: 20;
     display: block;
+    height: 88px;
     min-height: 44px;
     max-height: 120px;
     overflow-y: auto;
@@ -612,16 +613,10 @@ body {
   }
 
   .skyjo-active-game-layout .skyjo-table-controls {
-    grid-template-columns: minmax(84px, 1fr) 112px minmax(44px, 1fr);
+    grid-template-columns: minmax(44px, 1fr) 120px minmax(94px, 1fr);
     gap: 2px;
     overflow: hidden;
     padding: 4px;
-  }
-
-  .skyjo-active-game-layout .skyjo-table-controls.skyjo-table-controls-drawn {
-    grid-template-columns: 44px 120px minmax(0, 1fr);
-    column-gap: 1px;
-    padding-inline: 2px;
   }
 
   .skyjo-active-game-layout .skyjo-table-controls-drawn .skyjo-final-turn-callout {
@@ -834,9 +829,11 @@ body {
 
   .skyjo-active-game-layout .skyjo-drawn-decision .skyjo-choice-button span {
     max-width: 100%;
+    overflow-wrap: anywhere;
     font-size: 0.625rem;
     letter-spacing: -0.02em;
     line-height: 1;
+    white-space: normal;
   }
 
   .skyjo-active-game-layout
