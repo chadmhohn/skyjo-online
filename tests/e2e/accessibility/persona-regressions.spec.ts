@@ -338,12 +338,12 @@ for (const [variantIndex, variant] of combinedFinalLapVariants.entries()) {
           const range = document.createRange();
           range.selectNodeContents(child);
           const contentRect = range.getBoundingClientRect();
-          const childRect = child.getBoundingClientRect();
+          const parentRect = parent.getBoundingClientRect();
           return (
-            contentRect.left >= childRect.left - 1 &&
-            contentRect.right <= childRect.right + 1 &&
-            contentRect.top >= childRect.top - 1 &&
-            contentRect.bottom <= childRect.bottom + 1
+            contentRect.left >= parentRect.left - 1 &&
+            contentRect.right <= parentRect.right + 1 &&
+            contentRect.top >= parentRect.top - 1 &&
+            contentRect.bottom <= parentRect.bottom + 1
           );
         };
         const inViewport = (element: HTMLElement) => {
