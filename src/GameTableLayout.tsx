@@ -766,7 +766,7 @@ function FinalTurnCallout({ state, localPlayerId }: { state: GameState; localPla
   return (
     <div className="skyjo-final-turn-callout">
       <div className="flex items-start gap-3">
-        <div className="skyjo-final-turn-mark" aria-hidden="true">!</div>
+        <div className="skyjo-final-turn-mark" aria-hidden="true" />
         <div className="min-w-0">
           <div className="skyjo-kicker text-amber-100/75">Final lap active</div>
           <h2 className="skyjo-serif mt-1 text-xl font-bold leading-tight text-[#fff6df]">{closerName} went out.</h2>
@@ -969,7 +969,6 @@ function TableControls({
       }`}
       data-drawn-decision={hasLocalDrawnDecision ? 'true' : undefined}
       data-testid="table-center"
-      key={hasLocalDrawnDecision ? 'drawn-decision' : 'table-controls'}
     >
       <div
         aria-label={progressRegionLabel}

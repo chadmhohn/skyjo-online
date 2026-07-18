@@ -431,10 +431,10 @@ for (const [variantIndex, variant] of combinedFinalLapVariants.entries()) {
             const card = button.querySelector<HTMLElement>('.skyjo-table-card');
             const rect = button.getBoundingClientRect();
             return {
-              cardContained: Boolean(card && typographyContained(card, button)),
+              cardContained: Boolean(card && contained(card, button)),
               cardFontSize: card ? Number.parseFloat(window.getComputedStyle(card).fontSize) : 0,
               height: rect.height,
-              labelContained: Boolean(label && typographyContained(label, button)),
+              labelContained: Boolean(label && contained(label, button)),
               labelFontSize: label ? Number.parseFloat(window.getComputedStyle(label).fontSize) : 0,
               labelText: label?.textContent?.trim() || '',
               width: rect.width

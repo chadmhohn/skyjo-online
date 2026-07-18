@@ -106,6 +106,15 @@ type DOMRectSnapshot = {
   width: number;
 };
 
+type SoloPileGeometrySnapshot = {
+  band: DOMRectSnapshot;
+  buttons: DOMRectSnapshot[];
+  documentScroll: { left: number; top: number };
+  labels: Array<{ clientWidth: number; fits: boolean; scrollWidth: number; text: string }>;
+  midpointDelta: number;
+  piles: DOMRectSnapshot;
+};
+
 const iphone16ProMax = devices['iPhone 16 Pro Max'];
 const soloDrawnCardViewports: ReadonlyArray<SoloPhoneVariant> = [
   { label: 'iPhone 16 Pro Max', width: 440, height: 956 },
@@ -635,6 +644,63 @@ async function openSoloPhone(
   }
 }
 
+async function readSoloPileGeometry(page: Page): Promise<SoloPileGeometrySnapshot> {
+  return page.evaluate(() => {
+    const required = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) throw new Error(`Missing solo phone pile geometry anchor: ${selector}`);
+      return element;
+    };
+    const rect = (element: Element): DOMRectSnapshot => {
+      const value = element.getBoundingClientRect();
+      return {
+        bottom: value.bottom,
+        height: value.height,
+        left: value.left,
+        right: value.right,
+        top: value.top,
+        width: value.width
+      };
+    };
+    const band = required('[data-testid="table-center-band"]');
+    const piles = required('[data-testid="table-piles"]');
+    const buttons = Array.from(piles.querySelectorAll<HTMLElement>('.skyjo-pile-button'));
+    const bandRect = band.getBoundingClientRect();
+    const pileRect = piles.getBoundingClientRect();
+    const scrolling = document.scrollingElement;
+    if (!scrolling) throw new Error('Document scrolling element was unavailable.');
+
+    return {
+      band: rect(band),
+      buttons: buttons.map(rect),
+      documentScroll: { left: scrolling.scrollLeft, top: scrolling.scrollTop },
+      labels: buttons.map((button) => {
+        const label = button.querySelector<HTMLElement>('.skyjo-kicker');
+        if (!label) throw new Error('Solo pile label was unavailable.');
+        const labelRect = label.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(label);
+        const textRect = range.getBoundingClientRect();
+        return {
+          clientWidth: label.clientWidth,
+          fits:
+            label.scrollWidth <= label.clientWidth + 1 &&
+            textRect.left >= labelRect.left - 1 &&
+            textRect.right <= labelRect.right + 1 &&
+            textRect.top >= labelRect.top - 1 &&
+            textRect.bottom <= labelRect.bottom + 1,
+          scrollWidth: label.scrollWidth,
+          text: label.textContent?.trim() ?? ''
+        };
+      }),
+      midpointDelta: Math.abs(
+        pileRect.left + pileRect.width / 2 - (bandRect.left + bandRect.width / 2)
+      ),
+      piles: rect(piles)
+    };
+  });
+}
+
 async function stageSoloPhoneState(page: Page, baseURL: string, state: GameState, stateIndex: number): Promise<void> {
   await page.goto(baseURL);
   await page.evaluate(
@@ -837,7 +903,7 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
           cardContained: contained(cardRect) && card.scrollWidth <= card.clientWidth + 1,
           cardFontSize: Number.parseFloat(window.getComputedStyle(card).fontSize),
           cardText: card.textContent?.trim() || '',
-          labelContained: contained(labelRect) && label.scrollWidth <= label.clientWidth + 1,
+          labelContained: contained(labelRect),
           labelFontSize: Number.parseFloat(window.getComputedStyle(label).fontSize),
           labelText: label.textContent?.trim() || ''
         };
@@ -900,6 +966,39 @@ function rectsOverlap(first: DOMRectSnapshot, second: DOMRectSnapshot, tolerance
     first.bottom <= second.top + tolerance ||
     second.bottom <= first.top + tolerance
   );
+}
+
+function expectSoloPileGeometry(snapshot: SoloPileGeometrySnapshot, expectedLabels: string[]): void {
+  expect(snapshot.documentScroll).toEqual({ left: 0, top: 0 });
+  expect(snapshot.labels.map(({ text }) => text)).toEqual(expectedLabels);
+  expect(
+    snapshot.labels.every(({ fits }) => fits),
+    `phone pile labels should render in full: ${JSON.stringify(snapshot.labels)}`
+  ).toBe(true);
+  expect(snapshot.buttons).toHaveLength(2);
+  for (const [index, button] of snapshot.buttons.entries()) {
+    expect(button.width + 0.01, `solo pile ${index + 1} should be at least 44px wide`).toBeGreaterThanOrEqual(44);
+    expect(button.height + 0.01, `solo pile ${index + 1} should be at least 44px high`).toBeGreaterThanOrEqual(44);
+    expect(rectIsInside(button, snapshot.band), `solo pile ${index + 1} should stay inside the center band`).toBe(true);
+  }
+  expect(snapshot.midpointDelta, 'solo piles should remain centered in the phone band').toBeLessThanOrEqual(8);
+}
+
+function expectSoloPileGeometryStable(
+  before: SoloPileGeometrySnapshot,
+  after: SoloPileGeometrySnapshot,
+  label: string
+): void {
+  const expectRectStable = (reference: DOMRectSnapshot, candidate: DOMRectSnapshot, rectLabel: string) => {
+    for (const key of ['bottom', 'height', 'left', 'right', 'top', 'width'] as const) {
+      expect(Math.abs(candidate[key] - reference[key]), `${rectLabel} ${key} should remain stable`).toBeLessThanOrEqual(1);
+    }
+  };
+  expectRectStable(before.piles, after.piles, `${label} pile group`);
+  expect(after.buttons).toHaveLength(before.buttons.length);
+  for (const [index, button] of after.buttons.entries()) {
+    expectRectStable(before.buttons[index], button, `${label} pile ${index + 1}`);
+  }
 }
 
 function expectPhoneScaledTextOutcome(normal: number, scaled: number, scaledMinimum: number, label: string): void {
@@ -1233,7 +1332,7 @@ test('a complete solo turn is keyboard operable and restores actionable controls
   await page.keyboard.press('Enter');
   await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
   const placeDecision = page.getByRole('button', { name: 'Place drawn card', exact: true });
-  await expect(placeDecision, 'drawing from a focused deck should move focus into the remounted decision controls').toBeFocused();
+  await expect(placeDecision, 'drawing from a focused deck should move focus into the decision controls').toBeFocused();
   await expect(page.getByTestId('turn-announcer')).toContainText(/You drew (?:minus )?\d+\. Place mode selected\./);
 
   const replacement = page.getByRole('button', { name: /Replace with the drawn card/ }).filter({ visible: true }).first();
@@ -1246,6 +1345,82 @@ test('a complete solo turn is keyboard operable and restores actionable controls
   await expect(deck).toBeEnabled({ timeout: 15_000 });
   await expect(table).toHaveAttribute('data-phase', 'choose-source');
   await expect(page.getByTestId('turn-announcer')).toContainText('Your turn. Choose the discard pile or draw blind from the deck.');
+});
+
+test('phone piles stay centered and fixed through solo source, draw, and AI phases', async ({
+  browser,
+  skyjoServer
+}, testInfo) => {
+  test.skip(
+    !['chromium', 'webkit-phone'].includes(testInfo.project.name),
+    'The custom iPhone context runs once per browser engine.'
+  );
+  test.setTimeout(60_000);
+  const variant = { label: 'iPhone 16 Pro Max', width: 440, height: 956 };
+  const { context, page } = await openSoloPhone(
+    browser,
+    skyjoServer.baseURL,
+    skyjoServer.accessPassword,
+    variant,
+    205
+  );
+
+  try {
+    const table = page.getByTestId('shared-game-table');
+    const openingCards = page
+      .getByRole('button', { name: /face-down\. Reveal this opening card/ })
+      .filter({ visible: true });
+    for (let reveal = 0; reveal < 2; reveal += 1) await openingCards.first().click();
+    await expect(table).not.toHaveAttribute('data-phase', 'opening-reveal', { timeout: 5_000 });
+
+    const piles = page.getByTestId('table-piles');
+    const deck = piles.getByRole('button', { name: /^Deck/ });
+    await expect(deck).toBeEnabled({ timeout: 15_000 });
+    const idle = await readSoloPileGeometry(page);
+    expectSoloPileGeometry(idle, ['Deck', 'Discard']);
+
+    await piles.getByRole('button', { name: /^Discard/ }).click();
+    await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
+    const selectedDiscard = await readSoloPileGeometry(page);
+    expectSoloPileGeometry(selectedDiscard, ['Deck', 'Undo']);
+    expectSoloPileGeometryStable(idle, selectedDiscard, 'discard selection');
+
+    await piles.getByRole('button', { name: 'Put the discard card back.' }).click();
+    await expect(table).toHaveAttribute('data-phase', 'choose-source');
+    const canceledDiscard = await readSoloPileGeometry(page);
+    expectSoloPileGeometry(canceledDiscard, ['Deck', 'Discard']);
+    expectSoloPileGeometryStable(idle, canceledDiscard, 'discard cancellation');
+
+    await deck.click();
+    await expect(table).toHaveAttribute('data-phase', 'choose-replacement');
+    const drawnPlace = await readSoloPileGeometry(page);
+    expectSoloPileGeometry(drawnPlace, ['Deck', 'Discard']);
+    expectSoloPileGeometryStable(idle, drawnPlace, 'blind draw');
+
+    const discardDecision = page.getByRole('button', { name: 'Discard + reveal drawn card', exact: true });
+    await discardDecision.click();
+    await expect(discardDecision).toHaveAttribute('aria-pressed', 'true');
+    const drawnDiscard = await readSoloPileGeometry(page);
+    expectSoloPileGeometry(drawnDiscard, ['Deck', 'Discard']);
+    expectSoloPileGeometryStable(idle, drawnDiscard, 'drawn discard mode');
+
+    await page
+      .getByRole('button', { name: /Reveal after discarding the drawn card/ })
+      .filter({ visible: true })
+      .first()
+      .click();
+    const aiTurn = await readSoloPileGeometry(page);
+    expectSoloPileGeometry(aiTurn, ['Deck', 'Discard']);
+    expectSoloPileGeometryStable(idle, aiTurn, 'AI turn');
+
+    await expect(deck).toBeEnabled({ timeout: 20_000 });
+    await expect(table).toHaveAttribute('data-phase', 'choose-source');
+    const returned = await readSoloPileGeometry(page);
+    expectSoloPileGeometry(returned, ['Deck', 'Discard']);
+    expectSoloPileGeometryStable(idle, returned, 'returned local turn');
+  } finally {
+    await context.close();
+  }
 });
 
 test('solo drawn-card decisions stay visible and fixed across the supported phone floor', async ({
