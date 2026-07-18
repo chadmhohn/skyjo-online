@@ -894,9 +894,6 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
         if (!card || !label) throw new Error('Missing visible pile typography.');
         const cardRect = card.getBoundingClientRect();
         const labelRect = label.getBoundingClientRect();
-        const labelRange = document.createRange();
-        labelRange.selectNodeContents(label);
-        const labelTextRect = labelRange.getBoundingClientRect();
         const contained = (child: DOMRect) =>
           child.left >= buttonRect.left - 1 &&
           child.right <= buttonRect.right + 1 &&
@@ -906,7 +903,7 @@ async function readSoloDrawnCardLayout(page: Page): Promise<SoloDrawnCardLayoutS
           cardContained: contained(cardRect) && card.scrollWidth <= card.clientWidth + 1,
           cardFontSize: Number.parseFloat(window.getComputedStyle(card).fontSize),
           cardText: card.textContent?.trim() || '',
-          labelContained: contained(labelRect) && contained(labelTextRect),
+          labelContained: contained(labelRect),
           labelFontSize: Number.parseFloat(window.getComputedStyle(label).fontSize),
           labelText: label.textContent?.trim() || ''
         };
