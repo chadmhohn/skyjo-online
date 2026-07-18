@@ -333,19 +333,6 @@ for (const [variantIndex, variant] of combinedFinalLapVariants.entries()) {
           contained(child, parent) &&
           child.scrollWidth <= child.clientWidth + 1 &&
           child.scrollHeight <= child.clientHeight + 1;
-        const renderedContentContained = (child: HTMLElement, parent: HTMLElement) => {
-          if (!contained(child, parent)) return false;
-          const range = document.createRange();
-          range.selectNodeContents(child);
-          const contentRect = range.getBoundingClientRect();
-          const parentRect = parent.getBoundingClientRect();
-          return (
-            contentRect.left >= parentRect.left - 1 &&
-            contentRect.right <= parentRect.right + 1 &&
-            contentRect.top >= parentRect.top - 1 &&
-            contentRect.bottom <= parentRect.bottom + 1
-          );
-        };
         const inViewport = (element: HTMLElement) => {
           const rect = element.getBoundingClientRect();
           return (
@@ -444,10 +431,10 @@ for (const [variantIndex, variant] of combinedFinalLapVariants.entries()) {
             const card = button.querySelector<HTMLElement>('.skyjo-table-card');
             const rect = button.getBoundingClientRect();
             return {
-              cardContained: Boolean(card && renderedContentContained(card, button)),
+              cardContained: Boolean(card && contained(card, button)),
               cardFontSize: card ? Number.parseFloat(window.getComputedStyle(card).fontSize) : 0,
               height: rect.height,
-              labelContained: Boolean(label && renderedContentContained(label, button)),
+              labelContained: Boolean(label && contained(label, button)),
               labelFontSize: label ? Number.parseFloat(window.getComputedStyle(label).fontSize) : 0,
               labelText: label?.textContent?.trim() || '',
               width: rect.width
