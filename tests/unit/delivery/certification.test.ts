@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
+  CERTIFICATION_RELEASE_VERSION,
   K6_LINUX_AMD64_SHA256,
   PERSONA_EVIDENCE_FORMAT_VERSION,
   assertRecoveryTraceMatchesCertification,
@@ -41,7 +42,7 @@ const sourceSha = 'a'.repeat(40);
 
 function releaseIdentity() {
   return {
-    version: '0.2.0',
+    version: CERTIFICATION_RELEASE_VERSION,
     sourceSha,
     buildTimestamp: '2026-07-13T12:00:00.000Z',
     schemaVersion: 2,
@@ -91,7 +92,7 @@ function personaEvidence() {
   return {
     formatVersion: PERSONA_EVIDENCE_FORMAT_VERSION,
     kind: 'skyjo-eight-client-persona',
-    release: { version: '0.2.0', sourceSha, protocolVersion: 2 },
+    release: { version: CERTIFICATION_RELEASE_VERSION, sourceSha, protocolVersion: 2 },
     topology: {
       rooms: 1,
       clients: 8,
@@ -283,7 +284,7 @@ describe('recovery RPO measurement', () => {
   });
 });
 
-describe('v0.2.0 certification evidence', () => {
+describe('v0.2.1 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     const commandId = '00000000-0000-4000-8000-000000000001';
     const sentCommand = (action: GameCommand, expectedRevision: number, nextCommandId = commandId) => ({
@@ -651,7 +652,7 @@ describe('v0.2.0 certification evidence', () => {
   });
 });
 
-describe('v0.2.0 workflow governance', () => {
+describe('v0.2.1 workflow governance', () => {
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
     const [ci, nightly, installer, load, runner, realtime, verifier, packageDocument, packageLock, changelog] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
@@ -709,9 +710,9 @@ describe('v0.2.0 workflow governance', () => {
     expect(verifier).toMatch(/assertRssStageEvidenceMatchesCertification\(evidence, rssEvidence\)/);
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
-    expect(JSON.parse(packageDocument).version).toBe('0.2.0');
+    expect(JSON.parse(packageDocument).version).toBe('0.2.1');
     expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('--retries=0');
-    expect(JSON.parse(packageLock).version).toBe('0.2.0');
-    expect(changelog).toMatch(/^## 0\.2\.0 - 2026-07-13$/m);
+    expect(JSON.parse(packageLock).version).toBe('0.2.1');
+    expect(changelog).toMatch(/^## 0\.2\.1 - 2026-07-24$/m);
   });
 });

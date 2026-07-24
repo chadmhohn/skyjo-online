@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-07-24
+
+- Patched the post-certification `brace-expansion` and `fast-uri` high-severity advisories without changing application runtime dependencies or the accepted PWA layout.
+- Carried the complete v0.2.0 feature set into an immutable successor after the v0.2.0 tag failed closed before artifact creation, canary, deployment, or GitHub Release publication.
+- Documented the remaining moderate React Router client-routing exposure and its release exception, which expires on 2026-08-21.
+
 ## 0.2.0 - 2026-07-13
 
 - Replaced whole-state multiplayer writes with revisioned, idempotent, server-authoritative commands and player-specific redacted snapshots.
