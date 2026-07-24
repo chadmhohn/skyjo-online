@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import { expect, test } from '../fixtures';
 
-const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
+const audioCuePaths = ['/audio/card-flip.mp3', '/audio/card-pickup.mp3', '/audio/card-place.mp3'];
+const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/audio\/card-(?:flip|pickup|place)\.mp3|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
 type TestPwaWorkerVariant = 'A' | 'B' | 'C' | 'D' | 'E';
 type TestPwaWorkerIdentity = {
   variant: TestPwaWorkerVariant;
@@ -432,7 +435,25 @@ test('a fresh credentialless install caches only the data-free offline solo allo
   const context = await browser.newContext({ serviceWorkers: 'allow' });
   try {
     const page = await context.newPage();
-    await page.goto(`${skyjoServer.baseURL}/login`);
+    const workerSourceResponse = await fetch(`${skyjoServer.baseURL}/sw.js`);
+    expect(workerSourceResponse.ok).toBe(true);
+    const workerSource = await workerSourceResponse.text();
+    const manifestMatch = workerSource.match(/const precacheEntries = (\[[^\n;]+\]);/);
+    expect(manifestMatch, 'Generated service worker must expose the injected Workbox manifest.').not.toBeNull();
+    const precacheEntries = JSON.parse(manifestMatch?.[1] || '[]') as Array<{ revision?: string | null; url: string }>;
+    const audioManifestEntries = precacheEntries
+      .map((entry) => ({ ...entry, path: `/${entry.url.replace(/^\/+/, '')}` }))
+      .filter((entry) => entry.path.endsWith('.mp3'))
+      .sort((left, right) => left.path.localeCompare(right.path));
+    expect(audioManifestEntries.map((entry) => entry.path)).toEqual([...audioCuePaths].sort());
+    for (const entry of audioManifestEntries) {
+      expect(entry.revision).toMatch(/^[a-f0-9]{32}$/);
+      const builtBytes = await readFile(path.resolve('dist', entry.path.slice(1)));
+      expect(entry.revision).toBe(createHash('md5').update(builtBytes).digest('hex'));
+    }
+
+    const loginResponse = await page.goto(`${skyjoServer.baseURL}/login`);
+    expect(loginResponse?.headers()['content-security-policy']).toContain("media-src 'self' data:");
     await page.evaluate(async () => {
       const legacyOnline = await caches.open('skyjo-online-v5');
       const legacyStatic = await caches.open('skyjo-static-v5');
@@ -472,13 +493,18 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     expect(cacheEvidence.keys.some((key) => key.startsWith('skyjo-online-v') || key.startsWith('skyjo-static-v'))).toBe(false);
     expect(cacheEvidence.keys.filter((key) => key.startsWith('skyjo-pwa-v2-'))).toHaveLength(1);
     expect(cacheEvidence.entries.length).toBeGreaterThan(4);
-    expect(cacheEvidence.entries.some((entry) => entry.path.endsWith('.mp3'))).toBe(false);
+    const cachedAudioPaths = cacheEvidence.entries
+      .filter((entry) => entry.path.endsWith('.mp3'))
+      .map((entry) => entry.path)
+      .sort();
+    expect(cachedAudioPaths).toEqual([...audioCuePaths].sort());
     for (const entry of cacheEvidence.entries) {
       expect(entry.cache).toMatch(/^skyjo-pwa-v2-/);
       expect(entry.path).toMatch(safeCachedPath);
       expect(entry.body).not.toMatch(/poison@example|secret invite|set-cookie|invite-code/i);
       if (entry.path.endsWith('.js')) expect(entry.contentType).toMatch(/javascript/);
       if (entry.path.endsWith('.css')) expect(entry.contentType).toMatch(/^text\/css/);
+      if (entry.path.endsWith('.mp3')) expect(entry.contentType).toMatch(/^audio\/mpeg/);
     }
 
     const sanitizedExactPath = await page.evaluate(async () => {
@@ -514,8 +540,50 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, true);
     const offlineResponse = await offlineStart.goto(`${skyjoServer.baseURL}/`, { waitUntil: 'domcontentloaded' });
     expect(offlineResponse?.headers()['content-security-policy']).toContain("form-action 'self'");
+    expect(offlineResponse?.headers()['content-security-policy']).toContain("media-src 'self' data:");
     expect(offlineResponse?.headers()['content-security-policy']).not.toContain("'unsafe-inline'");
     await expect(offlineStart.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
+    const offlineAudioResults = await offlineStart.evaluate(async (paths) => Promise.all(paths.map(async (audioPath) => {
+      const response = await fetch(audioPath, {
+        credentials: 'omit',
+        redirect: 'error'
+      });
+      const bytes = await response.arrayBuffer();
+      const audio = document.createElement('audio');
+      audio.preload = 'metadata';
+      const decodedDuration = await new Promise<number>((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error(`Audio metadata timed out for ${audioPath}.`)), 5_000);
+        audio.addEventListener('loadedmetadata', () => {
+          window.clearTimeout(timeout);
+          resolve(audio.duration);
+        }, { once: true });
+        audio.addEventListener('error', () => {
+          window.clearTimeout(timeout);
+          reject(new Error(`Audio metadata failed for ${audioPath}.`));
+        }, { once: true });
+        audio.src = audioPath;
+        audio.load();
+      }).finally(() => {
+        audio.removeAttribute('src');
+        audio.load();
+      });
+      return {
+        bytes: bytes.byteLength,
+        contentType: response.headers.get('content-type') || '',
+        decodedDuration,
+        ok: response.ok,
+        redirected: response.redirected
+      };
+    })), cachedAudioPaths);
+    for (const result of offlineAudioResults) {
+      expect(result).toMatchObject({
+        contentType: expect.stringMatching(/^audio\/mpeg/),
+        ok: true,
+        redirected: false
+      });
+      expect(result.bytes).toBeGreaterThan(1_000);
+      expect(result.decodedDuration).toBeGreaterThan(0.1);
+    }
     await offlineStart.getByRole('link', { name: 'Single Player' }).click();
     await expect(offlineStart).toHaveURL(`${skyjoServer.baseURL}/single-player`);
     await expect(offlineStart.getByRole('heading', { name: 'Single Player' })).toBeVisible();

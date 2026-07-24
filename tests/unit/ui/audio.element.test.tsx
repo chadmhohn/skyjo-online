@@ -31,8 +31,8 @@ async function loadAudio() {
 }
 
 async function flushPromises() {
-  await Promise.resolve();
-  await Promise.resolve();
+  await vi.dynamicImportSettled();
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
 function bySource(suffix: string) {
@@ -85,16 +85,15 @@ describe('HTML Audio playback', () => {
     expect(FakeAudio.instances).toHaveLength(0);
   });
 
-  it('warms ambience without touching disabled sound effects', async () => {
+  it('never constructs retired ambience from legacy settings', async () => {
     const audio = await loadAudio();
-    audio.setAudioSettings({ ambience: true, soundEffects: false });
+    audio.setAudioSettings({ ambience: true, ambienceVolume: 1, soundEffects: false });
     await flushPromises();
 
     await expect(audio.primeAudio()).resolves.toBe(true);
 
-    expect(FakeAudio.instances.map((instance) => instance.src)).toEqual(['/audio/table-ambience.mp3']);
-    expect(bySource('table-ambience.mp3').load).toHaveBeenCalledOnce();
-    expect(bySource('table-ambience.mp3').play).toHaveBeenCalledOnce();
+    expect(audio.getAudioSettings()).toEqual({ soundEffects: false, soundVolume: 0.72 });
+    expect(FakeAudio.instances).toHaveLength(0);
   });
 
   it('plays a volume-scaled cue, throttles duplicates, and cleans it up on schedule', async () => {
@@ -111,7 +110,7 @@ describe('HTML Audio playback', () => {
     expect(flip.volume).toBeCloseTo(0.72 * 0.24);
     expect(flip.muted).toBe(false);
     expect(audio.getAudioStatus()).toBe('ready');
-    expect(statusSubscriber).toHaveBeenCalledWith('ready');
+    expect(statusSubscriber).not.toHaveBeenCalled();
 
     audio.playAudioCue('flip');
     expect(flip.play).toHaveBeenCalledOnce();
@@ -151,6 +150,7 @@ describe('HTML Audio playback', () => {
     const audio = await loadAudio();
 
     audio.playAudioCue('place');
+    await flushPromises();
     expect(bySource('card-place.mp3').play).toHaveBeenCalledOnce();
     expect(audio.getAudioStatus()).toBe('ready');
 
@@ -175,35 +175,30 @@ describe('HTML Audio playback', () => {
     expect(bySource('card-place.mp3').play).toHaveBeenCalledOnce();
   });
 
-  it('starts, adjusts, and stops ambience from settings', async () => {
+  it('renders semantic score and turn cues through generated WAV fallback audio', async () => {
     const audio = await loadAudio();
 
-    audio.setAudioSettings({ ambience: true, ambienceVolume: 0.5 });
+    audio.playGameAudioEvents([
+      { cue: 'columnClear', delayMs: 0, id: 'semantic:1' },
+      { cue: 'localTurn', delayMs: 0, id: 'semantic:2' }
+    ]);
     await flushPromises();
-    const ambience = bySource('table-ambience.mp3');
-    expect(ambience.play).toHaveBeenCalledOnce();
-    expect(ambience.volume).toBeCloseTo(0.275);
-    expect(audio.getAudioStatus()).toBe('ready');
 
-    audio.setAudioSettings({ ambienceVolume: 0.8 });
-    await flushPromises();
-    expect(ambience.volume).toBeCloseTo(0.44);
-    expect(ambience.play).toHaveBeenCalledOnce();
-
-    audio.setAudioSettings({ ambience: false });
-    expect(ambience.pause).toHaveBeenCalledOnce();
-    expect(ambience.currentTime).toBe(0);
+    expect(FakeAudio.instances).toHaveLength(2);
+    FakeAudio.instances.forEach((instance) => {
+      expect(instance.src).toMatch(/^data:audio\/wav;base64,/);
+      expect(instance.play).toHaveBeenCalledOnce();
+    });
   });
 
-  it('returns false and reports blocked when ambience cannot start', async () => {
+  it('reports blocked when generated fallback playback is rejected', async () => {
     FakeAudio.playBehavior = async () => {
       throw new Error('autoplay denied');
     };
     const audio = await loadAudio();
-    audio.setAudioSettings({ ambience: true });
+    audio.playAudioCue('roundEnd');
     await flushPromises();
 
-    await expect(audio.primeAudio()).resolves.toBe(false);
     expect(audio.getAudioStatus()).toBe('blocked');
   });
 });

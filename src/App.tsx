@@ -42,7 +42,13 @@ import {
   type StatsGame,
   type StatsSummary
 } from './account';
-import { playAudioCue, playAudioTestCue, primeAudio, useAudioSettings, useGameAudio, type AudioSettings } from './audio';
+import {
+  playAudioTestCue,
+  primeAudio,
+  useAudioSettings,
+  useGameAudio,
+  type GameAudioDelivery
+} from './audio';
 import {
   activatePwaUpdate,
   getPwaUpdateSnapshot,
@@ -193,18 +199,13 @@ function AudioSettingsControls() {
     audioStatus === 'ready'
       ? 'Audio is ready.'
       : audioStatus === 'blocked'
-        ? 'Audio is blocked. Tap Test sound or interact with the page to unlock it.'
+        ? 'Audio is blocked. Tap Preview sounds or interact with the page to unlock it.'
         : audioStatus === 'unavailable'
           ? 'This browser cannot play audio assets.'
-          : 'Tap Test sound to enable audio.';
+          : 'Tap Preview sounds to enable audio.';
 
-  function updateVolume(key: keyof Pick<AudioSettings, 'ambienceVolume' | 'soundVolume'>, value: string) {
-    const volume = Number(value) / 100;
-    if (key === 'ambienceVolume') {
-      setSettings({ ambienceVolume: volume });
-      return;
-    }
-    setSettings({ soundVolume: volume });
+  function updateVolume(value: string) {
+    setSettings({ soundVolume: Number(value) / 100 });
   }
 
   return (
@@ -212,7 +213,8 @@ function AudioSettingsControls() {
       <div className="skyjo-audio-settings-grid">
         <label className="skyjo-audio-setting-row">
           <span>
-            <span className="skyjo-audio-setting-title">Sound effects</span>
+            <span className="skyjo-audio-setting-title">Game sounds</span>
+            <span className="block text-xs font-bold text-[#f5e6c8]/50">Cards, turns, and scoring</span>
           </span>
           <input
             checked={settings.soundEffects}
@@ -222,39 +224,15 @@ function AudioSettingsControls() {
           />
         </label>
         <label className="skyjo-audio-setting-slider">
-          <span>Effects volume</span>
+          <span>Game volume</span>
           <input
             className="skyjo-audio-range"
             disabled={!settings.soundEffects}
             max="100"
             min="0"
-            onChange={(event) => updateVolume('soundVolume', event.target.value)}
+            onChange={(event) => updateVolume(event.target.value)}
             type="range"
             value={Math.round(settings.soundVolume * 100)}
-          />
-        </label>
-        <label className="skyjo-audio-setting-row">
-          <span>
-            <span className="skyjo-audio-setting-title">Ambience</span>
-            <span className="block text-xs font-bold text-[#f5e6c8]/50">Quiet room tone</span>
-          </span>
-          <input
-            checked={settings.ambience}
-            className="skyjo-audio-toggle"
-            onChange={(event) => setSettings({ ambience: event.target.checked })}
-            type="checkbox"
-          />
-        </label>
-        <label className="skyjo-audio-setting-slider">
-          <span>Ambience volume</span>
-          <input
-            className="skyjo-audio-range"
-            disabled={!settings.ambience}
-            max="100"
-            min="0"
-            onChange={(event) => updateVolume('ambienceVolume', event.target.value)}
-            type="range"
-            value={Math.round(settings.ambienceVolume * 100)}
           />
         </label>
       </div>
@@ -265,7 +243,7 @@ function AudioSettingsControls() {
         onPointerDown={() => void primeAudio()}
         type="button"
       >
-        Test sound
+        Preview sounds
       </button>
       <p className="skyjo-audio-status text-xs font-bold leading-5 text-[#f5e6c8]/58">{audioStatusMessage}</p>
     </div>
@@ -1236,7 +1214,10 @@ function SinglePlayer() {
     onDismiss: () => navigate('/')
   });
 
-  useGameAudio(state);
+  useGameAudio(state, {
+    sessionId: activeGameId,
+    localPlayerId: localPlayerId ?? null
+  });
 
   useEffect(() => {
     if (accountLoading) return;
@@ -1389,11 +1370,9 @@ function SinglePlayer() {
   function handleCard(index: number) {
     if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
     if (state.phase === 'opening-reveal') {
-      void playAudioCue('flip');
       setState((current) => revealOpeningCard(current, index));
       return;
     }
-    void playAudioCue('place');
     setState((current) =>
       drawIntent === 'discard' && current.selectedSource === 'draw' && current.drawnCard
         ? discardDrawnAndReveal(current, index)
@@ -1402,12 +1381,10 @@ function SinglePlayer() {
   }
 
   function chooseDiscardForSinglePlayer() {
-    void playAudioCue('pickup');
     setState((current) => chooseDiscard(current));
   }
 
   function drawForSinglePlayer() {
-    void playAudioCue('pickup');
     setState((current) => drawBlind(current));
   }
 
@@ -1703,6 +1680,7 @@ function Lobby() {
   const roomOptionsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const roomCodeRef = useRef(initialLobby.roomCode);
   const playerIdRef = useRef(initialLobby.playerId);
+  const roomAudioNeedsBaselineRef = useRef(true);
   const terminalSessionRetiredRef = useRef(false);
   const resetRecoveryHintRef = useRef<ResetRecoveryHint | null>(
     initialLobby.recoveryCommandId && initialLobby.recoveryExpectedRevision !== undefined
@@ -1723,6 +1701,7 @@ function Lobby() {
   const [clientNow, setClientNow] = useState(() => Date.now());
   const [serverClockOffset, setServerClockOffset] = useState(0);
   const [connection, setConnection] = useState<RoomConnectionState>('idle');
+  const [roomAudioDelivery, setRoomAudioDelivery] = useState<GameAudioDelivery>('baseline');
   const [commandPending, setCommandPending] = useState(false);
   const [error, setError] = useState('');
   const [shareStatus, setShareStatus] = useState('');
@@ -1838,7 +1817,10 @@ function Lobby() {
         url: roomSocketUrl(),
         createSocket: (url) => new WebSocket(url) as unknown as RoomConnectionSocket,
         onFrame: (frame) => frameHandlerRef.current(frame),
-        onStateChange: (state) => setConnection(state),
+        onStateChange: (state) => {
+          if (state !== 'connected') roomAudioNeedsBaselineRef.current = true;
+          setConnection(state);
+        },
         onPendingCommandChange: setCommandPending,
         onError: (message) => setError(message)
       });
@@ -1947,6 +1929,13 @@ function Lobby() {
     if (message.type === 'snapshot' || message.type === 'resync') {
       const joinedPlayerId = message.playerId as string;
       const joinedRoom = multiplayerRoomForRender(message.room as PublicRoomSnapshot);
+      const audioDelivery: GameAudioDelivery =
+        message.type === 'resync'
+          ? 'resync'
+          : roomAudioNeedsBaselineRef.current
+            ? 'baseline'
+            : 'live';
+      roomAudioNeedsBaselineRef.current = false;
       const receivedAt = Date.now();
       terminalSessionRetiredRef.current = false;
       setClientNow(receivedAt);
@@ -1972,6 +1961,7 @@ function Lobby() {
       roomCodeRef.current = joinedRoom.code;
       window.localStorage.setItem('skyjo-room-code', joinedRoom.code);
       setJoinCode(joinedRoom.code);
+      setRoomAudioDelivery(audioDelivery);
       setRoom(joinedRoom);
       setError(
         message.type === 'resync' && message.reason !== 'room-reset'
@@ -2171,11 +2161,9 @@ function Lobby() {
     const active = room.state.players[room.state.currentPlayerIndex];
     if (active.id !== playerId) return;
     if (room.state.phase === 'opening-reveal') {
-      void playAudioCue('flip');
       sendCommand({ type: 'reveal-opening-card', cardIndex: index });
       return;
     }
-    void playAudioCue('place');
     sendCommand(
       drawIntent === 'discard' && room.state.selectedSource === 'draw' && room.state.drawnCard
         ? { type: 'discard-and-reveal', cardIndex: index }
@@ -2310,11 +2298,20 @@ function Lobby() {
     if (!activePhoneLayout) setRoomOptionsOpen(false);
   }, [activePhoneLayout]);
 
-  useGameAudio(roomState);
+  useGameAudio(
+    roomState,
+    room && playerId
+      ? {
+          delivery: roomAudioDelivery,
+          localPlayerId: playerId,
+          revision: room.revision,
+          sessionId: room.code
+        }
+      : undefined
+  );
 
   function chooseDiscardForRoom() {
     if (!roomState) return;
-    void playAudioCue('pickup');
     sendCommand({ type: 'choose-discard' });
   }
 
@@ -2325,7 +2322,6 @@ function Lobby() {
 
   function drawForRoom() {
     if (!roomState) return;
-    void playAudioCue('pickup');
     sendCommand({ type: 'draw-blind' });
   }
 

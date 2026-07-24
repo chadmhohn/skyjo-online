@@ -1,7 +1,7 @@
 {
   "name": "skyjo-online",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "engines": {
     "node": ">=24.15.0 <25",
@@ -12,6 +12,7 @@
     "build": "tsc && npm run build:server && vite build && node scripts/create-offline-shell.mjs && node scripts/build-service-worker.mjs",
     "postbuild": "node scripts/write-release-json.mjs",
     "build:server": "node scripts/clean-server-dist.mjs && tsc -p tsconfig.server.json",
+    "check:audio": "node scripts/check-audio-assets.mjs",
     "check:bundle": "node scripts/check-bundle-budget.mjs",
     "check:types": "tsc --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "certify:automated": "node scripts/run-automated-certification.mjs",
@@ -31,7 +32,7 @@
     "smoke:delivery": "npm run test:controller && node scripts/smoke-delivery.mjs",
     "smoke:ops": "node scripts/smoke-ops.mjs",
     "smoke:persistence": "node scripts/smoke-persistence.mjs",
-    "smoke:release": "git diff --check && npm run lint && npm run build && npm audit --audit-level=high && npm run smoke:validation && npm run smoke:ai && npm run smoke:persistence && npm run smoke:accounts && npm run smoke:ops && npm run smoke:backup && npm run smoke:delivery",
+    "smoke:release": "git diff --check && npm run lint && npm run check:audio && npm run build && npm audit --audit-level=high && npm run smoke:validation && npm run smoke:ai && npm run smoke:persistence && npm run smoke:accounts && npm run smoke:ops && npm run smoke:backup && npm run smoke:delivery",
     "smoke:validation": "npm run build:server && node scripts/smoke-validation.mjs",
     "state:backup": "node scripts/backup-state.mjs",
     "state:restore": "node scripts/restore-state.mjs",
@@ -56,7 +57,7 @@
     "test:artifact:integration": "node scripts/test-runtime-artifact-integration.mjs",
     "test:visual": "playwright test tests/e2e/visual --project=chromium",
     "test:lighthouse": "node scripts/run-lighthouse.mjs",
-    "test:quality": "git diff --check && npm run lint && npm run check:types && npm audit --audit-level=high && npm run test:unit:delivery && npm run build && npm run check:bundle"
+    "test:quality": "git diff --check && npm run lint && npm run check:types && npm audit --audit-level=high && npm run check:audio && npm run test:unit:delivery && npm run build && npm run check:bundle"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -21,6 +21,15 @@ import {
 import type { Card, GameState, MultiplayerRoom, Player, RoomChatMessage } from '../../../src/types';
 import { setMediaQueryMatches } from '../../setup/dom';
 
+const audioMocks = vi.hoisted(() => ({
+  useGameAudio: vi.fn()
+}));
+
+vi.mock('../../../src/audio', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/audio')>(),
+  useGameAudio: audioMocks.useGameAudio
+}));
+
 type SocketEventName = 'open' | 'message' | 'error' | 'close';
 type SocketListener = (event: Event | MessageEvent<string>) => void;
 
@@ -362,6 +371,7 @@ async function createJoinedRoom(room = makeRoom(), viewerPlayerId = room.hostId)
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  audioMocks.useGameAudio.mockClear();
   vi.stubGlobal('WebSocket', FakeWebSocket);
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
@@ -1172,6 +1182,46 @@ describe('multiplayer lobby', () => {
     receiveSnapshot(resumed, makeRoom({ updatedAt: 200 }));
     expect(screen.getByText(/Bob online/)).toBeInTheDocument();
     expect(screen.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
+  });
+
+  it('marks initial, live, resync, and reconnect snapshots for exact-once audio delivery', async () => {
+    const latestAudioContext = () => audioMocks.useGameAudio.mock.calls.at(-1)?.[1];
+    const { socket } = await createJoinedRoom(makeRoom({ revision: 4 }));
+
+    await waitFor(() => expect(latestAudioContext()).toEqual({
+      delivery: 'baseline',
+      localPlayerId: 'p1',
+      revision: 4,
+      sessionId: 'ABCDE'
+    }));
+
+    receiveSnapshot(socket, makeRoom({ revision: 5, updatedAt: 200 }));
+    await waitFor(() => expect(latestAudioContext()).toEqual({
+      delivery: 'live',
+      localPlayerId: 'p1',
+      revision: 5,
+      sessionId: 'ABCDE'
+    }));
+
+    receive(socket, resyncFrame(makeRoom({ revision: 6, updatedAt: 300 }), savedRecoveryCommandId));
+    await waitFor(() => expect(latestAudioContext()).toEqual({
+      delivery: 'resync',
+      localPlayerId: 'p1',
+      revision: 6,
+      sessionId: 'ABCDE'
+    }));
+
+    act(() => socket.serverClose());
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), { timeout: 1_000 });
+    const reconnected = openSocket();
+    receiveSnapshot(reconnected, makeRoom({ revision: 7, updatedAt: 400 }));
+    await waitFor(() => expect(latestAudioContext()).toEqual({
+      delivery: 'baseline',
+      localPlayerId: 'p1',
+      revision: 7,
+      sessionId: 'ABCDE'
+    }));
   });
 
   it('shows an initially offline lobby and disables room requests until online', async () => {

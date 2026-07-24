@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
     changePassword: vi.fn(async () => undefined),
     updateProfile: vi.fn(async () => undefined)
   },
-  audioSettings: { ambience: false, ambienceVolume: 0.34, soundEffects: true, soundVolume: 0.72 },
+  audioSettings: { ambience: false, ambienceVolume: 0, soundEffects: true, soundVolume: 0.72 },
   setAudioSettings: vi.fn(),
   playAudioTestCue: vi.fn(),
   primeAudio: vi.fn(async () => true),
@@ -148,7 +148,7 @@ describe('application routes and solo controls', () => {
     mocks.account.localSoloOwnerId = null;
     mocks.account.error = '';
     mocks.audioSettings.ambience = false;
-    mocks.audioSettings.ambienceVolume = 0.34;
+    mocks.audioSettings.ambienceVolume = 0;
     mocks.audioSettings.soundEffects = true;
     mocks.audioSettings.soundVolume = 0.72;
     mocks.loadPushStatus.mockResolvedValue('prompt');
@@ -172,11 +172,10 @@ describe('application routes and solo controls', () => {
     expect(screen.getByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
     expect(screen.getByText(/Sign in to save stats/)).toBeInTheDocument();
 
-    await actor.click(screen.getByRole('checkbox', { name: /Sound effects/ }));
-    await actor.click(screen.getByRole('checkbox', { name: /Ambience/ }));
-    await actor.click(screen.getByRole('button', { name: 'Test sound' }));
+    await actor.click(screen.getByRole('checkbox', { name: /Game sounds/ }));
+    expect(screen.queryByRole('checkbox', { name: /Ambience/ })).not.toBeInTheDocument();
+    await actor.click(screen.getByRole('button', { name: 'Preview sounds' }));
     expect(mocks.setAudioSettings).toHaveBeenCalledWith({ soundEffects: false });
-    expect(mocks.setAudioSettings).toHaveBeenCalledWith({ ambience: true });
     expect(mocks.playAudioTestCue).toHaveBeenCalled();
 
     view.unmount();
@@ -323,7 +322,7 @@ describe('application routes and solo controls', () => {
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /Reveal this opening card/ }).length).toBeGreaterThan(0);
     await actor.click(screen.getAllByRole('button', { name: /row 1, column 1, SKYJO face-down\. Reveal this opening card/ })[0]);
-    expect(mocks.playAudioCue).toHaveBeenCalledWith('flip');
+    expect(mocks.playAudioCue).not.toHaveBeenCalled();
 
     await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();

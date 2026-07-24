@@ -67,14 +67,14 @@ describe('lazy audio activation', () => {
     expect(LazyAudio.instances).toHaveLength(0);
     await act(async () => {
       unlock(new Event('pointerdown'));
-      await Promise.resolve();
+      await vi.dynamicImportSettled();
     });
     expect(LazyAudio.instances).toHaveLength(0);
 
     await act(async () => {
       unlock(trustedEvent());
       unlock(trustedEvent());
-      await Promise.resolve();
+      await vi.dynamicImportSettled();
     });
     expect(LazyAudio.instances.map((instance) => instance.src)).toEqual([
       '/audio/card-flip.mp3',
@@ -97,7 +97,7 @@ describe('lazy audio activation', () => {
 
     await act(async () => {
       unlock(trustedEvent());
-      await Promise.resolve();
+      await vi.dynamicImportSettled();
     });
     expect(LazyAudio.instances).toHaveLength(3);
 
@@ -113,7 +113,7 @@ describe('lazy audio activation', () => {
     await act(async () => {
       unlock(trustedEvent());
       unlock(trustedEvent());
-      await Promise.resolve();
+      await vi.dynamicImportSettled();
     });
     expect(LazyAudio.instances).toHaveLength(6);
     LazyAudio.instances.slice(3).forEach((instance) => expect(instance.load).toHaveBeenCalledOnce());
@@ -132,7 +132,7 @@ describe('lazy audio activation', () => {
 
     await act(async () => {
       unlock(trustedEvent());
-      await Promise.resolve();
+      await vi.dynamicImportSettled();
     });
     audio.playAudioCue('flip');
 

@@ -284,7 +284,7 @@ describe('recovery RPO measurement', () => {
   });
 });
 
-describe('v0.2.1 certification evidence', () => {
+describe('v0.2.2 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     const commandId = '00000000-0000-4000-8000-000000000001';
     const sentCommand = (action: GameCommand, expectedRevision: number, nextCommandId = commandId) => ({
@@ -652,7 +652,7 @@ describe('v0.2.1 certification evidence', () => {
   });
 });
 
-describe('v0.2.1 workflow governance', () => {
+describe('v0.2.2 workflow governance', () => {
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
     const [ci, nightly, installer, load, runner, realtime, verifier, packageDocument, packageLock, changelog] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
@@ -710,9 +710,9 @@ describe('v0.2.1 workflow governance', () => {
     expect(verifier).toMatch(/assertRssStageEvidenceMatchesCertification\(evidence, rssEvidence\)/);
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
-    expect(JSON.parse(packageDocument).version).toBe('0.2.1');
+    expect(JSON.parse(packageDocument).version).toBe('0.2.2');
     expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('--retries=0');
-    expect(JSON.parse(packageLock).version).toBe('0.2.1');
-    expect(changelog).toMatch(/^## 0\.2\.1 - 2026-07-24$/m);
+    expect(JSON.parse(packageLock).version).toBe('0.2.2');
+    expect(changelog).toMatch(/^## 0\.2\.2 - 2026-07-24$/m);
   });
 });

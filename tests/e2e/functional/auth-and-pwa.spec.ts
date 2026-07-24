@@ -102,7 +102,15 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   expect(serviceWorkerSource).toContain("addEventListener('push'");
   expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
   expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
-  expect(serviceWorkerSource).not.toMatch(/(?:__WB_MANIFEST|url)[^\n]*audio\/[^\n]*\.mp3/);
+  const precachedAudioPaths = [...serviceWorkerSource.matchAll(/"url":"(audio\/[^"]+\.mp3)"/g)]
+    .map((match) => `/${match[1]}`)
+    .sort();
+  expect(precachedAudioPaths).toEqual([
+    '/audio/card-flip.mp3',
+    '/audio/card-pickup.mp3',
+    '/audio/card-place.mp3'
+  ]);
+  expect(serviceWorkerSource).not.toContain('table-ambience.mp3');
   const originGuardIndex = serviceWorkerSource.indexOf('if (event.origin !== self.location.origin) return;');
   const activationIndex = serviceWorkerSource.indexOf('if (isActivation) {');
   const skipWaitingIndex = serviceWorkerSource.indexOf('void self.skipWaiting().catch(() => {});');

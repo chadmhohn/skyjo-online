@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-07-24
+
+- Kept the existing card-flip cue while replacing the delayed pickup and place files with short, responsive table sounds.
+- Removed the continuous ambience loop and added restrained, exact-once cues for local turns, cleared columns, and round or game completion.
+- Added safe audio-setting migration, offline cue precaching, asset-budget validation, and deterministic audio controller coverage.
+
 ## 0.2.1 - 2026-07-24
 
 - Patched the post-certification `brace-expansion` and `fast-uri` high-severity advisories without changing application runtime dependencies or the accepted PWA layout.
