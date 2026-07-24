@@ -102,6 +102,14 @@ jobs:
           node-version-file: .node-version
           cache: npm
 
+      - name: Install audio inspection tools
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
       - name: Install locked dependencies
         run: npm ci
 
