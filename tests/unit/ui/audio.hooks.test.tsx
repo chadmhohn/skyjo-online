@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { GameState } from '../../../src/types';
-import { setAudioSettings, useAudioSettings, useGameAudio } from '../../../src/audio';
+import type { GameAudioContext } from '../../../src/audioEvents';
+import type { Card, GameState, Player } from '../../../src/types';
 
 class HookAudio {
   static instances: HookAudio[] = [];
@@ -11,6 +11,7 @@ class HookAudio {
   paused = true;
   preload = '';
   volume = 1;
+  readonly addEventListener = vi.fn();
   readonly load = vi.fn();
   readonly pause = vi.fn(() => {
     this.paused = true;
@@ -18,32 +19,86 @@ class HookAudio {
   readonly play = vi.fn(async () => {
     this.paused = false;
   });
+  readonly removeEventListener = vi.fn();
 
   constructor(readonly src: string) {
     HookAudio.instances.push(this);
   }
 }
 
-function gameWithLog(message: string) {
-  return { log: message ? [message] : [] } as unknown as GameState;
+function card(id: string, value = 1, faceUp = false): Card {
+  return { faceUp, id, removed: false, value };
 }
 
-function playsFor(suffix: string) {
+function player(id: string): Player {
+  return {
+    grid: Array.from({ length: 12 }, (_, index) => card(`${id}-${index}`)),
+    id,
+    kind: 'human',
+    name: id,
+    roundScore: 0,
+    totalScore: 0
+  };
+}
+
+function game(overrides: Partial<GameState> = {}): GameState {
+  return {
+    currentPlayerIndex: 0,
+    discardPile: [card('discard', 4, true)],
+    drawPile: [card('drawn', 7), card('draw-next', 2)],
+    drawnCard: null,
+    finalTurnPlayerIds: [],
+    log: ['Localized display copy is not an audio protocol'],
+    nextStarterId: null,
+    openingRevealCounts: { local: 2, remote: 2 },
+    phase: 'choose-source',
+    players: [player('local'), player('remote')],
+    round: 1,
+    roundCloserId: null,
+    roundHistory: [],
+    selectedSource: null,
+    winnerId: null,
+    ...overrides
+  };
+}
+
+function context(revision: number, overrides: Partial<GameAudioContext> = {}): GameAudioContext {
+  return {
+    delivery: 'live',
+    localPlayerId: 'local',
+    revision,
+    sessionId: 'hook-session',
+    visible: true,
+    ...overrides
+  };
+}
+
+async function loadAudio() {
+  vi.resetModules();
+  return import('../../../src/audio');
+}
+
+async function flushPromises(rounds = 12) {
+  await vi.dynamicImportSettled();
+  for (let index = 0; index < rounds; index += 1) await Promise.resolve();
+}
+
+function playCount(suffix: string) {
   return HookAudio.instances
-    .filter((audio) => audio.src.endsWith(suffix))
-    .reduce((total, audio) => total + audio.play.mock.calls.length, 0);
+    .filter((instance) => instance.src.endsWith(suffix))
+    .reduce((total, instance) => total + instance.play.mock.calls.length, 0);
 }
 
-describe('audio hooks', () => {
-  let testClock = Date.parse('2026-07-12T12:00:00Z');
-
+describe('root audio hooks', () => {
   beforeEach(() => {
+    window.localStorage.clear();
     vi.useFakeTimers();
-    testClock += 10_000;
-    vi.setSystemTime(testClock);
+    vi.setSystemTime(new Date('2026-07-24T20:00:00Z'));
+    HookAudio.instances = [];
     vi.stubGlobal('Audio', HookAudio);
     Object.defineProperty(window, 'AudioContext', { configurable: true, value: undefined });
-    setAudioSettings({ ambience: false, ambienceVolume: 0.34, soundEffects: true, soundVolume: 0.72 });
+    Object.defineProperty(window, 'webkitAudioContext', { configurable: true, value: undefined });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   });
 
   afterEach(() => {
@@ -52,100 +107,134 @@ describe('audio hooks', () => {
     vi.unstubAllGlobals();
   });
 
-  it('subscribes to settings and browser lifecycle events, then cleans up', async () => {
+  it('installs one lifecycle listener set across multiple hook consumers and removes it after the last unmount', async () => {
     const windowAdd = vi.spyOn(window, 'addEventListener');
     const windowRemove = vi.spyOn(window, 'removeEventListener');
     const documentAdd = vi.spyOn(document, 'addEventListener');
     const documentRemove = vi.spyOn(document, 'removeEventListener');
-    const audioInstancesBeforeMount = HookAudio.instances.length;
-    const { result, unmount } = renderHook(() => useAudioSettings());
+    const audio = await loadAudio();
 
-    expect(HookAudio.instances).toHaveLength(audioInstancesBeforeMount);
-    expect(result.current[0].soundVolume).toBe(0.72);
-    expect(windowAdd.mock.calls.map(([event]) => event)).toEqual(
-      expect.arrayContaining(['pointerdown', 'touchstart', 'click', 'keydown', 'focus', 'pageshow'])
-    );
-    expect(documentAdd).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+    const settingsHook = renderHook(() => audio.useAudioSettings());
+    const gameHook = renderHook(() => audio.useGameAudio(null));
+    for (const eventName of ['pointerdown', 'touchstart', 'click', 'keydown', 'focus', 'pageshow']) {
+      expect(windowAdd.mock.calls.filter(([name]) => name === eventName)).toHaveLength(1);
+    }
+    expect(documentAdd.mock.calls.filter(([name]) => name === 'visibilitychange')).toHaveLength(1);
 
-    await act(async () => {
-      result.current[1]({ ambience: true, ambienceVolume: 0.6, soundVolume: 0.4 });
-      await Promise.resolve();
-    });
-    expect(result.current[0]).toMatchObject({ ambience: true, ambienceVolume: 0.6, soundVolume: 0.4 });
-    expect(result.current[2]).toBe('ready');
+    settingsHook.unmount();
+    expect(windowRemove).not.toHaveBeenCalled();
+    expect(documentRemove).not.toHaveBeenCalled();
 
-    await act(async () => {
-      window.dispatchEvent(new Event('pointerdown'));
-      await Promise.resolve();
-    });
-    const ambience = HookAudio.instances.find((audio) => audio.src.endsWith('table-ambience.mp3'));
-    expect(ambience?.play).toHaveBeenCalledOnce();
-
-    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
-    act(() => document.dispatchEvent(new Event('visibilitychange')));
-    expect(ambience?.pause).toHaveBeenCalled();
-
-    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
-    await act(async () => {
-      vi.advanceTimersByTime(501);
-      window.dispatchEvent(new Event('focus'));
-      await Promise.resolve();
-    });
-    expect(HookAudio.instances).toHaveLength(audioInstancesBeforeMount + 1);
-
-    unmount();
-    expect(windowRemove.mock.calls.map(([event]) => event)).toEqual(
-      expect.arrayContaining(['pointerdown', 'touchstart', 'click', 'keydown', 'focus', 'pageshow'])
-    );
-    expect(documentRemove).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+    gameHook.unmount();
+    for (const eventName of ['pointerdown', 'touchstart', 'click', 'keydown', 'focus', 'pageshow']) {
+      expect(windowRemove.mock.calls.filter(([name]) => name === eventName)).toHaveLength(1);
+    }
+    expect(documentRemove.mock.calls.filter(([name]) => name === 'visibilitychange')).toHaveLength(1);
   });
 
-  it('maps new game-log events to pickup, place, and flip cues without replaying the initial log', async () => {
-    const pickupBefore = playsFor('card-pickup.mp3');
-    const placeBefore = playsFor('card-place.mp3');
-    const flipBefore = playsFor('card-flip.mp3');
-    const { rerender } = renderHook(({ state }: { state: GameState }) => useGameAudio(state), {
-      initialProps: { state: gameWithLog('Alice drew a card') }
-    });
-    expect(playsFor('card-pickup.mp3')).toBe(pickupBefore);
+  it('plays a typed transition once and suppresses its delayed authoritative echo', async () => {
+    const audio = await loadAudio();
+    const initial = game();
+    const accepted = {
+      ...initial,
+      drawPile: initial.drawPile.slice(1),
+      drawnCard: { ...initial.drawPile[0], faceUp: true },
+      phase: 'choose-replacement' as const,
+      selectedSource: 'draw' as const
+    };
+    const rendered = renderHook(
+      ({ state, audioContext }: { state: GameState; audioContext: GameAudioContext }) =>
+        audio.useGameAudio(state, audioContext),
+      { initialProps: { state: initial, audioContext: context(100, { delivery: 'baseline' }) } }
+    );
+    expect(playCount('card-pickup.mp3')).toBe(0);
 
-    rerender({ state: gameWithLog('Alice drew a 5') });
-    await act(async () => Promise.resolve());
-    expect(playsFor('card-pickup.mp3')).toBe(pickupBefore + 1);
+    rendered.rerender({ state: accepted, audioContext: context(101) });
+    await act(async () => flushPromises());
+    expect(playCount('card-pickup.mp3')).toBe(1);
 
-    await vi.advanceTimersByTimeAsync(500);
-    rerender({ state: gameWithLog('Alice discarded a 7 and revealed a card') });
-    await act(async () => Promise.resolve());
-    expect(playsFor('card-place.mp3')).toBe(placeBefore + 1);
-    await vi.advanceTimersByTimeAsync(120);
-    expect(playsFor('card-flip.mp3')).toBe(flipBefore + 1);
-
-    await vi.advanceTimersByTimeAsync(500);
-    rerender({ state: gameWithLog('Alice replaced a card') });
-    await act(async () => Promise.resolve());
-    expect(playsFor('card-place.mp3')).toBe(placeBefore + 2);
-
-    await vi.advanceTimersByTimeAsync(500);
-    rerender({ state: gameWithLog('Alice revealed an opening card') });
-    await act(async () => Promise.resolve());
-    expect(playsFor('card-flip.mp3')).toBe(flipBefore + 2);
-
-    rerender({ state: gameWithLog('Alice revealed an opening card') });
-    await act(async () => Promise.resolve());
-    expect(playsFor('card-flip.mp3')).toBe(flipBefore + 2);
+    rendered.rerender({ state: accepted, audioContext: context(101) });
+    await act(async () => flushPromises());
+    expect(playCount('card-pickup.mp3')).toBe(1);
+    rendered.unmount();
   });
 
-  it('ignores empty logs and recognizes the finished-opening cue', async () => {
-    const flipBefore = playsFor('card-flip.mp3');
-    const { rerender } = renderHook(({ state }: { state: GameState | null }) => useGameAudio(state), {
-      initialProps: { state: null as GameState | null }
+  it('supplies a monotonic local revision sequence when solo context omits revision', async () => {
+    const audio = await loadAudio();
+    const initial = game();
+    const accepted = {
+      ...initial,
+      drawPile: initial.drawPile.slice(1),
+      drawnCard: { ...initial.drawPile[0], faceUp: true },
+      phase: 'choose-replacement' as const,
+      selectedSource: 'draw' as const
+    };
+    const soloContext: GameAudioContext = {
+      localPlayerId: 'local',
+      sessionId: 'solo-game-id',
+      visible: true
+    };
+    const rendered = renderHook(
+      ({ state }: { state: GameState }) => audio.useGameAudio(state, soloContext),
+      { initialProps: { state: initial } }
+    );
+
+    rendered.rerender({ state: accepted });
+    await act(async () => flushPromises());
+    expect(playCount('card-pickup.mp3')).toBe(1);
+
+    rendered.rerender({ state: accepted });
+    await act(async () => flushPromises());
+    expect(playCount('card-pickup.mp3')).toBe(1);
+
+    rendered.rerender({ state: { ...accepted, log: ['Only display copy changed'] } });
+    await act(async () => flushPromises());
+    expect(playCount('card-pickup.mp3')).toBe(1);
+    rendered.unmount();
+  });
+
+  it('keeps resync/background frames silent and resumes only from a later contiguous live transition', async () => {
+    const audio = await loadAudio();
+    const waiting = game({ currentPlayerIndex: 1 });
+    const localTurn = game({ currentPlayerIndex: 0 });
+    const rendered = renderHook(
+      ({ state, audioContext }: { state: GameState; audioContext: GameAudioContext }) =>
+        audio.useGameAudio(state, audioContext),
+      { initialProps: { state: waiting, audioContext: context(20, { delivery: 'baseline' }) } }
+    );
+
+    rendered.rerender({ state: localTurn, audioContext: context(21, { delivery: 'resync' }) });
+    await act(async () => flushPromises());
+    expect(HookAudio.instances).toHaveLength(0);
+
+    rendered.rerender({ state: waiting, audioContext: context(22, { visible: false }) });
+    await act(async () => flushPromises());
+    expect(HookAudio.instances).toHaveLength(0);
+
+    rendered.rerender({ state: localTurn, audioContext: context(23) });
+    await act(async () => flushPromises());
+    expect(HookAudio.instances).toHaveLength(1);
+    expect(HookAudio.instances[0].src).toMatch(/^data:audio\/wav;base64,/);
+    expect(HookAudio.instances[0].play).toHaveBeenCalledOnce();
+    rendered.unmount();
+  });
+
+  it('preserves legacy one-argument hook calls as silent lifecycle consumers', async () => {
+    const audio = await loadAudio();
+    const initial = game();
+    const accepted = {
+      ...initial,
+      drawnCard: { ...initial.drawPile[0], faceUp: true },
+      phase: 'choose-replacement' as const,
+      selectedSource: 'draw' as const
+    };
+    const rendered = renderHook(({ state }: { state: GameState }) => audio.useGameAudio(state), {
+      initialProps: { state: initial }
     });
 
-    rerender({ state: gameWithLog('') });
-    expect(playsFor('card-flip.mp3')).toBe(flipBefore);
-    rerender({ state: gameWithLog('Alice waits') });
-    rerender({ state: gameWithLog('Alice finished opening reveals') });
-    await act(async () => Promise.resolve());
-    expect(playsFor('card-flip.mp3')).toBe(flipBefore + 1);
+    rendered.rerender({ state: accepted });
+    await act(async () => flushPromises());
+    expect(HookAudio.instances).toHaveLength(0);
+    rendered.unmount();
   });
 });

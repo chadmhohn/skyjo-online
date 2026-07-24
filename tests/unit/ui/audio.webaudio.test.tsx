@@ -173,21 +173,22 @@ describe('WebAudio playback', () => {
     expect(FakeBufferSource.instances[0].start).toHaveBeenCalledOnce();
   });
 
-  it('reports blocked when context resume fails', async () => {
+  it('falls back to HTML Audio when context resume fails', async () => {
     FakeAudioContext.initialState = 'suspended';
     FakeAudioContext.rejectResume = true;
     const audio = await loadAudio();
 
     await expect(audio.primeAudio()).resolves.toBe(true);
-    expect(audio.getAudioStatus()).toBe('blocked');
+    expect(audio.getAudioStatus()).toBe('idle');
 
     audio.playAudioCue('place');
     await flushPromises();
-    expect(audio.getAudioStatus()).toBe('blocked');
+    expect(audio.getAudioStatus()).toBe('ready');
     expect(FakeBufferSource.instances).toHaveLength(0);
+    expect(AmbienceAudio.instances.find((instance) => instance.src.endsWith('card-place.mp3'))?.play).toHaveBeenCalledOnce();
   });
 
-  it('handles failed fetches and unavailable decoded buffers', async () => {
+  it('falls back to HTML Audio after failed fetch/decode', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 503 })));
     const audio = await loadAudio();
     await audio.primeAudio();
@@ -196,8 +197,9 @@ describe('WebAudio playback', () => {
     audio.playAudioCue('flip');
     await flushPromises();
 
-    expect(audio.getAudioStatus()).toBe('blocked');
+    expect(audio.getAudioStatus()).toBe('ready');
     expect(FakeBufferSource.instances).toHaveLength(0);
+    expect(AmbienceAudio.instances.find((instance) => instance.src.endsWith('card-flip.mp3'))?.play).toHaveBeenCalledOnce();
   });
 
   it('recreates a context that was closed between primes', async () => {

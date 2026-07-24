@@ -1,6 +1,6 @@
 import { expect, test } from '../fixtures';
 
-const audioSettingsKey = 'skyjo-audio-settings-v2';
+const audioSettingsKey = 'skyjo-audio-settings-v3';
 const cuePaths = ['/audio/card-flip.mp3', '/audio/card-pickup.mp3', '/audio/card-place.mp3'];
 
 test.describe('lazy audio loading', () => {
@@ -61,7 +61,7 @@ test.describe('lazy audio loading', () => {
     await expect(page.getByRole('heading', { name: 'Skyjo', exact: true })).toBeVisible();
     expect(audioRequests).toEqual([]);
 
-    await page.getByRole('button', { name: 'Test sound' }).click();
+    await page.getByRole('button', { name: 'Preview sounds' }).click();
     await expect.poll(() => [...audioRequests].sort()).toEqual([...cuePaths].sort());
 
     await page.evaluate(() => {
@@ -80,11 +80,11 @@ test.describe('lazy audio loading', () => {
     expect([...audioRequests].sort()).toEqual([...cuePaths].sort());
   });
 
-  test('disabled sound and ambience do not request audio after trusted gestures', async ({ page, skyjoServer }) => {
+  test('disabled game sounds do not request audio after trusted gestures', async ({ page, skyjoServer }) => {
     await page.addInitScript(({ key }) => {
       window.localStorage.setItem(
         key,
-        JSON.stringify({ ambience: false, ambienceVolume: 0.34, soundEffects: false, soundVolume: 0.72 })
+        JSON.stringify({ ambience: false, ambienceVolume: 0, soundEffects: false, soundVolume: 0.72 })
       );
     }, { key: audioSettingsKey });
     const audioRequests: string[] = [];

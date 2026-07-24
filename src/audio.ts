@@ -1,55 +1,53 @@
 import { useEffect, useRef, useState } from 'react';
+import {
+  deriveGameAudioEvents,
+  type GameAudioContext,
+  type GameAudioEvent,
+  type GameAudioFrame,
+  type SemanticAudioCue
+} from './audioEvents';
 import type { GameState } from './types';
 
-export type AudioCue = 'flip' | 'pickup' | 'place';
+export type AudioCue = SemanticAudioCue;
 export type AudioStatus = 'idle' | 'ready' | 'blocked' | 'unavailable';
+export type { GameAudioContext, GameAudioDelivery, GameAudioEvent, GameAudioFrame } from './audioEvents';
 
 export interface AudioSettings {
-  ambience: boolean;
-  ambienceVolume: number;
   soundEffects: boolean;
   soundVolume: number;
 }
 
-type CueAsset = {
-  src: string;
-  minGapMs: number;
-  stopAfterMs?: number;
-  volumeScale: number;
+type PlaybackEngine = typeof import('./audioPlaybackEngine');
+type LegacyAudioSettingsUpdate = Partial<AudioSettings> & {
+  ambience?: unknown;
+  ambienceVolume?: unknown;
 };
 
-const audioSettingsKey = 'skyjo-audio-settings-v2';
-const legacyAudioSettingsKey = 'skyjo-audio-settings-v1';
-const cueAssets: Record<AudioCue, CueAsset> = {
-  flip: { src: '/audio/card-flip.mp3', minGapMs: 180, stopAfterMs: 520, volumeScale: 0.24 },
-  pickup: { src: '/audio/card-pickup.mp3', minGapMs: 450, stopAfterMs: 380, volumeScale: 0.18 },
-  place: { src: '/audio/card-place.mp3', minGapMs: 260, stopAfterMs: 340, volumeScale: 0.14 }
-};
-const ambienceSrc = '/audio/table-ambience.mp3';
+const audioSettingsKeys = [
+  'skyjo-audio-settings-v3',
+  'skyjo-audio-settings-v2',
+  'skyjo-audio-settings-v1'
+] as const;
+const retainedSemanticEventIds = 256;
 const defaultAudioSettings: AudioSettings = {
-  ambience: false,
-  ambienceVolume: 0.34,
   soundEffects: true,
   soundVolume: 0.72
 };
-const subscribers = new Set<(settings: AudioSettings) => void>();
+
+const settingsSubscribers = new Set<(settings: AudioSettings) => void>();
 const statusSubscribers = new Set<(status: AudioStatus) => void>();
-const cueAudioElements = new Map<AudioCue, HTMLAudioElement>();
-const cueAudioBuffers = new Map<AudioCue, AudioBuffer>();
-const cueAudioBufferPromises = new Map<AudioCue, Promise<AudioBuffer | null>>();
-const lastCuePlayedAt = new Map<AudioCue, number>();
-const cuePlayTokens = new Map<AudioCue, number>();
+const playedSemanticEventIds = new Set<string>();
 
 let audioSettings = readStoredAudioSettings();
 let audioStatus: AudioStatus = 'idle';
 let audioContext: AudioContext | null = null;
-let ambienceAudio: HTMLAudioElement | null = null;
-let cueAssetsPreloaded = false;
-let ambienceAssetPreloaded = false;
 let audioPrimeInFlight: Promise<boolean> | null = null;
-let audioBlockedUntil = 0;
-let ambienceStartInFlight: Promise<void> | null = null;
+let playbackEngine: PlaybackEngine | null = null;
+let playbackEnginePromise: Promise<PlaybackEngine> | null = null;
+let playbackGeneration = 0;
+let localRevisionSeed = 0;
 let lastAudioResumeResetAt = 0;
+let lifecycleConsumers = 0;
 
 function isBrowser() {
   return typeof window !== 'undefined';
@@ -59,32 +57,47 @@ function hasAudioElement() {
   return isBrowser() && typeof Audio !== 'undefined';
 }
 
-function audioContextConstructor() {
-  if (!isBrowser()) return null;
-  return window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext || null;
-}
-
-function hasWebAudio() {
-  return Boolean(audioContextConstructor());
-}
-
-function getAudioContext() {
-  const AudioContextConstructor = audioContextConstructor();
+/**
+ * This function is deliberately synchronous. Calling it directly from the
+ * trusted activation handler preserves Safari's user-activation token before
+ * the lazy playback chunk crosses its first async boundary.
+ */
+function getAudioContextSynchronously() {
+  const AudioContextConstructor = isBrowser()
+    ? window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    : null;
   if (!AudioContextConstructor) return null;
-  if (!audioContext || audioContext.state === 'closed') audioContext = new AudioContextConstructor();
-  return audioContext;
+  try {
+    if (!audioContext || audioContext.state === 'closed') audioContext = new AudioContextConstructor();
+    return audioContext;
+  } catch {
+    return null;
+  }
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
+/**
+ * Invokes resume synchronously and only awaits the already-started operation.
+ */
+function resumeAudioContextSynchronously(context: AudioContext | null) {
+  if (!context || context.state !== 'suspended') return Promise.resolve(true);
+  try {
+    return Promise.resolve(context.resume()).then(
+      () => true,
+      () => false
+    );
+  } catch {
+    return Promise.resolve(false);
+  }
 }
 
 function normalizeSettings(parsed: Partial<AudioSettings>): AudioSettings {
+  const parsedVolume = Number(parsed.soundVolume ?? defaultAudioSettings.soundVolume);
   return {
-    ambience: Boolean(parsed.ambience ?? defaultAudioSettings.ambience),
-    ambienceVolume: clamp(Number(parsed.ambienceVolume ?? defaultAudioSettings.ambienceVolume), 0, 1),
     soundEffects: Boolean(parsed.soundEffects ?? defaultAudioSettings.soundEffects),
-    soundVolume: clamp(Number(parsed.soundVolume ?? defaultAudioSettings.soundVolume), 0, 1)
+    soundVolume: Number.isFinite(parsedVolume)
+      ? Math.min(1, Math.max(0, parsedVolume))
+      : defaultAudioSettings.soundVolume
   };
 }
 
@@ -92,359 +105,182 @@ function readStoredAudioSettings(): AudioSettings {
   if (!isBrowser()) return defaultAudioSettings;
 
   try {
-    const stored = window.localStorage.getItem(audioSettingsKey);
-    if (stored) return normalizeSettings(JSON.parse(stored) as Partial<AudioSettings>);
-
-    const legacyStored = window.localStorage.getItem(legacyAudioSettingsKey);
-    if (!legacyStored) return defaultAudioSettings;
-    const legacyParsed = JSON.parse(legacyStored) as Partial<AudioSettings>;
-    return normalizeSettings({
-      soundEffects: legacyParsed.soundEffects,
-      soundVolume: legacyParsed.soundVolume
-    });
+    for (const key of audioSettingsKeys) {
+      const stored = window.localStorage.getItem(key);
+      if (stored) return normalizeSettings(JSON.parse(stored) as Partial<AudioSettings>);
+    }
   } catch {
     return defaultAudioSettings;
   }
+  return defaultAudioSettings;
 }
 
 function writeStoredAudioSettings(settings: AudioSettings) {
   if (!isBrowser()) return;
-  window.localStorage.setItem(audioSettingsKey, JSON.stringify(settings));
-}
-
-function notifySubscribers() {
-  subscribers.forEach((subscriber) => subscriber(audioSettings));
-}
-
-function notifyStatusSubscribers() {
-  statusSubscribers.forEach((subscriber) => subscriber(audioStatus));
+  try {
+    window.localStorage.setItem(audioSettingsKeys[0], JSON.stringify(settings));
+  } catch {
+    // Audio remains usable when private browsing or storage policy blocks writes.
+  }
 }
 
 function setAudioStatus(status: AudioStatus) {
   if (audioStatus === status) return;
   audioStatus = status;
-  notifyStatusSubscribers();
+  statusSubscribers.forEach((subscriber) => subscriber(status));
 }
 
-function makeAudioElement(src: string) {
-  if (!hasAudioElement()) {
-    setAudioStatus('unavailable');
-    return null;
-  }
-  const audio = new Audio(src);
-  audio.preload = 'auto';
-  return audio;
+function isPageVisible() {
+  return document.visibilityState !== 'hidden';
 }
 
-function cueElement(cue: AudioCue) {
-  const existing = cueAudioElements.get(cue);
-  if (existing) return existing;
-  const audio = makeAudioElement(cueAssets[cue].src);
-  if (!audio) return null;
-  cueAudioElements.set(cue, audio);
-  return audio;
+function effectsEnabled() {
+  return audioSettings.soundEffects && audioSettings.soundVolume > 0;
 }
 
-function preloadEnabledAudioAssets() {
-  const shouldPreloadCues = audioSettings.soundEffects && audioSettings.soundVolume > 0;
-  const shouldPreloadAmbience = audioSettings.ambience && audioSettings.ambienceVolume > 0;
-  if (!shouldPreloadCues && !shouldPreloadAmbience) return;
-  if ((shouldPreloadCues && !hasWebAudio() && !hasAudioElement()) || (shouldPreloadAmbience && !hasAudioElement())) {
-    setAudioStatus('unavailable');
-    return;
-  }
-
-  if (shouldPreloadCues && !cueAssetsPreloaded) {
-    cueAssetsPreloaded = true;
-    if (hasWebAudio()) {
-      (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
-        void cueBuffer(cue);
-      });
-    } else {
-      (Object.keys(cueAssets) as AudioCue[]).forEach((cue) => {
-        cueElement(cue)?.load();
-      });
-    }
-  }
-
-  if (shouldPreloadAmbience && !ambienceAssetPreloaded) {
-    const ambience = ensureAmbienceAudio();
-    if (ambience) {
-      ambienceAssetPreloaded = true;
-      ambience.load();
-    }
-  }
+function configurePlaybackEngine(engine: PlaybackEngine) {
+  engine.configureAudioPlaybackEngine({
+    getSettings: () => audioSettings,
+    isPageVisible,
+    setStatus: setAudioStatus
+  });
+  engine.setAudioPlaybackContext(audioContext);
+  return engine;
 }
 
-async function cueBuffer(cue: AudioCue) {
-  const existing = cueAudioBuffers.get(cue);
-  if (existing) return existing;
-  const existingPromise = cueAudioBufferPromises.get(cue);
-  if (existingPromise) return existingPromise;
-
-  const context = getAudioContext();
-  if (!context) return null;
-  const promise = fetch(cueAssets[cue].src)
-    .then((response) => {
-      if (!response.ok) throw new Error(`Could not load audio cue ${cue}`);
-      return response.arrayBuffer();
-    })
-    .then((data) => context.decodeAudioData(data.slice(0)))
-    .then((buffer) => {
-      cueAudioBuffers.set(cue, buffer);
-      return buffer;
-    })
-    .catch(() => null)
-    .finally(() => {
-      cueAudioBufferPromises.delete(cue);
+function loadPlaybackEngine() {
+  if (playbackEngine) return Promise.resolve(playbackEngine);
+  if (playbackEnginePromise) return playbackEnginePromise;
+  playbackEnginePromise = import('./audioPlaybackEngine')
+    .then((engine) => {
+      playbackEngine = configurePlaybackEngine(engine);
+      return playbackEngine;
     });
-  cueAudioBufferPromises.set(cue, promise);
-  return promise;
+  return playbackEnginePromise;
+}
+
+function activatePlayback() {
+  if (!effectsEnabled() || !isPageVisible()) return Promise.resolve(null);
+  const context = getAudioContextSynchronously();
+  const resume = resumeAudioContextSynchronously(context);
+  if (!context && !hasAudioElement()) {
+    setAudioStatus('unavailable');
+    return Promise.resolve(null);
+  }
+  const generation = playbackGeneration;
+  return Promise.all([resume, loadPlaybackEngine()])
+    .then(([resumed, engine]) => {
+      if (generation !== playbackGeneration || !effectsEnabled() || !isPageVisible()) return null;
+      engine.setAudioPlaybackContext(context);
+      return [engine, resumed] as const;
+    })
+    .catch(() => {
+      setAudioStatus('unavailable');
+      return null;
+    });
+}
+
+function invalidatePendingPlayback() {
+  playbackGeneration += 1;
+  audioPrimeInFlight = null;
+  playbackEngine?.stopAudioPlayback();
 }
 
 function resetAudioAfterResume() {
-  if (document.visibilityState === 'hidden') {
-    stopAmbience();
+  if (!isPageVisible()) {
+    invalidatePendingPlayback();
     if (audioContext?.state === 'running') void audioContext.suspend().catch(() => undefined);
-    audioBlockedUntil = 0;
-    lastCuePlayedAt.clear();
     return;
   }
+
   const now = Date.now();
   if (now - lastAudioResumeResetAt < 500) return;
   lastAudioResumeResetAt = now;
-
-  audioBlockedUntil = 0;
-  lastCuePlayedAt.clear();
-  cuePlayTokens.clear();
-  cueAudioElements.forEach((audio) => cleanupCueAudio(audio));
-  cueAudioElements.clear();
-  if (ambienceAudio) {
-    ambienceAudio.pause();
-    ambienceAudio = null;
-  }
-  ambienceStartInFlight = null;
-  cueAssetsPreloaded = false;
-  ambienceAssetPreloaded = false;
+  playbackGeneration += 1;
+  audioPrimeInFlight = null;
+  playbackEngine?.resetAudioPlaybackAfterResume();
   setAudioStatus('idle');
 }
 
-function cleanupCueAudio(audio: HTMLAudioElement) {
-  audio.pause();
-  try {
-    audio.currentTime = 0;
-  } catch {
-    // Some mobile browsers reject currentTime changes before metadata is ready.
-  }
-}
-
-function playCueAsset(cue: AudioCue) {
-  if (hasWebAudio()) {
-    void playCueBuffer(cue);
-    return;
-  }
-  if (Date.now() < audioBlockedUntil) return;
-  const asset = cueAssets[cue];
-  const previousPlayedAt = lastCuePlayedAt.get(cue) ?? 0;
-  if (Date.now() - previousPlayedAt < asset.minGapMs) return;
-
-  const audio = cueElement(cue);
-  if (!audio) return;
-  lastCuePlayedAt.set(cue, Date.now());
-  const playToken = (cuePlayTokens.get(cue) ?? 0) + 1;
-  cuePlayTokens.set(cue, playToken);
-  audio.volume = clamp(audioSettings.soundVolume * asset.volumeScale, 0, 1);
-  audio.muted = false;
-  try {
-    audio.pause();
-    audio.currentTime = 0;
-  } catch {
-    // Current time can be locked until metadata loads on iOS.
-  }
-  if (asset.stopAfterMs) {
-    window.setTimeout(() => {
-      if (cuePlayTokens.get(cue) === playToken) cleanupCueAudio(audio);
-    }, asset.stopAfterMs);
-  }
-
-  const playResult = audio.play();
-  if (!playResult) {
-    setAudioStatus('ready');
-    return;
-  }
-  playResult
-    .then(() => {
-      audioBlockedUntil = 0;
-      setAudioStatus('ready');
-    })
-    .catch(() => {
-      audioBlockedUntil = Date.now() + 750;
-      lastCuePlayedAt.set(cue, 0);
-      cleanupCueAudio(audio);
-      setAudioStatus('blocked');
-    });
-}
-
-async function playCueBuffer(cue: AudioCue) {
-  if (Date.now() < audioBlockedUntil) return;
-  const asset = cueAssets[cue];
-  const previousPlayedAt = lastCuePlayedAt.get(cue) ?? 0;
-  if (Date.now() - previousPlayedAt < asset.minGapMs) return;
-
-  const context = getAudioContext();
-  if (!context) {
-    playCueAsset(cue);
-    return;
-  }
-
-  try {
-    if (context.state === 'suspended') await context.resume();
-    if (context.state !== 'running') throw new Error('Audio context is not running.');
-    const buffer = await cueBuffer(cue);
-    if (!buffer) throw new Error('Audio cue buffer is unavailable.');
-    lastCuePlayedAt.set(cue, Date.now());
-    const source = context.createBufferSource();
-    const gain = context.createGain();
-    source.buffer = buffer;
-    gain.gain.value = clamp(audioSettings.soundVolume * asset.volumeScale, 0, 1);
-    source.connect(gain);
-    gain.connect(context.destination);
-    source.start();
-    if (asset.stopAfterMs) {
-      window.setTimeout(() => {
-        try {
-          source.stop();
-        } catch {
-          // Buffer sources throw if they already ended.
-        }
-      }, asset.stopAfterMs);
-    }
-    audioBlockedUntil = 0;
-    setAudioStatus('ready');
-  } catch {
-    audioBlockedUntil = Date.now() + 750;
-    lastCuePlayedAt.set(cue, 0);
-    setAudioStatus('blocked');
-  }
-}
-
-export function playAudioCue(cue: AudioCue) {
-  if (!audioSettings.soundEffects || audioSettings.soundVolume <= 0) return;
-  playCueAsset(cue);
-}
-
-export function playAudioTestCue() {
+const trustedAudioActivation = (event: Event) => {
+  if (!event.isTrusted) return;
   void primeAudio();
-  void playAudioCue('flip');
-  window.setTimeout(() => void playAudioCue('pickup'), 170);
-  window.setTimeout(() => void playAudioCue('place'), 360);
+};
+
+function updateLifecycleListeners(method: 'addEventListener' | 'removeEventListener') {
+  if (!isBrowser()) return;
+  window[method]('pointerdown', trustedAudioActivation);
+  window[method]('touchstart', trustedAudioActivation);
+  window[method]('click', trustedAudioActivation);
+  window[method]('keydown', trustedAudioActivation);
+  window[method]('focus', resetAudioAfterResume);
+  window[method]('pageshow', resetAudioAfterResume);
+  document[method]('visibilitychange', resetAudioAfterResume);
 }
 
-async function primeEnabledAudio() {
-  const cuesEnabled = audioSettings.soundEffects && audioSettings.soundVolume > 0;
-  const ambienceEnabled = audioSettings.ambience && audioSettings.ambienceVolume > 0;
-  if (!cuesEnabled && !ambienceEnabled) return true;
-  if ((cuesEnabled && !hasWebAudio() && !hasAudioElement()) || (ambienceEnabled && !hasAudioElement())) {
-    setAudioStatus('unavailable');
-    return false;
-  }
-
-  audioBlockedUntil = 0;
-  preloadEnabledAudioAssets();
-  const context = cuesEnabled && hasWebAudio() ? getAudioContext() : null;
-  if (context?.state === 'suspended') {
-    try {
-      await context.resume();
-      setAudioStatus('ready');
-    } catch {
-      setAudioStatus('blocked');
-    }
-  }
-  if (!ambienceEnabled) return true;
-  await startAmbience();
-  return audioStatus === 'ready';
+function acquireAudioLifecycle() {
+  lifecycleConsumers += 1;
+  if (lifecycleConsumers === 1) updateLifecycleListeners('addEventListener');
+  return () => {
+    lifecycleConsumers = Math.max(0, lifecycleConsumers - 1);
+    if (lifecycleConsumers === 0) updateLifecycleListeners('removeEventListener');
+  };
 }
 
 export function primeAudio() {
   if (audioPrimeInFlight) return audioPrimeInFlight;
-  const prime: Promise<boolean> = primeEnabledAudio().finally(() => {
-    if (audioPrimeInFlight === prime) audioPrimeInFlight = null;
-  });
+  if (!effectsEnabled()) return Promise.resolve(true);
+  const prime = activatePlayback()
+    .then(async (activation) => {
+      if (!activation) return false;
+      const [engine, resumed] = activation;
+      if (!resumed && !hasAudioElement()) {
+        setAudioStatus('blocked');
+        return false;
+      }
+      if (!resumed) setAudioStatus('idle');
+      return engine.primeAudioPlayback();
+    })
+    .finally(() => {
+      if (audioPrimeInFlight === prime) audioPrimeInFlight = null;
+    });
   audioPrimeInFlight = prime;
   return prime;
 }
 
-function ensureAmbienceAudio() {
-  if (ambienceAudio) return ambienceAudio;
-  const audio = makeAudioElement(ambienceSrc);
-  if (!audio) return null;
-  audio.loop = true;
-  ambienceAudio = audio;
-  return ambienceAudio;
+export function playAudioCue(cue: AudioCue, delayMs = 0) {
+  void activatePlayback().then((activation) => {
+    activation?.[0].playAudioPlaybackCue(cue, delayMs);
+  });
 }
 
-async function startAmbience() {
-  if (!audioSettings.ambience || audioSettings.ambienceVolume <= 0) return;
-  const audio = ensureAmbienceAudio();
-  if (!audio) return;
-  audio.volume = clamp(audioSettings.ambienceVolume * 0.55, 0, 1);
-  if (!audio.paused) return;
-  if (ambienceStartInFlight) return ambienceStartInFlight;
-  try {
-    ambienceStartInFlight = audio.play().then(() => {
-      audioBlockedUntil = 0;
-      setAudioStatus('ready');
-    });
-    await ambienceStartInFlight;
-  } catch {
-    audioBlockedUntil = Date.now() + 5000;
-    setAudioStatus('blocked');
-  } finally {
-    ambienceStartInFlight = null;
-  }
-}
-
-function stopAmbience() {
-  if (!ambienceAudio) return;
-  ambienceAudio.pause();
-  try {
-    ambienceAudio.currentTime = 0;
-  } catch {
-    // Safe to ignore on browsers that only allow seeking after metadata loads.
-  }
-}
-
-function syncAmbience(allowStart = false) {
-  if (!audioSettings.ambience || audioSettings.ambienceVolume <= 0) {
-    stopAmbience();
-    return;
-  }
-
-  if (ambienceAudio) ambienceAudio.volume = clamp(audioSettings.ambienceVolume * 0.55, 0, 1);
-  if (!allowStart) return;
-  void startAmbience();
+export function playAudioTestCue() {
+  const generation = playbackGeneration;
+  void primeAudio().then((ready) => {
+    if (ready && generation === playbackGeneration) playbackEngine?.playAudioPlaybackTestCue();
+  });
 }
 
 export function getAudioSettings() {
   return audioSettings;
 }
 
-export function setAudioSettings(nextSettings: Partial<AudioSettings>) {
-  audioSettings = {
+export function setAudioSettings(nextSettings: LegacyAudioSettingsUpdate) {
+  audioSettings = normalizeSettings({
     ...audioSettings,
-    ...nextSettings,
-    ambienceVolume: clamp(Number(nextSettings.ambienceVolume ?? audioSettings.ambienceVolume), 0, 1),
-    soundVolume: clamp(Number(nextSettings.soundVolume ?? audioSettings.soundVolume), 0, 1)
-  };
+    ...nextSettings
+  });
   writeStoredAudioSettings(audioSettings);
-  notifySubscribers();
-  syncAmbience(nextSettings.ambience !== undefined || nextSettings.ambienceVolume !== undefined);
+  settingsSubscribers.forEach((subscriber) => subscriber(audioSettings));
+  if (!effectsEnabled()) {
+    invalidatePendingPlayback();
+  }
 }
 
 export function subscribeAudioSettings(subscriber: (settings: AudioSettings) => void) {
-  subscribers.add(subscriber);
+  settingsSubscribers.add(subscriber);
   return () => {
-    subscribers.delete(subscriber);
+    settingsSubscribers.delete(subscriber);
   };
 }
 
@@ -465,73 +301,86 @@ export function useAudioSettings() {
 
   useEffect(() => subscribeAudioSettings(setSettings), []);
   useEffect(() => subscribeAudioStatus(setStatus), []);
-
-  useEffect(() => {
-    if (!isBrowser()) return undefined;
-    const unlockAudio = (event: Event) => {
-      if (!event.isTrusted) return;
-      void primeAudio();
-    };
-
-    syncAmbience(false);
-    window.addEventListener('pointerdown', unlockAudio, { passive: true });
-    window.addEventListener('touchstart', unlockAudio, { passive: true });
-    window.addEventListener('click', unlockAudio, { passive: true });
-    window.addEventListener('keydown', unlockAudio);
-    window.addEventListener('focus', resetAudioAfterResume);
-    window.addEventListener('pageshow', resetAudioAfterResume);
-    document.addEventListener('visibilitychange', resetAudioAfterResume);
-
-    return () => {
-      window.removeEventListener('pointerdown', unlockAudio);
-      window.removeEventListener('touchstart', unlockAudio);
-      window.removeEventListener('click', unlockAudio);
-      window.removeEventListener('keydown', unlockAudio);
-      window.removeEventListener('focus', resetAudioAfterResume);
-      window.removeEventListener('pageshow', resetAudioAfterResume);
-      document.removeEventListener('visibilitychange', resetAudioAfterResume);
-    };
-  }, []);
+  useEffect(acquireAudioLifecycle, []);
 
   return [settings, setAudioSettings, status] as const;
 }
 
-function playCueForLog(message: string) {
-  if (message.includes('drew a')) {
-    void playAudioCue('pickup');
-    return;
+function rememberSemanticEvent(eventId: string) {
+  if (playedSemanticEventIds.has(eventId)) return false;
+  playedSemanticEventIds.add(eventId);
+  if (playedSemanticEventIds.size > retainedSemanticEventIds) {
+    playedSemanticEventIds.delete(playedSemanticEventIds.values().next().value as string);
   }
+  return true;
+}
 
-  if (message.includes('discarded') && message.includes('revealed a card')) {
-    void playAudioCue('place');
-    window.setTimeout(() => void playAudioCue('flip'), 120);
-    return;
-  }
-
-  if (message.includes('replaced a card')) {
-    void playAudioCue('place');
-    return;
-  }
-
-  if (message.includes('revealed an opening card') || message.includes('finished opening reveals')) {
-    void playAudioCue('flip');
+export function playGameAudioEvents(events: readonly GameAudioEvent[]) {
+  for (const event of events) {
+    if (!rememberSemanticEvent(event.id)) continue;
+    playAudioCue(event.cue, event.delayMs);
   }
 }
 
-export function useGameAudio(state: GameState | null | undefined) {
-  const previousLogRef = useRef<string | null>(null);
+export function playGameAudioTransition(
+  previousFrame: GameAudioFrame | null | undefined,
+  currentFrame: GameAudioFrame
+) {
+  const events = deriveGameAudioEvents(previousFrame, currentFrame);
+  playGameAudioEvents(events);
+  return events;
+}
+
+/**
+ * Existing one-argument calls remain source-compatible and intentionally act
+ * only as lifecycle owners. Semantic playback starts after the root supplies a
+ * stable session id and revision context.
+ */
+export function useGameAudio(state: GameState | null | undefined, context?: GameAudioContext) {
+  const previousFrameRef = useRef<GameAudioFrame | null>(null);
+  const localSequenceRef = useRef<{
+    revision: number;
+    sessionId: string;
+    state: GameState | null | undefined;
+  } | null>(null);
+  const hasContext = context !== undefined;
+  const delivery = context?.delivery;
+  const localPlayerId = context?.localPlayerId;
+  const revision = context?.revision;
+  const sessionId = context?.sessionId;
+  const visible = context?.visible;
+  useEffect(acquireAudioLifecycle, []);
 
   useEffect(() => {
-    const latestLog = state?.log[0] || '';
-    if (!latestLog) return;
-
-    if (previousLogRef.current === null) {
-      previousLogRef.current = latestLog;
+    if (!hasContext || sessionId === undefined) {
+      previousFrameRef.current = null;
+      localSequenceRef.current = null;
       return;
     }
-
-    if (previousLogRef.current === latestLog) return;
-    previousLogRef.current = latestLog;
-    playCueForLog(latestLog);
-  }, [state?.log]);
+    let resolvedRevision = revision;
+    if (resolvedRevision === undefined) {
+      const localSequence = localSequenceRef.current;
+      if (!localSequence || localSequence.sessionId !== sessionId) {
+        resolvedRevision = ++localRevisionSeed;
+        localSequenceRef.current = { revision: resolvedRevision, sessionId, state };
+      } else if (localSequence.state !== state) {
+        resolvedRevision = ++localRevisionSeed;
+        localSequenceRef.current = { revision: resolvedRevision, sessionId, state };
+      } else {
+        resolvedRevision = localSequence.revision;
+      }
+    } else {
+      localSequenceRef.current = null;
+    }
+    const currentFrame: GameAudioFrame = {
+      delivery: delivery ?? 'live',
+      localPlayerId,
+      revision: resolvedRevision,
+      sessionId,
+      state,
+      visible: visible ?? isPageVisible()
+    };
+    playGameAudioTransition(previousFrameRef.current, currentFrame);
+    previousFrameRef.current = currentFrame;
+  }, [delivery, hasContext, localPlayerId, revision, sessionId, state, visible]);
 }

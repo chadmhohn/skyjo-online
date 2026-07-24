@@ -1444,6 +1444,7 @@ function htmlSecurityHeaders(nonce) {
       `style-src 'self' 'nonce-${nonce}'`,
       "font-src 'self'",
       "img-src 'self' data:",
+      "media-src 'self' data:",
       "connect-src 'self' ws: wss:",
       "manifest-src 'self'",
       "worker-src 'self'",
@@ -2077,7 +2078,7 @@ async function serveStatic(req, res) {
     const cacheControl = immutableAsset ? 'public, max-age=31536000, immutable' : 'no-store';
     const htmlHeaders = ext === '.html'
       ? {
-          'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+          'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self' data:; connect-src 'self' ws: wss:; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
         }
       : {};
     send(res, 200, data, {
