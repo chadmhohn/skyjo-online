@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
+  CERTIFICATION_RELEASE_VERSION,
   assertRecoveryTraceMatchesCertification,
   assertRssStageEvidenceMatchesCertification,
   readVerifiedCertificationEvidence,
@@ -14,6 +15,8 @@ import { loadReleaseIdentity } from '../server-release.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const releaseTag = `v${CERTIFICATION_RELEASE_VERSION}`;
+const releaseChangelogHeading = `## ${CERTIFICATION_RELEASE_VERSION} - 2026-07-24`;
 
 function parseArguments(argv) {
   const options = {
@@ -41,14 +44,18 @@ function parseArguments(argv) {
       '--rss-evidence',
       '--tag'
     ].includes(name)) {
-      throw new Error('Usage: verify-v020-release --release-sha SHA [--evidence FILE --checksum FILE --recovery-evidence FILE --recovery-checksum FILE --rss-evidence FILE --rss-checksum FILE --tag v0.2.0 --production-base-url HTTPS_URL]');
+      throw new Error(`Usage: verify-v020-release --release-sha SHA [--evidence FILE --checksum FILE --recovery-evidence FILE --recovery-checksum FILE --rss-evidence FILE --rss-checksum FILE --tag ${releaseTag} --production-base-url HTTPS_URL]`);
     }
     const key = name.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     options[key] = value;
   }
   options.releaseSha = String(options.releaseSha).trim().toLowerCase();
-  if (!/^[a-f0-9]{40}$/.test(options.releaseSha)) throw new Error('A full v0.2.0 release SHA is required.');
-  if (options.tag && options.tag !== 'v0.2.0') throw new Error('The only accepted release tag is v0.2.0.');
+  if (!/^[a-f0-9]{40}$/.test(options.releaseSha)) {
+    throw new Error(`A full ${releaseTag} release SHA is required.`);
+  }
+  if (options.tag && options.tag !== releaseTag) {
+    throw new Error(`The only accepted release tag is ${releaseTag}.`);
+  }
   if (options.productionBaseUrl && !/^https:\/\/[A-Za-z0-9.-]+\/?$/.test(options.productionBaseUrl)) {
     throw new Error('Production verification requires a simple HTTPS origin.');
   }
@@ -71,7 +78,7 @@ async function verifyPublicRelease(baseUrl, releaseSha) {
     version.releaseSha !== releaseSha ||
     version.protocolVersion !== 2
   ) {
-    throw new Error('Production does not serve the certified v0.2.0 release identity.');
+    throw new Error(`Production does not serve the certified ${releaseTag} release identity.`);
   }
 }
 
@@ -82,7 +89,7 @@ async function main() {
     encoding: 'utf8'
   });
   if (checkoutOutput.trim().toLowerCase() !== options.releaseSha) {
-    throw new Error('The checked-out source does not match the certified v0.2.0 commit.');
+    throw new Error(`The checked-out source does not match the certified ${releaseTag} commit.`);
   }
   const [{ evidence, digest }, { evidence: recoveryEvidence }, { evidence: rssEvidence }] = await Promise.all([
     readVerifiedCertificationEvidence(path.resolve(options.evidence), path.resolve(options.checksum)),
@@ -92,15 +99,22 @@ async function main() {
     ),
     readVerifiedRssStageEvidence(path.resolve(options.rssEvidence), path.resolve(options.rssChecksum))
   ]);
-  if (evidence.release.sourceSha !== options.releaseSha || evidence.release.version !== '0.2.0') {
+  if (
+    evidence.release.sourceSha !== options.releaseSha ||
+    evidence.release.version !== CERTIFICATION_RELEASE_VERSION
+  ) {
     throw new Error('Certification evidence belongs to a different release.');
   }
   assertRecoveryTraceMatchesCertification(evidence, recoveryEvidence);
   assertRssStageEvidenceMatchesCertification(evidence, rssEvidence);
   const packageDocument = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
-  if (packageDocument.version !== '0.2.0') throw new Error('package.json does not identify v0.2.0.');
+  if (packageDocument.version !== CERTIFICATION_RELEASE_VERSION) {
+    throw new Error(`package.json does not identify ${releaseTag}.`);
+  }
   const changelog = await fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8');
-  if (!/^## 0\.2\.0 - 2026-07-13$/m.test(changelog)) throw new Error('The v0.2.0 changelog entry is missing.');
+  if (!changelog.split(/\r?\n/).includes(releaseChangelogHeading)) {
+    throw new Error(`The ${releaseTag} changelog entry is missing.`);
+  }
   const releaseIdentity = await loadReleaseIdentity(path.join(root, 'dist'), {
     allowDevelopment: false,
     requireFullSha: true
@@ -110,17 +124,19 @@ async function main() {
     releaseIdentity.schemaVersion !== 2 ||
     releaseIdentity.protocolVersion !== 2
   ) {
-    throw new Error('Built release identity does not match v0.2.0 certification.');
+    throw new Error(`Built release identity does not match ${releaseTag} certification.`);
   }
   if (options.tag) {
     const { stdout } = await execFileAsync('git', ['rev-parse', `${options.tag}^{commit}`], { cwd: root, encoding: 'utf8' });
-    if (stdout.trim().toLowerCase() !== options.releaseSha) throw new Error('v0.2.0 does not point to the certified commit.');
+    if (stdout.trim().toLowerCase() !== options.releaseSha) {
+      throw new Error(`${releaseTag} does not point to the certified commit.`);
+    }
   }
   if (options.productionBaseUrl) await verifyPublicRelease(options.productionBaseUrl, options.releaseSha);
-  console.log(`Verified v0.2.0 certification ${digest} for ${options.releaseSha}.`);
+  console.log(`Verified ${releaseTag} certification ${digest} for ${options.releaseSha}.`);
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : 'v0.2.0 verification failed.');
+  console.error(error instanceof Error ? error.message : `${releaseTag} verification failed.`);
   process.exitCode = 1;
 });

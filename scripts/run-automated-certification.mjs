@@ -707,7 +707,9 @@ async function main() {
   if (!/^v24\.\d+\.\d+$/.test(process.version)) throw new Error('Full certification requires Node 24.');
   const sourceSha = await sourceIdentity();
   const packageDocument = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
-  if (packageDocument.version !== CERTIFICATION_RELEASE_VERSION) throw new Error('package.json is not version 0.2.0.');
+  if (packageDocument.version !== CERTIFICATION_RELEASE_VERSION) {
+    throw new Error(`package.json is not version ${CERTIFICATION_RELEASE_VERSION}.`);
+  }
   const releaseIdentity = await loadReleaseIdentity(path.join(root, 'dist'), {
     allowDevelopment: false,
     requireFullSha: true
@@ -758,7 +760,7 @@ async function main() {
       persona
     });
     const { digest } = await writeCertificationEvidence(automatedEvidencePath, evidence);
-    console.log(`Automated v0.2.0 certification passed for ${sourceSha} (${digest}).`);
+    console.log(`Automated v${CERTIFICATION_RELEASE_VERSION} certification passed for ${sourceSha} (${digest}).`);
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }

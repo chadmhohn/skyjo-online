@@ -4,6 +4,7 @@ import type { BrowserContext, Locator, Page } from '@playwright/test';
 import {
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
+  CERTIFICATION_RELEASE_VERSION,
   PERSONA_EVIDENCE_FORMAT_VERSION,
   validateEightClientPersonaEvidence,
   writeEightClientPersonaEvidence
@@ -483,7 +484,7 @@ test('eight independent clients cover the release persona matrix without state o
     const evidence = {
       formatVersion: PERSONA_EVIDENCE_FORMAT_VERSION,
       kind: 'skyjo-eight-client-persona',
-      release: { version: '0.2.0', sourceSha, protocolVersion: 2 },
+      release: { version: CERTIFICATION_RELEASE_VERSION, sourceSha, protocolVersion: 2 },
       topology: {
         rooms: 1,
         clients: 8,
