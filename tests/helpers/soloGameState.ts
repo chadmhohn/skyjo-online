@@ -2,12 +2,12 @@ import {
   chooseDiscard,
   discardDrawnAndReveal,
   drawBlind,
-  getBestAiMove,
   replaceCard,
   revealOpeningCard,
   startFreshGame,
   startNextRound
 } from '../../src/game';
+import { getBestAiMove } from '../../src/aiProjection';
 import { createSeededRandom, type RandomSource } from '../../src/runtime';
 import type { Card, GameState, Player } from '../../src/types';
 

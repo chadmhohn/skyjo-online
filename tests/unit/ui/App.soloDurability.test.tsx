@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { vi } from 'vitest';
-import { startFreshGame } from '../../../src/game';
+import { revealOpeningCard, startFreshGame } from '../../../src/game';
 import {
+  createSoloGameSetup,
   enqueueCompletedGame,
   listStatsOutbox,
   loadSoloSession,
@@ -30,7 +31,8 @@ const mocks = vi.hoisted(() => ({
     changePassword: vi.fn(async () => undefined),
     updateProfile: vi.fn(async () => undefined)
   },
-  saveSinglePlayerGame: vi.fn(async () => ({ game: { id: 'server-game' } }))
+  saveSinglePlayerGame: vi.fn(async () => ({ game: { id: 'server-game' } })),
+  chooseAiMove: vi.fn(() => null)
 }));
 
 vi.mock('../../../src/account', () => ({
@@ -62,6 +64,10 @@ vi.mock('../../../src/push', () => ({
   disablePushNotifications: vi.fn()
 }));
 
+vi.mock('../../../src/lazySoloAiStrategy', () => ({
+  loadSoloAiStrategy: vi.fn(async () => ({ chooseAiMoveForState: mocks.chooseAiMove }))
+}));
+
 import App from '../../../src/App';
 
 const alice: AccountUser = {
@@ -86,6 +92,21 @@ function completedState(): GameState {
   return completedSoloGameState(1, () => 0.3);
 }
 
+function activeAiTurnState(): GameState {
+  let state = startFreshGame({ aiOpponentCount: 1, random: () => 0.2 });
+  while (state.phase === 'opening-reveal') {
+    const active = state.players[state.currentPlayerIndex];
+    state = revealOpeningCard(
+      state,
+      active.grid.findIndex((card) => !card.faceUp && !card.removed)
+    );
+  }
+  return {
+    ...state,
+    currentPlayerIndex: state.players.findIndex((player) => player.kind === 'ai')
+  };
+}
+
 function renderSolo() {
   window.history.replaceState({}, '', '/single-player');
   return render(<App />);
@@ -98,6 +119,8 @@ describe('solo durability integration', () => {
     mocks.account.localSoloOwnerId = null;
     mocks.saveSinglePlayerGame.mockReset();
     mocks.saveSinglePlayerGame.mockResolvedValue({ game: { id: 'server-game' } });
+    mocks.chooseAiMove.mockReset();
+    mocks.chooseAiMove.mockReturnValue(null);
   });
 
   it('offers Continue and New Game, then restores the same stable game snapshot', async () => {
@@ -112,6 +135,20 @@ describe('solo durability integration', () => {
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     expect(screen.getByText(/Round 1\./)).toBeInTheDocument();
     await waitFor(async () => expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId));
+  });
+
+  it('passes the persisted active profile to the lazily loaded solo strategy', async () => {
+    const state = activeAiTurnState();
+    await saveSoloSession('guest', savedGameId, state, createSoloGameSetup(1, 'ultra'));
+    const actor = userEvent.setup();
+    renderSolo();
+    await actor.click(await screen.findByRole('button', { name: 'Continue Game' }));
+
+    await waitFor(() => expect(mocks.chooseAiMove).toHaveBeenCalled(), { timeout: 2_000 });
+    expect(mocks.chooseAiMove).toHaveBeenCalledWith(
+      expect.objectContaining({ currentPlayerIndex: 1 }),
+      expect.objectContaining({ playerId: 'ai-1', difficulty: 'ultra', decisionKey: expect.stringContaining(savedGameId) })
+    );
   });
 
   it('leaves a saved-game choice with Escape without deleting the session', async () => {

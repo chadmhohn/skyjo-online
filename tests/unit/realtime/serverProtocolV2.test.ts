@@ -4,6 +4,7 @@ import {
   serializeRooms
 } from '../../../server-room-persistence.mjs';
 import { createMultiplayerGame, replaceCard, revealOpeningCard } from '../../../src/game';
+import { MULTIPLAYER_AI_DIFFICULTY } from '../../../src/authoritativeAi';
 import {
   createRoomSnapshot,
   MAX_RECENT_COMMAND_RECEIPTS,
@@ -804,6 +805,8 @@ describe('protocol v2 resilient seat lifecycle commands', () => {
   });
 
   it('takes over only after grace and commits a complete AI turn in one fenced revision', () => {
+    expect(MULTIPLAYER_AI_DIFFICULTY).toBe('hard');
+    expect(MULTIPLAYER_PROTOCOL_VERSION).toBe(2);
     const players = [player(HOST_ID, 'Host', true), player(GUEST_ID, 'Guest')];
     const state = createMultiplayerGame(players, 1, null, () => 0.5);
     state.phase = 'choose-source';
@@ -834,6 +837,7 @@ describe('protocol v2 resilient seat lifecycle commands', () => {
     expect(target.revision).toBe(2);
     expect(target.state).toMatchObject({ selectedSource: null, drawnCard: null });
     expect(target.state?.players.find((candidate) => candidate.id === GUEST_ID)?.kind).toBe('human');
+    expect(value.calls.randomValues).toEqual([]);
     expect(value.calls.broadcasts).toEqual([target, target]);
     expect(handler.executeAutomatedAction({
       commandId: commandIdAt(99),
