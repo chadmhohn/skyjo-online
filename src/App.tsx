@@ -5,7 +5,6 @@ import {
   chooseDiscard,
   discardDrawnAndReveal,
   drawBlind,
-  getBestAiMove,
   replaceCard,
   revealOpeningCard,
   singlePlayerAiOpponentRange,
@@ -86,6 +85,8 @@ import {
 } from './soloDurability';
 import type { GameState, MultiplayerRoom } from './types';
 import { advanceSoloAiOpeningSeat, drainSoloAiOpening, soloAiOpeningSeatDelayMs } from './soloAiOpening';
+import { difficultyForSoloPlayer, resolveSoloGameSetup } from './soloAiSetup';
+import { loadSoloAiStrategy } from './lazySoloAiStrategy';
 
 type SoloStatsCoordinator = ReturnType<typeof createStatsOutboxCoordinator>;
 type SoloStatsFlushResult = Awaited<ReturnType<SoloStatsCoordinator['flush']>>;
@@ -1077,21 +1078,48 @@ function SinglePlayer() {
     ) {
       return;
     }
+    let cancelled = false;
     const openingReveal = state.phase === 'opening-reveal';
+    const strategy = openingReveal ? null : loadSoloAiStrategy();
     const timer = window.setTimeout(() => {
-      setState((current) => {
-        if (current.phase === 'opening-reveal') {
-          return prefersReducedMotion ? drainSoloAiOpening(current) : advanceSoloAiOpeningSeat(current);
+      if (openingReveal) {
+        setState((current) =>
+          prefersReducedMotion ? drainSoloAiOpening(current) : advanceSoloAiOpeningSeat(current)
+        );
+        return;
+      }
+      void strategy?.then(
+        ({ chooseAiMoveForState }) => {
+          if (cancelled) return;
+          setState((current) => {
+            const currentAi = current.players[current.currentPlayerIndex];
+            if (!currentAi || currentAi.kind !== 'ai') return current;
+            const move = chooseAiMoveForState(current, {
+              playerId: currentAi.id,
+              difficulty: difficultyForSoloPlayer(activeSetup, currentAi.id),
+              decisionKey: `${activeGameId}:${current.round}:${current.log[0] ?? ''}`
+            });
+            if (!move) return current;
+            if (move.action === 'discard') return chooseDiscard(current);
+            if (move.action === 'draw') return drawBlind(current);
+            if (move.action === 'replace') return replaceCard(current, move.index ?? 0);
+            return discardDrawnAndReveal(current, move.index ?? 0);
+          });
+        },
+        () => {
+          if (cancelled) return;
+          setPersistenceWarning({
+            kind: 'unavailable',
+            message: 'AI opponents could not load on this device. Reload Skyjo to retry safely.'
+          });
         }
-        const move = getBestAiMove(current);
-        if (move.action === 'discard') return chooseDiscard(current);
-        if (move.action === 'draw') return drawBlind(current);
-        if (move.action === 'replace') return replaceCard(current, move.index || 0);
-        return discardDrawnAndReveal(current, move.index || 0);
-      });
+      );
     }, openingReveal ? (prefersReducedMotion ? 0 : soloAiOpeningSeatDelayMs) : 650);
-    return () => window.clearTimeout(timer);
-  }, [activePlayer.kind, durabilityReady, prefersReducedMotion, replacementRequest, settingsOpen, state]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeGameId, activePlayer.kind, activeSetup, durabilityReady, prefersReducedMotion, replacementRequest, settingsOpen, state]);
 
   useEffect(() => {
     setRoundSummaryOpen(isScoringPhase);
@@ -1209,12 +1237,17 @@ function SinglePlayer() {
     setReplacementPending(true);
     const nextGameId = createSoloGameId();
     const nextState = startFreshGame({ aiOpponentCount: request.setup.aiOpponentCount });
+    const nextSetup = resolveSoloGameSetup(
+      createSoloGameSetup(request.setup.aiOpponentCount, request.setup.difficulty),
+      nextState,
+      nextGameId
+    );
     const warning = await replaceSoloSession(
       request.ownerKey,
       request.previousGameId,
       nextGameId,
       nextState,
-      request.setup
+      nextSetup
     );
     if (
       ownerContextRef.current.ownerKey !== request.ownerKey ||
@@ -1228,8 +1261,8 @@ function SinglePlayer() {
       return;
     }
 
-    setActiveSetup(request.setup);
-    setDraftSetup(request.setup);
+    setActiveSetup(nextSetup);
+    setDraftSetup(nextSetup);
     setActiveGameId(nextGameId);
     setState(nextState);
     setResumeSession(null);
@@ -1310,7 +1343,9 @@ function SinglePlayer() {
               <GameSettingsButton
                 aiOpponentCount={draftAiOpponentCount}
                 aiOpponentSummary={aiOpponentSummary}
-                onAiOpponentCountChange={(count) => setDraftSetup(createSoloGameSetup(count))}
+                onAiOpponentCountChange={(count) =>
+                  setDraftSetup((current) => createSoloGameSetup(count, current.difficulty))
+                }
                 onNewGame={requestSelectedGame}
                 onOpenChange={setSettingsOpen}
                 state={state}

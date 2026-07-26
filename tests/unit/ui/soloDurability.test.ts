@@ -2,12 +2,12 @@ import {
   chooseDiscard,
   discardDrawnAndReveal,
   drawBlind,
-  getBestAiMove,
   replaceCard,
   revealOpeningCard,
   startFreshGame,
   startNextRound
 } from '../../../src/game';
+import { getBestAiMove } from '../../../src/aiProjection';
 import { createSeededRandom } from '../../../src/runtime';
 import type { RandomSource } from '../../../src/runtime';
 import {
@@ -29,6 +29,7 @@ import {
   statsOutboxStoreName
 } from '../../../src/soloDurability';
 import type { Card, GameState } from '../../../src/types';
+import { resolveSoloGameSetup } from '../../../src/soloAiSetup';
 import { completedSoloGameState } from '../../helpers/soloGameState';
 
 const gameA = '11111111-1111-4111-8111-111111111111';
@@ -527,8 +528,63 @@ describe('solo IndexedDB durability', () => {
       state,
       aiOpponentCount: 1,
       setup: { aiOpponentCount: 1, difficulty: 'hard' },
+      aiSetup: { aiOpponentCount: 1, difficulty: 'hard', strategyVersion: 1 },
       updatedAt: 30
     });
+  });
+
+  it('round-trips fixed and exact per-game Mixed profiles without a database or record bump', async () => {
+    const mediumState = startFreshGame({ aiOpponentCount: 2, random: createSeededRandom(163) });
+    await saveSoloSession('guest', gameA, mediumState, createSoloGameSetup(2, 'medium'), () => 31);
+    expect((await loadSoloSession('guest')).session?.setup).toEqual({
+      aiOpponentCount: 2,
+      difficulty: 'medium',
+      strategyVersion: 1
+    });
+
+    const mixedState = startFreshGame({ aiOpponentCount: 7, random: createSeededRandom(164) });
+    const mixed = resolveSoloGameSetup(createSoloGameSetup(7, 'mixed'), mixedState, gameB);
+    expect(await replaceSoloSession('guest', gameA, gameB, mixedState, mixed, () => 32)).toBeNull();
+    const restored = (await loadSoloSession('guest')).session;
+    expect(restored).toMatchObject({ gameId: gameB, schemaVersion: 1, aiOpponentCount: 7 });
+    expect(restored?.setup).toEqual(mixed);
+
+    const [raw] = (await rawRecordsForOwner(soloSessionStoreName, 'guest')) as Array<Record<string, unknown>>;
+    expect(raw.setup).toEqual({ aiOpponentCount: 7, difficulty: 'hard' });
+    expect(raw.aiSetup).toEqual(mixed);
+    // This is the exact setup predicate used by the v0.2.2 reader. A rollback
+    // accepts the game safely and merely resumes its legacy Hard behavior.
+    expect(raw.setup).toMatchObject({ aiOpponentCount: raw.aiOpponentCount, difficulty: 'hard' });
+
+    const database = await openRawDatabase();
+    expect(database.version).toBe(1);
+    database.close();
+  });
+
+  it('quarantines incomplete or malformed Mixed metadata instead of silently reassigning players', async () => {
+    const ownerKey = soloOwnerKey('mixed-corrupt');
+    const state = startFreshGame({ aiOpponentCount: 2, random: createSeededRandom(165) });
+    await loadSoloSession(ownerKey);
+    await putRaw(soloSessionStoreName, {
+      ownerKey,
+      gameId: gameA,
+      schemaVersion: 1,
+      state,
+      aiOpponentCount: 2,
+      setup: { aiOpponentCount: 2, difficulty: 'hard' },
+      aiSetup: {
+        aiOpponentCount: 2,
+        difficulty: 'mixed',
+        strategyVersion: 1,
+        playerDifficulties: { 'ai-1': 'hard' }
+      },
+      updatedAt: 33
+    });
+
+    const result = await loadSoloSession(ownerKey);
+    expect(result.session).toBeNull();
+    expect(result.warning).toMatchObject({ kind: 'recovered' });
+    expect(await rawRecordsForOwner(soloSessionStoreName, ownerKey)).toEqual([]);
   });
 
   it('atomically replaces the owner session and fences a delayed stale autosave', async () => {

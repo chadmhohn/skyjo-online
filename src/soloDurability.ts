@@ -1,4 +1,13 @@
 import type { Card, GameState, Player } from './types';
+import {
+  createSoloGameSetup,
+  isResolvedSoloGameSetup,
+  resolveSoloGameSetup,
+  type SoloGameSetup
+} from './soloAiSetup';
+
+export { createSoloGameSetup } from './soloAiSetup';
+export type { SoloAiDifficulty, SoloAiDifficultySelection, SoloGameSetup } from './soloAiSetup';
 
 export const soloDatabaseName = 'skyjo-pwa';
 export const soloDatabaseVersion = 1;
@@ -18,15 +27,6 @@ const canonicalSoloDeckValues = [
 
 export type SoloOwnerKey = `account:${string}` | 'guest';
 export type SoloPersistenceWarningKind = 'conflict' | 'quota' | 'recovered' | 'unavailable';
-
-// v0.2.2's one shared AI strategy is the compatibility baseline. Later releases
-// can extend this union without changing the IndexedDB or record schema version.
-export type SoloAiDifficulty = 'hard';
-
-export interface SoloGameSetup {
-  readonly aiOpponentCount: number;
-  readonly difficulty: SoloAiDifficulty;
-}
 
 export interface SoloPersistenceWarning {
   kind: SoloPersistenceWarningKind;
@@ -503,17 +503,16 @@ function normalizeSoloGameSetup(
 ): SoloGameSetup | null {
   if (!hasExpectedAiOpponentCount(state, aiOpponentCount)) return null;
   if (setup === undefined) {
-    return { aiOpponentCount, difficulty: 'hard' };
+    return createSoloGameSetup(aiOpponentCount, 'hard');
   }
-  if (
-    !isRecord(setup) ||
-    setup.difficulty !== 'hard' ||
-    setup.aiOpponentCount !== aiOpponentCount ||
-    !hasExpectedAiOpponentCount(state, setup.aiOpponentCount)
-  ) {
+  if (!isRecord(setup) || setup.aiOpponentCount !== aiOpponentCount) return null;
+  const candidate = setup as unknown as SoloGameSetup;
+  if (!isResolvedSoloGameSetup(candidate, state)) return null;
+  try {
+    return resolveSoloGameSetup(candidate, state, 'persisted-assignment');
+  } catch {
     return null;
   }
-  return { aiOpponentCount, difficulty: setup.difficulty };
 }
 
 function normalizeSoloSessionRecord(value: unknown): SoloSessionRecord | null {
@@ -527,7 +526,14 @@ function normalizeSoloSessionRecord(value: unknown): SoloSessionRecord | null {
   ) {
     return null;
   }
-  const setup = normalizeSoloGameSetup(value.state, value.aiOpponentCount, value.setup);
+  // `setup` remains the v0.2.2 Hard-only rollback contract. New profile
+  // metadata lives in the additive `aiSetup` sibling and is preferred when
+  // present; malformed new metadata is never silently reassigned.
+  const setup = normalizeSoloGameSetup(
+    value.state,
+    value.aiOpponentCount,
+    value.aiSetup === undefined ? value.setup : value.aiSetup
+  );
   if (!setup) return null;
   return {
     ownerKey: value.ownerKey,
@@ -604,13 +610,6 @@ export function soloOwnerKey(userId?: string | null): SoloOwnerKey {
 
 export function createSoloGameId(): string {
   return crypto.randomUUID();
-}
-
-export function createSoloGameSetup(aiOpponentCount: number): SoloGameSetup {
-  if (!Number.isSafeInteger(aiOpponentCount) || aiOpponentCount < 1 || aiOpponentCount > 7) {
-    throw new Error('AI opponent count must be an integer from 1 through 7.');
-  }
-  return { aiOpponentCount, difficulty: 'hard' };
 }
 
 function recoveredSessionWarning(): SoloPersistenceWarning {
@@ -705,9 +704,10 @@ export async function saveSoloSession(
           schemaVersion: recordSchemaVersion,
           state,
           aiOpponentCount: setup.aiOpponentCount,
-          setup,
+          setup: { aiOpponentCount: setup.aiOpponentCount, difficulty: 'hard' },
+          aiSetup: setup,
           updatedAt
-        } satisfies SoloSessionRecord)
+        })
       );
       for (const key of existing) {
         if (Array.isArray(key) && key[1] !== gameId) await requestResult(store.delete(key));
@@ -759,9 +759,10 @@ export async function replaceSoloSession(
           schemaVersion: recordSchemaVersion,
           state,
           aiOpponentCount: normalizedSetup.aiOpponentCount,
-          setup: normalizedSetup,
+          setup: { aiOpponentCount: normalizedSetup.aiOpponentCount, difficulty: 'hard' },
+          aiSetup: normalizedSetup,
           updatedAt
-        } satisfies SoloSessionRecord)
+        })
       );
       for (const key of existing) {
         if (Array.isArray(key) && key[1] !== gameId) await requestResult(store.delete(key));

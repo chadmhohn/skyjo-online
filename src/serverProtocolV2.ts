@@ -4,11 +4,11 @@ import {
   MULTIPLAYER_PROTOCOL_VERSION,
   SHARED_SNAPSHOT_ENVELOPE_VERSION,
   parseClientCommand,
-  reduceAuthoritativeAiAction,
   reduceAuthoritativeGameCommand,
   type CommandReceipt,
   type GameCommand
 } from './protocolV2.js';
+import { reduceAuthoritativeAiAction } from './authoritativeAi.js';
 import {
   canTakeOverWithAi,
   connectedWaitingPlayerIds,

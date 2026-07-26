@@ -2,9 +2,20 @@ import assert from 'node:assert/strict';
 import {
   chooseDiscard,
   discardDrawnAndReveal,
-  getBestAiMove,
   replaceCard
 } from '../server-dist/game.js';
+import {
+  chooseAiMoveForState,
+  getBestAiMove,
+  legalAiMovesForState,
+  projectAiKnowledge
+} from '../server-dist/aiProjection.js';
+import {
+  createSoloGameSetup,
+  difficultyForSoloPlayer,
+  isResolvedSoloGameSetup,
+  resolveSoloGameSetup
+} from '../server-dist/soloAiSetup.js';
 
 function card(id, value, faceUp = true, removed = false) {
   return { id, value, faceUp, removed };
@@ -178,4 +189,53 @@ move = getBestAiMove(state);
 assertLegalReplacement(state, move);
 assert.equal(move.action, 'replace', 'AI should accept modest score reduction during a final turn');
 
-console.log('ai smoke passed: source choice, replacement targets, reveal targets, final-turn pressure, and removed-card safety');
+const profileState = makeState({
+  grid: gridWith([
+    [0, 12],
+    [1, 9],
+    [2, 7, false]
+  ]),
+  discardValue: 1
+});
+for (const difficulty of ['easy', 'medium', 'hard', 'ultra']) {
+  const profileMove = chooseAiMoveForState(profileState, {
+    playerId: 'ai',
+    difficulty,
+    decisionKey: `smoke-${difficulty}`
+  });
+  assert.ok(profileMove, `${difficulty} should choose a source`);
+  assert.ok(
+    legalAiMovesForState(profileState, 'ai').some(
+      (candidate) => candidate.action === profileMove.action && candidate.index === profileMove.index
+    ),
+    `${difficulty} should use the shared legal action surface`
+  );
+}
+
+const hiddenMutation = structuredClone(profileState);
+hiddenMutation.players = hiddenMutation.players.map((player) => ({
+  ...player,
+  grid: player.grid.map((item, index) =>
+    item.faceUp || item.removed ? item : hidden(`mutated-${player.id}-${index}`, 12 - index)
+  )
+}));
+hiddenMutation.drawPile = [...hiddenMutation.drawPile].reverse().map((_, index) => hidden(`mutated-draw-${index}`, index));
+assert.deepEqual(
+  projectAiKnowledge(hiddenMutation, 'ai'),
+  projectAiKnowledge(profileState, 'ai'),
+  'AI projection must exclude hidden values, card ids, and draw order'
+);
+assert.deepEqual(
+  chooseAiMoveForState(hiddenMutation, { playerId: 'ai', difficulty: 'ultra', decisionKey: 'hidden-smoke' }),
+  chooseAiMoveForState(profileState, { playerId: 'ai', difficulty: 'ultra', decisionKey: 'hidden-smoke' }),
+  'Ultra must not react to hidden-state mutations'
+);
+
+const mixed = resolveSoloGameSetup(createSoloGameSetup(1, 'mixed'), profileState, 'smoke-game');
+assert.equal(isResolvedSoloGameSetup(mixed, profileState), true, 'Mixed setup should persist a complete assignment');
+assert.ok(
+  ['easy', 'medium', 'hard', 'ultra'].includes(difficultyForSoloPlayer(mixed, 'ai')),
+  'Mixed setup should assign a supported profile'
+);
+
+console.log('ai smoke passed: fair profiles, hidden-state isolation, legal moves, Mixed setup, and Hard compatibility');

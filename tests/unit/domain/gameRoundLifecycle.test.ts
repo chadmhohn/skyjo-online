@@ -5,12 +5,12 @@ import {
   createGameForPlayers,
   discardDrawnAndReveal,
   drawBlind,
-  getBestAiMove,
   replaceCard,
   revealOpeningCard,
   startFreshGame,
   startNextRound
 } from '../../../src/game';
+import { getBestAiMove } from '../../../src/aiProjection';
 import { createSeededRandom } from '../../../src/runtime';
 import type { Card, GameState, Player } from '../../../src/types';
 

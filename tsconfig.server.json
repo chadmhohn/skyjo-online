@@ -12,5 +12,5 @@
     "rootDir": "src",
     "declaration": false
   },
-  "include": ["src/game.ts", "src/protocolV2.ts", "src/runtime.ts", "src/serverProtocolV2.ts", "src/serverRealtime.ts", "src/serverRoomLifecycle.ts", "src/serverValidation.ts", "src/types.ts"]
+  "include": ["src/aiContracts.ts", "src/aiProjection.ts", "src/aiStrategy.ts", "src/authoritativeAi.ts", "src/game.ts", "src/gameRules.ts", "src/protocolV2.ts", "src/runtime.ts", "src/serverProtocolV2.ts", "src/serverRealtime.ts", "src/serverRoomLifecycle.ts", "src/serverValidation.ts", "src/soloAiSetup.ts", "src/types.ts"]
 }

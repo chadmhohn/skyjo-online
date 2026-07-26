@@ -7,6 +7,7 @@ export default defineConfig({
     globals: true,
     include: [
       './tests/unit/data/runtimeArtifact.test.ts',
+      './tests/unit/delivery/aiBenchmarkEvidence.test.ts',
       './tests/unit/delivery/certification.test.ts',
       './tests/unit/delivery/lighthouseGate.test.ts'
     ],
@@ -16,7 +17,10 @@ export default defineConfig({
       provider: 'v8',
       reportsDirectory: './coverage/delivery',
       reporter: ['text', 'json-summary', 'lcov'],
-      include: ['scripts/runtime-artifact-security.mjs'],
+      include: [
+        'scripts/ai-benchmark-evidence.mjs',
+        'scripts/runtime-artifact-security.mjs'
+      ],
       thresholds: {
         lines: 90,
         branches: 85,

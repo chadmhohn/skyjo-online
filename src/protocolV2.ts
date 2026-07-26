@@ -3,7 +3,6 @@ import {
   chooseDiscard,
   discardDrawnAndReveal,
   drawBlind,
-  getBestAiMove,
   replaceCard,
   revealOpeningCard
 } from './game.js';
@@ -318,49 +317,6 @@ export function reduceAuthoritativeGameCommand(
 
   if (nextState === state) return { ok: false, message: 'That move is not legal.' };
   return { ok: true, state: nextState };
-}
-
-export function reduceAuthoritativeAiAction(
-  state: GameState | null,
-  playerId: string,
-  random: RandomSource
-): GameCommandReduction {
-  if (!state) return { ok: false, message: 'No active game.' };
-  const activePlayer = state.players[state.currentPlayerIndex];
-  if (!activePlayer || activePlayer.id !== playerId) {
-    return { ok: false, message: 'The AI seat is not the current player.' };
-  }
-  if (state.phase === 'round-over' || state.phase === 'game-over') {
-    return { ok: false, message: 'The game is waiting for round confirmation.' };
-  }
-
-  if (state.phase === 'opening-reveal') {
-    const cardIndex = activePlayer.grid.findIndex((card) => !card.faceUp && !card.removed);
-    return cardIndex >= 0
-      ? reduceAuthoritativeGameCommand(state, playerId, { type: 'reveal-opening-card', cardIndex }, random)
-      : { ok: false, message: 'The AI seat has no opening card to reveal.' };
-  }
-
-  let current = state;
-  if (current.phase === 'choose-source') {
-    const sourceMove = getBestAiMove(current);
-    const sourceAction: GameCommand = sourceMove.action === 'discard'
-      ? { type: 'choose-discard' }
-      : { type: 'draw-blind' };
-    const sourceReduction = reduceAuthoritativeGameCommand(current, playerId, sourceAction, random);
-    if (!sourceReduction.ok) return sourceReduction;
-    current = sourceReduction.state;
-  }
-
-  if (current.phase !== 'choose-replacement') {
-    return { ok: false, message: 'The AI action did not reach a replacement decision.' };
-  }
-  const placementMove = getBestAiMove(current);
-  const cardIndex = placementMove.index ?? 0;
-  const placementAction: GameCommand = placementMove.action === 'reveal'
-    ? { type: 'discard-and-reveal', cardIndex }
-    : { type: 'replace-card', cardIndex };
-  return reduceAuthoritativeGameCommand(current, playerId, placementAction, random);
 }
 
 function publicCard(card: Card, id: string, reveal: boolean): PublicCardSnapshot {
