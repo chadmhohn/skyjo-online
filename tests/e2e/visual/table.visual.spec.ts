@@ -18,7 +18,7 @@ async function configureSoloRoster(page: Page, playerCount: number) {
     .click();
   await page.waitForTimeout(250);
   await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
   await expect(settings).toBeHidden();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', String(playerCount));
 }

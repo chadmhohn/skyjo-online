@@ -48,7 +48,7 @@ test('eight-player centered table has no serious or critical Axe violations', as
   await expectNoBlockingViolations(page);
   await page.waitForTimeout(250);
   await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
   await expect(settings).toBeHidden();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', '8');
   await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
@@ -97,7 +97,7 @@ test('three-player compact table exposes both visible opponent boards without Ax
     .getByRole('button', { name: '2', exact: true })
     .click();
   await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
   await expect(settings).toBeHidden();
   await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
   await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)))

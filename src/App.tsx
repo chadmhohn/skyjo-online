@@ -1,5 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   cancelDiscardSelection,
@@ -16,15 +15,12 @@ import {
 import { GameTableLayout, type DrawIntent } from './GameTableLayout';
 import {
   handleScrollableRegionKeyDown,
-  noFocusScroll,
-  useModalFocus,
   usePhoneLayout,
   usePrefersReducedMotion
 } from './accessibility';
-import {
-  ActiveRoomOptionsLoadFallback,
-  RoundSummaryLoadFallback
-} from './CriticalLoadFallbacks';
+import AudioSettingsControls from './AudioSettingsControls';
+import GameSettingsDialogLoadFallback from './GameSettingsDialogLoadFallback';
+import SoloGamePromptLoadFallback from './SoloGamePromptLoadFallback';
 import {
   AccountProvider,
   createAdminUser,
@@ -43,8 +39,6 @@ import {
   type StatsSummary
 } from './account';
 import {
-  playAudioTestCue,
-  primeAudio,
   useAudioSettings,
   useGameAudio,
   type GameAudioDelivery
@@ -77,24 +71,30 @@ import {
 } from './protocolV2';
 import {
   createSoloGameId,
+  createSoloGameSetup,
   createStatsOutboxCoordinator,
   deleteSoloSession,
   enqueueCompletedGame,
   loadSoloSession,
+  replaceSoloSession,
   saveSoloSession,
   soloOwnerKey,
+  type SoloGameSetup,
+  type SoloOwnerKey,
   type SoloPersistenceWarning,
   type SoloSessionRecord
 } from './soloDurability';
 import type { GameState, MultiplayerRoom } from './types';
 import { advanceSoloAiOpeningSeat, drainSoloAiOpening, soloAiOpeningSeatDelayMs } from './soloAiOpening';
 
-const singlePlayerAiCounts = Array.from(
-  { length: singlePlayerAiOpponentRange.max - singlePlayerAiOpponentRange.min + 1 },
-  (_, index) => singlePlayerAiOpponentRange.min + index
-);
 type SoloStatsCoordinator = ReturnType<typeof createStatsOutboxCoordinator>;
 type SoloStatsFlushResult = Awaited<ReturnType<SoloStatsCoordinator['flush']>>;
+type SoloReplacementRequest = {
+  ownerKey: SoloOwnerKey;
+  ownerGeneration: number;
+  previousGameId: string;
+  setup: SoloGameSetup;
+};
 
 function beginSoloStatsFlush(
   coordinator: SoloStatsCoordinator,
@@ -185,71 +185,6 @@ function GearIcon() {
   );
 }
 
-function CloseIcon() {
-  return (
-    <svg aria-hidden="true" className="skyjo-icon" focusable="false" viewBox="0 0 24 24">
-      <path d="m6 6 12 12M18 6 6 18" />
-    </svg>
-  );
-}
-
-function AudioSettingsControls() {
-  const [settings, setSettings, audioStatus] = useAudioSettings();
-  const audioStatusMessage =
-    audioStatus === 'ready'
-      ? 'Audio is ready.'
-      : audioStatus === 'blocked'
-        ? 'Audio is blocked. Tap Preview sounds or interact with the page to unlock it.'
-        : audioStatus === 'unavailable'
-          ? 'This browser cannot play audio assets.'
-          : 'Tap Preview sounds to enable audio.';
-
-  function updateVolume(value: string) {
-    setSettings({ soundVolume: Number(value) / 100 });
-  }
-
-  return (
-    <div className="skyjo-audio-controls" onPointerDown={() => void primeAudio()}>
-      <div className="skyjo-audio-settings-grid">
-        <label className="skyjo-audio-setting-row">
-          <span>
-            <span className="skyjo-audio-setting-title">Game sounds</span>
-            <span className="block text-xs font-bold text-[#f5e6c8]/50">Cards, turns, and scoring</span>
-          </span>
-          <input
-            checked={settings.soundEffects}
-            className="skyjo-audio-toggle"
-            onChange={(event) => setSettings({ soundEffects: event.target.checked })}
-            type="checkbox"
-          />
-        </label>
-        <label className="skyjo-audio-setting-slider">
-          <span>Game volume</span>
-          <input
-            className="skyjo-audio-range"
-            disabled={!settings.soundEffects}
-            max="100"
-            min="0"
-            onChange={(event) => updateVolume(event.target.value)}
-            type="range"
-            value={Math.round(settings.soundVolume * 100)}
-          />
-        </label>
-      </div>
-      <button
-        className="skyjo-button skyjo-audio-test-button px-3 py-2 text-sm"
-        disabled={!settings.soundEffects}
-        onClick={() => void playAudioTestCue()}
-        onPointerDown={() => void primeAudio()}
-        type="button"
-      >
-        Preview sounds
-      </button>
-      <p className="skyjo-audio-status text-xs font-bold leading-5 text-[#f5e6c8]/58">{audioStatusMessage}</p>
-    </div>
-  );
-}
-
 function AudioSettingsPanel() {
   return (
     <section aria-labelledby="skyjo-audio-settings-title" className="skyjo-panel skyjo-home-audio-panel mt-7">
@@ -274,14 +209,15 @@ const loadPushSettingsControls = () => import('./PushSettingsControls').catch(()
   )
 }));
 const PushSettingsControls = lazy(loadPushSettingsControls);
-const RulesHelpPanel = lazy(() => import('./RulesHelpPanel').catch(() => ({
-  default: () => <p className="skyjo-disabled-note" role="alert">Rules could not load. Reload Skyjo to try again.</p>
-})));
-const RoundSummary = lazy(() => import('./RoundSummary').catch(() => ({ default: RoundSummaryLoadFallback })));
+const RoundSummary = lazy(() => import('./RoundSummary').catch(() => import('./CriticalLoadFallbacks').then((module) => ({
+  default: module.RoundSummaryLoadFallback
+}))));
 const RoomChat = lazy(() => import('./RoomChat').catch(() => import('./RoomChatLoadFallback')));
-const ActiveRoomOptionsDialog = lazy(() => import('./ActiveRoomOptionsDialog').catch(() => ({
-  default: ActiveRoomOptionsLoadFallback
-})));
+const SoloGamePrompt = lazy(() => import('./SoloGamePrompt').catch(() => ({ default: SoloGamePromptLoadFallback })));
+const GameSettingsDialog = lazy(() => import('./GameSettingsDialog').catch(() => ({ default: GameSettingsDialogLoadFallback })));
+const ActiveRoomOptionsDialog = lazy(() => import('./ActiveRoomOptionsDialog').catch(() => import('./CriticalLoadFallbacks').then((module) => ({
+  default: module.ActiveRoomOptionsLoadFallback
+}))));
 
 function Home() {
   return (
@@ -916,59 +852,35 @@ type GameSettingsButtonProps = {
   aiOpponentSummary?: string;
   onAiOpponentCountChange?: (count: number) => void;
   onNewGame?: () => void;
+  onOpenChange?: (open: boolean) => void;
   state?: GameState | null;
 };
-type GameSettingsPanel = 'audio' | 'game' | 'rules' | 'log';
-
 function GameSettingsButton({
   aiOpponentCount,
   aiOpponentSummary,
   onAiOpponentCountChange,
   onNewGame,
+  onOpenChange,
   state
 }: GameSettingsButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [activePanel, setActivePanel] = useState<GameSettingsPanel>('audio');
-  const dialogRef = useRef<HTMLElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const hasAiSettings = typeof aiOpponentCount === 'number' && Boolean(aiOpponentSummary && onAiOpponentCountChange && onNewGame);
-  const hasMoveLog = Boolean(state);
-  const settingsPanels = useMemo(
-    () => [
-      { key: 'audio' as const, label: 'Audio' },
-      ...(hasAiSettings ? [{ key: 'game' as const, label: 'Game' }] : []),
-      { key: 'rules' as const, label: 'Rules' },
-      ...(hasMoveLog ? [{ key: 'log' as const, label: 'Log' }] : [])
-    ],
-    [hasAiSettings, hasMoveLog]
+  const setSettingsVisibility = useCallback(
+    (open: boolean) => {
+      setIsOpen(open);
+      onOpenChange?.(open);
+    },
+    [onOpenChange]
   );
-
-  useModalFocus({
-    open: isOpen,
-    dialogRef,
-    initialFocusRef: closeButtonRef,
-    triggerRef,
-    onDismiss: () => setIsOpen(false)
-  });
-
-  useEffect(() => {
-    if (!isOpen) return;
-    if (!settingsPanels.some((panel) => panel.key === activePanel)) setActivePanel('audio');
-  }, [activePanel, isOpen, settingsPanels]);
-
-  function handleSettingsTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
-    let nextIndex = index;
-    if (event.key === 'ArrowRight') nextIndex = (index + 1) % settingsPanels.length;
-    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + settingsPanels.length) % settingsPanels.length;
-    else if (event.key === 'Home') nextIndex = 0;
-    else if (event.key === 'End') nextIndex = settingsPanels.length - 1;
-    else return;
-    event.preventDefault();
-    const nextPanel = settingsPanels[nextIndex];
-    setActivePanel(nextPanel.key);
-    document.getElementById(`skyjo-settings-tab-${nextPanel.key}`)?.focus(noFocusScroll);
-  }
+  const dialogProps = {
+    aiOpponentCount,
+    aiOpponentSummary,
+    onAiOpponentCountChange,
+    onDismiss: () => setSettingsVisibility(false),
+    onNewGame,
+    state,
+    triggerRef
+  };
 
   return (
     <>
@@ -977,7 +889,7 @@ function GameSettingsButton({
         aria-haspopup="dialog"
         aria-label="Open game settings"
         className="skyjo-button skyjo-icon-button"
-        onClick={() => setIsOpen(true)}
+        onClick={() => setSettingsVisibility(true)}
         ref={triggerRef}
         title="Game settings"
         type="button"
@@ -985,157 +897,12 @@ function GameSettingsButton({
         <GearIcon />
       </button>
 
-      {isOpen
-        ? createPortal(
-            <div
-              className="skyjo-settings-overlay fixed inset-0 flex items-end justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:items-center sm:px-5"
-              data-modal-overlay
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) setIsOpen(false);
-              }}
-            >
-              <section
-                aria-describedby="skyjo-game-settings-intro"
-                aria-labelledby="skyjo-game-settings-title"
-                aria-modal="true"
-                className="skyjo-panel skyjo-settings-dialog w-full max-w-3xl overflow-hidden rounded-2xl bg-[#09110e]/95 shadow-2xl"
-                ref={dialogRef}
-                role="dialog"
-                tabIndex={-1}
-              >
-                <div className="skyjo-settings-dialog-header flex items-start justify-between gap-3 border-b border-[#f5e6c8]/10 p-4 sm:p-5">
-                  <div className="min-w-0">
-                    <p className="skyjo-kicker">Game</p>
-                    <h2 className="skyjo-serif mt-1 text-2xl font-black leading-tight text-[#f5e6c8] sm:text-3xl" id="skyjo-game-settings-title">
-                      Settings
-                    </h2>
-                    <p className="skyjo-settings-intro mt-2 text-sm leading-6" id="skyjo-game-settings-intro">
-                      Audio, table options, rules, and the move log.
-                    </p>
-                  </div>
-                  <button
-                    aria-label="Close game settings"
-                    className="skyjo-button skyjo-icon-button shrink-0"
-                    onClick={() => setIsOpen(false)}
-                    ref={closeButtonRef}
-                    type="button"
-                  >
-                    <CloseIcon />
-                  </button>
-                </div>
-
-                <div className="skyjo-settings-body overflow-y-auto p-4 sm:p-5">
-                  <div aria-label="Settings sections" aria-orientation="horizontal" className={`skyjo-settings-tabs skyjo-settings-tabs-${settingsPanels.length}`} role="tablist">
-                    {settingsPanels.map((panel, index) => (
-                      <button
-                        aria-controls={`skyjo-settings-panel-${panel.key}`}
-                        aria-selected={activePanel === panel.key}
-                        className={`skyjo-settings-tab ${activePanel === panel.key ? 'skyjo-settings-tab-active' : ''}`}
-                        id={`skyjo-settings-tab-${panel.key}`}
-                        key={panel.key}
-                        onClick={() => setActivePanel(panel.key)}
-                        onKeyDown={(event) => handleSettingsTabKeyDown(event, index)}
-                        role="tab"
-                        tabIndex={activePanel === panel.key ? 0 : -1}
-                        type="button"
-                      >
-                        {panel.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div
-                    aria-labelledby={`skyjo-settings-tab-${activePanel}`}
-                    className="skyjo-settings-panel"
-                    id={`skyjo-settings-panel-${activePanel}`}
-                    role="tabpanel"
-                  >
-                    {activePanel === 'audio' ? (
-                      <section className="skyjo-settings-section">
-                        <div className="skyjo-settings-section-heading">
-                          <p className="skyjo-kicker">Audio</p>
-                          <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Sound</h3>
-                        </div>
-                        <AudioSettingsControls />
-                      </section>
-                    ) : null}
-
-                    {activePanel === 'game' && hasAiSettings ? (
-                      <section className="skyjo-settings-section">
-                        <div className="skyjo-settings-section-heading">
-                          <p className="skyjo-kicker">Single player</p>
-                          <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">AI opponents</h3>
-                        </div>
-                        <div className="skyjo-settings-ai-toolbar">
-                          <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
-                          <button className="skyjo-button skyjo-new-game-button text-sm" onClick={onNewGame} type="button">
-                            New Game
-                          </button>
-                        </div>
-                        <div className="skyjo-settings-ai-grid mt-3" role="group" aria-label="Choose AI opponent count">
-                          {singlePlayerAiCounts.map((count) => (
-                            <button
-                              aria-pressed={count === aiOpponentCount}
-                              className={`skyjo-button min-w-0 px-0 text-sm tabular-nums ${count === aiOpponentCount ? 'skyjo-button-primary' : ''}`}
-                              key={count}
-                              onClick={() => onAiOpponentCountChange?.(count)}
-                              type="button"
-                            >
-                              {count}
-                            </button>
-                          ))}
-                        </div>
-                      </section>
-                    ) : null}
-
-                    {activePanel === 'rules' ? (
-                      <Suspense fallback={<p className="skyjo-kicker" role="status">Loading rules...</p>}>
-                        <RulesHelpPanel />
-                      </Suspense>
-                    ) : null}
-
-                    {activePanel === 'log' && state ? (
-                      <section className="skyjo-settings-section">
-                        <div className="skyjo-settings-section-heading">
-                          <p className="skyjo-kicker">Table</p>
-                          <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Move Log</h3>
-                        </div>
-                        <MoveLogList state={state} />
-                      </section>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="skyjo-settings-footer border-t border-[#f5e6c8]/10 p-4 sm:p-5">
-                  <button className="skyjo-button skyjo-button-primary w-full px-4 py-2 text-sm sm:w-auto" onClick={() => setIsOpen(false)} type="button">
-                    Done
-                  </button>
-                </div>
-              </section>
-            </div>,
-            document.body
-          )
-        : null}
+      {isOpen ? (
+        <Suspense fallback={<GameSettingsDialogLoadFallback {...dialogProps} />}>
+          <GameSettingsDialog {...dialogProps} />
+        </Suspense>
+      ) : null}
     </>
-  );
-}
-
-
-function MoveLogList({ state }: { state: GameState }) {
-  return (
-    <div className="skyjo-move-log-list space-y-2 text-sm text-[#f5e6c8]/72">
-      {state.log.length > 0 ? (
-        state.log.map((entry, index) => (
-          <div className="rounded-lg border border-white/[0.04] bg-white/[0.025] px-3 py-2" key={`${index}-${entry}`}>
-            {entry}
-          </div>
-        ))
-      ) : (
-        <div className="rounded-lg border border-dashed border-[#f5e6c8]/14 px-3 py-5 text-center text-sm font-bold text-[#f5e6c8]/45">
-          No moves yet.
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -1177,7 +944,12 @@ function SinglePlayer() {
   const pwaUpdate = useSyncExternalStore(subscribeToPwaUpdates, getPwaUpdateSnapshot, getPwaUpdateSnapshot);
   const prefersReducedMotion = usePrefersReducedMotion();
   const ownerKey = soloOwnerKey(user?.id ?? localSoloOwnerId);
-  const [aiOpponentCount, setAiOpponentCount] = useState<number>(singlePlayerAiOpponentRange.min);
+  const [activeSetup, setActiveSetup] = useState<SoloGameSetup>(() =>
+    createSoloGameSetup(singlePlayerAiOpponentRange.min)
+  );
+  const [draftSetup, setDraftSetup] = useState<SoloGameSetup>(() =>
+    createSoloGameSetup(singlePlayerAiOpponentRange.min)
+  );
   const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
   const [activeGameId, setActiveGameId] = useState(createSoloGameId);
   const [hydratedOwnerKey, setHydratedOwnerKey] = useState('');
@@ -1186,9 +958,14 @@ function SinglePlayer() {
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
   const [statsSaveStatus, setStatsSaveStatus] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [replacementRequest, setReplacementRequest] = useState<SoloReplacementRequest | null>(null);
+  const [replacementPending, setReplacementPending] = useState(false);
   const completedQueueKeyRef = useRef('');
-  const resumeDialogRef = useRef<HTMLDivElement | null>(null);
-  const continueGameRef = useRef<HTMLButtonElement | null>(null);
+  const ownerContextRef = useRef({ generation: 0, ownerKey });
+  if (ownerContextRef.current.ownerKey !== ownerKey) {
+    ownerContextRef.current = { generation: ownerContextRef.current.generation + 1, ownerKey };
+  }
   const statsCoordinatorRef = useRef<ReturnType<typeof createStatsOutboxCoordinator> | null>(null);
   if (!statsCoordinatorRef.current) {
     statsCoordinatorRef.current = createStatsOutboxCoordinator((record, signal) => {
@@ -1202,17 +979,12 @@ function SinglePlayer() {
   const activePlayer = state.players[state.currentPlayerIndex];
   const humanTurn = activePlayer.kind === 'human';
   const localPlayerId = state.players.find((player) => player.kind === 'human')?.id;
-  const aiOpponentSummary = `${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
+  const aiOpponentCount = activeSetup.aiOpponentCount;
+  const draftAiOpponentCount = draftSetup.aiOpponentCount;
+  const aiOpponentSummary = `Current game: ${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
   const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
   const summaryModalOpen = isScoringPhase && roundSummaryOpen;
   const durabilityReady = !accountLoading && hydratedOwnerKey === ownerKey && !resumeSession;
-
-  useModalFocus({
-    open: Boolean(resumeSession),
-    dialogRef: resumeDialogRef,
-    initialFocusRef: continueGameRef,
-    onDismiss: () => navigate('/')
-  });
 
   useGameAudio(state, {
     sessionId: activeGameId,
@@ -1224,6 +996,8 @@ function SinglePlayer() {
     let cancelled = false;
     setHydratedOwnerKey('');
     setResumeSession(null);
+    setReplacementRequest(null);
+    setReplacementPending(false);
     setStatsSaveStatus('');
     setPersistenceWarning(null);
     completedQueueKeyRef.current = '';
@@ -1235,10 +1009,11 @@ function SinglePlayer() {
         setResumeSession(result.session);
         return;
       }
-      const count = singlePlayerAiOpponentRange.min;
-      setAiOpponentCount(count);
+      const setup = createSoloGameSetup(singlePlayerAiOpponentRange.min);
+      setActiveSetup(setup);
+      setDraftSetup(setup);
       setActiveGameId(createSoloGameId());
-      setState(startFreshGame({ aiOpponentCount: count }));
+      setState(startFreshGame({ aiOpponentCount: setup.aiOpponentCount }));
       setHydratedOwnerKey(ownerKey);
     });
 
@@ -1292,7 +1067,16 @@ function SinglePlayer() {
   }, [state.drawnCard, state.phase, state.selectedSource]);
 
   useEffect(() => {
-    if (!durabilityReady || activePlayer.kind !== 'ai' || state.phase === 'round-over' || state.phase === 'game-over') return;
+    if (
+      !durabilityReady ||
+      settingsOpen ||
+      replacementRequest ||
+      activePlayer.kind !== 'ai' ||
+      state.phase === 'round-over' ||
+      state.phase === 'game-over'
+    ) {
+      return;
+    }
     const openingReveal = state.phase === 'opening-reveal';
     const timer = window.setTimeout(() => {
       setState((current) => {
@@ -1307,7 +1091,7 @@ function SinglePlayer() {
       });
     }, openingReveal ? (prefersReducedMotion ? 0 : soloAiOpeningSeatDelayMs) : 650);
     return () => window.clearTimeout(timer);
-  }, [activePlayer.kind, durabilityReady, prefersReducedMotion, state]);
+  }, [activePlayer.kind, durabilityReady, prefersReducedMotion, replacementRequest, settingsOpen, state]);
 
   useEffect(() => {
     setRoundSummaryOpen(isScoringPhase);
@@ -1317,7 +1101,7 @@ function SinglePlayer() {
     if (!durabilityReady) return;
     let cancelled = false;
     if (state.phase !== 'game-over') {
-      void saveSoloSession(ownerKey, activeGameId, state, aiOpponentCount).then((warning) => {
+      void saveSoloSession(ownerKey, activeGameId, state, activeSetup).then((warning) => {
         if (!cancelled && warning) setPersistenceWarning(warning);
       });
       return () => {
@@ -1365,7 +1149,7 @@ function SinglePlayer() {
     return () => {
       cancelled = true;
     };
-  }, [activeGameId, aiOpponentCount, durabilityReady, localSoloOwnerId, ownerKey, state, user]);
+  }, [activeGameId, activeSetup, durabilityReady, localSoloOwnerId, ownerKey, state, user]);
 
   function handleCard(index: number) {
     if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
@@ -1388,17 +1172,20 @@ function SinglePlayer() {
     setState((current) => drawBlind(current));
   }
 
-  function startSelectedGame() {
-    void deleteSoloSession(ownerKey, activeGameId).catch(() => undefined);
-    setActiveGameId(createSoloGameId());
-    setState(startFreshGame({ aiOpponentCount }));
-    setStatsSaveStatus('');
-    completedQueueKeyRef.current = '';
+  function requestSelectedGame() {
+    setRoundSummaryOpen(false);
+    setReplacementRequest({
+      ownerKey,
+      ownerGeneration: ownerContextRef.current.generation,
+      previousGameId: activeGameId,
+      setup: draftSetup
+    });
   }
 
   function continueSavedGame() {
     if (!resumeSession) return;
-    setAiOpponentCount(resumeSession.aiOpponentCount);
+    setActiveSetup(resumeSession.setup);
+    setDraftSetup(resumeSession.setup);
     setActiveGameId(resumeSession.gameId);
     setState(resumeSession.state);
     setResumeSession(null);
@@ -1406,56 +1193,76 @@ function SinglePlayer() {
     completedQueueKeyRef.current = '';
   }
 
-  function discardSavedGame() {
-    if (resumeSession) void deleteSoloSession(ownerKey, resumeSession.gameId).catch(() => undefined);
-    const count = resumeSession?.aiOpponentCount ?? singlePlayerAiOpponentRange.min;
-    setAiOpponentCount(count);
-    setActiveGameId(createSoloGameId());
-    setState(startFreshGame({ aiOpponentCount: count }));
+  function requestReplacementForSavedGame() {
+    if (!resumeSession) return;
+    setReplacementRequest({
+      ownerKey,
+      ownerGeneration: ownerContextRef.current.generation,
+      previousGameId: resumeSession.gameId,
+      setup: resumeSession.setup
+    });
+  }
+
+  async function confirmReplacement() {
+    if (!replacementRequest || replacementPending) return;
+    const request = replacementRequest;
+    setReplacementPending(true);
+    const nextGameId = createSoloGameId();
+    const nextState = startFreshGame({ aiOpponentCount: request.setup.aiOpponentCount });
+    const warning = await replaceSoloSession(
+      request.ownerKey,
+      request.previousGameId,
+      nextGameId,
+      nextState,
+      request.setup
+    );
+    if (
+      ownerContextRef.current.ownerKey !== request.ownerKey ||
+      ownerContextRef.current.generation !== request.ownerGeneration
+    ) {
+      return;
+    }
+    if (warning) {
+      setPersistenceWarning(warning);
+      setReplacementPending(false);
+      return;
+    }
+
+    setActiveSetup(request.setup);
+    setDraftSetup(request.setup);
+    setActiveGameId(nextGameId);
+    setState(nextState);
     setResumeSession(null);
     setHydratedOwnerKey(ownerKey);
     setStatsSaveStatus('');
+    setPersistenceWarning(null);
+    setReplacementRequest(null);
+    setReplacementPending(false);
     completedQueueKeyRef.current = '';
   }
 
+  const soloGamePromptProps = {
+    onCancelReplacement: () => setReplacementRequest(null),
+    onConfirmReplacement: () => void confirmReplacement(),
+    onContinue: continueSavedGame,
+    onDismissResume: () => navigate('/'),
+    onRequestReplacement: requestReplacementForSavedGame,
+    replacementOpen: Boolean(replacementRequest),
+    replacementPending,
+    resumeSession,
+    restoreFocusFallback: () =>
+      document.querySelector<HTMLElement>('[aria-label="Open game settings"]') ??
+      document.querySelector<HTMLElement>('[data-testid="solo-resume-choice"] button'),
+    warning: persistenceWarning
+  };
+  const soloGamePrompt = (
+    <Suspense fallback={<SoloGamePromptLoadFallback {...soloGamePromptProps} />}>
+      <SoloGamePrompt {...soloGamePromptProps} />
+    </Suspense>
+  );
+
   if (resumeSession) {
-    return (
-      <main className="skyjo-surface px-4 py-8" data-modal-overlay data-testid="solo-resume-choice">
-        <section className="skyjo-shell mx-auto flex min-h-[70vh] max-w-2xl items-center">
-          <div
-            aria-describedby="solo-resume-description"
-            aria-labelledby="solo-resume-title"
-            aria-modal="true"
-            className="skyjo-panel skyjo-solo-resume-dialog w-full p-6"
-            ref={resumeDialogRef}
-            role="dialog"
-          >
-            <p className="skyjo-kicker">Saved game found</p>
-            <h1 className="skyjo-serif mt-2 text-3xl font-black text-[#f5e6c8]" id="solo-resume-title">
-              Continue your solo game?
-            </h1>
-            <p className="mt-3 leading-7 text-[#f5e6c8]/68" id="solo-resume-description">
-              Round {resumeSession.state.round} with {resumeSession.aiOpponentCount} AI opponent
-              {resumeSession.aiOpponentCount === 1 ? '' : 's'}, saved {formatDate(resumeSession.updatedAt)}.
-            </p>
-            {persistenceWarning ? <p className="mt-3 text-sm font-bold text-[#f5e6c8]/70">{persistenceWarning.message}</p> : null}
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button
-                className="skyjo-button skyjo-button-primary px-4 py-3"
-                onClick={continueSavedGame}
-                ref={continueGameRef}
-                type="button"
-              >
-                Continue Game
-              </button>
-              <button className="skyjo-button px-4 py-3" onClick={discardSavedGame} type="button">
-                New Game
-              </button>
-            </div>
-          </div>
-        </section>
-      </main>
-    );
+    return soloGamePrompt;
   }
 
   if (!durabilityReady) {
@@ -1501,10 +1308,11 @@ function SinglePlayer() {
           <div className="skyjo-header-controls flex w-auto items-start justify-end">
             <div className="skyjo-header-actions flex items-start justify-end gap-2">
               <GameSettingsButton
-                aiOpponentCount={aiOpponentCount}
+                aiOpponentCount={draftAiOpponentCount}
                 aiOpponentSummary={aiOpponentSummary}
-                onAiOpponentCountChange={setAiOpponentCount}
-                onNewGame={startSelectedGame}
+                onAiOpponentCountChange={(count) => setDraftSetup(createSoloGameSetup(count))}
+                onNewGame={requestSelectedGame}
+                onOpenChange={setSettingsOpen}
                 state={state}
               />
             </div>
@@ -1545,7 +1353,7 @@ function SinglePlayer() {
               <RoundSummary
                 actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
                 onMinimize={() => setRoundSummaryOpen(false)}
-                onAction={() => (state.phase === 'game-over' ? startSelectedGame() : setState(startNextRound(state)))}
+                onAction={() => (state.phase === 'game-over' ? requestSelectedGame() : setState(startNextRound(state)))}
                 restoreFocusFallback={() => document.querySelector<HTMLElement>('[aria-label="Action guidance"]')}
                 state={state}
               />
@@ -1553,6 +1361,7 @@ function SinglePlayer() {
           </aside>
         ) : null}
       </div>
+      {replacementRequest ? soloGamePrompt : null}
     </main>
   );
 }

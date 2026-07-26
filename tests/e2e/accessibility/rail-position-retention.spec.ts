@@ -62,7 +62,7 @@ async function configureSoloRoster(page: Page, playerCount: number) {
     .getByRole('button', { name: String(playerCount - 1), exact: true })
     .click();
   await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', String(playerCount));
 }
 

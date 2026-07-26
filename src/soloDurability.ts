@@ -17,7 +17,16 @@ const canonicalSoloDeckValues = [
 ] as const;
 
 export type SoloOwnerKey = `account:${string}` | 'guest';
-export type SoloPersistenceWarningKind = 'quota' | 'recovered' | 'unavailable';
+export type SoloPersistenceWarningKind = 'conflict' | 'quota' | 'recovered' | 'unavailable';
+
+// v0.2.2's one shared AI strategy is the compatibility baseline. Later releases
+// can extend this union without changing the IndexedDB or record schema version.
+export type SoloAiDifficulty = 'hard';
+
+export interface SoloGameSetup {
+  readonly aiOpponentCount: number;
+  readonly difficulty: SoloAiDifficulty;
+}
 
 export interface SoloPersistenceWarning {
   kind: SoloPersistenceWarningKind;
@@ -30,6 +39,7 @@ export interface SoloSessionRecord {
   schemaVersion: 1;
   state: GameState;
   aiOpponentCount: number;
+  setup: SoloGameSetup;
   updatedAt: number;
 }
 
@@ -76,6 +86,10 @@ type StatsOutboxCoordinator = {
 };
 
 let databasePromise: Promise<IDBDatabase> | null = null;
+
+class SoloSessionConflictError extends Error {
+  override readonly name = 'SoloSessionConflictError';
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -482,16 +496,48 @@ function hasExpectedAiOpponentCount(state: GameState, aiOpponentCount: unknown):
   );
 }
 
-function isSoloSessionRecord(value: unknown): value is SoloSessionRecord {
-  return (
-    isRecord(value) &&
-    value.schemaVersion === recordSchemaVersion &&
-    isOwnerKey(value.ownerKey) &&
-    isUuid(value.gameId) &&
-    isValidTimestamp(value.updatedAt) &&
-    isCompatibleSoloGameState(value.state) &&
-    hasExpectedAiOpponentCount(value.state, value.aiOpponentCount)
-  );
+function normalizeSoloGameSetup(
+  state: GameState,
+  aiOpponentCount: unknown,
+  setup: unknown
+): SoloGameSetup | null {
+  if (!hasExpectedAiOpponentCount(state, aiOpponentCount)) return null;
+  if (setup === undefined) {
+    return { aiOpponentCount, difficulty: 'hard' };
+  }
+  if (
+    !isRecord(setup) ||
+    setup.difficulty !== 'hard' ||
+    setup.aiOpponentCount !== aiOpponentCount ||
+    !hasExpectedAiOpponentCount(state, setup.aiOpponentCount)
+  ) {
+    return null;
+  }
+  return { aiOpponentCount, difficulty: setup.difficulty };
+}
+
+function normalizeSoloSessionRecord(value: unknown): SoloSessionRecord | null {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== recordSchemaVersion ||
+    !isOwnerKey(value.ownerKey) ||
+    !isUuid(value.gameId) ||
+    !isValidTimestamp(value.updatedAt) ||
+    !isCompatibleSoloGameState(value.state)
+  ) {
+    return null;
+  }
+  const setup = normalizeSoloGameSetup(value.state, value.aiOpponentCount, value.setup);
+  if (!setup) return null;
+  return {
+    ownerKey: value.ownerKey,
+    gameId: value.gameId,
+    schemaVersion: recordSchemaVersion,
+    state: value.state,
+    aiOpponentCount: setup.aiOpponentCount,
+    setup,
+    updatedAt: value.updatedAt
+  };
 }
 
 function isStatsOutboxRecord(value: unknown): value is StatsOutboxRecord {
@@ -521,6 +567,12 @@ function isUuid(value: unknown): value is string {
 
 function persistenceWarning(error: unknown): SoloPersistenceWarning {
   const name = isRecord(error) && typeof error.name === 'string' ? error.name : '';
+  if (name === 'SoloSessionConflictError') {
+    return {
+      kind: 'conflict',
+      message: 'A newer saved game is already active. Your current game was left unchanged.'
+    };
+  }
   if (name === 'QuotaExceededError') {
     return {
       kind: 'quota',
@@ -552,6 +604,13 @@ export function soloOwnerKey(userId?: string | null): SoloOwnerKey {
 
 export function createSoloGameId(): string {
   return crypto.randomUUID();
+}
+
+export function createSoloGameSetup(aiOpponentCount: number): SoloGameSetup {
+  if (!Number.isSafeInteger(aiOpponentCount) || aiOpponentCount < 1 || aiOpponentCount > 7) {
+    throw new Error('AI opponent count must be an integer from 1 through 7.');
+  }
+  return { aiOpponentCount, difficulty: 'hard' };
 }
 
 function recoveredSessionWarning(): SoloPersistenceWarning {
@@ -595,8 +654,9 @@ export async function loadSoloSession(ownerKey: SoloOwnerKey): Promise<SoloSessi
 
       let recovered = false;
       for (const { value: candidate, primaryKey } of records) {
-        if (isSoloSessionRecord(candidate) && candidate.ownerKey === ownerKey && candidate.state.phase !== 'game-over') {
-          return { session: candidate, warning: recovered ? recoveredSessionWarning() : null };
+        const normalized = normalizeSoloSessionRecord(candidate);
+        if (normalized && normalized.ownerKey === ownerKey && normalized.state.phase !== 'game-over') {
+          return { session: normalized, warning: recovered ? recoveredSessionWarning() : null };
         }
         recovered = true;
         await requestResult(store.delete(primaryKey));
@@ -618,18 +678,25 @@ export async function saveSoloSession(
   ownerKey: SoloOwnerKey,
   gameId: string,
   state: GameState,
-  aiOpponentCount: number,
+  setupInput: number | SoloGameSetup,
   now = Date.now
 ): Promise<SoloPersistenceWarning | null> {
   try {
-    if (!isUuid(gameId) || !isCompatibleSoloGameState(state) || !hasExpectedAiOpponentCount(state, aiOpponentCount)) {
+    const setup =
+      typeof setupInput === 'number'
+        ? normalizeSoloGameSetup(state, setupInput, undefined)
+        : normalizeSoloGameSetup(state, setupInput.aiOpponentCount, setupInput);
+    if (!isUuid(gameId) || !isCompatibleSoloGameState(state) || !setup) {
       throw new Error('Invalid solo session.');
     }
     const updatedAt = now();
+    if (!isValidTimestamp(updatedAt)) throw new Error('Invalid solo session timestamp.');
     await withStore(soloSessionStoreName, 'readwrite', async (store) => {
       const existing = (await requestResult(store.index('byOwner').getAllKeys(ownerKey))) as IDBValidKey[];
-      for (const key of existing) {
-        if (Array.isArray(key) && key[1] !== gameId) store.delete(key);
+      const hasCurrentGame = existing.some((key) => Array.isArray(key) && key[1] === gameId);
+      const hasDifferentGame = existing.some((key) => Array.isArray(key) && key[1] !== gameId);
+      if (!hasCurrentGame && hasDifferentGame) {
+        throw new SoloSessionConflictError('A stale autosave cannot replace a newer active game.');
       }
       await requestResult(
         store.put({
@@ -637,10 +704,68 @@ export async function saveSoloSession(
           gameId,
           schemaVersion: recordSchemaVersion,
           state,
-          aiOpponentCount,
+          aiOpponentCount: setup.aiOpponentCount,
+          setup,
           updatedAt
         } satisfies SoloSessionRecord)
       );
+      for (const key of existing) {
+        if (Array.isArray(key) && key[1] !== gameId) await requestResult(store.delete(key));
+      }
+    });
+    return null;
+  } catch (error) {
+    return persistenceWarning(error);
+  }
+}
+
+export async function replaceSoloSession(
+  ownerKey: SoloOwnerKey,
+  previousGameId: string,
+  gameId: string,
+  state: GameState,
+  setup: SoloGameSetup,
+  now = Date.now
+): Promise<SoloPersistenceWarning | null> {
+  try {
+    const normalizedSetup = normalizeSoloGameSetup(state, setup.aiOpponentCount, setup);
+    if (
+      !isUuid(previousGameId) ||
+      !isUuid(gameId) ||
+      previousGameId === gameId ||
+      !isCompatibleSoloGameState(state) ||
+      !normalizedSetup
+    ) {
+      throw new Error('Invalid solo session replacement.');
+    }
+    const updatedAt = now();
+    if (!isValidTimestamp(updatedAt)) throw new Error('Invalid solo session timestamp.');
+
+    await withStore(soloSessionStoreName, 'readwrite', async (store) => {
+      const existing = (await requestResult(store.index('byOwner').getAllKeys(ownerKey))) as IDBValidKey[];
+      const existingGameIds = existing
+        .filter((key): key is IDBValidKey[] => Array.isArray(key))
+        .map((key) => key[1]);
+      if (existingGameIds.length > 0 && !existingGameIds.includes(previousGameId)) {
+        throw new SoloSessionConflictError('The expected saved game is no longer active.');
+      }
+
+      // Write first, then remove superseded records in the same transaction. Any
+      // failed request aborts the transaction and restores the previous record.
+      await requestResult(
+        store.put({
+          ownerKey,
+          gameId,
+          schemaVersion: recordSchemaVersion,
+          state,
+          aiOpponentCount: normalizedSetup.aiOpponentCount,
+          setup: normalizedSetup,
+          updatedAt
+        } satisfies SoloSessionRecord)
+      );
+      for (const key of existing) {
+        if (Array.isArray(key) && key[1] !== gameId) await requestResult(store.delete(key));
+      }
     });
     return null;
   } catch (error) {
