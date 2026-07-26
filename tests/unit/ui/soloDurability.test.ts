@@ -12,6 +12,7 @@ import { createSeededRandom } from '../../../src/runtime';
 import type { RandomSource } from '../../../src/runtime';
 import {
   closeSoloDatabaseForTests,
+  createSoloGameSetup,
   createStatsOutboxCoordinator,
   enqueueCompletedGame,
   flushStatsOutbox,
@@ -19,6 +20,7 @@ import {
   listStatsOutbox,
   loadSoloSession,
   resetSoloDatabaseForTests,
+  replaceSoloSession,
   saveSoloSession,
   soloDatabaseName,
   soloDatabaseVersion,
@@ -479,6 +481,93 @@ describe('solo IndexedDB durability', () => {
       'byOwnerNextAttempt'
     ]);
     database.close();
+  });
+
+  it('normalizes a v0.2.2 session to Hard without rewriting its v1 record', async () => {
+    const ownerKey = soloOwnerKey('legacy-player');
+    const state = activeState();
+    await loadSoloSession(ownerKey);
+    await putRaw(soloSessionStoreName, {
+      ownerKey,
+      gameId: gameA,
+      schemaVersion: 1,
+      state,
+      aiOpponentCount: 1,
+      updatedAt: 20
+    });
+
+    const restored = await loadSoloSession(ownerKey);
+    expect(restored).toMatchObject({
+      session: {
+        gameId: gameA,
+        schemaVersion: 1,
+        state,
+        aiOpponentCount: 1,
+        setup: { aiOpponentCount: 1, difficulty: 'hard' }
+      },
+      warning: null
+    });
+    const [raw] = (await rawRecordsForOwner(soloSessionStoreName, ownerKey)) as Array<Record<string, unknown>>;
+    expect(raw).toMatchObject({ gameId: gameA, schemaVersion: 1, aiOpponentCount: 1, state });
+    expect(raw).not.toHaveProperty('setup');
+
+    const database = await openRawDatabase();
+    expect(database.version).toBe(1);
+    database.close();
+  });
+
+  it('writes setup as additive v1 metadata that a v0.2.2 reader can ignore', async () => {
+    const state = activeState();
+    await saveSoloSession('guest', gameA, state, createSoloGameSetup(1), () => 30);
+
+    const [raw] = (await rawRecordsForOwner(soloSessionStoreName, 'guest')) as Array<Record<string, unknown>>;
+    expect(raw).toMatchObject({
+      gameId: gameA,
+      schemaVersion: 1,
+      state,
+      aiOpponentCount: 1,
+      setup: { aiOpponentCount: 1, difficulty: 'hard' },
+      updatedAt: 30
+    });
+  });
+
+  it('atomically replaces the owner session and fences a delayed stale autosave', async () => {
+    await saveSoloSession('guest', gameA, activeState(), 1, () => 10);
+    const replacementState = startFreshGame({ aiOpponentCount: 2, random: () => 0.4 });
+    expect(
+      await replaceSoloSession('guest', gameA, gameB, replacementState, createSoloGameSetup(2), () => 20)
+    ).toBeNull();
+
+    const staleWarning = await saveSoloSession('guest', gameA, activeState(), 1, () => 30);
+    expect(staleWarning).toMatchObject({ kind: 'conflict' });
+    expect((await loadSoloSession('guest')).session).toMatchObject({
+      gameId: gameB,
+      state: replacementState,
+      setup: { aiOpponentCount: 2, difficulty: 'hard' }
+    });
+    expect(await rawRecordsForOwner(soloSessionStoreName, 'guest')).toHaveLength(1);
+  });
+
+  it('aborts a failed replacement transaction and leaves the prior save resumable', async () => {
+    const originalState = activeState();
+    await saveSoloSession('guest', gameA, originalState, 1, () => 10);
+    const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementationOnce(() => {
+      throw new DOMException('Storage full', 'QuotaExceededError');
+    });
+
+    const warning = await replaceSoloSession(
+      'guest',
+      gameA,
+      gameB,
+      startFreshGame({ aiOpponentCount: 2, random: () => 0.4 }),
+      createSoloGameSetup(2),
+      () => 20
+    );
+    put.mockRestore();
+
+    expect(warning).toMatchObject({ kind: 'quota' });
+    expect((await loadSoloSession('guest')).session).toMatchObject({ gameId: gameA, state: originalState });
+    expect(await rawRecordsForOwner(soloSessionStoreName, 'guest')).toHaveLength(1);
   });
 
   it('quarantines only the newest corrupt or incompatible session and preserves an older valid record', async () => {

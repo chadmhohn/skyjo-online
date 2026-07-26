@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { vi } from 'vitest';
@@ -11,6 +11,7 @@ import {
   soloOwnerKey,
   statsOutboxStoreName
 } from '../../../src/soloDurability';
+import * as soloDurabilityModule from '../../../src/soloDurability';
 import type { AccountUser } from '../../../src/account';
 import type { GameState } from '../../../src/types';
 import { completedSoloGameState } from '../../helpers/soloGameState';
@@ -126,15 +127,132 @@ describe('solo durability integration', () => {
     expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId);
   });
 
-  it('discards a saved game only when New Game is chosen', async () => {
+  it('does not mutate a saved game when replacement is cancelled', async () => {
     await saveSoloSession('guest', savedGameId, activeState(), 2);
     const actor = userEvent.setup();
     renderSolo();
     await actor.click(await screen.findByRole('button', { name: 'New Game' }));
 
+    expect(screen.queryByRole('dialog', { name: 'Continue your solo game?' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Replace your saved game?' })).toBeInTheDocument();
+    expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId);
+    await actor.click(screen.getByRole('button', { name: 'Keep Current Game' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Continue your solo game?' })).toBeInTheDocument();
+    expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId);
+  });
+
+  it('replaces a saved game only after explicit confirmation', async () => {
+    await saveSoloSession('guest', savedGameId, activeState(), 2);
+    const actor = userEvent.setup();
+    renderSolo();
+    await actor.click(await screen.findByRole('button', { name: 'New Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Replace Saved Game' }));
+
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     expect(screen.getByText(/Round 1\./)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open game settings' })).toHaveFocus());
     await waitFor(async () => expect((await loadSoloSession('guest')).session?.gameId).not.toBe(savedGameId));
+  });
+
+  it('keeps active setup and autosaves valid while next-game opponent count is edited and cancelled', async () => {
+    const actor = userEvent.setup();
+    renderSolo();
+    expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+    const originalGameId = await waitFor(async () => (await loadSoloSession('guest')).session?.gameId);
+
+    await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
+    await actor.click(await screen.findByRole('tab', { name: 'Game' }));
+    expect(screen.getByText('Current game: 1 AI opponent')).toBeInTheDocument();
+    await actor.click(screen.getByRole('button', { name: '3' }));
+    await actor.click(screen.getByRole('button', { name: 'New Game' }));
+
+    expect(screen.getByRole('dialog', { name: 'Replace your saved game?' })).toBeInTheDocument();
+    const beforeCancel = (await loadSoloSession('guest')).session;
+    expect(beforeCancel).toMatchObject({ gameId: originalGameId, aiOpponentCount: 1 });
+    await actor.click(screen.getByRole('button', { name: 'Keep Current Game' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open game settings' })).toHaveFocus());
+    await waitFor(async () => {
+      expect((await loadSoloSession('guest')).session).toMatchObject({ gameId: originalGameId, aiOpponentCount: 1 });
+    });
+    expect(screen.queryByText(/Saved games are unavailable/)).not.toBeInTheDocument();
+  });
+
+  it('pauses an AI opening turn while the settings draft is open and resumes after closing', async () => {
+    const actor = userEvent.setup();
+    renderSolo();
+    expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+    await actor.click(screen.getAllByRole('button', { name: /Reveal this opening card/ })[0]);
+
+    // Keep this regression focused on the AI pause contract. Preload the lazy
+    // dialog before fake timers so the assertion is independent of test order.
+    await act(async () => {
+      await import('../../../src/GameSettingsDialog');
+    });
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getAllByRole('button', { name: /Reveal this opening card/ })[0]);
+      await act(async () => vi.advanceTimersByTimeAsync(0));
+      expect(document.querySelector('[data-player-role="opponent"] [aria-label="0 of 12 cards flipped"]')).not.toBeNull();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Open game settings' }));
+      });
+      expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      expect(document.querySelector('[data-player-role="opponent"] [aria-label="0 of 12 cards flipped"]')).not.toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+      await act(async () => vi.advanceTimersByTimeAsync(225));
+      expect(document.querySelector('[data-player-role="opponent"] [aria-label="2 of 12 cards flipped"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports replacement storage failure while preserving the prior game', async () => {
+    const originalState = activeState();
+    await saveSoloSession('guest', savedGameId, originalState, 2);
+    const actor = userEvent.setup();
+    renderSolo();
+    await actor.click(await screen.findByRole('button', { name: 'New Game' }));
+    const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementationOnce(() => {
+      throw new DOMException('Storage full', 'QuotaExceededError');
+    });
+    await actor.click(screen.getByRole('button', { name: 'Replace Saved Game' }));
+
+    expect(await screen.findByText(/This device is low on storage/)).toBeInTheDocument();
+    put.mockRestore();
+    expect((await loadSoloSession('guest')).session).toMatchObject({ gameId: savedGameId, state: originalState });
+  });
+
+  it('does not install an awaited replacement after the active owner changes', async () => {
+    await saveSoloSession('guest', savedGameId, activeState(), 2);
+    let finishReplacement: ((warning: null) => void) | undefined;
+    const replacement = vi.spyOn(soloDurabilityModule, 'replaceSoloSession').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishReplacement = resolve;
+        })
+    );
+    const actor = userEvent.setup();
+    const view = renderSolo();
+    await actor.click(await screen.findByRole('button', { name: 'New Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Replace Saved Game' }));
+    await waitFor(() => expect(replacement).toHaveBeenCalledTimes(1));
+
+    mocks.account.user = alice;
+    view.rerender(<App />);
+    expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+    finishReplacement?.(null);
+    await waitFor(() => expect(screen.queryByText('Saving New Game…')).not.toBeInTheDocument());
+
+    await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
+    await actor.click(await screen.findByRole('tab', { name: 'Game' }));
+    expect(screen.getByText('Current game: 1 AI opponent')).toBeInTheDocument();
+    replacement.mockRestore();
   });
 
   it('retries account-scoped offline stats on sign-in, online, and focus events', async () => {

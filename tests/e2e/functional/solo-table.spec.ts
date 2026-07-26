@@ -479,7 +479,7 @@ async function configureSoloRoster(page: Page, playerCount: number) {
   await opponentPicker.getByRole('button', { name: String(playerCount - 1), exact: true }).click();
   await page.waitForTimeout(250);
   await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
   await expect(settings).toBeHidden();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', String(playerCount));
 }
@@ -1821,6 +1821,7 @@ test('repeated responsive captures explicitly start a new durable game', async (
     await expect(gameTable.or(resumeChoice)).toBeVisible();
     if (await resumeChoice.isVisible()) {
       await page.getByRole('button', { name: 'New Game' }).click();
+      await page.getByRole('button', { name: 'Replace Saved Game' }).click();
     }
     await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
     opponentRosters.push(await page.locator('[data-testid="opponent-rail"] h2').allTextContents());
@@ -1865,7 +1866,9 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
   page,
   skyjoServer
 }) => {
-  test.setTimeout(90_000);
+  // This matrix performs 16 strict responsive-table settlements. Shared Linux
+  // WebKit can cross 90 seconds without any individual 7.5-second gate failing.
+  test.setTimeout(120_000);
   await installSeededBrowserRuntime(page, 70);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(`${skyjoServer.baseURL}/single-player`);

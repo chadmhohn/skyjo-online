@@ -326,10 +326,13 @@ describe('application routes and solo controls', () => {
 
     await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
-    await actor.click(screen.getByRole('tab', { name: 'Game' }));
+    await actor.click(await screen.findByRole('tab', { name: 'Game' }));
     await actor.click(screen.getByRole('button', { name: '3' }));
     await actor.click(screen.getByRole('button', { name: 'New Game' }));
-    await actor.click(screen.getByRole('tab', { name: 'Rules' }));
+    expect(await screen.findByRole('dialog', { name: 'Replace your saved game?' })).toBeInTheDocument();
+    await actor.click(screen.getByRole('button', { name: 'Keep Current Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
+    await actor.click(await screen.findByRole('tab', { name: 'Rules' }));
     expect(await screen.findByRole('heading', { name: 'Ending and scoring' })).toBeInTheDocument();
     await actor.click(screen.getByRole('tab', { name: 'Log' }));
     expect(screen.getByRole('heading', { name: 'Move Log' })).toBeInTheDocument();
@@ -419,7 +422,7 @@ describe('application routes and solo controls', () => {
     renderRoute('/single-player');
     const trigger = await screen.findByRole('button', { name: 'Open game settings' });
     await actor.click(trigger);
-    expect(screen.getByRole('button', { name: 'Close game settings' })).toHaveFocus();
+    expect(await screen.findByRole('button', { name: 'Close game settings' })).toHaveFocus();
     expect(trigger.closest('[inert]')).not.toBeNull();
     const audioTab = screen.getByRole('tab', { name: 'Audio' });
     audioTab.focus();
