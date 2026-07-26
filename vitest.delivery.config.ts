@@ -7,7 +7,8 @@ export default defineConfig({
     globals: true,
     include: [
       './tests/unit/data/runtimeArtifact.test.ts',
-      './tests/unit/delivery/certification.test.ts'
+      './tests/unit/delivery/certification.test.ts',
+      './tests/unit/delivery/lighthouseGate.test.ts'
     ],
     restoreMocks: true,
     clearMocks: true,
