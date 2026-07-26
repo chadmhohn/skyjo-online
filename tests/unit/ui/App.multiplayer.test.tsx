@@ -1610,7 +1610,7 @@ describe('multiplayer game table', () => {
     expect(screen.getByRole('dialog', { name: 'Room ABCDE' })).toBeInTheDocument();
     expect(screen.getByText(/Carol away/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Close room options' }));
-    expect(roomOptionsTrigger).toHaveFocus();
+    await waitFor(() => expect(roomOptionsTrigger).toHaveFocus());
 
     const roundOverPlayers = fourPlayers.map((player, index) => ({
       ...player,

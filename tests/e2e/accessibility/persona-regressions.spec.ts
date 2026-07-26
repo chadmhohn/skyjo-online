@@ -2,6 +2,7 @@ import { devices, type BrowserContext, type CDPSession, type Page } from '@playw
 import type { GameState } from '../../../src/types';
 import { soloProgressGameStates } from '../../helpers/soloGameState';
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
+import { configureSoloSetup, finishSoloSetup, startFreshSoloGame } from '../helpers/soloFlow';
 
 const minimumTargetSize = 43.99;
 const iphone16ProMax = devices['iPhone 16 Pro Max'];
@@ -57,9 +58,9 @@ async function stageSoloState(page: Page, baseURL: string, state: GameState, sta
     }
   );
   await page.goto(`${baseURL}/single-player`);
-  const resume = page.getByRole('dialog', { name: 'Continue your solo game?' });
-  await expect(resume).toBeVisible();
-  await resume.getByRole('button', { name: 'Continue Game' }).click();
+  const launcher = page.getByTestId('solo-launcher');
+  await expect(launcher).toBeVisible();
+  await launcher.getByRole('button', { name: 'Continue Solo' }).click();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', state.phase);
   await page.evaluate(
     () => new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())))
@@ -623,14 +624,9 @@ async function configureSoloRoster(page: Page, playerCount: number) {
   await page.getByRole('button', { name: 'Open game settings' }).click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
   await settings.getByRole('tab', { name: 'Game' }).click();
-  const countButton = settings
-    .getByRole('group', { name: 'Choose AI opponent count' })
-    .getByRole('button', { name: String(playerCount - 1), exact: true });
-  await countButton.click();
-  await expect(countButton).toHaveAttribute('aria-pressed', 'true');
-  await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
-  await expect(settings).toBeHidden();
+  await settings.getByRole('button', { name: 'Set up another game…' }).click();
+  await configureSoloSetup(page, { opponents: playerCount - 1 });
+  await finishSoloSetup(page);
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', String(playerCount));
 }
 
@@ -675,11 +671,8 @@ async function remountPersistedSoloState(page: Page, expectedPhase: string) {
   ).toBe(true);
 
   await page.getByRole('link', { name: 'Back to home' }).click();
-  await expect(page.getByRole('link', { name: 'Single Player', exact: true })).toBeVisible();
-  await page.getByRole('link', { name: 'Single Player', exact: true }).click();
-  const resume = page.getByRole('dialog', { name: 'Continue your solo game?' });
-  await expect(resume).toBeVisible();
-  await resume.getByRole('button', { name: 'Continue Game' }).click();
+  await expect(page.getByRole('link', { name: /Continue Solo/ })).toBeVisible();
+  await page.getByRole('link', { name: /Continue Solo/ }).click();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', expectedPhase);
   await page.evaluate(() => window.scrollTo(0, 0));
 }
@@ -1080,7 +1073,7 @@ test('compiled opponent rail CSS preserves seven-seat geometry and trusted Chrom
   test.setTimeout(75_000);
   await installSeededBrowserRuntime(page, 81);
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   const fixedPhoneContract = await page.evaluate(() =>
     window.matchMedia('(max-width: 640px), (max-height: 640px) and (pointer: coarse) and (hover: none)').matches
   );
@@ -1116,7 +1109,7 @@ test('compiled opponent rail CSS preserves seven-seat geometry and trusted Chrom
     const wheelPage = await wheelContext.newPage();
     await installSeededBrowserRuntime(wheelPage, 81);
     await wheelPage.emulateMedia({ reducedMotion: 'reduce' });
-    await wheelPage.goto(`${skyjoServer.baseURL}/single-player`);
+    await startFreshSoloGame(wheelPage, skyjoServer.baseURL);
     await configureSoloRoster(wheelPage, 8);
     await expectCompiledOpponentOverflow(wheelPage);
     for (const viewport of railViewports) {
@@ -1144,7 +1137,7 @@ test('compiled opponent rail CSS preserves seven-seat geometry and trusted Chrom
       const touchPage = await touchContext.newPage();
       await installSeededBrowserRuntime(touchPage, 81);
       await touchPage.emulateMedia({ reducedMotion: 'reduce' });
-      await touchPage.goto(`${skyjoServer.baseURL}/single-player`);
+      await startFreshSoloGame(touchPage, skyjoServer.baseURL);
       await configureSoloRoster(touchPage, 8);
       await expectRailGeometry(touchPage, viewport);
       touchSession = await touchContext.newCDPSession(touchPage);
@@ -1182,7 +1175,7 @@ test('non-mobile WebKit keyboard and wheel input match the mobile build', async 
     const wheelPage = await wheelContext.newPage();
     await installSeededBrowserRuntime(wheelPage, 84);
     await wheelPage.emulateMedia({ reducedMotion: 'reduce' });
-    await wheelPage.goto(`${skyjoServer.baseURL}/single-player`);
+    await startFreshSoloGame(wheelPage, skyjoServer.baseURL);
     await configureSoloRoster(wheelPage, 8);
     expect(await stylesheetHrefs(wheelPage)).toEqual(primaryStylesheets);
     await expectCompiledOpponentOverflow(wheelPage);
@@ -1207,7 +1200,7 @@ for (const viewport of [
     await installSeededBrowserRuntime(page, viewport.width);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.setViewportSize(viewport);
-    await page.goto(`${skyjoServer.baseURL}/single-player`);
+    await startFreshSoloGame(page, skyjoServer.baseURL);
     await finishOpeningAndDraw(page);
 
     const decisionRegion = page.getByRole('region', { name: 'Drawn card decision' });
@@ -1245,7 +1238,7 @@ test('844x390 drawn decisions replace redundant side guidance with one contained
   await installSeededBrowserRuntime(page, 844);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 844, height: 390 });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await finishOpeningAndDraw(page);
 
   const decisionRegion = page.getByRole('region', { name: 'Drawn card decision' });
@@ -1306,7 +1299,7 @@ test('844x390 drawn decisions reflow without internal overflow at 200% text', as
   await installSeededBrowserRuntime(page, 845);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 844, height: 390 });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await finishOpeningAndDraw(page);
   const fixedPhoneContract = await page.evaluate(() =>
     window.matchMedia('(max-width: 640px), (max-height: 640px) and (pointer: coarse) and (hover: none)').matches
@@ -1413,7 +1406,7 @@ test('320x568 keeps compact decisions and internally scrollable boards at 200% t
   await installSeededBrowserRuntime(page, 82);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 320, height: 568 });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await finishOpeningAndDraw(page);
 
   const normalSnapshot = await drawnDecisionSnapshot(page);
@@ -1590,7 +1583,7 @@ test('compact desktop opening and replacement cards keep 44px enabled hitboxes',
   await installSeededBrowserRuntime(page, 83);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
 
   await expectActionableCardsMeetTarget(page, 'opening');
   await finishOpeningAndDraw(page);

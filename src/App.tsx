@@ -17,9 +17,8 @@ import {
   usePhoneLayout,
   usePrefersReducedMotion
 } from './accessibility';
-import AudioSettingsControls from './AudioSettingsControls';
-import GameSettingsDialogLoadFallback from './GameSettingsDialogLoadFallback';
 import SoloGamePromptLoadFallback from './SoloGamePromptLoadFallback';
+import RoundSummaryRestoreButton from './RoundSummaryRestoreButton';
 import {
   AccountProvider,
   createAdminUser,
@@ -87,6 +86,14 @@ import type { GameState, MultiplayerRoom } from './types';
 import { advanceSoloAiOpeningSeat, drainSoloAiOpening, soloAiOpeningSeatDelayMs } from './soloAiOpening';
 import { difficultyForSoloPlayer, resolveSoloGameSetup } from './soloAiSetup';
 import { loadSoloAiStrategy } from './lazySoloAiStrategy';
+import {
+  RouteLoadFailure,
+  RouteLoadFallback
+} from './SoloFlowLoadFallbacks';
+import {
+  GameSettingsButtonPendingFallback
+} from './PendingControlFallbacks';
+import { soloDifficultyLabel, type SoloIntent, type SoloSetupOrigin } from './soloUx';
 
 type SoloStatsCoordinator = ReturnType<typeof createStatsOutboxCoordinator>;
 type SoloStatsFlushResult = Awaited<ReturnType<SoloStatsCoordinator['flush']>>;
@@ -96,6 +103,7 @@ type SoloReplacementRequest = {
   previousGameId: string;
   setup: SoloGameSetup;
 };
+type SoloScreen = 'loading' | 'launcher' | 'setup' | 'playing';
 
 function beginSoloStatsFlush(
   coordinator: SoloStatsCoordinator,
@@ -123,38 +131,6 @@ function accountPath(next?: string) {
   return next ? `/account?next=${encodeURIComponent(next)}` : '/account';
 }
 
-function AccountLinks() {
-  const { loading, user } = useAccount();
-  if (loading) return null;
-  return (
-    <div className="skyjo-home-account-links mt-6 flex flex-wrap items-center gap-2 text-sm font-bold">
-      {user ? (
-        <>
-          <span className="text-[#f5e6c8]/64">Signed in as {user.displayName}</span>
-          <Link className="skyjo-button px-3 py-2" to="/stats">
-            Stats
-          </Link>
-          <Link className="skyjo-button px-3 py-2" to="/account">
-            Account
-          </Link>
-          {user.role === 'admin' ? (
-            <Link className="skyjo-button px-3 py-2" to="/admin">
-              Admin
-            </Link>
-          ) : null}
-        </>
-      ) : (
-        <>
-          <span className="text-[#f5e6c8]/64">Sign in to save stats and play multiplayer.</span>
-          <Link className="skyjo-button px-3 py-2" to="/account">
-            Account
-          </Link>
-        </>
-      )}
-    </div>
-  );
-}
-
 function RequireAccountPanel({ next, title = 'Sign in to continue' }: { next: string; title?: string }) {
   return (
     <main className="skyjo-surface px-4 py-8">
@@ -177,266 +153,26 @@ function RequireAccountPanel({ next, title = 'Sign in to continue' }: { next: st
   );
 }
 
-function GearIcon() {
-  return (
-    <svg aria-hidden="true" className="skyjo-icon" focusable="false" viewBox="0 0 24 24">
-      <path d="M12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z" />
-      <path d="M18.45 13.45c.08-.47.08-.93 0-1.4l2.02-1.57-1.92-3.32-2.38.95a7.03 7.03 0 0 0-1.22-.7L14.6 4.85h-3.84l-.36 2.56c-.43.18-.84.41-1.22.7l-2.38-.95-1.92 3.32 2.02 1.57a7.2 7.2 0 0 0 0 1.4l-2.02 1.57 1.92 3.32 2.38-.95c.38.29.79.52 1.22.7l.36 2.56h3.84l.35-2.56c.44-.18.85-.41 1.22-.7l2.38.95 1.92-3.32-2.02-1.57Z" />
-    </svg>
-  );
-}
-
-function AudioSettingsPanel() {
-  return (
-    <section aria-labelledby="skyjo-audio-settings-title" className="skyjo-panel skyjo-home-audio-panel mt-7">
-      <div>
-        <p className="skyjo-kicker">Settings</p>
-        <h2 className="skyjo-serif mt-1 text-2xl font-bold text-[#f5e6c8]" id="skyjo-audio-settings-title">
-          Audio
-        </h2>
-      </div>
-      <div className="mt-4">
-        <AudioSettingsControls />
-      </div>
-    </section>
-  );
-}
-
-const loadPushSettingsControls = () => import('./PushSettingsControls').catch(() => ({
-  default: () => (
-    <div role="alert">
-      <a className="skyjo-button px-3 py-2" href="/account">Reload turn alerts</a>
-    </div>
-  )
-}));
-const PushSettingsControls = lazy(loadPushSettingsControls);
 const RoundSummary = lazy(() => import('./RoundSummary').catch(() => import('./CriticalLoadFallbacks').then((module) => ({
   default: module.RoundSummaryLoadFallback
 }))));
 const RoomChat = lazy(() => import('./RoomChat').catch(() => import('./RoomChatLoadFallback')));
 const SoloGamePrompt = lazy(() => import('./SoloGamePrompt').catch(() => ({ default: SoloGamePromptLoadFallback })));
-const GameSettingsDialog = lazy(() => import('./GameSettingsDialog').catch(() => ({ default: GameSettingsDialogLoadFallback })));
+const GameSettingsButton = lazy(() => import('./GameSettingsButton').catch(() =>
+  import('./CriticalLoadFallbacks').then((module) => ({ default: module.GameSettingsButtonLoadFallback }))
+));
+const Home = lazy(() => import('./Home').catch(() => ({ default: RouteLoadFailure })));
+const AccountPage = lazy(() => import('./AccountPage').catch(() => ({ default: RouteLoadFailure })));
+const SoloLauncher = lazy(() => import('./SoloSetupFlow').then((module) => ({ default: module.SoloLauncher })).catch(() => ({
+  default: RouteLoadFailure
+})));
+const SoloGameSetupPanel = lazy(() => import('./SoloSetupFlow').then((module) => ({ default: module.SoloGameSetupPanel })).catch(() => ({
+  default: RouteLoadFailure
+})));
 const ActiveRoomOptionsDialog = lazy(() => import('./ActiveRoomOptionsDialog').catch(() => import('./CriticalLoadFallbacks').then((module) => ({
   default: module.ActiveRoomOptionsLoadFallback
 }))));
 
-function Home() {
-  return (
-    <main className="skyjo-surface">
-      <section className="skyjo-shell flex min-h-screen flex-col justify-center px-5 py-10">
-        <div className="max-w-2xl">
-          <p className="skyjo-kicker mb-3">Private game table</p>
-          <h1 className="skyjo-title text-7xl sm:text-9xl">Skyjo</h1>
-          <p className="mt-5 max-w-xl text-lg leading-8 text-[#f5e6c8]/70">
-            Play solo against the house AI or create a private room for friends at the multiplayer table.
-          </p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link className="skyjo-button skyjo-button-primary px-5 py-3" to="/single-player">
-              Single Player
-            </Link>
-            <Link className="skyjo-button px-5 py-3" to="/lobby">
-              Multiplayer Lobby
-            </Link>
-          </div>
-          <AccountLinks />
-          <AudioSettingsPanel />
-        </div>
-      </section>
-    </main>
-  );
-}
-
-function AccountPage() {
-  const account = useAccount();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const next = new URLSearchParams(location.search).get('next') || '/';
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
-  const [email, setEmail] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [profileDisplayName, setProfileDisplayName] = useState('');
-  const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (account.user) setProfileDisplayName(account.user.displayName);
-  }, [account.user]);
-
-  async function handleAuth(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      if (mode === 'login') await account.login(email, password);
-      else await account.signup(email, displayName, password, confirmPassword);
-      navigate(next.startsWith('/') ? next : '/');
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Account request failed.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handlePasswordChange(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      await account.changePassword(currentPassword, password, confirmPassword);
-      setCurrentPassword('');
-      setPassword('');
-      setConfirmPassword('');
-      setMessage('Password changed. Sign in again with the new password.');
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Password change failed.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleProfileUpdate(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      await account.updateProfile(profileDisplayName);
-      setMessage('Display name updated.');
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Profile update failed.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleLogout() {
-    setBusy(true);
-    setError('');
-    try {
-      await account.logout();
-      navigate('/');
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Logout failed.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main className="skyjo-surface px-4 py-8">
-      <section className="skyjo-shell mx-auto max-w-3xl space-y-5">
-        <Link className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">
-          Back
-        </Link>
-        <div className="skyjo-panel p-5">
-          <p className="skyjo-kicker">Skyjo account</p>
-          <h1 className="skyjo-serif mt-2 text-4xl font-black text-[#f5e6c8]">{account.user ? 'Account' : mode === 'login' ? 'Sign In' : 'Create Account'}</h1>
-          {account.user ? (
-            <div className="mt-5 space-y-4">
-              <div className="skyjo-account-card">
-                <div>
-                  <div className="skyjo-kicker">Signed in</div>
-                  <div className="text-xl font-black text-[#f5e6c8]">{account.user.displayName}</div>
-                  <div className="text-sm text-[#f5e6c8]/58">{account.user.email}</div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Link className="skyjo-button px-3 py-2" to="/stats">
-                    Stats
-                  </Link>
-                  {account.user.role === 'admin' ? (
-                    <Link className="skyjo-button px-3 py-2" to="/admin">
-                      Admin
-                    </Link>
-                  ) : null}
-                  <button className="skyjo-button px-3 py-2" disabled={busy} onClick={handleLogout} type="button">
-                    Logout
-                  </button>
-                </div>
-              </div>
-              <form className="skyjo-account-form" onSubmit={handleProfileUpdate}>
-                <label>
-                  Display name
-                  <input
-                    className="skyjo-input px-3 py-2"
-                    maxLength={24}
-                    onChange={(event) => setProfileDisplayName(event.target.value)}
-                    value={profileDisplayName}
-                  />
-                </label>
-                <button
-                  className="skyjo-button skyjo-button-primary px-4 py-2"
-                  disabled={busy || profileDisplayName.trim() === account.user.displayName}
-                  type="submit"
-                >
-                  Save Display Name
-                </button>
-              </form>
-              <Suspense fallback={null}>
-                <PushSettingsControls />
-              </Suspense>
-              <form className="skyjo-account-form" onSubmit={handlePasswordChange}>
-                <label>
-                  Current password
-                  <input className="skyjo-input px-3 py-2" onChange={(event) => setCurrentPassword(event.target.value)} type="password" value={currentPassword} />
-                </label>
-                <label>
-                  New password
-                  <input className="skyjo-input px-3 py-2" onChange={(event) => setPassword(event.target.value)} type="password" value={password} />
-                </label>
-                <label>
-                  Confirm new password
-                  <input className="skyjo-input px-3 py-2" onChange={(event) => setConfirmPassword(event.target.value)} type="password" value={confirmPassword} />
-                </label>
-                <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={busy} type="submit">
-                  Change Password
-                </button>
-              </form>
-            </div>
-          ) : (
-            <form className="skyjo-account-form mt-5" onSubmit={handleAuth}>
-              <label>
-                Email
-                <input className="skyjo-input px-3 py-2" onChange={(event) => setEmail(event.target.value)} type="email" value={email} />
-              </label>
-              {mode === 'signup' ? (
-                <label>
-                  Display name
-                  <input className="skyjo-input px-3 py-2" onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
-                </label>
-              ) : null}
-              <label>
-                Password
-                <input className="skyjo-input px-3 py-2" onChange={(event) => setPassword(event.target.value)} type="password" value={password} />
-              </label>
-              {mode === 'signup' ? (
-                <label>
-                  Confirm password
-                  <input className="skyjo-input px-3 py-2" onChange={(event) => setConfirmPassword(event.target.value)} type="password" value={confirmPassword} />
-                </label>
-              ) : null}
-              <div className="flex flex-wrap gap-2">
-                <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={busy} type="submit">
-                  {mode === 'login' ? 'Sign In' : 'Create Account'}
-                </button>
-                <button className="skyjo-button px-4 py-2" disabled={busy} onClick={() => setMode(mode === 'login' ? 'signup' : 'login')} type="button">
-                  {mode === 'login' ? 'Create Account' : 'Use Sign In'}
-                </button>
-              </div>
-            </form>
-          )}
-          {message ? <div className="skyjo-success-note mt-4">{message}</div> : null}
-          {error ? <div className="skyjo-error-note mt-4">{error}</div> : null}
-        </div>
-      </section>
-    </main>
-  );
-}
 
 function StatTile({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -848,113 +584,30 @@ function AdminPage() {
   );
 }
 
-type GameSettingsButtonProps = {
-  aiOpponentCount?: number;
-  aiOpponentSummary?: string;
-  onAiOpponentCountChange?: (count: number) => void;
-  onNewGame?: () => void;
-  onOpenChange?: (open: boolean) => void;
-  state?: GameState | null;
-};
-function GameSettingsButton({
-  aiOpponentCount,
-  aiOpponentSummary,
-  onAiOpponentCountChange,
-  onNewGame,
-  onOpenChange,
-  state
-}: GameSettingsButtonProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const setSettingsVisibility = useCallback(
-    (open: boolean) => {
-      setIsOpen(open);
-      onOpenChange?.(open);
-    },
-    [onOpenChange]
-  );
-  const dialogProps = {
-    aiOpponentCount,
-    aiOpponentSummary,
-    onAiOpponentCountChange,
-    onDismiss: () => setSettingsVisibility(false),
-    onNewGame,
-    state,
-    triggerRef
-  };
-
-  return (
-    <>
-      <button
-        aria-expanded={isOpen}
-        aria-haspopup="dialog"
-        aria-label="Open game settings"
-        className="skyjo-button skyjo-icon-button"
-        onClick={() => setSettingsVisibility(true)}
-        ref={triggerRef}
-        title="Game settings"
-        type="button"
-      >
-        <GearIcon />
-      </button>
-
-      {isOpen ? (
-        <Suspense fallback={<GameSettingsDialogLoadFallback {...dialogProps} />}>
-          <GameSettingsDialog {...dialogProps} />
-        </Suspense>
-      ) : null}
-    </>
-  );
-}
-
-function RoundSummaryRestoreButton({
-  state,
-  u,
-  meta,
-  onRestore
-}: {
-  state: GameState;
-  /** A deferred PWA update is reserving the mobile bottom edge. */
-  u?: boolean;
-  meta?: string;
-  onRestore: () => void;
-}) {
-  return (
-    <button
-      className="skyjo-round-summary-chip"
-      data-testid="round-summary-restore"
-      onClick={onRestore}
-      style={u ? { bottom: 'var(--u)' } : {}}
-      type="button"
-    >
-      <span className="min-w-0">
-        <span className="skyjo-kicker block">{state.phase === 'game-over' ? 'Final totals' : 'Round scoring'}</span>
-        <span className="block truncate text-sm font-black text-[#f5e6c8]">{meta || 'Review scores'}</span>
-      </span>
-      <span className="skyjo-summary-meta">
-        <span className="skyjo-kicker">Open</span>
-        <span className="skyjo-disclosure-caret skyjo-disclosure-caret-open" aria-hidden="true" />
-      </span>
-    </button>
-  );
-}
-
 function SinglePlayer() {
   const { loading: accountLoading, localSoloOwnerId, user } = useAccount();
+  const location = useLocation();
   const navigate = useNavigate();
   const pwaUpdate = useSyncExternalStore(subscribeToPwaUpdates, getPwaUpdateSnapshot, getPwaUpdateSnapshot);
   const prefersReducedMotion = usePrefersReducedMotion();
   const ownerKey = soloOwnerKey(user?.id ?? localSoloOwnerId);
+  const initialIntentRef = useRef<SoloIntent | undefined>(
+    (location.state as { soloIntent?: SoloIntent } | null)?.soloIntent
+  );
   const [activeSetup, setActiveSetup] = useState<SoloGameSetup>(() =>
-    createSoloGameSetup(singlePlayerAiOpponentRange.min)
+    createSoloGameSetup(singlePlayerAiOpponentRange.min, 'medium')
   );
   const [draftSetup, setDraftSetup] = useState<SoloGameSetup>(() =>
-    createSoloGameSetup(singlePlayerAiOpponentRange.min)
+    createSoloGameSetup(singlePlayerAiOpponentRange.min, 'medium')
   );
-  const [state, setState] = useState<GameState>(() => startFreshGame({ aiOpponentCount: singlePlayerAiOpponentRange.min }));
-  const [activeGameId, setActiveGameId] = useState(createSoloGameId);
+  const [state, setState] = useState<GameState | null>(null);
+  const [activeGameId, setActiveGameId] = useState<string | null>(null);
+  const [screen, setScreen] = useState<SoloScreen>('loading');
+  const [setupOrigin, setSetupOrigin] = useState<SoloSetupOrigin>('home');
+  const [setupPending, setSetupPending] = useState(false);
   const [hydratedOwnerKey, setHydratedOwnerKey] = useState('');
   const [resumeSession, setResumeSession] = useState<SoloSessionRecord | null>(null);
+  const [protectedSession, setProtectedSession] = useState<SoloSessionRecord | null>(null);
   const [persistenceWarning, setPersistenceWarning] = useState<SoloPersistenceWarning | null>(null);
   const [drawIntent, setDrawIntent] = useState<DrawIntent>('place');
   const [roundSummaryOpen, setRoundSummaryOpen] = useState(false);
@@ -963,6 +616,15 @@ function SinglePlayer() {
   const [replacementRequest, setReplacementRequest] = useState<SoloReplacementRequest | null>(null);
   const [replacementPending, setReplacementPending] = useState(false);
   const completedQueueKeyRef = useRef('');
+  const gameplayFocusPendingRef = useRef(false);
+  const replacementFocusPendingRef = useRef(false);
+  const setupStartButtonRef = useRef<HTMLButtonElement | null>(null);
+  const lastPersistedSessionRef = useRef<{
+    activeSetup: SoloGameSetup;
+    gameId: string;
+    ownerKey: SoloOwnerKey;
+    state: GameState;
+  } | null>(null);
   const ownerContextRef = useRef({ generation: 0, ownerKey });
   if (ownerContextRef.current.ownerKey !== ownerKey) {
     ownerContextRef.current = { generation: ownerContextRef.current.generation + 1, ownerKey };
@@ -977,51 +639,96 @@ function SinglePlayer() {
       });
     });
   }
-  const activePlayer = state.players[state.currentPlayerIndex];
-  const humanTurn = activePlayer.kind === 'human';
-  const localPlayerId = state.players.find((player) => player.kind === 'human')?.id;
+  const activePlayer = state?.players[state.currentPlayerIndex] ?? null;
+  const humanTurn = activePlayer?.kind === 'human';
+  const localPlayerId = state?.players.find((player) => player.kind === 'human')?.id;
   const aiOpponentCount = activeSetup.aiOpponentCount;
-  const draftAiOpponentCount = draftSetup.aiOpponentCount;
   const aiOpponentSummary = `Current game: ${aiOpponentCount} AI opponent${aiOpponentCount === 1 ? '' : 's'}`;
-  const isScoringPhase = state.phase === 'round-over' || state.phase === 'game-over';
+  const aiDifficultySummary = `Difficulty: ${soloDifficultyLabel(activeSetup.difficulty)}`;
+  const mixedDifficultyBadges = activeSetup.difficulty === 'mixed'
+    ? Object.fromEntries(
+        Object.entries(activeSetup.playerDifficulties ?? {}).map(([playerId, difficulty]) => [
+          playerId,
+          `${soloDifficultyLabel(difficulty)} AI`
+        ])
+      )
+    : undefined;
+  const isScoringPhase = state?.phase === 'round-over' || state?.phase === 'game-over';
   const summaryModalOpen = isScoringPhase && roundSummaryOpen;
-  const durabilityReady = !accountLoading && hydratedOwnerKey === ownerKey && !resumeSession;
+  const durabilityReady = Boolean(
+    screen === 'playing' && state && activeGameId && !accountLoading && hydratedOwnerKey === ownerKey
+  );
 
-  useGameAudio(state, {
-    sessionId: activeGameId,
+  useGameAudio(screen === 'playing' ? state : null, {
+    sessionId: activeGameId ?? 'solo-pending',
     localPlayerId: localPlayerId ?? null
   });
 
   useEffect(() => {
     if (accountLoading) return;
     let cancelled = false;
+    const intent = initialIntentRef.current;
     setHydratedOwnerKey('');
+    setScreen('loading');
+    setState(null);
+    setActiveGameId(null);
     setResumeSession(null);
+    setProtectedSession(null);
     setReplacementRequest(null);
     setReplacementPending(false);
+    setSetupPending(false);
+    setSettingsOpen(false);
+    setRoundSummaryOpen(false);
+    setDrawIntent('place');
     setStatsSaveStatus('');
     setPersistenceWarning(null);
+    lastPersistedSessionRef.current = null;
     completedQueueKeyRef.current = '';
 
     loadSoloSession(ownerKey).then((result) => {
       if (cancelled) return;
-      setPersistenceWarning(result.warning);
+      if (intent) {
+        initialIntentRef.current = undefined;
+        navigate('/single-player', { replace: true, state: null });
+      }
+      setPersistenceWarning((current) => result.warning ?? current);
+      setHydratedOwnerKey(ownerKey);
       if (result.session) {
-        setResumeSession(result.session);
+        lastPersistedSessionRef.current = {
+          activeSetup: result.session.setup,
+          gameId: result.session.gameId,
+          ownerKey,
+          state: result.session.state
+        };
+        setProtectedSession(result.session);
+        setDraftSetup(result.session.setup);
+        if (intent === 'continue') {
+          setActiveSetup(result.session.setup);
+          setActiveGameId(result.session.gameId);
+          setState(result.session.state);
+          setProtectedSession(null);
+          gameplayFocusPendingRef.current = true;
+          setScreen('playing');
+          completedQueueKeyRef.current = '';
+        } else if (intent === 'new') {
+          setSetupOrigin('home');
+          setScreen('setup');
+        } else {
+          setResumeSession(result.session);
+          setScreen('launcher');
+        }
         return;
       }
-      const setup = createSoloGameSetup(singlePlayerAiOpponentRange.min);
-      setActiveSetup(setup);
+      const setup = createSoloGameSetup(singlePlayerAiOpponentRange.min, 'medium');
       setDraftSetup(setup);
-      setActiveGameId(createSoloGameId());
-      setState(startFreshGame({ aiOpponentCount: setup.aiOpponentCount }));
-      setHydratedOwnerKey(ownerKey);
+      setSetupOrigin('home');
+      setScreen('setup');
     });
 
     return () => {
       cancelled = true;
     };
-  }, [accountLoading, ownerKey]);
+  }, [accountLoading, navigate, ownerKey]);
 
   useEffect(() => {
     const coordinator = statsCoordinatorRef.current;
@@ -1062,17 +769,40 @@ function SinglePlayer() {
   }, []);
 
   useEffect(() => {
-    if (state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
+    if (!state || state.phase !== 'choose-replacement' || state.selectedSource !== 'draw' || !state.drawnCard) {
       setDrawIntent('place');
     }
-  }, [state.drawnCard, state.phase, state.selectedSource]);
+  }, [state]);
+
+  useEffect(() => {
+    if (screen !== 'playing' || !gameplayFocusPendingRef.current) return undefined;
+    gameplayFocusPendingRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (
+        active &&
+        active !== document.body &&
+        active !== document.documentElement &&
+        active.isConnected
+      ) {
+        return;
+      }
+      const target =
+        document.querySelector<HTMLElement>('[aria-label="Action guidance"]') ??
+        document.querySelector<HTMLElement>('[aria-label="Open game settings"]');
+      target?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeGameId, screen, state?.round]);
 
   useEffect(() => {
     if (
       !durabilityReady ||
+      !state ||
+      !activeGameId ||
       settingsOpen ||
       replacementRequest ||
-      activePlayer.kind !== 'ai' ||
+      activePlayer?.kind !== 'ai' ||
       state.phase === 'round-over' ||
       state.phase === 'game-over'
     ) {
@@ -1083,15 +813,16 @@ function SinglePlayer() {
     const strategy = openingReveal ? null : loadSoloAiStrategy();
     const timer = window.setTimeout(() => {
       if (openingReveal) {
-        setState((current) =>
-          prefersReducedMotion ? drainSoloAiOpening(current) : advanceSoloAiOpeningSeat(current)
-        );
+        setState((current) => current
+          ? (prefersReducedMotion ? drainSoloAiOpening(current) : advanceSoloAiOpeningSeat(current))
+          : current);
         return;
       }
       void strategy?.then(
         ({ chooseAiMoveForState }) => {
           if (cancelled) return;
           setState((current) => {
+            if (!current) return current;
             const currentAi = current.players[current.currentPlayerIndex];
             if (!currentAi || currentAi.kind !== 'ai') return current;
             const move = chooseAiMoveForState(current, {
@@ -1119,18 +850,41 @@ function SinglePlayer() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeGameId, activePlayer.kind, activeSetup, durabilityReady, prefersReducedMotion, replacementRequest, settingsOpen, state]);
+  }, [activeGameId, activePlayer?.kind, activeSetup, durabilityReady, prefersReducedMotion, replacementRequest, settingsOpen, state]);
 
   useEffect(() => {
     setRoundSummaryOpen(isScoringPhase);
-  }, [isScoringPhase, state.round]);
+  }, [isScoringPhase, state?.round]);
 
   useEffect(() => {
-    if (!durabilityReady) return;
+    if (replacementRequest || !replacementFocusPendingRef.current) return undefined;
+    replacementFocusPendingRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      setupStartButtonRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [replacementRequest]);
+
+  useEffect(() => {
+    if (!durabilityReady || !state || !activeGameId) return;
     let cancelled = false;
     if (state.phase !== 'game-over') {
+      const lastPersisted = lastPersistedSessionRef.current;
+      if (
+        lastPersisted?.ownerKey === ownerKey &&
+        lastPersisted.gameId === activeGameId &&
+        lastPersisted.state === state &&
+        lastPersisted.activeSetup === activeSetup
+      ) {
+        return;
+      }
       void saveSoloSession(ownerKey, activeGameId, state, activeSetup).then((warning) => {
-        if (!cancelled && warning) setPersistenceWarning(warning);
+        if (cancelled) return;
+        if (warning) {
+          setPersistenceWarning(warning);
+          return;
+        }
+        lastPersistedSessionRef.current = { activeSetup, gameId: activeGameId, ownerKey, state };
       });
       return () => {
         cancelled = true;
@@ -1141,7 +895,10 @@ function SinglePlayer() {
     if (completedQueueKeyRef.current === completionKey) return;
     completedQueueKeyRef.current = completionKey;
     void enqueueCompletedGame(ownerKey, activeGameId, state).then(async (warning) => {
-      if (!warning) await deleteSoloSession(ownerKey, activeGameId).catch(() => undefined);
+      if (!warning) {
+        await deleteSoloSession(ownerKey, activeGameId).catch(() => undefined);
+        lastPersistedSessionRef.current = null;
+      }
       if (cancelled) return;
       if (warning) {
         setPersistenceWarning(warning);
@@ -1180,34 +937,24 @@ function SinglePlayer() {
   }, [activeGameId, activeSetup, durabilityReady, localSoloOwnerId, ownerKey, state, user]);
 
   function handleCard(index: number) {
-    if (!humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
+    if (!state || !humanTurn || (state.phase !== 'opening-reveal' && state.phase !== 'choose-replacement')) return;
     if (state.phase === 'opening-reveal') {
-      setState((current) => revealOpeningCard(current, index));
+      setState((current) => current ? revealOpeningCard(current, index) : current);
       return;
     }
     setState((current) =>
-      drawIntent === 'discard' && current.selectedSource === 'draw' && current.drawnCard
+      current && drawIntent === 'discard' && current.selectedSource === 'draw' && current.drawnCard
         ? discardDrawnAndReveal(current, index)
-        : replaceCard(current, index)
+        : current ? replaceCard(current, index) : current
     );
   }
 
   function chooseDiscardForSinglePlayer() {
-    setState((current) => chooseDiscard(current));
+    setState((current) => current ? chooseDiscard(current) : current);
   }
 
   function drawForSinglePlayer() {
-    setState((current) => drawBlind(current));
-  }
-
-  function requestSelectedGame() {
-    setRoundSummaryOpen(false);
-    setReplacementRequest({
-      ownerKey,
-      ownerGeneration: ownerContextRef.current.generation,
-      previousGameId: activeGameId,
-      setup: draftSetup
-    });
+    setState((current) => current ? drawBlind(current) : current);
   }
 
   function continueSavedGame() {
@@ -1217,18 +964,117 @@ function SinglePlayer() {
     setActiveGameId(resumeSession.gameId);
     setState(resumeSession.state);
     setResumeSession(null);
+    setProtectedSession(null);
     setHydratedOwnerKey(ownerKey);
+    gameplayFocusPendingRef.current = true;
+    setScreen('playing');
     completedQueueKeyRef.current = '';
   }
 
-  function requestReplacementForSavedGame() {
+  function setUpNewGameFromLauncher() {
     if (!resumeSession) return;
-    setReplacementRequest({
+    setProtectedSession(resumeSession);
+    setDraftSetup(resumeSession.setup);
+    setResumeSession(null);
+    setSetupOrigin('launcher');
+    setScreen('setup');
+  }
+
+  function currentSoloSession(): SoloSessionRecord | null {
+    if (!state || !activeGameId) return null;
+    return {
       ownerKey,
-      ownerGeneration: ownerContextRef.current.generation,
-      previousGameId: resumeSession.gameId,
-      setup: resumeSession.setup
-    });
+      gameId: activeGameId,
+      schemaVersion: 1,
+      state,
+      aiOpponentCount: activeSetup.aiOpponentCount,
+      setup: activeSetup,
+      updatedAt: Date.now()
+    };
+  }
+
+  function openSetupFromGame(origin: Extract<SoloSetupOrigin, 'active' | 'game-over'>) {
+    const currentSession = currentSoloSession();
+    if (!currentSession) return;
+    setRoundSummaryOpen(false);
+    setSettingsOpen(false);
+    setProtectedSession(origin === 'active' ? currentSession : null);
+    setDraftSetup(activeSetup);
+    setSetupOrigin(origin);
+    setScreen('setup');
+  }
+
+  function leaveSetup() {
+    if (setupPending || replacementPending) return;
+    setReplacementRequest(null);
+    if (setupOrigin === 'launcher' && protectedSession) {
+      setResumeSession(protectedSession);
+      setScreen('launcher');
+      return;
+    }
+    if (setupOrigin === 'active' || setupOrigin === 'game-over') {
+      setProtectedSession(null);
+      if (setupOrigin === 'active') gameplayFocusPendingRef.current = true;
+      setScreen('playing');
+      if (setupOrigin === 'game-over') setRoundSummaryOpen(true);
+      return;
+    }
+    navigate('/');
+  }
+
+  function requestSetupStart() {
+    if (setupPending || replacementPending) return;
+    if (setupOrigin === 'game-over') {
+      void startAfterCompletedGame(draftSetup);
+      return;
+    }
+    if (protectedSession) {
+      setReplacementRequest({
+        ownerKey,
+        ownerGeneration: ownerContextRef.current.generation,
+        previousGameId: protectedSession.gameId,
+        setup: draftSetup
+      });
+      return;
+    }
+    void startUnprotectedGame(draftSetup);
+  }
+
+  async function startUnprotectedGame(setup: SoloGameSetup) {
+    setSetupPending(true);
+    const requestOwner = ownerContextRef.current;
+    const nextGameId = createSoloGameId();
+    const nextState = startFreshGame({ aiOpponentCount: setup.aiOpponentCount });
+    const nextSetup = resolveSoloGameSetup(
+      createSoloGameSetup(setup.aiOpponentCount, setup.difficulty),
+      nextState,
+      nextGameId
+    );
+    const warning = await saveSoloSession(ownerKey, nextGameId, nextState, nextSetup);
+    if (
+      ownerContextRef.current.ownerKey !== requestOwner.ownerKey ||
+      ownerContextRef.current.generation !== requestOwner.generation
+    ) return;
+    if (warning?.kind === 'conflict') {
+      setPersistenceWarning(warning);
+      setSetupPending(false);
+      return;
+    }
+    setActiveSetup(nextSetup);
+    setDraftSetup(nextSetup);
+    setActiveGameId(nextGameId);
+    setState(nextState);
+    setResumeSession(null);
+    setProtectedSession(null);
+    setStatsSaveStatus('');
+    setPersistenceWarning(warning);
+    setSetupPending(false);
+    if (!warning) {
+      lastPersistedSessionRef.current = { activeSetup: nextSetup, gameId: nextGameId, ownerKey, state: nextState };
+    }
+    gameplayFocusPendingRef.current = true;
+    setScreen('playing');
+    completedQueueKeyRef.current = '';
   }
 
   async function confirmReplacement() {
@@ -1266,26 +1112,81 @@ function SinglePlayer() {
     setActiveGameId(nextGameId);
     setState(nextState);
     setResumeSession(null);
+    setProtectedSession(null);
     setHydratedOwnerKey(ownerKey);
     setStatsSaveStatus('');
     setPersistenceWarning(null);
     setReplacementRequest(null);
     setReplacementPending(false);
+    setSetupPending(false);
+    lastPersistedSessionRef.current = { activeSetup: nextSetup, gameId: nextGameId, ownerKey, state: nextState };
+    gameplayFocusPendingRef.current = true;
+    setScreen('playing');
     completedQueueKeyRef.current = '';
   }
 
+  async function startAfterCompletedGame(setup: SoloGameSetup) {
+    if (setupPending || replacementPending || !activeGameId) return;
+    setSetupPending(true);
+    const requestOwner = ownerContextRef.current;
+    const nextGameId = createSoloGameId();
+    const nextState = startFreshGame({ aiOpponentCount: setup.aiOpponentCount });
+    const nextSetup = resolveSoloGameSetup(
+      createSoloGameSetup(setup.aiOpponentCount, setup.difficulty),
+      nextState,
+      nextGameId
+    );
+    const warning = await replaceSoloSession(ownerKey, activeGameId, nextGameId, nextState, nextSetup);
+    if (
+      ownerContextRef.current.ownerKey !== requestOwner.ownerKey ||
+      ownerContextRef.current.generation !== requestOwner.generation
+    ) return;
+    if (warning) {
+      setPersistenceWarning(warning);
+      setSetupPending(false);
+      return;
+    }
+    setActiveSetup(nextSetup);
+    setDraftSetup(nextSetup);
+    setActiveGameId(nextGameId);
+    setState(nextState);
+    setProtectedSession(null);
+    setStatsSaveStatus('');
+    setPersistenceWarning(null);
+    setSetupPending(false);
+    setRoundSummaryOpen(false);
+    lastPersistedSessionRef.current = { activeSetup: nextSetup, gameId: nextGameId, ownerKey, state: nextState };
+    gameplayFocusPendingRef.current = true;
+    setScreen('playing');
+    completedQueueKeyRef.current = '';
+  }
+
+  function replaySameSetup() {
+    void startAfterCompletedGame(activeSetup);
+  }
+
+  function cancelReplacement() {
+    if (replacementPending) return;
+    replacementFocusPendingRef.current = true;
+    setReplacementRequest(null);
+  }
+
   const soloGamePromptProps = {
-    onCancelReplacement: () => setReplacementRequest(null),
+    onCancelReplacement: cancelReplacement,
     onConfirmReplacement: () => void confirmReplacement(),
-    onContinue: continueSavedGame,
-    onDismissResume: () => navigate('/'),
-    onRequestReplacement: requestReplacementForSavedGame,
+    onContinue: () => undefined,
+    onDismissResume: () => undefined,
+    onRequestReplacement: () => undefined,
     replacementOpen: Boolean(replacementRequest),
     replacementPending,
-    resumeSession,
+    replacementCurrentSession: protectedSession,
+    replacementTriggerRef: setupStartButtonRef,
+    replacementSetup: replacementRequest?.setup,
+    resumeSession: null,
     restoreFocusFallback: () =>
-      document.querySelector<HTMLElement>('[aria-label="Open game settings"]') ??
-      document.querySelector<HTMLElement>('[data-testid="solo-resume-choice"] button'),
+      document.querySelector<HTMLElement>('[data-testid="solo-start-button"]') ??
+      document.querySelector<HTMLElement>('[aria-label="Action guidance"]') ??
+      document.querySelector<HTMLElement>('[aria-label="Open game settings"]'),
     warning: persistenceWarning
   };
   const soloGamePrompt = (
@@ -1294,11 +1195,7 @@ function SinglePlayer() {
     </Suspense>
   );
 
-  if (resumeSession) {
-    return soloGamePrompt;
-  }
-
-  if (!durabilityReady) {
+  if (screen === 'loading' || accountLoading || hydratedOwnerKey !== ownerKey) {
     return (
       <main className="skyjo-surface px-4 py-8" data-testid="solo-storage-loading">
         <section className="skyjo-shell mx-auto flex min-h-[70vh] max-w-2xl items-center">
@@ -1310,6 +1207,43 @@ function SinglePlayer() {
       </main>
     );
   }
+
+  if (screen === 'launcher' && resumeSession) {
+    return (
+      <Suspense fallback={<RouteLoadFallback />}>
+        <SoloLauncher
+          onBack={() => navigate('/')}
+          onContinue={continueSavedGame}
+          onNewGame={setUpNewGameFromLauncher}
+          session={resumeSession}
+          warning={persistenceWarning}
+        />
+      </Suspense>
+    );
+  }
+
+  if (screen === 'setup') {
+    return (
+      <>
+        <Suspense fallback={<RouteLoadFallback />}>
+          <SoloGameSetupPanel
+            draft={draftSetup}
+            onBack={leaveSetup}
+            onChange={(setup) => setDraftSetup(createSoloGameSetup(setup.aiOpponentCount, setup.difficulty))}
+            onStart={requestSetupStart}
+            origin={setupOrigin}
+            pending={setupPending || replacementPending}
+            protectedSession={protectedSession}
+            startButtonRef={setupStartButtonRef}
+            warning={replacementRequest ? null : persistenceWarning}
+          />
+        </Suspense>
+        {replacementRequest ? soloGamePrompt : null}
+      </>
+    );
+  }
+
+  if (!state || !activeGameId) return <RouteLoadFailure />;
 
   return (
     <main
@@ -1325,7 +1259,7 @@ function SinglePlayer() {
         {isScoringPhase && !roundSummaryOpen ? (
           <RoundSummaryRestoreButton
             state={state}
-            u={pwaUpdate.available}
+            updateReserved={pwaUpdate.available}
             onRestore={() => setRoundSummaryOpen(true)}
           />
         ) : null}
@@ -1340,16 +1274,16 @@ function SinglePlayer() {
           </div>
           <div className="skyjo-header-controls flex w-auto items-start justify-end">
             <div className="skyjo-header-actions flex items-start justify-end gap-2">
-              <GameSettingsButton
-                aiOpponentCount={draftAiOpponentCount}
-                aiOpponentSummary={aiOpponentSummary}
-                onAiOpponentCountChange={(count) =>
-                  setDraftSetup((current) => createSoloGameSetup(count, current.difficulty))
-                }
-                onNewGame={requestSelectedGame}
-                onOpenChange={setSettingsOpen}
-                state={state}
-              />
+              <Suspense fallback={<GameSettingsButtonPendingFallback state={state} />}>
+                <GameSettingsButton
+                  aiDifficultySummary={aiDifficultySummary}
+                  aiOpponentCount={aiOpponentCount}
+                  aiOpponentSummary={aiOpponentSummary}
+                  onOpenChange={setSettingsOpen}
+                  onSetupAnotherGame={() => openSetupFromGame('active')}
+                  state={state}
+                />
+              </Suspense>
             </div>
           </div>
           {statsSaveStatus || persistenceWarning ? (
@@ -1374,11 +1308,12 @@ function SinglePlayer() {
           drawIntent={drawIntent}
           localPlayerId={localPlayerId}
           localTurn={humanTurn}
-          onCancelDiscard={() => setState((current) => cancelDiscardSelection(current))}
+          onCancelDiscard={() => setState((current) => current ? cancelDiscardSelection(current) : current)}
           onCardClick={handleCard}
           onChooseDiscard={chooseDiscardForSinglePlayer}
           onDraw={drawForSinglePlayer}
           onSetDrawIntent={setDrawIntent}
+          playerBadges={mixedDifficultyBadges}
           state={state}
         />
 
@@ -1386,12 +1321,27 @@ function SinglePlayer() {
           <aside className="skyjo-secondary-stack space-y-4">
             <Suspense fallback={null}>
               <RoundSummary
-                actionLabel={state.phase === 'game-over' ? 'Start New Game' : 'Next Round'}
+                actionLabel={state.phase === 'game-over' ? (setupPending ? 'Starting…' : 'Play again with same setup') : 'Next Round'}
+                actionDisabledReason={state.phase === 'game-over' && setupPending ? 'Preparing your next game.' : undefined}
                 onMinimize={() => setRoundSummaryOpen(false)}
-                onAction={() => (state.phase === 'game-over' ? requestSelectedGame() : setState(startNextRound(state)))}
+                onAction={() => (state.phase === 'game-over'
+                  ? void replaySameSetup()
+                  : setState((current) => current ? startNextRound(current) : current))}
                 restoreFocusFallback={() => document.querySelector<HTMLElement>('[aria-label="Action guidance"]')}
+                playerBadges={mixedDifficultyBadges}
                 state={state}
-              />
+              >
+                {state.phase === 'game-over' ? (
+                  <button
+                    className="skyjo-button mt-3 w-full px-4 py-3"
+                    disabled={setupPending}
+                    onClick={() => openSetupFromGame('game-over')}
+                    type="button"
+                  >
+                    Change setup
+                  </button>
+                ) : null}
+              </RoundSummary>
             </Suspense>
           </aside>
         ) : null}
@@ -2233,7 +2183,9 @@ function Lobby() {
               type="button"
             >
             </button>
-            <GameSettingsButton state={roomState} />
+            <Suspense fallback={<GameSettingsButtonPendingFallback state={roomState} />}>
+              <GameSettingsButton state={roomState} />
+            </Suspense>
             {shareStatus ? <span className="skyjo-active-share-status" role="status">{shareStatus}</span> : null}
           </header>
         ) : (
@@ -2246,7 +2198,9 @@ function Lobby() {
               <p className="skyjo-game-subtitle mt-1 text-[#f5e6c8]/55">Create a private room and share the code with friends.</p>
             </div>
             <div className="skyjo-header-actions flex items-start justify-end gap-2">
-              <GameSettingsButton state={roomState} />
+              <Suspense fallback={<GameSettingsButtonPendingFallback state={roomState} />}>
+                <GameSettingsButton state={roomState} />
+              </Suspense>
             </div>
           </div>
         )}
@@ -2556,8 +2510,8 @@ function App() {
       <AccountProvider>
         <PwaUpdateBanner />
         <Routes>
-          <Route element={<Home />} path="/" />
-          <Route element={<AccountPage />} path="/account" />
+          <Route element={<Suspense fallback={<RouteLoadFallback />}><Home /></Suspense>} path="/" />
+          <Route element={<Suspense fallback={<RouteLoadFallback />}><AccountPage /></Suspense>} path="/account" />
           <Route element={<StatsPage />} path="/stats" />
           <Route element={<GameDetailPage />} path="/stats/games/:gameId" />
           <Route element={<PlayerStatsPage />} path="/stats/players/:playerId" />

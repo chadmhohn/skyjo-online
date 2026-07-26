@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ReactNode } from 'react';
+import { StrictMode, type ReactNode } from 'react';
 import { vi } from 'vitest';
 import { revealOpeningCard, startFreshGame } from '../../../src/game';
 import {
@@ -15,7 +15,7 @@ import {
 import * as soloDurabilityModule from '../../../src/soloDurability';
 import type { AccountUser } from '../../../src/account';
 import type { GameState } from '../../../src/types';
-import { completedSoloGameState } from '../../helpers/soloGameState';
+import { completedSoloGameState, soloProgressGameStates } from '../../helpers/soloGameState';
 
 const mocks = vi.hoisted(() => ({
   account: {
@@ -112,6 +112,12 @@ function renderSolo() {
   return render(<App />);
 }
 
+async function startNewSolo(actor: ReturnType<typeof userEvent.setup>) {
+  expect(await screen.findByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
+  await actor.click(screen.getByRole('button', { name: 'Start Solo Game' }));
+  expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+}
+
 describe('solo durability integration', () => {
   beforeEach(() => {
     mocks.account.loading = false;
@@ -123,18 +129,129 @@ describe('solo durability integration', () => {
     mocks.chooseAiMove.mockReturnValue(null);
   });
 
-  it('offers Continue and New Game, then restores the same stable game snapshot', async () => {
+  it('does not create a session before Start and defaults a genuinely new setup to Medium', async () => {
+    const actor = userEvent.setup();
+    const random = vi.spyOn(Math, 'random');
+    renderSolo();
+
+    expect(await screen.findByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
+    expect(random).not.toHaveBeenCalled();
+    expect(screen.getByRole('radio', { name: /Medium/ })).toBeChecked();
+    expect(await loadSoloSession('guest')).toEqual({ session: null, warning: null });
+    await actor.click(screen.getByRole('button', { name: 'Increase AI opponents' }));
+    await actor.click(screen.getByRole('radio', { name: /Mixed/ }));
+    expect(await loadSoloSession('guest')).toEqual({ session: null, warning: null });
+    expect(random).not.toHaveBeenCalled();
+
+    await actor.click(screen.getByRole('button', { name: 'Start Solo Game' }));
+    expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+    expect(random).toHaveBeenCalled();
+    await waitFor(async () => {
+      expect((await loadSoloSession('guest')).session?.setup).toMatchObject({
+        aiOpponentCount: 2,
+        difficulty: 'mixed'
+      });
+    });
+  });
+
+  it('shows saved solo metadata on Home with distinct Continue and New actions', async () => {
+    await saveSoloSession('guest', savedGameId, activeState(), createSoloGameSetup(2, 'ultra'), () => Date.UTC(2026, 6, 12, 12));
+    window.history.replaceState({}, '', '/');
+    render(<App />);
+
+    expect(await screen.findByRole('link', { name: /Continue Solo/ })).toHaveTextContent('Round 1 · 2 AI opponents · Ultra Hard');
+    expect(screen.getByRole('link', { name: /New Solo Game/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Multiplayer/ })).toBeInTheDocument();
+  });
+
+  it('consumes Continue navigation intent exactly once under StrictMode', async () => {
+    await saveSoloSession('guest', savedGameId, activeState(), createSoloGameSetup(2, 'hard'));
+    window.history.replaceState({ usr: { soloIntent: 'continue' }, key: 'strict-continue', idx: 0 }, '', '/single-player');
+    render(<StrictMode><App /></StrictMode>);
+
+    expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Your solo table is waiting' })).not.toBeInTheDocument();
+    expect(window.history.state.usr).toBeNull();
+    await waitFor(async () => expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId));
+  });
+
+  it('consumes New navigation intent under StrictMode without mutating the protected save', async () => {
+    const originalState = activeState();
+    await saveSoloSession('guest', savedGameId, originalState, createSoloGameSetup(2, 'hard'));
+    window.history.replaceState({ usr: { soloIntent: 'new' }, key: 'strict-new', idx: 0 }, '', '/single-player');
+    render(<StrictMode><App /></StrictMode>);
+
+    expect(await screen.findByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Protected saved game')).toHaveTextContent('Round 1 · 2 AI opponents · Hard');
+    expect(window.history.state.usr).toBeNull();
+    expect((await loadSoloSession('guest')).session).toMatchObject({ gameId: savedGameId, state: originalState });
+  });
+
+  it('offers Continue and setup as explicit launcher actions, then restores the same stable snapshot', async () => {
     const state = activeState();
     await saveSoloSession('guest', savedGameId, state, 2, () => Date.UTC(2026, 6, 12, 12));
     const actor = userEvent.setup();
     renderSolo();
 
-    expect(await screen.findByRole('dialog', { name: 'Continue your solo game?' })).toBeInTheDocument();
-    expect(screen.getByText(/Round 1 with 2 AI opponents/)).toBeInTheDocument();
-    await actor.click(screen.getByRole('button', { name: 'Continue Game' }));
+    expect(await screen.findByRole('heading', { name: 'Your solo table is waiting' })).toBeInTheDocument();
+    expect(screen.getByText(/Round 1 · 2 AI opponents · Hard/)).toBeInTheDocument();
+    await actor.click(screen.getByRole('button', { name: 'Continue Solo' }));
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     expect(screen.getByText(/Round 1\./)).toBeInTheDocument();
     await waitFor(async () => expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId));
+  });
+
+  it('focuses gameplay on entry without stealing a control reached before the deferred focus frame', async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
+    });
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    const flushFrames = () => {
+      const pending = [...frames.values()];
+      frames.clear();
+      pending.forEach((callback) => callback(1));
+    };
+
+    try {
+      await saveSoloSession(
+        'guest',
+        savedGameId,
+        activeState(),
+        createSoloGameSetup(2, 'medium')
+      );
+      const firstView = renderSolo();
+      fireEvent.click(await screen.findByRole('button', { name: 'Continue Solo' }));
+      expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+      const guidance = screen.getByRole('region', { name: 'Action guidance' });
+      act(flushFrames);
+      expect(guidance).toHaveFocus();
+      firstView.unmount();
+
+      await saveSoloSession(
+        'guest',
+        savedGameId,
+        soloProgressGameStates().drawnDecision,
+        createSoloGameSetup(1, 'medium')
+      );
+      renderSolo();
+      fireEvent.click(await screen.findByRole('button', { name: 'Continue Solo' }));
+      expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+      const placeChoice = screen.getByRole('button', { name: 'Place drawn card' });
+      placeChoice.focus();
+      expect(placeChoice).toHaveFocus();
+      act(flushFrames);
+      expect(placeChoice).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Open game settings' })).not.toHaveFocus();
+    } finally {
+      requestFrame.mockRestore();
+      cancelFrame.mockRestore();
+    }
   });
 
   it('passes the persisted active profile to the lazily loaded solo strategy', async () => {
@@ -142,7 +259,7 @@ describe('solo durability integration', () => {
     await saveSoloSession('guest', savedGameId, state, createSoloGameSetup(1, 'ultra'));
     const actor = userEvent.setup();
     renderSolo();
-    await actor.click(await screen.findByRole('button', { name: 'Continue Game' }));
+    await actor.click(await screen.findByRole('button', { name: 'Continue Solo' }));
 
     await waitFor(() => expect(mocks.chooseAiMove).toHaveBeenCalled(), { timeout: 2_000 });
     expect(mocks.chooseAiMove).toHaveBeenCalledWith(
@@ -156,8 +273,8 @@ describe('solo durability integration', () => {
     const actor = userEvent.setup();
     renderSolo();
 
-    const continueButton = await screen.findByRole('button', { name: 'Continue Game' });
-    await waitFor(() => expect(continueButton).toHaveFocus());
+    const launcherHeading = await screen.findByRole('heading', { name: 'Your solo table is waiting' });
+    await waitFor(() => expect(launcherHeading).toHaveFocus());
     await actor.keyboard('{Escape}');
 
     expect(await screen.findByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
@@ -168,15 +285,18 @@ describe('solo durability integration', () => {
     await saveSoloSession('guest', savedGameId, activeState(), 2);
     const actor = userEvent.setup();
     renderSolo();
-    await actor.click(await screen.findByRole('button', { name: 'New Game' }));
+    await actor.click(await screen.findByRole('button', { name: 'Set Up New Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Review & Start' }));
 
-    expect(screen.queryByRole('dialog', { name: 'Continue your solo game?' })).not.toBeInTheDocument();
-    expect(screen.getAllByRole('dialog')).toHaveLength(1);
-    expect(screen.getByRole('dialog', { name: 'Replace your saved game?' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Replace your saved game?' })).toBeInTheDocument();
+    expect(screen.getByText('Current saved game')).toBeInTheDocument();
+    expect(screen.getByText('New game')).toBeInTheDocument();
     expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId);
     await actor.click(screen.getByRole('button', { name: 'Keep Current Game' }));
 
-    expect(await screen.findByRole('dialog', { name: 'Continue your solo game?' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
+    await actor.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByRole('heading', { name: 'Your solo table is waiting' })).toBeInTheDocument();
     expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId);
   });
 
@@ -184,32 +304,36 @@ describe('solo durability integration', () => {
     await saveSoloSession('guest', savedGameId, activeState(), 2);
     const actor = userEvent.setup();
     renderSolo();
-    await actor.click(await screen.findByRole('button', { name: 'New Game' }));
-    await actor.click(screen.getByRole('button', { name: 'Replace Saved Game' }));
+    await actor.click(await screen.findByRole('button', { name: 'Set Up New Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Review & Start' }));
+    await actor.click(await screen.findByRole('button', { name: 'Replace saved game & start' }));
 
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     expect(screen.getByText(/Round 1\./)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Open game settings' })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Action guidance' })).toHaveFocus());
     await waitFor(async () => expect((await loadSoloSession('guest')).session?.gameId).not.toBe(savedGameId));
   });
 
   it('keeps active setup and autosaves valid while next-game opponent count is edited and cancelled', async () => {
     const actor = userEvent.setup();
     renderSolo();
-    expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+    await startNewSolo(actor);
     const originalGameId = await waitFor(async () => (await loadSoloSession('guest')).session?.gameId);
 
     await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
     await actor.click(await screen.findByRole('tab', { name: 'Game' }));
     expect(screen.getByText('Current game: 1 AI opponent')).toBeInTheDocument();
-    await actor.click(screen.getByRole('button', { name: '3' }));
-    await actor.click(screen.getByRole('button', { name: 'New Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Set up another game…' }));
+    await actor.click(screen.getByRole('button', { name: 'Increase AI opponents' }));
+    await actor.click(screen.getByRole('button', { name: 'Increase AI opponents' }));
+    await actor.click(screen.getByRole('button', { name: 'Review & Start' }));
 
     expect(screen.getByRole('dialog', { name: 'Replace your saved game?' })).toBeInTheDocument();
     const beforeCancel = (await loadSoloSession('guest')).session;
     expect(beforeCancel).toMatchObject({ gameId: originalGameId, aiOpponentCount: 1 });
     await actor.click(screen.getByRole('button', { name: 'Keep Current Game' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Open game settings' })).toHaveFocus());
+    await actor.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Action guidance' })).toHaveFocus());
     await waitFor(async () => {
       expect((await loadSoloSession('guest')).session).toMatchObject({ gameId: originalGameId, aiOpponentCount: 1 });
     });
@@ -219,7 +343,7 @@ describe('solo durability integration', () => {
   it('pauses an AI opening turn while the settings draft is open and resumes after closing', async () => {
     const actor = userEvent.setup();
     renderSolo();
-    expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+    await startNewSolo(actor);
     await actor.click(screen.getAllByRole('button', { name: /Reveal this opening card/ })[0]);
 
     // Keep this regression focused on the AI pause contract. Preload the lazy
@@ -254,11 +378,12 @@ describe('solo durability integration', () => {
     await saveSoloSession('guest', savedGameId, originalState, 2);
     const actor = userEvent.setup();
     renderSolo();
-    await actor.click(await screen.findByRole('button', { name: 'New Game' }));
+    await actor.click(await screen.findByRole('button', { name: 'Set Up New Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Review & Start' }));
     const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementationOnce(() => {
       throw new DOMException('Storage full', 'QuotaExceededError');
     });
-    await actor.click(screen.getByRole('button', { name: 'Replace Saved Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Replace saved game & start' }));
 
     expect(await screen.findByText(/This device is low on storage/)).toBeInTheDocument();
     put.mockRestore();
@@ -276,19 +401,17 @@ describe('solo durability integration', () => {
     );
     const actor = userEvent.setup();
     const view = renderSolo();
-    await actor.click(await screen.findByRole('button', { name: 'New Game' }));
-    await actor.click(screen.getByRole('button', { name: 'Replace Saved Game' }));
+    await actor.click(await screen.findByRole('button', { name: 'Set Up New Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Review & Start' }));
+    await actor.click(screen.getByRole('button', { name: 'Replace saved game & start' }));
     await waitFor(() => expect(replacement).toHaveBeenCalledTimes(1));
 
     mocks.account.user = alice;
     view.rerender(<App />);
-    expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
     finishReplacement?.(null);
-    await waitFor(() => expect(screen.queryByText('Saving New Game…')).not.toBeInTheDocument());
-
-    await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
-    await actor.click(await screen.findByRole('tab', { name: 'Game' }));
-    expect(screen.getByText('Current game: 1 AI opponent')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Saving new game…')).not.toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
     replacement.mockRestore();
   });
 
@@ -327,7 +450,7 @@ describe('solo durability integration', () => {
     mocks.account.localSoloOwnerId = alice.id;
     renderSolo();
 
-    expect(await screen.findByRole('dialog', { name: 'Continue your solo game?' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Your solo table is waiting' })).toBeInTheDocument();
     expect(screen.getByText(/2 AI opponents/)).toBeInTheDocument();
     expect(mocks.saveSinglePlayerGame).not.toHaveBeenCalled();
   });
@@ -344,9 +467,11 @@ describe('solo durability integration', () => {
 
     renderSolo();
     expect(
-      await screen.findByText('Game stats sync is unavailable. Play can continue and Skyjo will retry later.')
+      await screen.findByText('Saved game stats are unavailable in this browser session. Your game can continue safely.')
     ).toBeInTheDocument();
     expect(screen.queryByText(/sensitive local database path/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Start Solo Game' }));
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     index.mockRestore();
     expect((await listStatsOutbox(ownerKey)).map((record) => record.gameId)).toEqual([queuedGameId]);

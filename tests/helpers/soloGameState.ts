@@ -8,6 +8,7 @@ import {
   startNextRound
 } from '../../src/game';
 import { getBestAiMove } from '../../src/aiProjection';
+import type { AiMove } from '../../src/aiContracts';
 import { createSeededRandom, type RandomSource } from '../../src/runtime';
 import type { Card, GameState, Player } from '../../src/types';
 
@@ -17,6 +18,11 @@ export interface SoloProgressGameStates {
   drawnDecision: GameState;
   finalTurn: GameState;
   roundOver: GameState;
+}
+
+export interface SoloGameOverDecisionState {
+  move: AiMove;
+  state: GameState;
 }
 
 function playAutomatedStep(state: GameState, random: RandomSource): GameState {
@@ -67,6 +73,30 @@ export function soloProgressGameStates(): SoloProgressGameStates {
     }
   }
   throw new Error('Could not build deterministic solo progress states.');
+}
+
+export function soloGameOverDecisionState(): SoloGameOverDecisionState {
+  for (let seed = 1; seed <= 100; seed += 1) {
+    const random = createSeededRandom(seed);
+    let state = startFreshGame({ aiOpponentCount: 1, random });
+    for (let step = 0; step < 20_000 && state.phase !== 'game-over'; step += 1) {
+      const active = state.players[state.currentPlayerIndex];
+      if (
+        active.kind === 'human' &&
+        state.phase === 'choose-replacement' &&
+        state.finalTurnPlayerIds.length === 1 &&
+        state.finalTurnPlayerIds[0] === active.id
+      ) {
+        const move = getBestAiMove(state);
+        const next = move.action === 'reveal'
+          ? discardDrawnAndReveal(state, move.index ?? 0)
+          : replaceCard(state, move.index ?? 0);
+        if (next.phase === 'game-over') return { move, state };
+      }
+      state = playAutomatedStep(state, random);
+    }
+  }
+  throw new Error('Could not build a deterministic decision immediately before solo game over.');
 }
 
 function gridScore(grid: Card[]): number {

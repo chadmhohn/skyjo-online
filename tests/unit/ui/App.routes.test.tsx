@@ -169,8 +169,8 @@ describe('application routes and solo controls', () => {
   it('renders guest and signed-in home choices with audio controls', async () => {
     const actor = userEvent.setup();
     const view = renderRoute('/');
-    expect(screen.getByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
-    expect(screen.getByText(/Sign in to save stats/)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
+    expect(await screen.findByText(/Sign in to save stats/)).toBeInTheDocument();
 
     await actor.click(screen.getByRole('checkbox', { name: /Game sounds/ }));
     expect(screen.queryByRole('checkbox', { name: /Ambience/ })).not.toBeInTheDocument();
@@ -181,23 +181,23 @@ describe('application routes and solo controls', () => {
     view.unmount();
     mocks.account.user = adminUser;
     renderRoute('/');
-    expect(screen.getByText('Signed in as Admin One')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Admin' })).toBeInTheDocument();
+    expect(await screen.findByText('Signed in as Admin One')).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Admin' })).toBeInTheDocument();
   });
 
   it('submits login and signup forms and validates a safe return path', async () => {
     const actor = userEvent.setup();
     const view = renderRoute('/account?next=%2Fstats');
-    await actor.type(screen.getByLabelText('Email'), 'player@example.test');
-    await actor.type(screen.getByLabelText('Password'), 'secret');
+    await actor.type(await screen.findByLabelText('Email'), 'player@example.test');
+    await actor.type(await screen.findByLabelText('Password'), 'secret');
     await actor.click(screen.getByRole('button', { name: 'Sign In' }));
     await waitFor(() => expect(mocks.account.login).toHaveBeenCalledWith('player@example.test', 'secret'));
     expect(window.location.pathname).toBe('/stats');
 
     view.unmount();
     renderRoute('/account?next=https%3A%2F%2Fevil.example');
-    await actor.click(screen.getByRole('button', { name: 'Create Account' }));
-    await actor.type(screen.getByLabelText('Email'), 'new@example.test');
+    await actor.click(await screen.findByRole('button', { name: 'Create Account' }));
+    await actor.type(await screen.findByLabelText('Email'), 'new@example.test');
     await actor.type(screen.getByLabelText('Display name'), 'New Player');
     await actor.type(screen.getByLabelText('Password'), 'secret');
     await actor.type(screen.getByLabelText('Confirm password'), 'secret');
@@ -319,6 +319,7 @@ describe('application routes and solo controls', () => {
   it('opens every solo settings panel and exercises opening-card controls', async () => {
     const actor = userEvent.setup();
     renderRoute('/single-player');
+    await actor.click(await screen.findByRole('button', { name: 'Start Solo Game' }));
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /Reveal this opening card/ }).length).toBeGreaterThan(0);
     await actor.click(screen.getAllByRole('button', { name: /row 1, column 1, SKYJO face-down\. Reveal this opening card/ })[0]);
@@ -327,10 +328,14 @@ describe('application routes and solo controls', () => {
     await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     await actor.click(await screen.findByRole('tab', { name: 'Game' }));
-    await actor.click(screen.getByRole('button', { name: '3' }));
-    await actor.click(screen.getByRole('button', { name: 'New Game' }));
+    expect(screen.getByText('Difficulty: Medium')).toBeInTheDocument();
+    await actor.click(screen.getByRole('button', { name: 'Set up another game…' }));
+    await actor.click(screen.getByRole('button', { name: 'Increase AI opponents' }));
+    await actor.click(screen.getByRole('button', { name: 'Increase AI opponents' }));
+    await actor.click(screen.getByRole('button', { name: 'Review & Start' }));
     expect(await screen.findByRole('dialog', { name: 'Replace your saved game?' })).toBeInTheDocument();
     await actor.click(screen.getByRole('button', { name: 'Keep Current Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Cancel' }));
     await actor.click(screen.getByRole('button', { name: 'Open game settings' }));
     await actor.click(await screen.findByRole('tab', { name: 'Rules' }));
     expect(await screen.findByRole('heading', { name: 'Ending and scoring' })).toBeInTheDocument();
@@ -420,6 +425,7 @@ describe('application routes and solo controls', () => {
   it('closes settings with Escape and backdrop interaction', async () => {
     const actor = userEvent.setup();
     renderRoute('/single-player');
+    await actor.click(await screen.findByRole('button', { name: 'Start Solo Game' }));
     const trigger = await screen.findByRole('button', { name: 'Open game settings' });
     await actor.click(trigger);
     expect(await screen.findByRole('button', { name: 'Close game settings' })).toHaveFocus();

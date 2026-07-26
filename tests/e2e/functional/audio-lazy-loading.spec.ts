@@ -1,4 +1,5 @@
 import { expect, test } from '../fixtures';
+import { startFreshSoloGame } from '../helpers/soloFlow';
 
 const audioSettingsKey = 'skyjo-audio-settings-v3';
 const cuePaths = ['/audio/card-flip.mp3', '/audio/card-pickup.mp3', '/audio/card-place.mp3'];
@@ -61,6 +62,7 @@ test.describe('lazy audio loading', () => {
     await expect(page.getByRole('heading', { name: 'Skyjo', exact: true })).toBeVisible();
     expect(audioRequests).toEqual([]);
 
+    await page.getByText('Sound', { exact: true }).click();
     await page.getByRole('button', { name: 'Preview sounds' }).click();
     await expect.poll(() => [...audioRequests].sort()).toEqual([...cuePaths].sort());
 
@@ -93,8 +95,7 @@ test.describe('lazy audio loading', () => {
       if (pathname.endsWith('.mp3')) audioRequests.push(pathname);
     });
 
-    await page.goto(`${skyjoServer.baseURL}/single-player`);
-    await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+    await startFreshSoloGame(page, skyjoServer.baseURL);
     await page.getByRole('heading', { name: 'Single Player' }).click();
     await page.keyboard.press('Tab');
     await page.waitForTimeout(250);

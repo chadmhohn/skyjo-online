@@ -2,7 +2,23 @@ import { useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useModalFocus, usePhoneLayout } from './accessibility';
 import type { ActiveRoomOptionsDialogProps } from './ActiveRoomOptionsDialog';
+import type { GameSettingsButtonProps } from './GameSettingsButton';
 import type { RoundSummaryProps } from './RoundSummary';
+
+export function GameSettingsButtonLoadFallback({ state }: GameSettingsButtonProps) {
+  return (
+    <button
+      aria-label="Open game settings"
+      className="skyjo-button skyjo-icon-button"
+      data-game-phase={state?.phase}
+      disabled
+      title="Game settings are unavailable. Your game is still safe."
+      type="button"
+    >
+      <span aria-hidden="true">⚙</span>
+    </button>
+  );
+}
 
 export function RoundSummaryLoadFallback({
   actionDisabledReason,

@@ -170,10 +170,11 @@ export function useModalFocus({
       if (activeSessionRef.current === token) activeSessionRef.current = null;
       restoreInert();
       unlockBody();
-      queueMicrotask(() => {
+      window.requestAnimationFrame(() => {
         if (activeSessionRef.current !== null) return;
         const fallback = restoreFocusFallbackRef.current?.() ?? null;
-        const target = opener && opener !== document.body && opener.isConnected ? opener : fallback;
+        const openerTarget = opener && opener !== document.body && opener.isConnected ? opener : null;
+        const target = fallback ?? openerTarget;
         target?.focus(noFocusScroll);
       });
     };

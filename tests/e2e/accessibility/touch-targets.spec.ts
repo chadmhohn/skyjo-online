@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
+import { configureSoloSetup, finishSoloSetup, startFreshSoloGame } from '../helpers/soloFlow';
 
 const minimumTargetSize = 43.99;
 
@@ -95,6 +96,29 @@ async function enableDoubleText(page: Page) {
   expect(scaled).toBeCloseTo(baseline * 2, 2);
 }
 
+async function expectNoInternalHorizontalOverflow(page: Page, selector: string, state: string) {
+  const overflow = await page.locator(selector).evaluate((root) => {
+    const rootElement = root as HTMLElement;
+    const rootRect = rootElement.getBoundingClientRect();
+    return [rootElement, ...rootElement.querySelectorAll<HTMLElement>('*')].flatMap((element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0) return [];
+      const scrollOverflow = element.scrollWidth > element.clientWidth + 1;
+      const geometryOverflow = rect.left < rootRect.left - 1 || rect.right > rootRect.right + 1;
+      if (!scrollOverflow && !geometryOverflow) return [];
+      return [{
+        className: element.className,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        tag: element.tagName,
+        text: element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 80) || ''
+      }];
+    });
+  });
+  expect(overflow, `${state} should not clip or mask horizontally overflowing content`).toEqual([]);
+}
+
 async function phoneTypeSizes(page: Page) {
   return page.evaluate(() => {
     const size = (selector: string) => {
@@ -154,6 +178,7 @@ test('visible controls meet the 44px target contract across routes and disabled 
   await page.setViewportSize({ width: 390, height: 844 });
 
   await page.goto(skyjoServer.baseURL);
+  await expect(page.getByRole('link', { name: /^Start Solo Game/ })).toBeVisible();
   await expectTouchTargets(page, 'home');
 
   await page.goto(`${skyjoServer.baseURL}/account`);
@@ -171,7 +196,7 @@ test('visible controls meet the 44px target contract across routes and disabled 
   });
   expect(signup.status()).toBe(201);
 
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await expectPhoneGuidanceFullyVisible(page, 'solo opening at 390x844');
   const openingTargets = await expectTouchTargets(page, 'solo opening');
   expect(openingTargets.some((target) => target.disabled)).toBe(true);
@@ -193,7 +218,7 @@ test('visible controls meet the 44px target contract across routes and disabled 
 
 test('settings dialog traps focus and restores its trigger in a real browser', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 76);
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
 
   const trigger = page.getByRole('button', { name: 'Open game settings' });
   await trigger.click();
@@ -214,11 +239,41 @@ test('200% text remains operable without horizontal scroll on a short 320px view
   await installSeededBrowserRuntime(page, 77);
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto(skyjoServer.baseURL);
+  await expect(page.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Solo Game/ })).toBeVisible();
   await enableDoubleText(page);
   await expectTouchTargets(page, 'home at 200% text and 320x568');
+  await expectNoInternalHorizontalOverflow(page, '.skyjo-home-shell', 'home at 200% text and 320x568');
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 
   await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await expect(page.getByTestId('solo-game-setup')).toBeVisible();
+  await enableDoubleText(page);
+  await expectTouchTargets(page, 'solo setup at 200% text and 320x568');
+  await expectNoInternalHorizontalOverflow(page, '.skyjo-solo-flow-panel', 'solo setup at 200% text and 320x568');
+  const soloFlowStack = await page.evaluate(() => {
+    const back = document.querySelector<HTMLElement>('.skyjo-solo-flow-shell > .skyjo-back-link');
+    const panel = document.querySelector<HTMLElement>('.skyjo-solo-flow-panel');
+    if (!back || !panel) throw new Error('Solo setup stack anchors were unavailable.');
+    return { back: back.getBoundingClientRect().toJSON(), panel: panel.getBoundingClientRect().toJSON() };
+  });
+  expect(soloFlowStack.back.bottom).toBeLessThanOrEqual(soloFlowStack.panel.top + 0.5);
+  const mediumDifficulty = page.getByRole('radio', { name: /Medium/ });
+  await mediumDifficulty.focus();
+  await page.keyboard.press('ArrowDown');
+  const hardDifficulty = page.getByRole('radio', { name: /^Hard/ });
+  await expect(hardDifficulty).toBeChecked();
+  const focusedDifficultyStack = await page.evaluate(() => {
+    const focused = document.activeElement?.closest<HTMLElement>('.skyjo-difficulty-option');
+    const footer = document.querySelector<HTMLElement>('.skyjo-solo-flow-actions');
+    if (!focused || !footer) throw new Error('Keyboard difficulty geometry anchors were unavailable.');
+    return { focused: focused.getBoundingClientRect().toJSON(), footer: footer.getBoundingClientRect().toJSON() };
+  });
+  expect(focusedDifficultyStack.focused.bottom).toBeLessThanOrEqual(focusedDifficultyStack.footer.top + 0.5);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  await page.evaluate(() => document.documentElement.classList.remove('skyjo-test-text-scale-200'));
+  await configureSoloSetup(page);
+  await finishSoloSetup(page);
   const compactGuidance = page.getByRole('region', { name: 'Action guidance' });
   await expect(compactGuidance).toBeVisible();
   await expect(compactGuidance.locator('.skyjo-action-guidance-title')).toBeInViewport();
@@ -235,8 +290,24 @@ test('200% text remains operable without horizontal scroll on a short 320px view
   expectScaledTypeOutcome(normalType.guidanceNote, scaledType.guidanceNote, 22, 'Guidance disabled note');
   await expectGuidanceDetailsReachable(page);
   await expectTouchTargets(page, 'solo at 200% text and 320x568');
-  await page.getByRole('button', { name: 'Open game settings' }).click();
+  const settingsTrigger = page.getByRole('button', { name: 'Open game settings' });
+  await expect(settingsTrigger).toBeEnabled();
+  await settingsTrigger.click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('tab', { name: 'Game' }).click();
   await expectTouchTargets(page, 'settings at 200% text and 320x568');
+  await expectNoInternalHorizontalOverflow(page, '.skyjo-settings-dialog', 'settings at 200% text and 320x568');
+  for (const content of [
+    settings.getByRole('heading', { name: 'Current setup' }),
+    settings.getByText('1 AI opponent'),
+    settings.getByText('Difficulty: Medium'),
+    settings.getByText(/This setup is fixed for the running game/),
+    settings.getByRole('button', { name: 'Set up another game…' }),
+    settings.getByRole('button', { name: 'Done' })
+  ]) {
+    await content.scrollIntoViewIfNeeded();
+    await expect(content).toBeVisible();
+  }
   await page.getByRole('button', { name: 'Close game settings' }).click();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 
@@ -244,10 +315,33 @@ test('200% text remains operable without horizontal scroll on a short 320px view
   await waitForSavedSoloGame(page);
   await page.reload();
   await enableDoubleText(page);
-  const resumeDialog = page.getByRole('dialog', { name: 'Continue your solo game?' });
-  await expect(resumeDialog).toBeVisible();
-  expect(await resumeDialog.evaluate((element) => window.getComputedStyle(element).overflowY)).toBe('auto');
-  await page.getByRole('button', { name: 'New Game' }).scrollIntoViewIfNeeded();
-  await expect(page.getByRole('button', { name: 'New Game' })).toBeVisible();
-  await expectTouchTargets(page, 'saved-game dialog at 200% text and 320x568');
+  const launcher = page.getByTestId('solo-launcher');
+  await expect(launcher).toBeVisible();
+  const launcherPanel = launcher.locator('.skyjo-solo-flow-panel');
+  expect(await launcherPanel.evaluate((element) => window.getComputedStyle(element).overflowY)).toBe('auto');
+  await expectNoInternalHorizontalOverflow(page, '.skyjo-solo-flow-panel', 'saved-game launcher at 200% text and 320x568');
+  await page.getByRole('button', { name: 'Set Up New Game' }).scrollIntoViewIfNeeded();
+  await expect(page.getByRole('button', { name: 'Set Up New Game' })).toBeVisible();
+  await expectTouchTargets(page, 'saved-game launcher at 200% text and 320x568');
+  await page.getByRole('button', { name: 'Set Up New Game' }).click();
+  const reviewStart = page.getByRole('button', { name: 'Review & Start' });
+  await reviewStart.scrollIntoViewIfNeeded();
+  await reviewStart.click();
+  const replacement = page.getByRole('dialog', { name: 'Replace your saved game?' });
+  await expect(replacement).toBeVisible();
+  await expectNoInternalHorizontalOverflow(page, '.skyjo-solo-replacement-dialog', 'replacement review at 200% text and 320x568');
+  for (const content of [
+    replacement.getByRole('heading', { name: 'Replace your saved game?' }),
+    replacement.getByText('Current saved game', { exact: true }),
+    replacement.getByText('New game', { exact: true }),
+    replacement.getByRole('button', { name: 'Keep Current Game' }),
+    replacement.getByRole('button', { name: 'Replace saved game & start' })
+  ]) {
+    await content.scrollIntoViewIfNeeded();
+    await expect(content).toBeVisible();
+  }
+  await replacement.getByRole('button', { name: 'Keep Current Game' }).focus();
+  await expect(replacement.getByRole('button', { name: 'Keep Current Game' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(replacement.getByRole('button', { name: 'Replace saved game & start' })).toBeFocused();
 });

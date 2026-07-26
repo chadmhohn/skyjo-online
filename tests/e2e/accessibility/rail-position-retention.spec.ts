@@ -1,5 +1,6 @@
 import type { Browser, BrowserContext, CDPSession, Page } from '@playwright/test';
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
+import { startFreshSoloGame } from '../helpers/soloFlow';
 
 const phoneViewport = { width: 390, height: 844 };
 const retainedPositionTolerance = 1;
@@ -53,19 +54,6 @@ type MultiplayerClient = {
   page: Page;
 };
 
-async function configureSoloRoster(page: Page, playerCount: number) {
-  await page.getByRole('button', { name: 'Open game settings' }).click();
-  const settings = page.getByRole('dialog', { name: 'Settings' });
-  await settings.getByRole('tab', { name: 'Game' }).click();
-  await settings
-    .getByRole('group', { name: 'Choose AI opponent count' })
-    .getByRole('button', { name: String(playerCount - 1), exact: true })
-    .click();
-  await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
-  await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', String(playerCount));
-}
-
 async function openSoloPage(browser: Browser, baseURL: string, accessPassword: string, hasTouch = false) {
   const context = await browser.newContext({
     hasTouch,
@@ -79,8 +67,8 @@ async function openSoloPage(browser: Browser, baseURL: string, accessPassword: s
   expect(access.ok()).toBe(true);
   const page = await context.newPage();
   await installSeededBrowserRuntime(page, 127);
-  await page.goto(`${baseURL}/single-player`);
-  await configureSoloRoster(page, 8);
+  await startFreshSoloGame(page, baseURL, { opponents: 7 });
+  await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', '8');
   return { context, page };
 }
 

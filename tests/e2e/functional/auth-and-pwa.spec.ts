@@ -1,5 +1,6 @@
 import { expect, test } from '../fixtures';
 import { completedSoloGameState } from '../../helpers/soloGameState';
+import { startFreshSoloGame } from '../helpers/soloFlow';
 
 const firstGameId = '11111111-1111-4111-8111-111111111111';
 const equalScoreGameId = '22222222-2222-4222-8222-222222222222';
@@ -61,7 +62,7 @@ async function statsOutboxAttempts(page: import('@playwright/test').Page, ownerK
 test('home, account signup, and authenticated account shell work together', async ({ page, skyjoServer }) => {
   await page.goto(skyjoServer.baseURL);
   await expect(page.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Single Player' })).toBeVisible();
+  await expect(page.getByRole('link', { name: /^Start Solo Game/ })).toBeVisible();
 
   await page.goto(`${skyjoServer.baseURL}/account?next=/account`);
   await page.getByRole('button', { name: 'Create Account' }).click();
@@ -203,8 +204,7 @@ test('a force-closed solo game restores from the last confirmed account partitio
   });
   expect(signup.status()).toBe(201);
   const offlineUser = (await signup.json()).user as { id: string };
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await expect.poll(() => page.evaluate(() => localStorage.getItem('skyjo:last-confirmed-solo-owner'))).not.toBeNull();
   await expect.poll(() => ownerRecordCount(page, 'soloSessions', `account:${offlineUser.id}`)).toBe(1);
   await page.close();
@@ -212,7 +212,8 @@ test('a force-closed solo game restores from the last confirmed account partitio
   const reopened = await context.newPage();
   await reopened.route('**/api/account/me', (route) => route.abort('internetdisconnected'));
   await reopened.goto(`${skyjoServer.baseURL}/single-player`);
-  await expect(reopened.getByRole('dialog', { name: 'Continue your solo game?' })).toBeVisible();
+  await expect(reopened.getByTestId('solo-launcher')).toBeVisible();
+  await expect(reopened.getByRole('heading', { name: 'Your solo table is waiting' })).toBeVisible();
 });
 
 test.describe('stale account handoff', () => {
@@ -234,8 +235,7 @@ test.describe('stale account handoff', () => {
   const userA = (await signupA.json()).user as { id: string };
   const ownerA = `account:${userA.id}`;
 
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await page.route('**/api/stats/single-player', (route) => route.abort('internetdisconnected'));
   const completedAt = Date.now() - 30_000;
   const state = completedSoloGameState(1, () => 0.35);

@@ -100,6 +100,7 @@ export interface GameTableLayoutProps {
   centerStartAccessory?: ReactNode;
   containBoardScroll?: boolean;
   interactionDisabledReason?: string;
+  playerBadges?: Readonly<Record<string, string>>;
   onCardClick: (index: number) => void;
   onChooseDiscard: () => void;
   onCancelDiscard: () => void;
@@ -307,6 +308,7 @@ interface PlayerGridProps {
   onCardClick?: (index: number) => void;
   focusFallbackRef?: RefObject<HTMLElement>;
   opponentScrollActive?: boolean;
+  badge?: string;
 }
 
 function PlayerGrid({
@@ -318,7 +320,8 @@ function PlayerGrid({
   interactionDisabledReason,
   onCardClick,
   focusFallbackRef,
-  opponentScrollActive
+  opponentScrollActive,
+  badge
 }: PlayerGridProps) {
   const canSelectOpening =
     isLocal &&
@@ -423,6 +426,7 @@ function PlayerGrid({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="skyjo-serif text-xl font-semibold text-[#f5e6c8]">{player.name}</h2>
+            {badge ? <span className="skyjo-ai-difficulty-badge">{badge}</span> : null}
             <span
               aria-label={`${knownCards} of 12 cards flipped`}
               className="skyjo-flipped-pill"
@@ -536,6 +540,7 @@ interface PlayerBoardGridProps {
   interactionDisabledReason?: string;
   onCardClick: (index: number) => void;
   focusFallbackRef?: RefObject<HTMLElement>;
+  playerBadges?: Readonly<Record<string, string>>;
 }
 
 export function PlayerBoardGrid({
@@ -546,7 +551,8 @@ export function PlayerBoardGrid({
   containScroll = false,
   interactionDisabledReason,
   onCardClick,
-  focusFallbackRef
+  focusFallbackRef,
+  playerBadges
 }: PlayerBoardGridProps) {
   const boardRef = useRef<HTMLDivElement | null>(null);
   const userScrollPausedUntilRef = useRef(0);
@@ -731,6 +737,7 @@ export function PlayerBoardGrid({
         const index = state.players.findIndex((item) => item.id === player.id);
         return (
           <PlayerGrid
+            badge={playerBadges?.[player.id]}
             drawIntent={drawIntent}
             focusFallbackRef={focusFallbackRef}
             interactionDisabledReason={interactionDisabledReason}
@@ -1128,6 +1135,7 @@ export function GameTableLayout({
   centerStartAccessory,
   containBoardScroll,
   interactionDisabledReason,
+  playerBadges,
   onCardClick,
   onChooseDiscard,
   onCancelDiscard,
@@ -1170,6 +1178,7 @@ export function GameTableLayout({
           interactionDisabledReason={interactionDisabledReason}
           localPlayerId={localPlayerId}
           onCardClick={onCardClick}
+          playerBadges={playerBadges}
           state={state}
           variant="opponents"
         />
@@ -1197,6 +1206,7 @@ export function GameTableLayout({
           interactionDisabledReason={interactionDisabledReason}
           localPlayerId={localPlayerId}
           onCardClick={onCardClick}
+          playerBadges={playerBadges}
           state={state}
           variant="local"
         />

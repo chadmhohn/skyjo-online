@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
 import { expect, test } from '../fixtures';
+import { configureSoloSetup, finishSoloSetup, startFreshSoloGame } from '../helpers/soloFlow';
 
 const audioCuePaths = ['/audio/card-flip.mp3', '/audio/card-pickup.mp3', '/audio/card-place.mp3'];
 const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/audio\/card-(?:flip|pickup|place)\.mp3|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
@@ -584,8 +585,10 @@ test('a fresh credentialless install caches only the data-free offline solo allo
       expect(result.bytes).toBeGreaterThan(1_000);
       expect(result.decodedDuration).toBeGreaterThan(0.1);
     }
-    await offlineStart.getByRole('link', { name: 'Single Player' }).click();
+    await offlineStart.getByRole('link', { name: /^Start Solo Game/ }).click();
     await expect(offlineStart).toHaveURL(`${skyjoServer.baseURL}/single-player`);
+    await configureSoloSetup(offlineStart);
+    await finishSoloSetup(offlineStart);
     await expect(offlineStart.getByRole('heading', { name: 'Single Player' })).toBeVisible();
     await expect.poll(() => offlineStart.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -607,8 +610,8 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     const offlineDeepLink = await context.newPage();
     await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, true);
     await offlineDeepLink.goto(`${skyjoServer.baseURL}/single-player`, { waitUntil: 'domcontentloaded' });
-    await expect(offlineDeepLink.getByRole('dialog', { name: 'Continue your solo game?' })).toBeVisible();
-    await offlineDeepLink.getByRole('button', { name: 'Continue Game' }).click();
+    await expect(offlineDeepLink.getByTestId('solo-launcher')).toBeVisible();
+    await offlineDeepLink.getByRole('button', { name: 'Continue Solo' }).click();
     await expect(offlineDeepLink.getByRole('heading', { name: 'Single Player' })).toBeVisible();
     await offlineDeepLink.close();
     await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, false);
@@ -646,7 +649,7 @@ test('a cold offline solo restore stays partitioned across owner A, owner B, and
   });
   expect(signupA.status()).toBe(201);
   const ownerA = (await signupA.json()).user as { id: string };
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await waitForServiceWorkerControl(page);
   await expect.poll(() => page.evaluate(() => localStorage.getItem('skyjo:last-confirmed-solo-owner'))).toBe(ownerA.id);
   await expect.poll(() => page.evaluate(async (ownerId) => {
@@ -668,7 +671,7 @@ test('a cold offline solo restore stays partitioned across owner A, owner B, and
   const ownerAOffline = await context.newPage();
   await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, true);
   await ownerAOffline.goto(`${skyjoServer.baseURL}/single-player`, { waitUntil: 'domcontentloaded' });
-  await expect(ownerAOffline.getByRole('dialog', { name: 'Continue your solo game?' })).toBeVisible();
+  await expect(ownerAOffline.getByTestId('solo-launcher')).toBeVisible();
   expect(await ownerAOffline.evaluate(async () => fetch('/api/account/me').then(
     (response) => response.ok ? 'live' : 'offline',
     () => 'offline'
@@ -695,8 +698,8 @@ test('a cold offline solo restore stays partitioned across owner A, owner B, and
   const ownerBOffline = await context.newPage();
   await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, true);
   await ownerBOffline.goto(`${skyjoServer.baseURL}/single-player`, { waitUntil: 'domcontentloaded' });
-  await expect(ownerBOffline.getByRole('heading', { name: 'Single Player' })).toBeVisible();
-  await expect(ownerBOffline.getByRole('dialog', { name: 'Continue your solo game?' })).toHaveCount(0);
+  await expect(ownerBOffline.getByRole('heading', { name: 'Set up your solo table' })).toBeVisible();
+  await expect(ownerBOffline.getByTestId('solo-launcher')).toHaveCount(0);
   await ownerBOffline.close();
 
   await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, false);
@@ -709,8 +712,8 @@ test('a cold offline solo restore stays partitioned across owner A, owner B, and
   const guestOffline = await context.newPage();
   await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, true);
   await guestOffline.goto(`${skyjoServer.baseURL}/single-player`, { waitUntil: 'domcontentloaded' });
-  await expect(guestOffline.getByRole('heading', { name: 'Single Player' })).toBeVisible();
-  await expect(guestOffline.getByRole('dialog', { name: 'Continue your solo game?' })).toHaveCount(0);
+  await expect(guestOffline.getByRole('heading', { name: 'Set up your solo table' })).toBeVisible();
+  await expect(guestOffline.getByTestId('solo-launcher')).toHaveCount(0);
   await setNetworkUnavailable(context, skyjoServer.baseURL, injectedNetworkFault, false);
 });
 
@@ -731,7 +734,7 @@ test('a changed worker defers on solo and lobby routes, then applies once from a
     sessionStorage.setItem('skyjo-test-page-loads', String(loads));
   });
   await setWorkerVariant(context, skyjoServer.baseURL, 'A', workerBuildNonces.A);
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await waitForServiceWorkerControl(page);
   await expectActiveWorker(page);
 
@@ -895,7 +898,7 @@ test('cross-tab activation never reloads a protected game and preserves one safe
       sessionStorage.setItem('skyjo-cross-tab-loads', String(loads));
     });
     await setWorkerVariant(context, skyjoServer.baseURL, 'A', workerBuildNonces.A);
-    await page.goto(`${skyjoServer.baseURL}/single-player`);
+    await startFreshSoloGame(page, skyjoServer.baseURL);
     await waitForServiceWorkerControl(page);
     await expectActiveWorker(page);
     const protectedLoads = Number(await page.evaluate(() => sessionStorage.getItem('skyjo-cross-tab-loads')));

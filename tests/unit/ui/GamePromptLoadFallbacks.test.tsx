@@ -2,21 +2,25 @@ import { lazy, Suspense } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import GameSettingsDialogLoadFallback from '../../../src/GameSettingsDialogLoadFallback';
+import { GameSettingsButtonLoadFallback } from '../../../src/CriticalLoadFallbacks';
 import SoloGamePromptLoadFallback from '../../../src/SoloGamePromptLoadFallback';
 import { startFreshGame } from '../../../src/game';
 import type { SoloGamePromptProps } from '../../../src/SoloGamePrompt';
 
 function createSoloPromptProps(overrides: Partial<SoloGamePromptProps> = {}): SoloGamePromptProps {
+  const session = {
+    ownerKey: 'guest' as const,
+    gameId: 'solo-recovery-game',
+    schemaVersion: 1 as const,
+    state: startFreshGame({ aiOpponentCount: 1, random: () => 0.25 }),
+    aiOpponentCount: 1,
+    setup: { aiOpponentCount: 1, difficulty: 'hard' as const },
+    updatedAt: Date.UTC(2026, 6, 26)
+  };
   return {
-    resumeSession: {
-      ownerKey: 'guest',
-      gameId: 'solo-recovery-game',
-      schemaVersion: 1,
-      state: startFreshGame({ aiOpponentCount: 1, random: () => 0.25 }),
-      aiOpponentCount: 1,
-      setup: { aiOpponentCount: 1, difficulty: 'hard' },
-      updatedAt: Date.UTC(2026, 6, 26)
-    },
+    resumeSession: session,
+    replacementCurrentSession: session,
+    replacementSetup: session.setup,
     replacementOpen: false,
     replacementPending: false,
     warning: null,
@@ -30,6 +34,15 @@ function createSoloPromptProps(overrides: Partial<SoloGamePromptProps> = {}): So
 }
 
 describe('settings and solo prompt lazy-load fallbacks', () => {
+  it('keeps a same-size disabled settings affordance when the button chunk fails', () => {
+    render(<GameSettingsButtonLoadFallback state={startFreshGame({ aiOpponentCount: 1, random: () => 0.25 })} />);
+
+    const trigger = screen.getByRole('button', { name: 'Open game settings' });
+    expect(trigger).toBeDisabled();
+    expect(trigger).toHaveClass('skyjo-icon-button');
+    expect(trigger).toHaveAttribute('title', 'Game settings are unavailable. Your game is still safe.');
+  });
+
   it('shows a focus-trapped, inert, dismissible settings shell while the chunk is unresolved', async () => {
     const PendingSettings = lazy(() => new Promise<{ default: () => null }>(() => undefined));
     const trigger = document.createElement('button');
@@ -85,13 +98,13 @@ describe('settings and solo prompt lazy-load fallbacks', () => {
     const { rerender } = render(<SoloGamePromptLoadFallback {...props} />);
 
     expect(screen.getByRole('button', { name: 'Keep Current Game' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Saving New Game…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Saving new game/ })).toBeDisabled();
     expect(screen.getByText(/Storage is full/)).toBeVisible();
     await actor.keyboard('{Escape}');
     expect(onCancelReplacement).not.toHaveBeenCalled();
 
     rerender(<SoloGamePromptLoadFallback {...props} replacementPending={false} />);
-    await actor.click(screen.getByRole('button', { name: 'Replace Saved Game' }));
+    await actor.click(screen.getByRole('button', { name: 'Replace saved game & start' }));
     expect(onConfirmReplacement).toHaveBeenCalledOnce();
   });
 
@@ -112,7 +125,7 @@ describe('settings and solo prompt lazy-load fallbacks', () => {
     );
 
     expect(await screen.findByRole('button', { name: 'Keep Current Game' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Replace Saved Game' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Replace saved game & start' })).toBeEnabled();
     expect(screen.getByText('Saved-game storage is unavailable.')).toBeVisible();
   });
 });

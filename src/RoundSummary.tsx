@@ -10,6 +10,7 @@ export interface RoundSummaryProps {
   onAction?: () => void;
   onMinimize?: () => void;
   restoreFocusFallback?: () => HTMLElement | null;
+  playerBadges?: Readonly<Record<string, string>>;
   children?: ReactNode;
 }
 
@@ -20,6 +21,7 @@ export default function RoundSummary({
   onAction,
   onMinimize,
   restoreFocusFallback,
+  playerBadges,
   children
 }: RoundSummaryProps) {
   const phoneLayout = usePhoneLayout();
@@ -86,9 +88,10 @@ export default function RoundSummary({
           return (
             <div className={`skyjo-score-row ${isWinner ? 'skyjo-score-row-leader' : ''}`} key={player.id}>
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="skyjo-score-player-identity flex min-w-0 flex-wrap items-center gap-2">
                   <span className="skyjo-score-rank">#{index + 1}</span>
                   <span className="skyjo-score-player-name font-extrabold text-[#f5e6c8]">{player.name}</span>
+                  {playerBadges?.[player.id] ? <span className="skyjo-ai-difficulty-badge">{playerBadges[player.id]}</span> : null}
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-right tabular-nums">
