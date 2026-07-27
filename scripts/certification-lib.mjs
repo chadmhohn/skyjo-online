@@ -5,8 +5,8 @@ import path from 'node:path';
 export const CERTIFICATION_FORMAT_VERSION = 1;
 export const AUTOMATED_CERTIFICATION_FORMAT_VERSION = 2;
 export const PERSONA_EVIDENCE_FORMAT_VERSION = 2;
-export const CERTIFICATION_RELEASE_VERSION = '0.3.1';
-export const CERTIFICATION_RELEASE_DATE = '2026-07-26';
+export const CERTIFICATION_RELEASE_VERSION = '0.3.2';
+export const CERTIFICATION_RELEASE_DATE = '2026-07-27';
 export const K6_VERSION = '2.0.0';
 export const K6_LINUX_AMD64_SHA256 = '2ae87d976f6cdba17185bdd980d8819a3a98e9092c6f0638cd58272ecefc8b90';
 export const CERTIFICATION_LIMITS = Object.freeze({
