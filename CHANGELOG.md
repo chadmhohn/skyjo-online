@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 - 2026-07-26
+
+- Reworked Home and the solo launcher so Continue, New Solo Game, and Multiplayer are distinct, saved-game metadata is visible, and merely opening setup never creates or replaces a game.
+- Added an accessible 1-7 opponent setup flow with Easy, Medium, Hard, Ultra Hard, and deterministic Mixed AI profiles while preserving v0.2.2 saves as exact Hard games.
+- Made solo replacement explicit, atomic, and reversible; active settings are read-only until the player chooses to set up another game, and game-over replay keeps same-setup and change-setup paths distinct.
+- Added exact-SHA AI calibration evidence, setup/replacement accessibility and WebKit rollback coverage, an expiring exact advisory gate, and a credentialless production PWA offline/restore smoke.
+
 ## 0.2.2 - 2026-07-24
 
 - Kept the existing card-flip cue while replacing the delayed pickup and place files with short, responsive table sounds.

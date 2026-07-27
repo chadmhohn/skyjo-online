@@ -5,11 +5,11 @@ import { configureSoloSetup, finishSoloSetup, startFreshSoloGame } from '../help
 
 type StoredSoloRecord = {
   aiOpponentCount: number;
-  aiSetup: { aiOpponentCount: number; difficulty: string; playerDifficulties?: Record<string, string>; strategyVersion?: number };
+  aiSetup?: { aiOpponentCount: number; difficulty: string; playerDifficulties?: Record<string, string>; strategyVersion?: number };
   gameId: string;
   ownerKey: string;
   schemaVersion: number;
-  setup: { aiOpponentCount: number; difficulty: string; playerDifficulties?: Record<string, string> };
+  setup?: { aiOpponentCount: number; difficulty: string; playerDifficulties?: Record<string, string> };
   state: { phase: string; players: Array<{ grid: Array<{ faceUp: boolean }> }> };
   updatedAt: number;
 };
@@ -153,7 +153,7 @@ test('Home Continue and New intents are one-shot across real reloads', async ({ 
   expect((await readSoloRecords(page))[0]).toEqual(original);
 });
 
-test('active setup is read-only and every setup dismissal preserves the exact save', async ({ page, skyjoServer }) => {
+test('active setup is read-only, dismissal preserves the save, and confirmation replaces it atomically', async ({ page, skyjoServer }) => {
   test.setTimeout(60_000);
   await installSeededBrowserRuntime(page, 166);
   await startFreshSoloGame(page, skyjoServer.baseURL);
@@ -211,6 +211,49 @@ test('active setup is read-only and every setup dismissal preserves the exact sa
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('button', { name: 'Review & Start' })).toBeFocused();
   expect((await readSoloRecords(page))[0]).toEqual(original);
+
+  await page.getByRole('button', { name: 'Review & Start' }).click();
+  await dialog.getByRole('button', { name: 'Replace saved game & start' }).click();
+  await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+  await expect.poll(async () => (await readSoloRecords(page)).length).toBe(1);
+  const replacement = (await readSoloRecords(page))[0];
+  expect(replacement.gameId).not.toBe(original.gameId);
+  expect(replacement.aiSetup).toMatchObject({ aiOpponentCount: 2, difficulty: 'easy' });
+  expect(replacement.state.players).toHaveLength(3);
+});
+
+test('WebKit preserves an exact v0.2.2 solo record while normalizing its missing setup to Hard', async ({
+  page,
+  skyjoServer
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'webkit-phone', 'One WebKit engine/profile is the release compatibility gate.');
+  await installSeededBrowserRuntime(page, 169);
+  await startFreshSoloGame(page, skyjoServer.baseURL, { difficulty: 'medium', opponents: 1 });
+  const generated = (await readSoloRecords(page))[0];
+  const gameId = '66666666-6666-4666-8666-666666666666';
+  const legacy: StoredSoloRecord = {
+    aiOpponentCount: 1,
+    gameId,
+    ownerKey: 'guest',
+    schemaVersion: 1,
+    state: generated.state,
+    updatedAt: generated.updatedAt
+  };
+  await page.goto(`${skyjoServer.baseURL}/healthz`);
+  await putSoloRecord(page, legacy);
+
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  const launcher = page.getByTestId('solo-launcher');
+  await expect(launcher).toBeVisible();
+  await expect(launcher.locator('.skyjo-saved-session-card')).toContainText('Hard');
+  expect((await readSoloRecords(page))[0]).toEqual(legacy);
+
+  await launcher.getByRole('button', { name: 'Continue Solo' }).click();
+  await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+  const continued = (await readSoloRecords(page))[0];
+  expect(continued).toEqual(legacy);
+  expect(continued.gameId).toBe(gameId);
+  expect(continued.state).toEqual(legacy.state);
 });
 
 test('Mixed badges survive reload with assignments bound to player IDs', async ({ page, skyjoServer }) => {

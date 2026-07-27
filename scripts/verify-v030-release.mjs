@@ -4,22 +4,27 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
+  CERTIFICATION_RELEASE_DATE,
   CERTIFICATION_RELEASE_VERSION,
+  assertAiBenchmarkMatchesCertification,
   assertRecoveryTraceMatchesCertification,
   assertRssStageEvidenceMatchesCertification,
   readVerifiedCertificationEvidence,
   readVerifiedRecoveryTraceEvidence,
   readVerifiedRssStageEvidence
 } from './certification-lib.mjs';
+import { readVerifiedAiBenchmarkEvidence } from './ai-benchmark-evidence.mjs';
 import { loadReleaseIdentity } from '../server-release.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const releaseTag = `v${CERTIFICATION_RELEASE_VERSION}`;
-const releaseChangelogHeading = `## ${CERTIFICATION_RELEASE_VERSION} - 2026-07-24`;
+const releaseChangelogHeading = `## ${CERTIFICATION_RELEASE_VERSION} - ${CERTIFICATION_RELEASE_DATE}`;
 
 function parseArguments(argv) {
   const options = {
+    aiChecksum: path.join(root, 'test-results', 'ai', 'benchmark.json.sha256'),
+    aiEvidence: path.join(root, 'test-results', 'ai', 'benchmark.json'),
     checksum: path.join(root, 'test-results', 'certification', 'automated.json.sha256'),
     evidence: path.join(root, 'test-results', 'certification', 'automated.json'),
     productionBaseUrl: '',
@@ -34,6 +39,8 @@ function parseArguments(argv) {
     const name = argv[index];
     const value = argv[index + 1];
     if (!value || ![
+      '--ai-checksum',
+      '--ai-evidence',
       '--checksum',
       '--evidence',
       '--production-base-url',
@@ -44,7 +51,7 @@ function parseArguments(argv) {
       '--rss-evidence',
       '--tag'
     ].includes(name)) {
-      throw new Error(`Usage: verify-v020-release --release-sha SHA [--evidence FILE --checksum FILE --recovery-evidence FILE --recovery-checksum FILE --rss-evidence FILE --rss-checksum FILE --tag ${releaseTag} --production-base-url HTTPS_URL]`);
+      throw new Error(`Usage: verify-v030-release --release-sha SHA [--ai-evidence FILE --ai-checksum FILE --evidence FILE --checksum FILE --recovery-evidence FILE --recovery-checksum FILE --rss-evidence FILE --rss-checksum FILE --tag ${releaseTag} --production-base-url HTTPS_URL]`);
     }
     const key = name.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     options[key] = value;
@@ -91,8 +98,18 @@ async function main() {
   if (checkoutOutput.trim().toLowerCase() !== options.releaseSha) {
     throw new Error(`The checked-out source does not match the certified ${releaseTag} commit.`);
   }
-  const [{ evidence, digest }, { evidence: recoveryEvidence }, { evidence: rssEvidence }] = await Promise.all([
+  const [
+    { evidence, digest },
+    { evidence: aiBenchmarkEvidence, digest: aiBenchmarkDigest },
+    { evidence: recoveryEvidence },
+    { evidence: rssEvidence }
+  ] = await Promise.all([
     readVerifiedCertificationEvidence(path.resolve(options.evidence), path.resolve(options.checksum)),
+    readVerifiedAiBenchmarkEvidence(path.resolve(options.aiEvidence), path.resolve(options.aiChecksum), {
+      expectedReleaseVersion: CERTIFICATION_RELEASE_VERSION,
+      expectedSourceSha: options.releaseSha,
+      expectedStrategyVersion: 1
+    }),
     readVerifiedRecoveryTraceEvidence(
       path.resolve(options.recoveryEvidence),
       path.resolve(options.recoveryChecksum)
@@ -107,6 +124,7 @@ async function main() {
   }
   assertRecoveryTraceMatchesCertification(evidence, recoveryEvidence);
   assertRssStageEvidenceMatchesCertification(evidence, rssEvidence);
+  assertAiBenchmarkMatchesCertification(evidence, aiBenchmarkEvidence, aiBenchmarkDigest);
   const packageDocument = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
   if (packageDocument.version !== CERTIFICATION_RELEASE_VERSION) {
     throw new Error(`package.json does not identify ${releaseTag}.`);

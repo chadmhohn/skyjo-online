@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import WebSocket from 'ws';
+import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
 
 function cookieFromResponse(response, label) {
   const setCookie = response.headers.get('set-cookie');
@@ -62,7 +63,7 @@ export async function runDeployedSmoke({
   accountEmail,
   accountPassword,
   expectedReleaseSha,
-  expectedProtocolVersion = 1
+  expectedProtocolVersion = CURRENT_PROTOCOL_VERSION
 }) {
   assert.ok(baseUrl, 'A deployed base URL is required.');
   assert.ok(accessPassword, 'The shared access password is required.');

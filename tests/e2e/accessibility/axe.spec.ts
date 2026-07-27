@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
-import { startFreshSoloGame } from '../helpers/soloFlow';
+import { finishSoloSetup, startFreshSoloGame } from '../helpers/soloFlow';
 
 async function expectNoBlockingViolations(page: Page) {
   const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
@@ -136,6 +136,24 @@ test('saved-game choice has no serious or critical Axe violations', async ({ pag
   await page.reload();
   await expect(page.getByTestId('solo-launcher')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your solo table is waiting' })).toBeVisible();
+  await expectNoBlockingViolations(page);
+});
+
+test('solo setup and replacement review have no serious or critical Axe violations', async ({ page, skyjoServer }) => {
+  await installSeededBrowserRuntime(page, 77);
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await expect(page.getByTestId('solo-game-setup')).toBeVisible();
+  await expectNoBlockingViolations(page);
+  await finishSoloSetup(page);
+
+  await page.getByRole('button', { name: 'Open game settings' }).click();
+  const settings = page.getByRole('dialog', { name: 'Settings' });
+  await settings.getByRole('tab', { name: 'Game' }).click();
+  await settings.getByRole('button', { name: /Set up another game/ }).click();
+  await expect(page.getByTestId('solo-game-setup')).toBeVisible();
+  await page.getByRole('button', { name: 'Review & Start' }).click();
+  await expect(page.getByRole('dialog', { name: 'Replace your saved game?' })).toBeVisible();
   await expectNoBlockingViolations(page);
 });
 
