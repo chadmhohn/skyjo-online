@@ -1,0 +1,159 @@
+# Native iOS Architecture
+
+## Decision
+
+Use SwiftUI with Swift 6 language mode and strict concurrency, targeting iOS/iPadOS 18.0 or later. Build with the latest stable App-Store-supported Xcode. Keep dependencies at zero initially and add only Swift Package Manager packages with an explicit architectural reason.
+
+The native client owns presentation, local solo execution, local persistence, audio/haptics, and transport coordination. The existing Node service remains authoritative for every multiplayer mutation and all shared/account data.
+
+## Planned Repository Shape
+
+```text
+ios/
+  SkyjoNative.xcodeproj/
+  Config/
+    Base.xcconfig
+    Debug.xcconfig
+    Release.xcconfig
+    Local.xcconfig.example
+  SkyjoApp/
+    App/
+    Features/
+      Access/
+      Account/
+      Home/
+      Solo/
+      Rooms/
+      Stats/
+      Settings/
+    Resources/
+      Assets.xcassets/
+      Audio/
+      PrivacyInfo.xcprivacy
+  Packages/
+    SkyjoDomain/
+    SkyjoNetworking/
+    SkyjoPersistence/
+    SkyjoDesignSystem/
+    SkyjoTestSupport/
+  SkyjoAppTests/
+  SkyjoAppUITests/
+  TestPlans/
+    SkyjoCI.xctestplan
+  README.md
+```
+
+Commit the project, shared schemes, test plan, `.xcconfig` templates, privacy manifest, and fixtures. Keep personal signing values in ignored `Local.xcconfig` or Xcode-managed local state.
+
+## Module Responsibilities
+
+### SkyjoDomain
+
+Pure Swift, Foundation-only where possible:
+
+- `Card`, `Player`, `GameState`, phases, round history, rules constants, and legal solo reducers.
+- Seeded random-source abstraction and deterministic IDs/clock for tests.
+- AI knowledge projection, strategies, difficulty assignments, and strategy version.
+- Codable wire/domain adapters. Hidden multiplayer values remain optional and never become fake values.
+- No SwiftUI, URLSession, filesystem, notification, or global singleton dependencies.
+
+The TypeScript engine remains the reference implementation during the port. Once parity fixtures pass, neither implementation may change a shared rule without updating the fixtures and both test suites in one compatible change.
+
+### SkyjoNetworking
+
+- One `URLSession` configured with a persistent `HTTPCookieStorage` for the outer access and account HttpOnly cookies.
+- Typed Codable request/response models for account, invite, stats, readiness, and version contracts.
+- An actor-owned `RoomConnection` around `URLSessionWebSocketTask`.
+- One in-flight command at a time, UUID command IDs, expected revisions, replay only with the identical ID/body, and authoritative snapshot convergence before enabling another action.
+- Explicit foreground/background presence, jittered reconnect, reachability hints, eight-second initial sync timeout, and diagnostic connection states.
+- Redacted snapshots are decoded into optional values. Never persist or log private drawn cards or raw frames.
+
+Do not store passwords just to recreate sessions. The server's signed cookies are the session. If a later credential-remembrance feature is approved, use Keychain Services and keep it separate from game storage.
+
+### SkyjoPersistence
+
+Use an actor-isolated SwiftData store with explicit `VersionedSchema` and `SchemaMigrationPlan` types. Persist game/outbox bodies as versioned Codable `Data` envelopes inside small record models rather than turning the game graph into SwiftData relationships. Keep model contexts inside the persistence boundary; do not make view models responsible for storage.
+
+Required stores:
+
+- At most one active `SoloSessionRecord` per owner partition (`guest` or `account:<uuid>`).
+- A signed-in-only idempotent `StatsOutboxRecord` keyed by stable game UUID.
+- Small nonsecret preferences through `UserDefaults`.
+- Session cookies through the configured cookie store.
+- Secrets only through Keychain, if any are introduced.
+
+Do not enable CloudKit in v0.1.0. Cross-device merge and account-partition behavior require a separate design.
+
+Solo replacement is transactional: persist the new validated session first, then remove the prior one. A failed replacement leaves the old game recoverable. Corrupt or incompatible records are quarantined or removed with a user-facing recovery message.
+
+### SkyjoDesignSystem
+
+- Card, grid, table band, player summary, score, connection banner, badges, controls, spacing, typography, colors, sounds, and haptics.
+- Semantic roles and accessibility labels live alongside the reusable component.
+- Dynamic Type and safe-area behavior are requirements, not later overrides.
+- Animations use semantic events, stable IDs, and `accessibilityReduceMotion` alternatives.
+
+### App And Features
+
+- `AppModel` is `@MainActor` and owns navigation plus authenticated product state.
+- Each feature has a small observable model whose dependencies are injected as protocols.
+- Long-lived work is owned by actors/services, not detached `Task` calls in views.
+- Navigation state is typed and restorable where safe. Invite routes are validated before they affect state.
+- SwiftUI views render state and send intents; they do not implement game rules or WebSocket framing.
+
+## State Ownership
+
+```text
+SwiftUI view intent
+  -> @MainActor feature model
+    -> domain reducer (solo) OR RoomConnection actor (multiplayer)
+      -> atomic local store OR server protocol-v2 command
+        -> validated state/snapshot
+          -> feature model publishes render state
+```
+
+For multiplayer, optimistic board mutation is prohibited. A tap may show a short pending affordance, but the board advances only from the server snapshot carrying the next revision. For solo, the pure reducer advances immediately and the durable store follows; a persistence warning must not corrupt the in-memory turn.
+
+## Realtime State Machine
+
+Native states mirror the established web client: `idle`, `connecting`, `connected`, `reconnecting`, `offline`, and `error`.
+
+- Connect to `wss://skyjo.groundworkrevops.com/rooms` with both valid server cookies.
+- Send exactly one create/join request after open.
+- Treat the first valid personalized snapshot/resync as synchronization.
+- Publish `set-presence` after synchronization and on foreground/background transitions.
+- Preserve a healthy socket across ordinary focus/scene changes.
+- Use jittered delays based on 0.5, 1, 2, 4, 8, 15, and 30 seconds.
+- Rejoin using the last room code and server-issued player ID; the account ID remains the authority for seat ownership.
+- Disable commands while offline, unsynchronized, or awaiting a command result.
+- On stale/future revision, accept the `resync`, clear the rejected pending action, explain it, and require a fresh user intent.
+- An exact replay uses the same command ID, expected revision, and action. Never generate a new ID for an uncertain in-flight command.
+
+`URLSessionWebSocketTask` handles WebSocket transport and control frames. Integration tests must still prove compatibility with the server's 15-second heartbeat and half-open termination behavior.
+
+## Native-Specific Backend Work
+
+The present backend is reusable but not fully native-ready. Additive work is planned for:
+
+1. A JSON access-session endpoint so the native app does not parse the HTML `/login` flow.
+2. A JSON invite redemption contract for universal-link handoff.
+3. `apple-app-site-association` hosting and Associated Domains.
+4. Authenticated APNs device registration/unregistration and APNs provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
+5. Versioned TypeScript-to-Swift conformance fixtures.
+
+All additions must leave the current PWA and web-push paths working.
+
+## Security And Privacy
+
+- HTTPS/WSS only; no App Transport Security exceptions for production.
+- Never pin a single certificate unless an explicit rotation strategy is accepted.
+- Redact email, cookies, passwords, invite tokens, device tokens, room frames, hidden values, and drawn-card values from logs.
+- Use `Logger` categories and privacy annotations; diagnostics expose release/protocol/status, not secrets or raw state.
+- Validate every decoded payload, array bound, identifier length, revision, URL path, and enum. A decoding failure closes or quarantines the affected flow safely.
+- Universal links may navigate to a lobby/invite review only; they never directly mutate or delete user data.
+- Add `PrivacyInfo.xcprivacy` before external distribution and keep App Store privacy answers consistent with actual account, chat, stats, and notification data.
+- Do not add analytics or crash-reporting SDKs without a separate privacy/supply-chain review.
+
+## Architecture Change Rule
+
+A PR that replaces SwiftUI, embeds the PWA, changes the server-authoritative boundary, adds a non-SPM dependency, changes the minimum OS, or introduces a new persistent store must add an ADR under `docs/native-ios/adr/` and update the handoff manifest.

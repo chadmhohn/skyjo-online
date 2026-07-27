@@ -1,5 +1,7 @@
 # Skyjo Online Project Plan
 
+> Historical MVP planning document. Several architecture statements below predate the server-authoritative multiplayer protocol and must not be used as current implementation guidance. Use `AGENTS.md`, executable tests, `src/protocolV2.ts`, and `docs/native-ios/` for the current PWA/native architecture.
+
 ## Goal
 
 Build a private, password-gated Skyjo-style web app for friends with:

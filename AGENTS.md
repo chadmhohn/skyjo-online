@@ -2,7 +2,7 @@
 
 This repository is the source for the private Skyjo-style web app at `https://skyjo.groundworkrevops.com/`. Treat this file as the first stop for Codex/Nova/Hermes handoff work.
 
-Last reviewed by Codex: 2026-07-26 America/Denver, for the v0.3.0 solo UX and AI release candidate. Re-check live release identity before claiming deployment status.
+Last reviewed by Codex: 2026-07-27 America/Denver, against the live v0.3.2 release and the portable native-iOS handoff. Re-check live release identity before claiming deployment status.
 
 ## Current Operating State
 
@@ -23,7 +23,18 @@ Last reviewed by Codex: 2026-07-26 America/Denver, for the v0.3.0 solo UX and AI
 
 The 2026-05-20 decoupling pass moved Skyjo out of the OpenClaw-owned workspace so OpenClaw can later move into Docker without taking Skyjo with it. Backup for that cutover lives at `/root/backups/skyjo-online-decouple-20260521T025019Z`.
 
-Production served immutable v0.2.2 at `b1c5876380eb2b12f9e255db15e4f1e0d12d860b` during the 2026-07-26 v0.3.0 preflight. Treat that only as the rollback baseline snapshot: re-read `/version` and `/readyz` before any promotion. Start every repository session with `git status --short --branch` and inspect the diff before making changes.
+Production served immutable v0.3.2 at `130114e745c66c9f72305f05a0366e3f0ca10915` when this guide was reviewed. Treat that only as a dated observation: re-read `/version` and `/readyz` before any promotion or compatibility claim. Start every repository session with `git status --short --branch` and inspect the diff before making changes.
+
+## Native iOS Work
+
+The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs/native-ios/README.md). A fresh Mac/Codex worker must read that directory completely and run `./scripts/ios-preflight.sh` before taking the first unblocked `Skyjo Native iOS v0.1.0` issue.
+
+- The intended product is a true SwiftUI iPhone/iPad app, not a `WKWebView` or Capacitor wrapper.
+- The existing Node server remains authoritative for multiplayer and shared/account state.
+- The solo rules and AI are ported to Swift behind cross-language deterministic fixtures.
+- Native implementation belongs under `ios/`; project files, shared schemes, test plans, sample configuration, and fixtures are committed.
+- Apple credentials, signing assets, device tokens, local team configuration, and App Store Connect keys never enter git.
+- No project requirement may depend on Nova/OpenClaw memory or another computer's local files. Move durable decisions into this repository.
 
 ## Architecture Map
 
@@ -137,7 +148,7 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - Multiplayer rooms are friend-facing and password gated. Shared room links should land on the install/browser choice page, and browser/install-code continuation should prefill join without reusing a stale saved player identity for another room.
 - The long invite link is reusable for group threads. Each invite page load mints a fresh one-time Home Screen install code, so several recipients can use the same shared link without racing over one copied code.
 
-## Useful Nova Memory Summary
+## Repository Handoff Notes
 
 Recent Nova work centered on mobile-first then desktop/tablet polish:
 
@@ -145,4 +156,4 @@ Recent Nova work centered on mobile-first then desktop/tablet polish:
 - Multiplayer hardening: ready-gated next round, minimizable scoring so completed boards remain visible, resume/rejoin behavior, correct column-clear discard order, smaller chat bubble, and persistent shareable waiting rooms.
 - Latest WIP before this guide: multiplayer reset creates a new room code; shared links avoid stale local identity; wider screens were being tuned to keep opponents visible/scrollable and the local board/table anchored near the bottom while preserving phone behavior.
 
-When in doubt, check `/root/.openclaw/workspace/memory/channels/skyjo.md` for the detailed project-memory trail before relying on chat memory alone.
+The notes above are historical orientation, not an external dependency. When in doubt, use current executable tests, the source paths in the architecture map, GitHub issues/PRs, and repository documentation. Update this guide when a durable decision changes.

@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-07-27T00:00:00-06:00",
+  "repository": "chadmhohn/skyjo-online",
+  "webBaseline": {
+    "version": "0.3.2",
+    "tag": "v0.3.2",
+    "sourceSha": "130114e745c66c9f72305f05a0366e3f0ca10915",
+    "productionBaseUrl": "https://skyjo.groundworkrevops.com",
+    "healthPath": "/healthz",
+    "readinessPath": "/readyz",
+    "versionPath": "/version"
+  },
+  "contracts": {
+    "databaseSchemaVersion": 2,
+    "roomPersistenceVersion": 2,
+    "multiplayerProtocolVersion": 2,
+    "explicitPresenceVersion": 1,
+    "sharedSnapshotEnvelopeVersion": 2,
+    "soloAiStrategyVersion": 1,
+    "webSocketPath": "/rooms"
+  },
+  "nativeTarget": {
+    "product": "SwiftUI iPhone and iPad app",
+    "plannedDirectory": "ios",
+    "minimumDeploymentTarget": "18.0",
+    "swiftLanguageMode": "6",
+    "workingBundleIdentifier": "com.groundworkrevops.skyjo",
+    "releaseTagPrefix": "ios-v",
+    "releaseGoal": "Internal TestFlight v0.1.0, then external TestFlight after branding and rights approval"
+  },
+  "githubProgram": {
+    "milestoneNumber": 3,
+    "programIssue": 179,
+    "handoffIssue": 180,
+    "externalTestFlightHumanGateIssue": 193,
+    "publicAppStoreAccountDeletionIssue": 192,
+    "orderedImplementationIssues": [
+      181,
+      182,
+      183,
+      184,
+      185,
+      186,
+      187,
+      188,
+      189,
+      190,
+      191
+    ]
+  },
+  "sourceOfTruth": {
+    "gameRules": [
+      "src/gameRules.ts",
+      "src/game.ts",
+      "src/types.ts"
+    ],
+    "ai": [
+      "src/aiContracts.ts",
+      "src/aiProjection.ts",
+      "src/aiStrategy.ts",
+      "src/soloAiSetup.ts"
+    ],
+    "realtime": [
+      "src/protocolV2.ts",
+      "src/roomConnection.ts",
+      "src/serverProtocolV2.ts",
+      "src/serverRealtime.ts",
+      "src/serverRoomLifecycle.ts"
+    ],
+    "accountsAndStats": [
+      "src/account.tsx",
+      "server.mjs",
+      "server-account-store.mjs"
+    ],
+    "soloPersistence": [
+      "src/soloDurability.ts"
+    ],
+    "visualReference": [
+      "src/GameTableLayout.tsx",
+      "src/index.css",
+      "tests/e2e/__screenshots__/visual"
+    ],
+    "audioProvenance": [
+      "public/audio/README.md"
+    ]
+  },
+    "requiredHandoffDocuments": [
+    "AGENTS.md",
+    "ios/AGENTS.md",
+    "ios/README.md",
+    "docs/native-ios/README.md",
+    "docs/native-ios/PRODUCT.md",
+    "docs/native-ios/ARCHITECTURE.md",
+    "docs/native-ios/BACKEND_CONTRACTS.md",
+    "docs/native-ios/MAC_SETUP.md",
+    "docs/native-ios/IMPLEMENTATION_PLAN.md",
+    "docs/native-ios/TEST_AND_RELEASE.md"
+  ],
+  "plannedServerAdditions": [
+    "JSON outer-access session API",
+    "machine-readable schemas and cross-language fixtures",
+    "native invite redemption and apple-app-site-association",
+    "authenticated APNs device registration and delivery",
+    "account deletion before public App Store submission"
+  ],
+  "secretNamesOnly": [
+    "Apple Developer Team ID",
+    "APNs key ID and issuer/team ID",
+    "APNs .p8 private key",
+    "App Store Connect API private key",
+    "SKYJO_ACCESS_PASSWORD",
+    "native test account credentials"
+  ],
+  "humanGates": [
+    "Apple account sign-in, two-factor authentication, and agreements",
+    "physical-device trust and Developer Mode",
+    "Apple team and bundle identifier selection",
+    "external TestFlight and public App Store branding and intellectual-property confirmation",
+    "destructive production-data recovery choice"
+  ]
+}

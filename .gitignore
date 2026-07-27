@@ -15,3 +15,25 @@ release/
 tsconfig*.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+
+# Native Apple development
+DerivedData/
+*.xcresult
+*.xcarchive
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.xcuserstate
+**/xcuserdata/
+**/.swiftpm/xcode/package.xcworkspace/xcuserdata/
+ios/**/Local.xcconfig
+ios/build/
+ios/Artifacts/
+ios/Export/
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
