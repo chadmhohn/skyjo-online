@@ -1,5 +1,6 @@
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 const rumPaths = new Set(['/cdn-cgi/rum', '/cdn-cgi/rum/']);
+const rumSuffixes = ['/cdn-cgi/rum', '/cdn-cgi/rum/', '/cdn-cgi/rum?', '/cdn-cgi/rum/?'] as const;
 
 export type CredentiallessRequestRejection =
   | 'application-mutation'
@@ -56,11 +57,8 @@ export function classifyCredentiallessRequest({
   if (requestUrl.username || requestUrl.password) return { allowed: false, reason: 'url-credentials' };
   if (requestUrl.origin !== expectedOrigin) return { allowed: false, reason: 'cross-origin-mutation' };
   if (!rumPaths.has(requestUrl.pathname)) return { allowed: false, reason: 'application-mutation' };
-  if (
-    requestUrl.search ||
-    requestUrl.hash ||
-    requestUrl.href !== `${expectedOrigin}${requestUrl.pathname}`
-  ) {
+  const allowedRumUrls = new Set(rumSuffixes.map((suffix) => `${expectedOrigin}${suffix}`));
+  if (!allowedRumUrls.has(url)) {
     return { allowed: false, reason: 'rum-query-or-fragment' };
   }
   return { allowed: true, kind: 'cloudflare-rum' };
