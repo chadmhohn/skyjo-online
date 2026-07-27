@@ -298,7 +298,7 @@ describe('recovery RPO measurement', () => {
   });
 });
 
-describe('v0.3.1 certification evidence', () => {
+describe('v0.3.2 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     const commandId = '00000000-0000-4000-8000-000000000001';
     const sentCommand = (action: GameCommand, expectedRevision: number, nextCommandId = commandId) => ({
@@ -699,7 +699,7 @@ describe('v0.3.1 certification evidence', () => {
   });
 });
 
-describe('v0.3.1 workflow governance', () => {
+describe('v0.3.2 workflow governance', () => {
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
     const [
       ci,
@@ -725,8 +725,8 @@ describe('v0.3.1 workflow governance', () => {
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
       fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.1-certification.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.1-security.md'), 'utf8')
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.2-certification.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.2-security.md'), 'utf8')
     ]);
     expect(REQUIRED_CHECKS).toContain('CI / Load & Recovery');
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'CI / Load & Recovery')).toHaveLength(1);
@@ -772,14 +772,17 @@ describe('v0.3.1 workflow governance', () => {
     expect(verifier).toMatch(/assertRssStageEvidenceMatchesCertification\(evidence, rssEvidence\)/);
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
-    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-26');
-    expect(JSON.parse(packageDocument).version).toBe('0.3.1');
+    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-27');
+    expect(JSON.parse(packageDocument).version).toBe('0.3.2');
     expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
     expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('--retries=0');
-    expect(JSON.parse(packageLock).version).toBe('0.3.1');
-    expect(changelog).toMatch(/^## 0\.3\.1 - 2026-07-26$/m);
+    expect(JSON.parse(packageLock).version).toBe('0.3.2');
+    expect(changelog).toMatch(/^## 0\.3\.2 - 2026-07-27$/m);
     expect(certificationAddendum).toContain('physical `PASS V0.3 IOS`');
     expect(certificationAddendum).toContain('complete automated CI and CodeQL matrix');
+    expect(certificationAddendum).toContain('byte-equivalence proof');
+    expect(certificationAddendum).toContain('`v0.3.0` and `v0.3.1` remain immutable and unpublished');
     expect(securityAddendum).toContain('Browser resource type is deliberately not an authorization boundary');
+    expect(securityAddendum).toContain('`/cdn-cgi/rum?`');
   });
 });
