@@ -298,7 +298,7 @@ describe('recovery RPO measurement', () => {
   });
 });
 
-describe('v0.3.0 certification evidence', () => {
+describe('v0.3.1 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     const commandId = '00000000-0000-4000-8000-000000000001';
     const sentCommand = (action: GameCommand, expectedRevision: number, nextCommandId = commandId) => ({
@@ -699,9 +699,22 @@ describe('v0.3.0 certification evidence', () => {
   });
 });
 
-describe('v0.3.0 workflow governance', () => {
+describe('v0.3.1 workflow governance', () => {
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
-    const [ci, nightly, installer, load, runner, realtime, verifier, packageDocument, packageLock, changelog] = await Promise.all([
+    const [
+      ci,
+      nightly,
+      installer,
+      load,
+      runner,
+      realtime,
+      verifier,
+      packageDocument,
+      packageLock,
+      changelog,
+      certificationAddendum,
+      securityAddendum
+    ] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
       fs.readFile(path.join(root, '.github', 'workflows', 'nightly-certification.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'install-k6.sh'), 'utf8'),
@@ -711,7 +724,9 @@ describe('v0.3.0 workflow governance', () => {
       fs.readFile(path.join(root, 'scripts', 'verify-v030-release.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
-      fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8')
+      fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.1-certification.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.1-security.md'), 'utf8')
     ]);
     expect(REQUIRED_CHECKS).toContain('CI / Load & Recovery');
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'CI / Load & Recovery')).toHaveLength(1);
@@ -758,10 +773,13 @@ describe('v0.3.0 workflow governance', () => {
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
     expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-26');
-    expect(JSON.parse(packageDocument).version).toBe('0.3.0');
+    expect(JSON.parse(packageDocument).version).toBe('0.3.1');
     expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
     expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('--retries=0');
-    expect(JSON.parse(packageLock).version).toBe('0.3.0');
-    expect(changelog).toMatch(/^## 0\.3\.0 - 2026-07-26$/m);
+    expect(JSON.parse(packageLock).version).toBe('0.3.1');
+    expect(changelog).toMatch(/^## 0\.3\.1 - 2026-07-26$/m);
+    expect(certificationAddendum).toContain('physical `PASS V0.3 IOS`');
+    expect(certificationAddendum).toContain('complete automated CI and CodeQL matrix');
+    expect(securityAddendum).toContain('Browser resource type is deliberately not an authorization boundary');
   });
 });

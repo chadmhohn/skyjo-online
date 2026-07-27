@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 - 2026-07-26
+
+- Corrected the credentialless production PWA gate so it permits only Cloudflare's exact same-origin `POST /cdn-cgi/rum` analytics request while continuing to reject every application, off-origin, malformed, or lookalike mutation.
+- Preserved the cookie, cache allowlist, offline cold-launch, and exact solo-restore release assertions; no application runtime, dependency, schema, protocol, or deployment behavior changed.
+
 ## 0.3.0 - 2026-07-26
 
 - Reworked Home and the solo launcher so Continue, New Solo Game, and Multiplayer are distinct, saved-game metadata is visible, and merely opening setup never creates or replaces a game.

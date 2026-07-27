@@ -29,7 +29,7 @@ function report() {
   };
 }
 
-describe('v0.3.0 dependency exception gate', () => {
+describe('v0.3.1 dependency exception gate', () => {
   it('accepts only the exact reviewed React Router moderate set before expiry', () => {
     expect(ALLOWED_MODERATE_PACKAGES).toEqual(['react-router', 'react-router-dom']);
     expect(validateReleaseAudit(report(), { now: Date.parse('2026-07-26T12:00:00.000Z') })).toEqual({
