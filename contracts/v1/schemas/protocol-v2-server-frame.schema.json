@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/protocol-v2-server-frame.schema.json",
+  "title": "Skyjo multiplayer protocol-v2 server frames",
+  "oneOf": [
+    { "$ref": "#/$defs/personalizedSnapshot" },
+    { "$ref": "#/$defs/sharedSnapshot" },
+    { "$ref": "#/$defs/resync" },
+    { "$ref": "#/$defs/ack" },
+    { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/upgradeRequired" }
+  ],
+  "$defs": {
+    "personalizedSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "playerId", "revision", "room"],
+      "properties": {
+        "type": { "const": "snapshot" },
+        "protocolVersion": { "const": 2 },
+        "playerId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "room": { "$ref": "public-room-snapshot.schema.json" }
+      }
+    },
+    "sharedSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "revision", "room"],
+      "properties": {
+        "type": { "const": "snapshot" },
+        "protocolVersion": { "const": 2 },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "room": { "$ref": "public-room-snapshot.schema.json" }
+      }
+    },
+    "resync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "playerId", "revision", "room", "reason"],
+      "properties": {
+        "type": { "const": "resync" },
+        "protocolVersion": { "const": 2 },
+        "playerId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "room": { "$ref": "public-room-snapshot.schema.json" },
+        "reason": { "enum": ["revision-mismatch", "stale-revision", "future-revision", "room-reset", "completion-recovered"] },
+        "commandId": { "$ref": "common.schema.json#/$defs/uuid" }
+      }
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "commandId", "revision"],
+      "properties": {
+        "type": { "const": "ack" },
+        "protocolVersion": { "const": 2 },
+        "commandId": { "$ref": "common.schema.json#/$defs/uuid" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "result": { "const": "room-left" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "code", "message"],
+      "properties": {
+        "type": { "const": "error" },
+        "protocolVersion": { "const": 2 },
+        "code": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z][a-z0-9-]*$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "commandId": { "$ref": "common.schema.json#/$defs/uuid" }
+      }
+    },
+    "upgradeRequired": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "message"],
+      "properties": {
+        "type": { "const": "upgrade-required" },
+        "protocolVersion": { "const": 2 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "commandId": { "$ref": "common.schema.json#/$defs/uuid" }
+      }
+    }
+  }
+}

@@ -1,12 +1,13 @@
 # Backend Contracts For The Native Client
 
-This document maps the deployed v0.3.2 behavior. The executable TypeScript validators remain authoritative until the planned language-neutral schemas and fixtures are committed. Do not infer a contract from rendered HTML or from a captured production room.
+This document separates the dated deployed v0.3.2 baseline from native-enabling contracts present in the IOS-2 repository change. Production was still verified as v0.3.2 at the SHA below when the handoff was reviewed; the access API, stable API-error envelope, and `contracts/v1` assets described here are source/PR capabilities until an immutable release is promoted and reverified. Do not infer a contract from rendered HTML or from a captured production room.
 
 ## Compatibility Baseline
 
 | Contract | Current value | Canonical implementation |
 | --- | ---: | --- |
 | Release | `v0.3.2` / `130114e745c66c9f72305f05a0366e3f0ca10915` | Git tag and public `/version` |
+| Portable contract bundle | 1 | `contracts/v1/`, `contracts/README.md` |
 | Database schema | 2 | `server-migrations.mjs`, `server-readiness.mjs` |
 | Room persistence | 2 with legacy readers | `server-room-persistence.mjs` |
 | Multiplayer protocol | 2 | `src/protocolV2.ts` |
@@ -15,6 +16,29 @@ This document maps the deployed v0.3.2 behavior. The executable TypeScript valid
 | Solo AI strategy | 1 | `src/aiContracts.ts`, `src/soloAiSetup.ts` |
 
 The native app must refuse unsupported protocol versions with a clear upgrade message. The server must retain PWA compatibility whenever a native endpoint is added.
+
+### Contract Registry And Independent Version Axes
+
+`contracts/v1/schemas/` contains the language-neutral JSON Schemas for authoritative game state, redacted public room snapshots, protocol-v2 client/server frames, access/account DTOs, stats DTOs, operational DTOs, and stable JSON API errors. `contracts/v1/fixtures/` is the deterministic, sanitized corpus generated from canonical TypeScript producers. Its `manifest.json` records a SHA-256 digest for every generated fixture file.
+
+Contract bundle version 1 identifies this portable schema/fixture layout only. It is independent of:
+
+- PWA/server release and source SHA.
+- Native marketing/build versions.
+- Multiplayer protocol 2, shared snapshot envelope 2, and presence 1.
+- Database schema 2 and room persistence 2.
+- Solo AI strategy 1.
+
+A change under `contracts/v1` does not automatically bump any other axis, and a runtime protocol/schema bump does not automatically rename the contract bundle. Evaluate each affected axis explicitly. Runtime negotiation continues to use the relevant protocol/envelope fields, not the directory name `v1`.
+
+Use the nonwriting checks for ordinary verification:
+
+```sh
+npm run contracts:fixtures:check
+npm run test:unit:contracts
+```
+
+When intentionally changing a schema or canonical producer, run `npm run contracts:fixtures:update`. The generator injects seeded randomness plus scripted clock/UUID/code sources and asserts their expected consumption; it does not depend on wall time or ambient randomness. It writes a temporary sibling directory, validates and hashes the complete corpus, and atomically replaces the fixture directory only when its existing git state is clean. Review the semantic/privacy diff and commit the schema, producer/generator, fixtures, and manifest together. The fixtures are synthetic and must never contain credentials, cookies, tokens, production rooms, or private wire captures.
 
 ## Hosts And Transport
 
@@ -47,21 +71,28 @@ Both use path `/`, `SameSite=Lax`, a finite Max-Age, and `Secure` in production.
 
 Do not extract, log, copy into `UserDefaults`, or manually expose HttpOnly cookie values. Do not bundle the shared password.
 
-### Current Outer Access Flow
+### Outer Access Flow
 
-The existing PWA submits `POST /login` as `application/x-www-form-urlencoded` with `password` and `next`; success sets the access cookie and responds with a 303. This can bootstrap a development client, but parsing an HTML-oriented flow is not the long-term native contract.
+The existing PWA continues to submit `POST /login` as `application/x-www-form-urlencoded` with `password` and `next`; success sets the access cookie and responds with a 303. Its GET page, redirect behavior, and browser logout flow remain unchanged.
 
-Before native access UI is considered complete, add and test an additive JSON surface that is handled before the outer access redirect:
+IOS-2 adds an API-only surface handled before the outer access redirect:
 
-- `GET /api/access/session` -> `{ authenticated: boolean }`.
-- `POST /api/access/session` with `{ password: string }` -> `{ authenticated: true }` plus the existing access cookie.
-- `DELETE /api/access/session` -> `{ authenticated: false }` plus expired access/account cookies.
+- `GET /api/access/session` -> HTTP 200 `{ "authenticated": boolean }`. A missing, expired, invalid, or malformed cookie yields `false`, not a redirect or server error.
+- `POST /api/access/session` requires `Content-Type: application/json` and exactly `{ "password": string }`. The password must contain 1-4096 Unicode code points; the same bound is enforced for the configured access secret at server startup. Success returns HTTP 200 `{ "authenticated": true }` and sets the existing signed outer-access cookie. A wrong password returns HTTP 401 `ACCESS_AUTHENTICATION_FAILED` and sets no cookie.
+- `DELETE /api/access/session` is idempotent and returns HTTP 200 `{ "authenticated": false }`. It expires both outer-access and account cookies and best-effort revokes the presented account session server-side.
+- Other methods return HTTP 405 `METHOD_NOT_ALLOWED` with `Allow: GET, POST, DELETE`.
 
-Use generic authentication errors and the existing rate-limiting posture. The PWA `/login` behavior remains unchanged.
+Malformed JSON, a non-object body, an unsupported media type, an invalid shape/bound, and an oversized body use `INVALID_JSON`, `EXPECTED_JSON_OBJECT`, `UNSUPPORTED_MEDIA_TYPE`, `INVALID_REQUEST`, and `REQUEST_TOO_LARGE` respectively. Success and error responses are JSON with `Cache-Control: no-store`.
+
+The endpoint reuses the established cookie signing, name, path, lifetime, HttpOnly, SameSite, and production Secure behavior, so the PWA, HTTP APIs, and WebSocket upgrade see the same outer session. It does not introduce a new access-specific rate limiter; the server retains the existing outer-gate posture, generic authentication message, constant-time secret comparison, request bounds, and no-secret logging. Any future throttling must cover both JSON and legacy HTML login without breaking invite/browser behavior.
 
 ## Account And Stats HTTP API
 
-All routes below require the outer access session. Authenticated routes additionally require the account cookie. Current errors are not yet one stable contract: many routes use `{ error: string }`, while some validation failures escape as plain text. The native-contract issue must introduce stable machine-readable error codes without breaking the PWA's message fallback.
+All routes below require the outer access session. Authenticated routes additionally require the account cookie. IOS-2 normalizes JSON API failures to the stable object `{ "code": string, "error": string }` described by `contracts/v1/schemas/api-error.schema.json`. `code` is the machine-readable branch key; `error` remains the sanitized user-facing string consumed by the PWA, so adding the sibling field is backward compatible. Canonical producers emit the exact envelope, while clients must tolerate additive response fields.
+
+An unauthenticated request to `/api/*`, except the pre-gate access-session endpoint itself, receives HTTP 401 `{ "code": "ACCESS_REQUIRED", "error": "Skyjo access is required." }` rather than an HTML login redirect. Browser page requests still redirect to `/login`. Do not confuse `ACCESS_REQUIRED` with `ACCOUNT_AUTHENTICATION_REQUIRED`: the former means the outer shared gate is absent; the latter means the account cookie is absent, expired, disabled, or otherwise invalid after outer access succeeds.
+
+Native clients may display the server message only for a recognized stable code. Unknown codes, malformed/non-JSON bodies, redirects, or out-of-bound error values use the safe local fallback `Request failed.` The PWA continues reading `error` and does not need to understand `code` immediately.
 
 ### Accounts
 
@@ -236,6 +267,24 @@ Existing `/api/push/*` routes store browser PushSubscription/VAPID data. Native 
 - `DELETE /api/push/apns/devices/:installationId`.
 
 The server associates tokens with the authenticated account, supports multiple devices, rotates tokens, removes invalid tokens, and sends minimal turn-alert payloads through APNs. Device tokens and APNs errors are secrets/sensitive operations data. Define final route schemas, stable codes, database migration, retention, and web-push coexistence before implementation.
+
+## Native Access Verification And Rollback Compatibility
+
+Run the focused native/server gate with:
+
+```sh
+./scripts/ios-build-test.sh --networking-contracts
+```
+
+The script builds `server-dist`, launches the real `server.mjs` on a dynamic `127.0.0.1` port, generates test-only session/invite secrets, and uses temporary SQLite and room-state paths. The loopback server and test target share a fixed, explicitly non-secret access fixture; the simulator environment receives only the dynamic loopback URL, never a secret or generated credential. Swift `URLSession` tests prove unauthenticated status, generic wrong-password failure, access-cookie persistence across requests, repeatable logout, and clearing of both cookie layers against that process. `URLProtocol` tests cover strict typed success decoding, additive fields, known/unknown/malformed errors, redirect rejection, and streamed request/response bounds. Cleanup terminates the exact child process and deletes the validated temporary state directory and raw server log. On every trappable exit, the harness scans the raw result bundle and logs for the generated server secrets and stages only verified files into the exact CI-upload directory. A match or scan failure stages only a generic safety error and fails the gate; an untrappable exit never creates an upload-eligible directory.
+
+Compatibility and rollout rules:
+
+- The new server remains compatible with the existing PWA: HTML access routes and cookie format are unchanged, and every API error retains the legacy `error` string while adding `code`.
+- The native client is fail-closed against an older server. A pre-IOS-2 backend may redirect `/api/access/session` to HTML login or return an unrecognized API response; `AccessSessionClient` rejects the redirect/invalid payload instead of scraping HTML or treating it as authenticated.
+- Promote and verify server support through the immutable release pipeline before distributing a native build that requires it. Re-check `/version`, `/readyz`, the PWA account/login/invite flows, and the focused access contract against the promoted release.
+- A server rollback to a pre-IOS-2 release is safe for the PWA but removes required native access functionality. Do not perform that rollback after a dependent native build is distributed unless the native feature is disabled/fails safely and the compatibility impact is accepted. The established signed cookie format itself remains downgrade-compatible.
+- Source changes and local integration success are not proof of production deployment.
 
 ## Contract Change Checklist
 

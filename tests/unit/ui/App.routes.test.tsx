@@ -87,8 +87,11 @@ const savedGame: StatsGame = {
   roomCode: 'ABCDE',
   completedAt: Date.UTC(2026, 0, 2, 3, 4),
   roundCount: 2,
+  winnerPlayerId: 'p1',
   winnerName: 'Player One',
   winnerUserId: playerUser.id,
+  createdByUserId: playerUser.id,
+  finishedByAi: false,
   participants: [
     {
       id: 'participant-1',

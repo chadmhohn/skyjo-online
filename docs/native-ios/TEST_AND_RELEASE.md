@@ -16,7 +16,17 @@ Run the iOS jobs on a pinned, documented macOS/Xcode image. Print `sw_vers`, `xc
 
 The build job compiles once for testing without signing; downstream jobs reuse derived products when safe. Upload failed `.xcresult`, screenshots, logs, and sanitized diagnostics for 14 days. Never attach cookies, credentials, invite tokens, APNs device tokens, raw private snapshots, signing assets, or production databases.
 
-IOS-1 pins `iOS / Build` to the GitHub-hosted `macos-26` image and selects Xcode 26.6 through `DEVELOPER_DIR`. The job records the concrete weekly runner image version, discovers an iPhone on the newest installed iOS runtime, and runs [`scripts/ios-build-test.sh`](../../scripts/ios-build-test.sh). That script gives `xcodebuild` an allowlisted environment without CI tokens or service credentials, scrubs machine-local paths from console and saved logs, and writes ignored evidence under `ios/Artifacts/`. Only failed `.xcresult` bundles and sanitized logs are uploaded, for 14 days.
+IOS-1 pins `iOS / Build` to the GitHub-hosted `macos-26` image and selects Xcode 26.6 through `DEVELOPER_DIR`. The job records the concrete weekly runner image version, discovers an iPhone on the newest installed iOS runtime, installs locked Node dependencies, and runs [`scripts/ios-build-test.sh`](../../scripts/ios-build-test.sh). IOS-2 adds the focused `iOS / Networking Contracts` job, which runs the same harness with `--networking-contracts`.
+
+The harness gives Node and `xcodebuild` allowlisted environments without CI tokens or service credentials, builds `server-dist`, and starts the real `server.mjs` on a dynamic loopback port with a fixed non-secret access fixture, UUID-based test-only session/invite secrets, and temporary SQLite/room-state paths. The access fixture is compiled into the test target; only the loopback URL enters the simulator environment. The harness runs one unsigned `xcodebuild test`, terminates the exact Node child, removes the validated temporary state/raw log, scrubs secrets and machine-local paths from retained text, and writes ignored results under `ios/Artifacts/`. On every trappable exit it scans the raw `.xcresult` and logs for generated server secrets, then stages only verified files into the exact current-run directory accepted by CI. A match or scan error stages only a generic safety log and fails; an exit that cannot run the finalizer creates no upload-eligible directory. Failed validated evidence is retained for 14 days.
+
+Local equivalents:
+
+```sh
+npm run contracts:fixtures:check
+npm run test:unit:contracts
+./scripts/ios-build-test.sh --networking-contracts
+```
 
 ## Test Layers
 
@@ -30,11 +40,13 @@ IOS-1 pins `iOS / Build` to the GitHub-hosted `macos-26` image and selects Xcode
 
 ### Networking And Server Compatibility
 
-- `URLProtocol` fakes for deterministic HTTP and cookie/error behavior.
+- `URLProtocol` fakes for deterministic HTTP/error behavior, including typed required success fields with additive-field tolerance, known/unknown/malformed errors, redirect rejection, and request/response bounds enforced while streaming.
 - Codable fixtures for every valid/invalid REST and WebSocket frame.
-- Local Node server integration tests for real cookies, redirect boundaries, WebSocket upgrade, heartbeat, revisions, commands, redaction, reconnect, lifecycle, invites, and APNs registration APIs.
+- IOS-2 local Node integration proves real outer-cookie status/login/logout, wrong-password behavior, repeatable logout, and clearing both access/account cookie layers through native `URLSession`. Later issues extend the same local-server pattern to WebSocket upgrade, heartbeat, revisions, commands, redaction, reconnect, lifecycle, invites, and APNs registration APIs.
 - Mixed-client E2E with at least one Swift simulator and one Playwright web client.
 - Previous released PWA compatibility stays green for any server change.
+
+The deterministic contract corpus lives under `contracts/v1/fixtures/`; its SHA-256 manifest must match the generator. `npm run contracts:fixtures:check` is nonwriting and rejects missing, stale, or unexpected output. Use `npm run contracts:fixtures:update` only for an intentional schema/producer change and review the complete semantic and privacy diff.
 
 ### SwiftUI And XCUITest
 
@@ -92,6 +104,7 @@ A defect returns to its owning issue and automated regression coverage is added.
 
 - PWA/server releases keep `vX.Y.Z` tags.
 - Native releases use `ios-vX.Y.Z` tags.
+- Portable schemas/fixtures use `contracts/vN`. This bundle version is independent of the PWA/server release, native release/build, multiplayer protocol, snapshot envelope, presence, database schema, room persistence, and solo-AI strategy; assess every affected axis separately.
 - `CFBundleShortVersionString` uses semantic product version; `CFBundleVersion` is a monotonically increasing build integer.
 - The About/Diagnostics screen shows native version/build, backend release SHA, schema, protocol, and sanitized connection state.
 - Maintain a table in each native release note with minimum/maximum supported backend protocol and tested production release.
@@ -109,6 +122,8 @@ For an additive backend requirement:
 6. Monitor sanitized readiness, APNs failures, and protocol errors. Never automatically restore a live database after traffic resumes.
 
 Server rollback must remain compatible with the released native client or the native feature must be remotely nonessential/fail safely. Do not couple a native build to an unpromoted server commit.
+
+For IOS-2 specifically, the new server is backward compatible with the PWA because `/login`, signed-cookie format, and the `error` string remain intact while `code` is additive. A pre-IOS-2 server is not forward compatible with native access: it may redirect the JSON endpoint to HTML login or omit the required envelope, and the native client intentionally fails closed. Deploy and verify the server first; do not roll it back after distributing a dependent native build unless that feature is disabled/fails safely and the compatibility impact is accepted. Passing local/CI checks alone is not a production-deployment claim.
 
 ## External TestFlight And Public App Store Gates
 

@@ -11,6 +11,14 @@
     "readinessPath": "/readyz",
     "versionPath": "/version"
   },
+  "portableContractBundle": {
+    "version": 1,
+    "root": "contracts/v1",
+    "schemas": "contracts/v1/schemas",
+    "fixtures": "contracts/v1/fixtures",
+    "fixtureManifest": "contracts/v1/fixtures/manifest.json",
+    "versioning": "Independent of PWA/server release, native release/build, multiplayer protocol, snapshot envelope, presence, database schema, room persistence, and solo AI strategy"
+  },
   "contracts": {
     "databaseSchemaVersion": 2,
     "roomPersistenceVersion": 2,
@@ -18,11 +26,23 @@
     "explicitPresenceVersion": 1,
     "sharedSnapshotEnvelopeVersion": 2,
     "soloAiStrategyVersion": 1,
-    "webSocketPath": "/rooms"
+    "webSocketPath": "/rooms",
+    "accessSessionPath": "/api/access/session",
+    "accessSessionMethods": [
+      "GET",
+      "POST",
+      "DELETE"
+    ],
+    "jsonApiErrorFields": [
+      "code",
+      "error"
+    ],
+    "pwaErrorFallbackField": "error",
+    "outerAccessRequiredCode": "ACCESS_REQUIRED"
   },
   "nativeTarget": {
     "product": "SwiftUI iPhone and iPad app",
-    "plannedDirectory": "ios",
+    "directory": "ios",
     "minimumDeploymentTarget": "18.0",
     "swiftLanguageMode": "6",
     "workingBundleIdentifier": "com.groundworkrevops.skyjo",
@@ -71,7 +91,21 @@
     "accountsAndStats": [
       "src/account.tsx",
       "server.mjs",
-      "server-account-store.mjs"
+      "server-account-store.mjs",
+      "contracts/v1/schemas/account-http.schema.json",
+      "contracts/v1/schemas/stats-http.schema.json",
+      "contracts/v1/schemas/api-error.schema.json"
+    ],
+    "portableContracts": [
+      "contracts/README.md",
+      "contracts/v1/schemas",
+      "contracts/v1/fixtures",
+      "scripts/generate-contract-fixtures.mjs"
+    ],
+    "nativeAccessClient": [
+      "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/AccessSessionClient.swift",
+      "ios/SkyjoAppTests/AccessSessionClientTests.swift",
+      "scripts/ios-build-test.sh"
     ],
     "soloPersistence": [
       "src/soloDurability.ts"
@@ -85,8 +119,9 @@
       "public/audio/README.md"
     ]
   },
-    "requiredHandoffDocuments": [
+  "requiredHandoffDocuments": [
     "AGENTS.md",
+    "contracts/README.md",
     "ios/AGENTS.md",
     "ios/README.md",
     "docs/native-ios/README.md",
@@ -97,9 +132,29 @@
     "docs/native-ios/IMPLEMENTATION_PLAN.md",
     "docs/native-ios/TEST_AND_RELEASE.md"
   ],
+  "verificationCommands": {
+    "contractFixturesNonWritingCheck": "npm run contracts:fixtures:check",
+    "contractTypeScriptTests": "npm run test:unit:contracts",
+    "contractFixturesIntentionalUpdate": "npm run contracts:fixtures:update",
+    "nativeNetworkingContracts": "./scripts/ios-build-test.sh --networking-contracts",
+    "nativeFullBuildAndTest": "./scripts/ios-build-test.sh"
+  },
+  "nativeNetworkingHarness": {
+    "server": "real server.mjs on a dynamic 127.0.0.1 port",
+    "state": "temporary isolated SQLite and room files",
+    "credentials": "fixed non-secret access fixture plus generated test-only session and invite secrets",
+    "simulatorEnvironmentNames": [
+      "SKYJO_IOS_TEST_SERVER_URL"
+    ],
+    "cleanup": "on every trappable exit terminate the exact child, remove validated temporary state and raw log, scan raw evidence for generated secrets, and stage only verified ignored evidence for CI upload"
+  },
+  "repositoryCapabilitiesAwaitingDeploymentVerification": [
+    "pre-gate GET/POST/DELETE JSON outer-access session API using the established signed cookie",
+    "stable JSON API error envelope with code and legacy-compatible error fields",
+    "contracts/v1 machine-readable schemas and deterministic sanitized fixtures",
+    "native URLSession access-client tests against an isolated real local Node server"
+  ],
   "plannedServerAdditions": [
-    "JSON outer-access session API",
-    "machine-readable schemas and cross-language fixtures",
     "native invite redemption and apple-app-site-association",
     "authenticated APNs device registration and delivery",
     "account deletion before public App Store submission"
@@ -110,6 +165,8 @@
     "APNs .p8 private key",
     "App Store Connect API private key",
     "SKYJO_ACCESS_PASSWORD",
+    "SKYJO_SESSION_SECRET",
+    "SKYJO_INVITE_SECRET",
     "native test account credentials"
   ],
   "humanGates": [

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/api-error.schema.json",
+  "title": "Skyjo stable JSON API error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "error"],
+  "properties": {
+    "code": {
+      "enum": [
+        "ACCESS_REQUIRED", "ACCESS_AUTHENTICATION_FAILED",
+        "ACCOUNT_AUTHENTICATION_REQUIRED", "ACCOUNT_AUTHENTICATION_FAILED", "ADMIN_REQUIRED",
+        "PUSH_NOT_CONFIGURED", "ROOM_NOT_FOUND", "ROOM_MEMBERSHIP_REQUIRED", "GAME_NOT_FOUND",
+        "PLAYER_NOT_FOUND", "ADMIN_SELF_REVOKE_FORBIDDEN", "SERVICE_UNAVAILABLE", "SERVICE_NOT_READY",
+        "API_ROUTE_NOT_FOUND", "INVALID_REQUEST", "UNSUPPORTED_MEDIA_TYPE", "METHOD_NOT_ALLOWED",
+        "INVALID_EMAIL", "WEAK_PASSWORD", "INVALID_ROLE", "ACCOUNT_EXISTS", "ACCOUNT_NOT_FOUND",
+        "CURRENT_PASSWORD_MISMATCH", "LAST_ADMIN", "INVALID_PUSH_SUBSCRIPTION", "MISSING_PUSH_KEYS",
+        "INCOMPLETE_GAME", "INVALID_ROOM_CODE", "PASSWORDS_MUST_MATCH", "MISSING_HUMAN_PLAYER",
+        "ACCOUNT_SESSION_CHANGED", "STATS_CLIENT_UPGRADE_REQUIRED", "INVALID_COMPLETED_AT",
+        "REQUEST_TOO_LARGE", "INVALID_JSON", "EXPECTED_JSON_OBJECT", "CODE_ALLOCATION_FAILED",
+        "INVITE_CODE_LIMIT", "REQUEST_FAILED"
+      ]
+    },
+    "error": { "type": "string", "minLength": 1, "maxLength": 512 }
+  }
+}

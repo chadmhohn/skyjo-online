@@ -31,7 +31,8 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 
 - The intended product is a true SwiftUI iPhone/iPad app, not a `WKWebView` or Capacitor wrapper.
 - The existing Node server remains authoritative for multiplayer and shared/account state.
-- The solo rules and AI are ported to Swift behind cross-language deterministic fixtures.
+- Portable schemas and deterministic fixtures live under `contracts/v1/`; contract-bundle version 1 is independent of the release, multiplayer protocol, snapshot envelope, presence, database, room-persistence, and solo-AI versions.
+- The solo rules and AI are ported to Swift behind those cross-language deterministic fixtures.
 - Native implementation belongs under `ios/`; project files, shared schemes, test plans, sample configuration, and fixtures are committed.
 - Apple credentials, signing assets, device tokens, local team configuration, and App Store Connect keys never enter git.
 - No project requirement may depend on Nova/OpenClaw memory or another computer's local files. Move durable decisions into this repository.
@@ -41,7 +42,7 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 - `src/game.ts`: shared Skyjo game engine for single-player and multiplayer. Owns deck composition, opening reveal rules, turn progression, scoring, final-turn flow, column clears, and AI decisions.
 - `src/types.ts`: shared client/server state types.
 - `src/serverValidation.ts`: server-side legal multiplayer state validation. This compiles to `server-dist/` and is loaded by the Node server.
-- `server.mjs`: production Node server. Handles password-gated HTTP, invite install/browser handoff, static `dist/` serving, public `/healthz`, `/readyz`, and `/version`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and verified persistence flush on shutdown.
+- `server.mjs`: production Node server. Handles password-gated HTTP, the additive JSON access-session contract, invite install/browser handoff, static `dist/` serving, public `/healthz`, `/readyz`, and `/version`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and verified persistence flush on shutdown.
 - `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, and admin user operations.
 - `server-room-persistence.mjs`: versioned JSON persistence for rooms with strict legacy readers and durable atomic v2 writes. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
 - `server-release.mjs` and `server-readiness.mjs`: checksum-validated build identity and sanitized public readiness/version contracts. The current baseline is schema 2 and protocol 2.
@@ -50,6 +51,9 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 - `src/account.tsx`: account context and client API helpers for login/signup/logout, stats, single-player save, and admin actions.
 - `src/audio.ts`: client-only Web Audio settings and generated cues. Sound effects are on by default, background music is off by default, and settings persist in browser `localStorage`.
 - `src/index.css`: most layout and visual behavior, including the mobile locked play surface and desktop/tablet responsive rules.
+- `contracts/v1/`: language-neutral JSON Schemas plus generated, sanitized, hash-manifested fixtures for native/web compatibility. See `contracts/README.md` before changing a wire or DTO contract.
+- `ios/Packages/SkyjoNetworking/`: native HTTP and realtime transport boundary. `AccessSessionClient` uses a dedicated cookie-aware `URLSession`, rejects redirects, bounds payloads, and safely decodes stable API errors.
+- `scripts/ios-build-test.sh`: unsigned native test entrypoint. It builds the server, starts an isolated loopback Node instance with temporary state and test-only secrets, runs the committed Xcode test plan, sanitizes evidence, and tears the process/state down.
 - `scripts/smoke-*.mjs`: focused release smoke tests for validation, AI, persistence, and room/chat flows.
 - `deploy/` and `docs/atomic-vps-releases.md`: checksum-pinned Node 24 bootstrap, forced-command upload identity, hardened systemd units, isolated canary, atomic release controller, and code-only rollback contract.
 - `docs/deployment-smoke-checklist.md`: operational release and smoke checklist.
@@ -78,6 +82,16 @@ npm run smoke:chat
 ```
 
 `npm run smoke:release` includes `git diff --check`, lint, build, high-severity audit, validation smoke, AI smoke, persistence smoke, account/store smoke, operational readiness/recovery smoke, backup/restore smoke, controller transition tests, and the delivery contract smoke.
+
+For contract or native-networking changes, also run:
+
+```sh
+npm run contracts:fixtures:check
+npm run test:unit:contracts
+./scripts/ios-build-test.sh --networking-contracts
+```
+
+Use `npm run contracts:fixtures:update` only after deliberately changing a schema or canonical producer. Review and commit the schema, generator/producer, fixtures, and fixture manifest together.
 
 For layout changes, also perform visual QA at minimum widths around:
 

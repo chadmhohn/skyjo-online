@@ -1,0 +1,246 @@
+{
+  "cases": [
+    {
+      "name": "create room",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "name": "Host",
+        "protocolVersion": 2,
+        "snapshotEnvelopeVersion": 2,
+        "type": "create-room"
+      }
+    },
+    {
+      "name": "fresh join",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "code": "ABCDE",
+        "name": "Guest",
+        "presenceVersion": 1,
+        "protocolVersion": 2,
+        "snapshotEnvelopeVersion": 2,
+        "type": "join-room"
+      }
+    },
+    {
+      "name": "seat rejoin",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "code": "ABCDE",
+        "name": "Host",
+        "playerId": "10000000-0000-4000-8000-000000000001",
+        "presenceVersion": 1,
+        "protocolVersion": 2,
+        "snapshotEnvelopeVersion": 2,
+        "type": "join-room"
+      }
+    },
+    {
+      "name": "reset recovery join",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "code": "ABCDE",
+        "name": "Host",
+        "playerId": "10000000-0000-4000-8000-000000000001",
+        "presenceVersion": 1,
+        "protocolVersion": 2,
+        "recoveryCommandId": "40000000-0000-4000-8000-000000000001",
+        "snapshotEnvelopeVersion": 2,
+        "type": "join-room"
+      }
+    },
+    {
+      "name": "presence visible",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "type": "set-presence",
+        "visible": true
+      }
+    },
+    {
+      "name": "presence hidden",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "type": "set-presence",
+        "visible": false
+      }
+    },
+    {
+      "name": "command reveal-opening-card",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "cardIndex": 0,
+          "type": "reveal-opening-card"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000002",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command choose-discard",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "type": "choose-discard"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000003",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command cancel-discard",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "type": "cancel-discard"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000004",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command draw-blind",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "type": "draw-blind"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000005",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command replace-card",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "cardIndex": 11,
+          "type": "replace-card"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000006",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command discard-and-reveal",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "cardIndex": 5,
+          "type": "discard-and-reveal"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000007",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command set-next-round-ready",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "ready": true,
+          "type": "set-next-round-ready"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000008",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command start-game",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "type": "start-game"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000009",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command reset-room",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "type": "reset-room"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000010",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command leave-room",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "type": "leave-room"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000011",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command remove-player",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "playerId": "20000000-0000-4000-8000-000000000002",
+          "type": "remove-player"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000012",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command takeover-player-with-ai",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "playerId": "20000000-0000-4000-8000-000000000002",
+          "type": "takeover-player-with-ai"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000013",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
+      "name": "command send-chat-message",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "text": "Fixture hello",
+          "type": "send-chat-message"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000014",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    }
+  ],
+  "contractVersion": 1
+}

@@ -3,6 +3,8 @@ export const RELEASE_TAG_CREATION_RULESET_NAME = 'Release tag creation';
 export const RELEASE_TAG_IMMUTABILITY_RULESET_NAME = 'Immutable release tags';
 export const REQUIRED_CHECKS = Object.freeze([
   'CI / Quality & Security',
+  'iOS / Build',
+  'iOS / Networking Contracts',
   'CI / Unit (domain)',
   'CI / Unit (data)',
   'CI / E2E (chromium 1)',

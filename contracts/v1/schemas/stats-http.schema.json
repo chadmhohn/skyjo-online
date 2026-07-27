@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/stats-http.schema.json",
+  "title": "Skyjo stats HTTP DTOs",
+  "oneOf": [
+    { "$ref": "#/$defs/saveSinglePlayerRequest" },
+    { "$ref": "#/$defs/gameEnvelope" },
+    { "$ref": "#/$defs/gamesEnvelope" },
+    { "$ref": "#/$defs/statsSummary" },
+    { "$ref": "#/$defs/playerStats" }
+  ],
+  "$defs": {
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "userId", "playerId", "displayName", "kind", "rank", "roundScore", "totalScore", "won"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "userId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/uuid" }] },
+        "playerId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "kind": { "$ref": "common.schema.json#/$defs/playerKind" },
+        "rank": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "roundScore": { "$ref": "common.schema.json#/$defs/score" },
+        "totalScore": { "$ref": "common.schema.json#/$defs/score" },
+        "won": { "type": "boolean" }
+      }
+    },
+    "roundScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "round", "playerId", "userId", "displayName", "roundScore", "totalScore"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "round": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "playerId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "userId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/uuid" }] },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "roundScore": { "$ref": "common.schema.json#/$defs/score" },
+        "totalScore": { "$ref": "common.schema.json#/$defs/score" }
+      }
+    },
+    "statsGame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode", "roomCode", "completedAt", "roundCount", "winnerPlayerId", "winnerUserId", "winnerName", "createdByUserId", "finishedByAi", "participants", "rounds"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "mode": { "enum": ["single", "multi"] },
+        "roomCode": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/roomCode" }] },
+        "completedAt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "roundCount": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "winnerPlayerId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/identifier" }] },
+        "winnerUserId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/uuid" }] },
+        "winnerName": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdByUserId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/uuid" }] },
+        "finishedByAi": { "type": "boolean" },
+        "participants": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/participant" } },
+        "rounds": { "type": "array", "minItems": 1, "maxItems": 2048, "items": { "$ref": "#/$defs/roundScore" } }
+      }
+    },
+    "summaryNumbers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gamesPlayed", "wins", "multiplayerGames", "singlePlayerGames", "winRate", "averageTotalScore", "bestTotalScore"],
+      "properties": {
+        "gamesPlayed": { "type": "integer", "minimum": 0 },
+        "wins": { "type": "integer", "minimum": 0 },
+        "multiplayerGames": { "type": "integer", "minimum": 0 },
+        "singlePlayerGames": { "type": "integer", "minimum": 0 },
+        "winRate": { "type": "number", "minimum": 0, "maximum": 100 },
+        "averageTotalScore": { "type": "number" },
+        "bestTotalScore": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/score" }] }
+      }
+    },
+    "coPlayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["userId", "displayName", "gamesTogether", "wins", "averageTotalScore", "latestAt"],
+      "properties": {
+        "userId": { "$ref": "common.schema.json#/$defs/uuid" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "gamesTogether": { "type": "integer", "minimum": 1 },
+        "wins": { "type": "integer", "minimum": 0 },
+        "averageTotalScore": { "type": "number" },
+        "latestAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" }
+      }
+    },
+    "statsSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["self", "coPlayers", "recentGames", "admin"],
+      "properties": {
+        "self": { "$ref": "#/$defs/summaryNumbers" },
+        "coPlayers": { "type": "array", "items": { "$ref": "#/$defs/coPlayer" } },
+        "recentGames": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/statsGame" } },
+        "admin": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["users", "games"],
+              "properties": { "users": { "type": "integer", "minimum": 0 }, "games": { "type": "integer", "minimum": 0 } }
+            }
+          ]
+        }
+      }
+    },
+    "saveSinglePlayerRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "clientGameKey", "expectedAccountUserId"],
+      "properties": {
+        "state": { "$ref": "game-state.schema.json" },
+        "clientGameKey": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "completedAt": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "expectedAccountUserId": { "$ref": "common.schema.json#/$defs/uuid" }
+      }
+    },
+    "gameEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["game"],
+      "properties": { "game": { "$ref": "#/$defs/statsGame" } }
+    },
+    "gamesEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["games"],
+      "properties": { "games": { "type": "array", "items": { "$ref": "#/$defs/statsGame" } } }
+    },
+    "playerStats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user", "summary", "games"],
+      "properties": {
+        "user": { "$ref": "account-http.schema.json#/$defs/accountUser" },
+        "summary": { "$ref": "#/$defs/summaryNumbers" },
+        "games": { "type": "array", "items": { "$ref": "#/$defs/statsGame" } }
+      }
+    }
+  }
+}

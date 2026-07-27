@@ -1,0 +1,15 @@
+{
+  "contractVersion": 1,
+  "files": {
+    "game-state.invalid.json": "df6b503aae147b2f5191ddd6cdf3af397082ec50f2abde5e1b86abfb489572a5",
+    "game-state.valid.json": "15dbc45b430afcc49cfe5f5d327d1fb608ea739af75b2e46ab1f308d311277bd",
+    "http.invalid.json": "af2f480c62ed9a61ddd60bad61532eeb3e3482e95666bcb9640a8db2d068da92",
+    "http.valid.json": "8b68da1523982d4f8732cdcd2c775292e5a773cb6c06038b36a6b3c0d5e5524d",
+    "protocol-client.invalid.json": "debe71ef4a2973e671b1e6174c8f052eb7ce52cd93100dce1d262a1cfb4edfc0",
+    "protocol-client.valid.json": "b81fb17162d12ca65e506e9f5ab13f7fe283e65c60a4eacfe15c2703957902af",
+    "protocol-server.invalid.json": "21bb23be82b13b2f7350768a47ccdfe839a21967e9ea99255c30c5701b8ba984",
+    "protocol-server.valid.json": "f51f8530be412ab30c6744b1c32f509ac11ae8a69aceaa2e1b23a85205e89d6e",
+    "protocol-transcripts.json": "ec46ac762478836f32e24ca849eafb22e00adb5b3092afbfa68e8597fca1cff7"
+  },
+  "generator": "scripts/generate-contract-fixtures.mjs"
+}

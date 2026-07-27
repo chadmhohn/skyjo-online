@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/account-http.schema.json",
+  "title": "Skyjo access and account HTTP DTOs",
+  "oneOf": [
+    { "$ref": "#/$defs/accessSession" },
+    { "$ref": "#/$defs/accessRequest" },
+    { "$ref": "#/$defs/userEnvelope" },
+    { "$ref": "#/$defs/okEnvelope" },
+    { "$ref": "#/$defs/loginRequest" },
+    { "$ref": "#/$defs/signupRequest" },
+    { "$ref": "#/$defs/profileRequest" },
+    { "$ref": "#/$defs/passwordRequest" }
+  ],
+  "$defs": {
+    "accountUser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "email", "displayName", "role", "disabled", "createdAt", "updatedAt", "lastLoginAt"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 254, "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "role": { "enum": ["admin", "player"] },
+        "disabled": { "type": "boolean" },
+        "createdAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" },
+        "updatedAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" },
+        "lastLoginAt": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/epochMilliseconds" }] }
+      }
+    },
+    "accessSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authenticated"],
+      "properties": { "authenticated": { "type": "boolean" } }
+    },
+    "accessRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["password"],
+      "properties": { "password": { "type": "string", "minLength": 1, "maxLength": 4096 } }
+    },
+    "userEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user"],
+      "properties": { "user": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/accountUser" }] } }
+    },
+    "okEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": { "ok": { "const": true } }
+    },
+    "loginRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email", "password"],
+      "properties": {
+        "email": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "password": { "type": "string", "minLength": 8, "maxLength": 1024 }
+      }
+    },
+    "signupRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email", "displayName", "password", "confirmPassword"],
+      "properties": {
+        "email": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "password": { "type": "string", "minLength": 8, "maxLength": 1024 },
+        "confirmPassword": { "type": "string", "minLength": 8, "maxLength": 1024 }
+      }
+    },
+    "profileRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displayName"],
+      "properties": { "displayName": { "type": "string", "minLength": 1, "maxLength": 24 } }
+    },
+    "passwordRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["currentPassword", "password", "confirmPassword"],
+      "properties": {
+        "currentPassword": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "password": { "type": "string", "minLength": 8, "maxLength": 1024 },
+        "confirmPassword": { "type": "string", "minLength": 8, "maxLength": 1024 }
+      }
+    }
+  }
+}
