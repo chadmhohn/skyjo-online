@@ -78,6 +78,18 @@ Repository governance, scheduled operations, monitoring, and incident guide:
 Agent handoff and operating guide:
 [AGENTS.md](AGENTS.md)
 
+## Native iPhone And iPad Development
+
+A repository-complete handoff for a true SwiftUI client lives in [docs/native-ios/README.md](docs/native-ios/README.md). It defines product parity, architecture, backend/WebSocket contracts, Mac/Xcode setup, dependency-ordered implementation issues, CI, accessibility, physical-device testing, TestFlight, and the public App Store decision gate.
+
+On a prepared Mac, start with:
+
+```sh
+./scripts/ios-preflight.sh
+```
+
+The native app will live under `ios/` after its bootstrap issue. It reuses the existing server-authoritative multiplayer service, while solo rules and AI are ported to Swift and checked against shared deterministic fixtures. It is not planned as a web-view wrapper.
+
 ## Tech Stack
 - React 18 + TypeScript
 - Vite
