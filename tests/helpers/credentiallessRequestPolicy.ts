@@ -1,5 +1,6 @@
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 const rumPaths = new Set(['/cdn-cgi/rum', '/cdn-cgi/rum/']);
+// A bare query delimiter carries no query data, but remains material to the exact raw URL allowlist.
 const rumSuffixes = ['/cdn-cgi/rum', '/cdn-cgi/rum/', '/cdn-cgi/rum?', '/cdn-cgi/rum/?'] as const;
 
 export type CredentiallessRequestRejection =

@@ -58,6 +58,8 @@ describe('credentialless production request policy', () => {
       '/cdn-cgi/rum?token=redacted',
       '/cdn-cgi/rum/?token=redacted',
       '/cdn-cgi/rum?=',
+      '/cdn-cgi/rum?&',
+      '/cdn-cgi/rum?%00',
       '/cdn-cgi/rum??',
       '/cdn-cgi/rum#',
       '/cdn-cgi/rum/#',
@@ -82,6 +84,14 @@ describe('credentialless production request policy', () => {
       allowed: false,
       reason: 'cross-origin-mutation'
     });
+    expect(classify({ url: 'https://skyjo.example.test.evil/cdn-cgi/rum?' })).toEqual({
+      allowed: false,
+      reason: 'cross-origin-mutation'
+    });
+    expect(classify({ url: 'https://skyjo.example.test:444/cdn-cgi/rum?' })).toEqual({
+      allowed: false,
+      reason: 'cross-origin-mutation'
+    });
     for (const url of [
       'https://skyjo.example.test:443/cdn-cgi/rum',
       'https://SKYJO.example.test/cdn-cgi/rum',
@@ -95,7 +105,36 @@ describe('credentialless production request policy', () => {
     }
   });
 
-  it.each(['CONNECT', 'DELETE', 'PATCH', 'PUT', 'TRACE'])('rejects unsafe %s methods', (method) => {
+  it('requires raw URL membership rather than accepting an equivalent normalized href', () => {
+    const normalizedToAllowed = `${baseOrigin}/cdn-cgi/x/../rum?`;
+    expect(new URL(normalizedToAllowed).href).toBe(`${baseOrigin}/cdn-cgi/rum?`);
+    expect(classify({ url: normalizedToAllowed })).toEqual({
+      allowed: false,
+      reason: 'rum-query-or-fragment'
+    });
+
+    for (const suffix of ['/cdn-cgi/%2e/rum?', '/cdn-cgi\\rum?']) {
+      expect(new URL(`${baseOrigin}${suffix}`).href).toBe(`${baseOrigin}/cdn-cgi/rum?`);
+      expect(classify({ url: `${baseOrigin}${suffix}` })).toEqual({
+        allowed: false,
+        reason: 'rum-query-or-fragment'
+      });
+    }
+    for (const suffix of ['/cdn-cgi/%72um?', '/cdn-cgi/rum%3f']) {
+      expect(classify({ url: `${baseOrigin}${suffix}` })).toEqual({
+        allowed: false,
+        reason: 'application-mutation'
+      });
+    }
+    for (const suffix of ['/cdn-cgi/RUM?', '/cdn-cgi//rum?']) {
+      expect(classify({ url: `${baseOrigin}${suffix}` })).toEqual({
+        allowed: false,
+        reason: 'application-mutation'
+      });
+    }
+  });
+
+  it.each(['CONNECT', 'DELETE', 'PATCH', 'PUT', 'TRACE', 'post', 'POST '])('rejects unsafe %s methods', (method) => {
     expect(classify({ method })).toEqual({ allowed: false, reason: 'unsafe-method' });
   });
 

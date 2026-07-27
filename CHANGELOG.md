@@ -4,7 +4,7 @@
 
 - Accepted Cloudflare Web Analytics' exact live same-origin empty-query beacon forms, `POST /cdn-cgi/rum?` and `POST /cdn-cgi/rum/?`, alongside the two delimiter-free forms.
 - Kept the public PWA release gate fail-closed for non-empty queries, every fragment, URL credentials, unsafe methods, off-origin requests, application paths, and RUM lookalikes; browser resource type remains outside the authorization decision.
-- Preserved application/runtime bytes, production dependencies, schema 2, protocol 2, offline restoration, cache, and credentialless assertions while creating the immutable `v0.3.2` successor.
+- Preserved normalized application-build bytes, the production dependency graph, schema 2, protocol 2, offline restoration, cache, and credentialless assertions while creating the immutable `v0.3.2` successor.
 
 ## 0.3.1 - 2026-07-26
 
