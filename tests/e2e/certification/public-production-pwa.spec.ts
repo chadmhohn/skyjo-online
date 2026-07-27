@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { classifyCredentiallessRequest, type CredentiallessRequestRejection } from '../../helpers/credentiallessRequestPolicy';
 
 const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/audio\/card-(?:flip|pickup|place)\.mp3|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
 
@@ -125,9 +126,15 @@ test('exact production release cold-launches and restores a disposable guest sol
   }
 
   const context = await browser.newContext({ serviceWorkers: 'allow' });
-  const mutatingRequests: string[] = [];
+  const rejectedRequests = new Set<CredentiallessRequestRejection>();
   context.on('request', (browserRequest) => {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(browserRequest.method())) mutatingRequests.push(browserRequest.method());
+    const decision = classifyCredentiallessRequest({
+      baseOrigin: baseURL,
+      method: browserRequest.method(),
+      resourceType: browserRequest.resourceType(),
+      url: browserRequest.url()
+    });
+    if (!decision.allowed) rejectedRequests.add(decision.reason);
   });
   try {
     const bootstrap = await context.newPage();
@@ -168,7 +175,11 @@ test('exact production release cold-launches and restores a disposable guest sol
     }
     await assertSafeCaches(restored);
     await assertCredentiallessContext(context);
-    if (mutatingRequests.length !== 0) throw new Error('Credentialless PWA smoke attempted a server mutation.');
+    if (rejectedRequests.size !== 0) {
+      throw new Error(
+        `Credentialless PWA smoke attempted a rejected request (${[...rejectedRequests].sort().join(', ')}).`
+      );
+    }
   } finally {
     await context.setOffline(false).catch(() => undefined);
     await context.close();

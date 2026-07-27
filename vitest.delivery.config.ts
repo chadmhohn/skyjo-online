@@ -9,6 +9,7 @@ export default defineConfig({
       './tests/unit/data/runtimeArtifact.test.ts',
       './tests/unit/delivery/aiBenchmarkEvidence.test.ts',
       './tests/unit/delivery/certification.test.ts',
+      './tests/unit/delivery/credentiallessRequestPolicy.test.ts',
       './tests/unit/delivery/deployedSmokeContract.test.ts',
       './tests/unit/delivery/lighthouseGate.test.ts',
       './tests/unit/delivery/releaseAudit.test.ts'
