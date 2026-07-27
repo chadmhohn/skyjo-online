@@ -2,14 +2,13 @@
 
 This repository is the source for the private Skyjo-style web app at `https://skyjo.groundworkrevops.com/`. Treat this file as the first stop for Codex/Nova/Hermes handoff work.
 
-Last verified by Codex: 2026-05-23 America/Denver, after the accounts/stats and homepage audio/settings passes.
+Last reviewed by Codex: 2026-07-26 America/Denver, for the v0.3.0 solo UX and AI release candidate. Re-check live release identity before claiming deployment status.
 
 ## Current Operating State
 
 - GitHub repo: `chadmhohn/skyjo-online`.
-- Canonical live VPS checkout: `/srv/skyjo-online` on `hostinger-vps`.
-- Compatibility symlink: `/root/.openclaw/workspace/skyjo-online -> /srv/skyjo-online`.
-- Production service: `skyjo-online.service`, working directory `/srv/skyjo-online`.
+- Immutable release root: `/srv/skyjo-online` on `hostinger-vps`; `current` and `previous` select release directories.
+- Production service: `skyjo-online.service`, working directory `/srv/skyjo-online/current`.
 - Service env file: `/etc/skyjo-online.env`. Do not print or commit secret values from this file.
 - Signed room invites use `SKYJO_INVITE_SECRET`, `SKYJO_INVITE_TTL_HOURS`, and optional `SKYJO_INVITE_CODE_TTL_MINUTES`. Invites only bypass the shared site-password gate; multiplayer still requires account login and room membership rules.
 - Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
@@ -24,13 +23,7 @@ Last verified by Codex: 2026-05-23 America/Denver, after the accounts/stats and 
 
 The 2026-05-20 decoupling pass moved Skyjo out of the OpenClaw-owned workspace so OpenClaw can later move into Docker without taking Skyjo with it. Backup for that cutover lives at `/root/backups/skyjo-online-decouple-20260521T025019Z`.
 
-As of the verification above, the VPS checkout had local uncommitted work from the most recent Nova pass:
-
-- `server.mjs`: host reset creates a fresh room code and notifies old guests.
-- `scripts/smoke-chat.mjs`: coverage for reset/share-room behavior.
-- `src/App.tsx` and `src/index.css`: desktop/tablet responsive play-surface polish while keeping the phone layout intact.
-
-Do not revert or overwrite those files blindly. Start every session with `git status --short --branch` and inspect the diff before making changes.
+Production served immutable v0.2.2 at `b1c5876380eb2b12f9e255db15e4f1e0d12d860b` during the 2026-07-26 v0.3.0 preflight. Treat that only as the rollback baseline snapshot: re-read `/version` and `/readyz` before any promotion. Start every repository session with `git status --short --branch` and inspect the diff before making changes.
 
 ## Architecture Map
 
@@ -40,7 +33,7 @@ Do not revert or overwrite those files blindly. Start every session with `git st
 - `server.mjs`: production Node server. Handles password-gated HTTP, invite install/browser handoff, static `dist/` serving, public `/healthz`, `/readyz`, and `/version`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and verified persistence flush on shutdown.
 - `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, and admin user operations.
 - `server-room-persistence.mjs`: versioned JSON persistence for rooms with strict legacy readers and durable atomic v2 writes. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
-- `server-release.mjs` and `server-readiness.mjs`: checksum-validated build identity and sanitized public readiness/version contracts. The current baseline is schema 2 and protocol 1.
+- `server-release.mjs` and `server-readiness.mjs`: checksum-validated build identity and sanitized public readiness/version contracts. The current baseline is schema 2 and protocol 2.
 - `server-state-backup.mjs`: online SQLite backup, fixed-file checksum manifest verification, and fresh isolated restore safeguards.
 - `src/App.tsx`: React routes and UI for home, single-player, lobby, room play, table chat, rules, scoring, and responsive gameplay shells.
 - `src/account.tsx`: account context and client API helpers for login/signup/logout, stats, single-player save, and admin actions.
@@ -135,7 +128,8 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - Round end begins when a player reveals their last card; every other player gets one final turn.
 - If the closer does not have the strictly lowest round score and their score is positive, the closer's round score doubles.
 - Matching revealed columns clear and score zero. Replacement-driven column clears should put the cleared column on top of the replaced card in the discard pile.
-- Single-player supports 1-7 AI opponents with shuffled themed names. New game reshuffles names; next round preserves identities for scoring continuity.
+- Single-player supports 1-7 AI opponents with shuffled themed names and Easy, Medium, Hard, Ultra Hard, or deterministic Mixed profiles. New players default to Medium; v0.2.2 saves normalize to Hard without rewriting their v1 record. New game reshuffles names; next round preserves identities, Mixed assignments, and scoring continuity.
+- Opening solo setup creates no game or durable record. Replacing an active save requires explicit review and confirmation, and a failed replacement must leave the prior game intact.
 - The shared site password remains the outer gate. Single-player is playable without an account, but guest solo games do not save stats. Multiplayer requires a signed-in account, and room seats are tied to account user IDs.
 - Account stats start from the account release forward. Do not attempt historical backfill from `rooms.json` unless Chad explicitly asks for a separate import pass.
 - Mobile phone layout is intentionally board-first/locked: opponents scroll above, local board and table controls stay anchored. Be careful not to regress this when changing tablet/desktop layouts.

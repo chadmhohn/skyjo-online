@@ -1,4 +1,7 @@
 import { runDeployedSmoke } from './deployed-smoke-lib.mjs';
+import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
+
+const configuredProtocolVersion = process.env.SKYJO_EXPECTED_PROTOCOL_VERSION;
 
 const result = await runDeployedSmoke({
   baseUrl: process.env.SKYJO_SMOKE_BASE_URL,
@@ -6,7 +9,9 @@ const result = await runDeployedSmoke({
   accountEmail: process.env.SKYJO_SMOKE_ACCOUNT_EMAIL || process.env.SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL,
   accountPassword: process.env.SKYJO_SMOKE_ACCOUNT_PASSWORD || process.env.SKYJO_DEPLOY_SMOKE_ACCOUNT_PASSWORD,
   expectedReleaseSha: process.env.SKYJO_EXPECTED_RELEASE_SHA || process.env.SKYJO_SMOKE_RELEASE_SHA || undefined,
-  expectedProtocolVersion: Number(process.env.SKYJO_EXPECTED_PROTOCOL_VERSION || 1)
+  expectedProtocolVersion: configuredProtocolVersion === undefined
+    ? CURRENT_PROTOCOL_VERSION
+    : Number(configuredProtocolVersion)
 });
 
 console.log(`Deployed smoke passed for release ${result.releaseSha}.`);

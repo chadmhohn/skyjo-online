@@ -239,6 +239,7 @@ jobs:
         with:
           name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
+
       - name: Install pinned Chromium
         run: npm exec -- playwright install --with-deps chromium
       - name: Run Chromium shard 1
@@ -432,6 +433,19 @@ jobs:
           name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
 
+      - name: Download exact-SHA AI calibration evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
+        with:
+          name: ai-calibration-${{ needs.quality.outputs.source-sha }}
+          path: test-results/ai
+
+      - name: Verify exact-SHA AI calibration evidence
+        run: |
+          npm run benchmark:ai:verify -- \
+            --source-sha "${{ needs.quality.outputs.source-sha }}" \
+            --release-version 0.3.0 \
+            --strategy-version 1
+
       - name: Install pinned Chromium and k6
         run: |
           set -Eeuo pipefail
@@ -451,6 +465,7 @@ jobs:
           name: certification-${{ needs.quality.outputs.source-sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             test-results/certification
+            test-results/ai
           if-no-files-found: error
           retention-days: 14
 
@@ -699,6 +714,12 @@ jobs:
         with:
           node-version-file: .node-version
 
+      - name: Install locked production PWA smoke browser
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm exec -- playwright install --with-deps chromium
+
       - name: Download the canary-proven release
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
@@ -759,7 +780,18 @@ jobs:
           [[ "$SKYJO_PUBLIC_BASE_URL" =~ ^https://[A-Za-z0-9.-]+/?$ ]]
           deploy/github-release-remote.sh promote "$run_id" "$sha" "$archive" "$checksum" "$GITHUB_REF_NAME"
 
-          if ! node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --release-sha "$sha"; then
+          if ! node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --release-sha "$sha" || \
+             ! env \
+               -u SKYJO_DEPLOY_AUTH_PRIVATE_KEY_FILE \
+               -u SKYJO_DEPLOY_IDENTITY_FILE \
+               -u SKYJO_DEPLOY_KNOWN_HOSTS_FILE \
+               -u SKYJO_DEPLOY_HOST \
+               -u SKYJO_DEPLOY_PORT \
+               -u SKYJO_DEPLOY_USER \
+               -u SKYJO_DEPLOY_AUTH_KEY_ID \
+               SKYJO_PUBLIC_PWA_BASE_URL="$SKYJO_PUBLIC_BASE_URL" \
+               SKYJO_EXPECTED_RELEASE_SHA="$sha" \
+               npm run smoke:public-pwa; then
             echo "Public release smoke failed; requesting code-only rollback." >&2
             rollback_result="$(deploy/github-release-remote.sh rollback "$run_id" "$sha" "$checksum" "$GITHUB_REF_NAME")"
             rollback_target="$(printf '%s' "$rollback_result" | node scripts/parse-code-rollback-result.mjs --failed-release-sha "$sha")"

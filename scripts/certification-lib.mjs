@@ -3,8 +3,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 export const CERTIFICATION_FORMAT_VERSION = 1;
+export const AUTOMATED_CERTIFICATION_FORMAT_VERSION = 2;
 export const PERSONA_EVIDENCE_FORMAT_VERSION = 2;
-export const CERTIFICATION_RELEASE_VERSION = '0.2.2';
+export const CERTIFICATION_RELEASE_VERSION = '0.3.0';
+export const CERTIFICATION_RELEASE_DATE = '2026-07-26';
 export const K6_VERSION = '2.0.0';
 export const K6_LINUX_AMD64_SHA256 = '2ae87d976f6cdba17185bdd980d8819a3a98e9092c6f0638cd58272ecefc8b90';
 export const CERTIFICATION_LIMITS = Object.freeze({
@@ -537,8 +539,41 @@ export function validateRssStageEvidence(value) {
   return value;
 }
 
-export function createAutomatedCertificationEvidence({ release, k6Summary, rss, recovery, persona }) {
+export function createAiBenchmarkCertificationReference({ digest, evidence }) {
+  if (!sha256Pattern.test(digest || '')) throw new Error('AI benchmark evidence digest must be a SHA-256 digest.');
+  const reference = {
+    digest,
+    formatVersion: evidence?.formatVersion,
+    kind: evidence?.kind,
+    releaseVersion: evidence?.releaseVersion,
+    sourceSha: evidence?.sourceSha,
+    strategyVersion: evidence?.strategyVersion
+  };
+  return validateAiBenchmarkCertificationReference(reference);
+}
+
+export function validateAiBenchmarkCertificationReference(value) {
+  assertExactKeys(value, [
+    'digest',
+    'formatVersion',
+    'kind',
+    'releaseVersion',
+    'sourceSha',
+    'strategyVersion'
+  ], 'AI benchmark certification reference');
+  if (!sha256Pattern.test(value.digest || '')) throw new Error('AI benchmark evidence digest must be a SHA-256 digest.');
+  exactNumber(value.formatVersion, 1, 'AI benchmark evidence format version');
+  exactString(value.kind, 'skyjo-ai-benchmark', 'AI benchmark evidence kind');
+  exactString(value.releaseVersion, CERTIFICATION_RELEASE_VERSION, 'AI benchmark release version');
+  if (!fullShaPattern.test(value.sourceSha || '')) throw new Error('AI benchmark source SHA must be a full lowercase commit SHA.');
+  finiteNumber(value.strategyVersion, 'AI benchmark strategy version', { integer: true, minimum: 1 });
+  assertSanitizedCertificationValue(value);
+  return value;
+}
+
+export function createAutomatedCertificationEvidence({ release, aiBenchmark, k6Summary, rss, recovery, persona }) {
   validateReleaseCertificationIdentity(release);
+  validateAiBenchmarkCertificationReference(aiBenchmark);
   validateK6CertificationSummary(k6Summary);
   validateRssStageEvidence(rss);
   validateRecoveryCertification(recovery);
@@ -547,9 +582,16 @@ export function createAutomatedCertificationEvidence({ release, k6Summary, rss, 
   const maxRssKib = rss.stages[1].peakRssKib;
   if (persona.release.sourceSha !== release.sourceSha) throw new Error('Persona evidence belongs to a different source SHA.');
   if (rss.sourceSha !== release.sourceSha) throw new Error('RSS evidence belongs to a different source SHA.');
+  if (
+    aiBenchmark.sourceSha !== release.sourceSha ||
+    aiBenchmark.releaseVersion !== release.version
+  ) {
+    throw new Error('AI benchmark evidence belongs to a different release.');
+  }
 
   const evidence = {
-    formatVersion: CERTIFICATION_FORMAT_VERSION,
+    aiBenchmark: { ...aiBenchmark },
+    formatVersion: AUTOMATED_CERTIFICATION_FORMAT_VERSION,
     kind: 'skyjo-pwa-automated-certification',
     release: { ...release },
     topology: {
@@ -568,6 +610,7 @@ export function createAutomatedCertificationEvidence({ release, k6Summary, rss, 
     persona,
     rss,
     gates: {
+      aiCalibration: true,
       exactTopology: true,
       finiteMeasurements: true,
       loadErrorRate: true,
@@ -584,10 +627,17 @@ export function createAutomatedCertificationEvidence({ release, k6Summary, rss, 
 }
 
 export function validateAutomatedCertificationEvidence(value) {
-  assertExactKeys(value, ['formatVersion', 'gates', 'kind', 'load', 'persona', 'recovery', 'release', 'rss', 'topology'], 'Automated certification evidence');
-  exactNumber(value.formatVersion, CERTIFICATION_FORMAT_VERSION, 'Certification format version');
+  assertExactKeys(value, ['aiBenchmark', 'formatVersion', 'gates', 'kind', 'load', 'persona', 'recovery', 'release', 'rss', 'topology'], 'Automated certification evidence');
+  exactNumber(value.formatVersion, AUTOMATED_CERTIFICATION_FORMAT_VERSION, 'Certification format version');
   exactString(value.kind, 'skyjo-pwa-automated-certification', 'Certification evidence kind');
   validateReleaseCertificationIdentity(value.release);
+  validateAiBenchmarkCertificationReference(value.aiBenchmark);
+  if (
+    value.aiBenchmark.sourceSha !== value.release.sourceSha ||
+    value.aiBenchmark.releaseVersion !== value.release.version
+  ) {
+    throw new Error('AI benchmark reference does not match the certified release.');
+  }
   assertExactKeys(value.topology, ['clients', 'clientsPerRoom', 'durationSeconds', 'markers', 'observations', 'rooms'], 'Certification topology');
   for (const [key, expected] of Object.entries({
     rooms: CERTIFICATION_LIMITS.rooms,
@@ -635,6 +685,7 @@ export function validateAutomatedCertificationEvidence(value) {
   validateEightClientPersonaEvidence(value.persona);
   if (value.persona.release.sourceSha !== value.release.sourceSha) throw new Error('Persona source SHA does not match release source SHA.');
   const gateNames = [
+    'aiCalibration',
     'exactTopology',
     'finiteMeasurements',
     'loadErrorRate',
@@ -650,6 +701,15 @@ export function validateAutomatedCertificationEvidence(value) {
   gateNames.forEach((gate) => exactBoolean(value.gates[gate], true, `Certification gate ${gate}`));
   assertSanitizedCertificationValue(value);
   return value;
+}
+
+export function assertAiBenchmarkMatchesCertification(certification, aiBenchmarkEvidence, digest) {
+  validateAutomatedCertificationEvidence(certification);
+  const reference = createAiBenchmarkCertificationReference({ digest, evidence: aiBenchmarkEvidence });
+  if (JSON.stringify(reference) !== JSON.stringify(certification.aiBenchmark)) {
+    throw new Error('Standalone AI benchmark evidence does not match combined certification evidence.');
+  }
+  return aiBenchmarkEvidence;
 }
 
 function sortedValue(value) {

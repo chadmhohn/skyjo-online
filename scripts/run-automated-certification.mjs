@@ -7,11 +7,13 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
+import { readVerifiedAiBenchmarkEvidence } from './ai-benchmark-evidence.mjs';
 import {
   CERTIFICATION_LIMITS,
   CERTIFICATION_RELEASE_VERSION,
   K6_LINUX_AMD64_SHA256,
   K6_VERSION,
+  createAiBenchmarkCertificationReference,
   createRecoveryTraceEvidence,
   createAutomatedCertificationEvidence,
   createRssStageEvidence,
@@ -32,6 +34,7 @@ const k6SummaryPath = path.join(resultsDirectory, 'k6-summary.json');
 const automatedEvidencePath = path.join(resultsDirectory, 'automated.json');
 const recoveryTracePath = path.join(resultsDirectory, 'recovery-trials.json');
 const rssEvidencePath = path.join(resultsDirectory, 'rss-stages.json');
+const aiBenchmarkEvidencePath = path.join(root, 'test-results', 'ai', 'benchmark.json');
 const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const siteCookieName = 'skyjo_cert_site';
 const accountCookieName = 'skyjo_cert_account';
@@ -721,6 +724,15 @@ async function main() {
   ) {
     throw new Error('Built release identity does not match the certification source.');
   }
+  const aiBenchmark = await readVerifiedAiBenchmarkEvidence(
+    aiBenchmarkEvidencePath,
+    `${aiBenchmarkEvidencePath}.sha256`,
+    {
+      expectedReleaseVersion: CERTIFICATION_RELEASE_VERSION,
+      expectedSourceSha: sourceSha,
+      expectedStrategyVersion: 1
+    }
+  );
   const k6Binary = await resolveK6Binary();
   await fs.rm(resultsDirectory, { recursive: true, force: true });
   await fs.mkdir(resultsDirectory, { recursive: true });
@@ -744,6 +756,7 @@ async function main() {
     }
     const recovery = await runRecoveryCertification(temporaryDirectory, sourceSha);
     const evidence = createAutomatedCertificationEvidence({
+      aiBenchmark: createAiBenchmarkCertificationReference(aiBenchmark),
       release: {
         version: packageDocument.version,
         sourceSha,

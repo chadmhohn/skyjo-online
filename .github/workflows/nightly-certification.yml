@@ -43,10 +43,17 @@ jobs:
           set -Eeuo pipefail
           source_sha="$(git rev-parse 'HEAD^{commit}')"
           [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+          export SKYJO_RELEASE_SHA="$source_sha"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$source_sha")"
           echo "SKYJO_RELEASE_SHA=$source_sha" >> "$GITHUB_ENV"
-          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$source_sha")" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           npm run build
           npm run check:bundle
+          node scripts/benchmark-ai.mjs
+          npm run benchmark:ai:verify -- \
+            --source-sha "$source_sha" \
+            --release-version 0.3.0 \
+            --strategy-version 1
 
       - name: Install pinned Chromium and k6
         run: |
@@ -65,5 +72,6 @@ jobs:
           name: nightly-certification-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             test-results/certification
+            test-results/ai
           if-no-files-found: error
           retention-days: 14

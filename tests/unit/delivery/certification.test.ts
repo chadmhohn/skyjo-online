@@ -5,9 +5,11 @@ import { fileURLToPath } from 'node:url';
 import {
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
+  CERTIFICATION_RELEASE_DATE,
   CERTIFICATION_RELEASE_VERSION,
   K6_LINUX_AMD64_SHA256,
   PERSONA_EVIDENCE_FORMAT_VERSION,
+  assertAiBenchmarkMatchesCertification,
   assertRecoveryTraceMatchesCertification,
   assertRssStageEvidenceMatchesCertification,
   assertSanitizedCertificationValue,
@@ -39,6 +41,17 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const sourceSha = 'a'.repeat(40);
+
+function aiBenchmarkReference() {
+  return {
+    digest: 'd'.repeat(64),
+    formatVersion: 1,
+    kind: 'skyjo-ai-benchmark',
+    releaseVersion: CERTIFICATION_RELEASE_VERSION,
+    sourceSha,
+    strategyVersion: 1
+  };
+}
 
 function releaseIdentity() {
   return {
@@ -169,6 +182,7 @@ function rssStageEvidence(authenticatedLoadPeak = 128_000) {
 
 function automatedEvidence() {
   return createAutomatedCertificationEvidence({
+    aiBenchmark: aiBenchmarkReference(),
     release: releaseIdentity(),
     k6Summary: k6Summary(),
     rss: rssStageEvidence(),
@@ -284,7 +298,7 @@ describe('recovery RPO measurement', () => {
   });
 });
 
-describe('v0.2.2 certification evidence', () => {
+describe('v0.3.0 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     const commandId = '00000000-0000-4000-8000-000000000001';
     const sentCommand = (action: GameCommand, expectedRevision: number, nextCommandId = commandId) => ({
@@ -510,8 +524,39 @@ describe('v0.2.2 certification evidence', () => {
     expect(validateRssStageEvidence(rssStageEvidence())).toEqual(rssStageEvidence());
     expect(validateEightClientPersonaEvidence(personaEvidence())).toEqual(personaEvidence());
     expect(validateAutomatedCertificationEvidence(automatedEvidence())).toEqual(automatedEvidence());
+    expect(assertAiBenchmarkMatchesCertification(
+      automatedEvidence(),
+      {
+        formatVersion: 1,
+        kind: 'skyjo-ai-benchmark',
+        releaseVersion: CERTIFICATION_RELEASE_VERSION,
+        sourceSha,
+        strategyVersion: 1
+      },
+      'd'.repeat(64)
+    )).toMatchObject({ sourceSha, strategyVersion: 1 });
     expect(assertRssStageEvidenceMatchesCertification(automatedEvidence(), rssStageEvidence())).toEqual(rssStageEvidence());
     expect(assertRecoveryTraceMatchesCertification(automatedEvidence(), recoveryTraceEvidence())).toEqual(recoveryTraceEvidence());
+
+    const benchmark = {
+      formatVersion: 1,
+      kind: 'skyjo-ai-benchmark',
+      releaseVersion: CERTIFICATION_RELEASE_VERSION,
+      sourceSha,
+      strategyVersion: 1
+    };
+    expect(() => assertAiBenchmarkMatchesCertification(
+      automatedEvidence(), benchmark, 'e'.repeat(64)
+    )).toThrow(/does not match/i);
+    expect(() => assertAiBenchmarkMatchesCertification(
+      automatedEvidence(), { ...benchmark, sourceSha: 'b'.repeat(40) }, 'd'.repeat(64)
+    )).toThrow(/does not match/i);
+    expect(() => assertAiBenchmarkMatchesCertification(
+      automatedEvidence(), { ...benchmark, releaseVersion: '0.2.2' }, 'd'.repeat(64)
+    )).toThrow(/release version/i);
+    expect(() => assertAiBenchmarkMatchesCertification(
+      automatedEvidence(), { ...benchmark, strategyVersion: 2 }, 'd'.repeat(64)
+    )).toThrow(/does not match/i);
 
     for (const mutate of [
       (summary: ReturnType<typeof k6Summary>) => { summary.metrics.clientsConnected = 159; },
@@ -560,6 +605,7 @@ describe('v0.2.2 certification evidence', () => {
     expect(() => validateEightClientPersonaEvidence(obsoletePersona)).toThrow(/format version/i);
 
     expect(() => createAutomatedCertificationEvidence({
+      aiBenchmark: aiBenchmarkReference(),
       release: releaseIdentity(),
       k6Summary: k6Summary(),
       rss: rssStageEvidence(CERTIFICATION_LIMITS.rssKibExclusive),
@@ -570,6 +616,7 @@ describe('v0.2.2 certification evidence', () => {
     const wrongPersona = personaEvidence();
     wrongPersona.release.sourceSha = 'b'.repeat(40);
     expect(() => createAutomatedCertificationEvidence({
+      aiBenchmark: aiBenchmarkReference(),
       release: releaseIdentity(),
       k6Summary: k6Summary(),
       rss: rssStageEvidence(),
@@ -652,7 +699,7 @@ describe('v0.2.2 certification evidence', () => {
   });
 });
 
-describe('v0.2.2 workflow governance', () => {
+describe('v0.3.0 workflow governance', () => {
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
     const [ci, nightly, installer, load, runner, realtime, verifier, packageDocument, packageLock, changelog] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
@@ -661,7 +708,7 @@ describe('v0.2.2 workflow governance', () => {
       fs.readFile(path.join(root, 'tests', 'load', 'skyjo-realtime.k6.js'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'run-automated-certification.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'src', 'serverRealtime.ts'), 'utf8'),
-      fs.readFile(path.join(root, 'scripts', 'verify-v020-release.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'verify-v030-release.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
       fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8')
@@ -710,9 +757,11 @@ describe('v0.2.2 workflow governance', () => {
     expect(verifier).toMatch(/assertRssStageEvidenceMatchesCertification\(evidence, rssEvidence\)/);
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
-    expect(JSON.parse(packageDocument).version).toBe('0.2.2');
+    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-26');
+    expect(JSON.parse(packageDocument).version).toBe('0.3.0');
+    expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
     expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('--retries=0');
-    expect(JSON.parse(packageLock).version).toBe('0.2.2');
-    expect(changelog).toMatch(/^## 0\.2\.2 - 2026-07-24$/m);
+    expect(JSON.parse(packageLock).version).toBe('0.3.0');
+    expect(changelog).toMatch(/^## 0\.3\.0 - 2026-07-26$/m);
   });
 });
