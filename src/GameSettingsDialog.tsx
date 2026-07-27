@@ -2,23 +2,17 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEven
 import { createPortal } from 'react-dom';
 import { noFocusScroll, useModalFocus } from './accessibility';
 import AudioSettingsControls from './AudioSettingsControls';
-import { singlePlayerAiOpponentRange } from './game';
 import type { GameState } from './types';
 
 const RulesHelpPanel = lazy(() => import('./RulesHelpPanel').catch(() => ({
   default: () => <p className="skyjo-disabled-note" role="alert">Rules could not load. Reload Skyjo to try again.</p>
 })));
-const singlePlayerAiCounts = Array.from(
-  { length: singlePlayerAiOpponentRange.max - singlePlayerAiOpponentRange.min + 1 },
-  (_, index) => singlePlayerAiOpponentRange.min + index
-);
-
 export interface GameSettingsDialogProps {
   aiOpponentCount?: number;
   aiOpponentSummary?: string;
-  onAiOpponentCountChange?: (count: number) => void;
+  aiDifficultySummary?: string;
   onDismiss: () => void;
-  onNewGame?: () => void;
+  onSetupAnotherGame?: () => void;
   state?: GameState | null;
   triggerRef: RefObject<HTMLButtonElement>;
 }
@@ -54,16 +48,16 @@ function MoveLogList({ state }: { state: GameState }) {
 export default function GameSettingsDialog({
   aiOpponentCount,
   aiOpponentSummary,
-  onAiOpponentCountChange,
+  aiDifficultySummary,
   onDismiss,
-  onNewGame,
+  onSetupAnotherGame,
   state,
   triggerRef
 }: GameSettingsDialogProps) {
   const [activePanel, setActivePanel] = useState<GameSettingsPanel>('audio');
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const hasAiSettings = typeof aiOpponentCount === 'number' && Boolean(aiOpponentSummary && onAiOpponentCountChange && onNewGame);
+  const hasAiSettings = typeof aiOpponentCount === 'number' && Boolean(aiOpponentSummary && aiDifficultySummary && onSetupAnotherGame);
   const settingsPanels = useMemo(
     () => [
       { key: 'audio' as const, label: 'Audio' },
@@ -165,35 +159,25 @@ export default function GameSettingsDialog({
               <section className="skyjo-settings-section">
                 <div className="skyjo-settings-section-heading">
                   <p className="skyjo-kicker">Single player</p>
-                  <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">AI opponents</h3>
+                  <h3 className="skyjo-serif text-xl font-bold leading-tight text-[#f5e6c8]">Current setup</h3>
                 </div>
                 <div className="skyjo-settings-ai-toolbar">
-                  <div className="text-sm font-bold text-[#f5e6c8]/75">{aiOpponentSummary}</div>
+                  <div className="skyjo-current-setup-summary text-sm font-bold text-[#f5e6c8]/75">
+                    <span>{aiOpponentSummary}</span>
+                    <span>{aiDifficultySummary}</span>
+                  </div>
                   <button
                     className="skyjo-button skyjo-new-game-button text-sm"
                     onClick={() => {
                       onDismiss();
-                      onNewGame?.();
+                      onSetupAnotherGame?.();
                     }}
                     type="button"
                   >
-                    New Game
+                    Set up another game…
                   </button>
                 </div>
-                <p className="mt-3 text-sm font-bold text-[#f5e6c8]/62">Choose the opponent count for your next game.</p>
-                <div className="skyjo-settings-ai-grid mt-3" role="group" aria-label="Choose AI opponent count">
-                  {singlePlayerAiCounts.map((count) => (
-                    <button
-                      aria-pressed={count === aiOpponentCount}
-                      className={`skyjo-button min-w-0 px-0 text-sm tabular-nums ${count === aiOpponentCount ? 'skyjo-button-primary' : ''}`}
-                      key={count}
-                      onClick={() => onAiOpponentCountChange?.(count)}
-                      type="button"
-                    >
-                      {count}
-                    </button>
-                  ))}
-                </div>
+                <p className="mt-3 text-sm font-bold text-[#f5e6c8]/62">This setup is fixed for the running game. Set up another game to choose different opponents or difficulty.</p>
               </section>
             ) : null}
 

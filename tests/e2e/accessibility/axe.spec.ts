@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
 import { expect, installSeededBrowserRuntime, test } from '../fixtures';
+import { startFreshSoloGame } from '../helpers/soloFlow';
 
 async function expectNoBlockingViolations(page: Page) {
   const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
@@ -19,7 +20,7 @@ test('home page has no serious or critical Axe violations', async ({ page, skyjo
 test('solo table has no serious or critical Axe violations', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 60);
   await page.setViewportSize({ width: 320, height: 568 });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
   await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
   await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)))
@@ -37,19 +38,8 @@ test('solo table has no serious or critical Axe violations', async ({ page, skyj
 test('eight-player centered table has no serious or critical Axe violations', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 70);
   await page.setViewportSize({ width: 320, height: 568 });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await page.getByRole('button', { name: 'Open game settings' }).click();
-  const settings = page.getByRole('dialog', { name: 'Settings' });
-  await settings.getByRole('tab', { name: 'Game' }).click();
-  await settings
-    .getByRole('group', { name: 'Choose AI opponent count' })
-    .getByRole('button', { name: '7', exact: true })
-    .click();
+  await startFreshSoloGame(page, skyjoServer.baseURL, { opponents: 7 });
   await expectNoBlockingViolations(page);
-  await page.waitForTimeout(250);
-  await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
-  await expect(settings).toBeHidden();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', '8');
   await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
   await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)))
@@ -88,17 +78,7 @@ test('three-player compact table exposes both visible opponent boards without Ax
 }) => {
   await installSeededBrowserRuntime(page, 71);
   await page.setViewportSize({ width: 320, height: 568 });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await page.getByRole('button', { name: 'Open game settings' }).click();
-  const settings = page.getByRole('dialog', { name: 'Settings' });
-  await settings.getByRole('tab', { name: 'Game' }).click();
-  await settings
-    .getByRole('group', { name: 'Choose AI opponent count' })
-    .getByRole('button', { name: '2', exact: true })
-    .click();
-  await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
-  await expect(settings).toBeHidden();
+  await startFreshSoloGame(page, skyjoServer.baseURL, { opponents: 2 });
   await page.evaluate(() => document.documentElement.classList.add('skyjo-test-text-scale-200'));
   await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize)))
     .toBe(32);
@@ -130,7 +110,7 @@ test('three-player compact table exposes both visible opponent boards without Ax
 
 test('saved-game choice has no serious or critical Axe violations', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 76);
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).first().click();
   await expect
     .poll(() =>
@@ -154,7 +134,8 @@ test('saved-game choice has no serious or critical Axe violations', async ({ pag
     )
     .toBeGreaterThan(0);
   await page.reload();
-  await expect(page.getByRole('dialog', { name: 'Continue your solo game?' })).toBeVisible();
+  await expect(page.getByTestId('solo-launcher')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Your solo table is waiting' })).toBeVisible();
   await expectNoBlockingViolations(page);
 });
 

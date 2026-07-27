@@ -20,12 +20,14 @@ describe('application shell', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders the home choices and navigates to a deterministic solo table', async () => {
+  it('renders play-first home choices and creates a solo table only after Start', async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    expect(screen.getByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
-    await user.click(screen.getByRole('link', { name: 'Single Player' }));
+    expect(await screen.findByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
+    await user.click(await screen.findByRole('link', { name: /Start Solo Game/ }));
+    expect(await screen.findByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Start Solo Game' }));
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     expect(screen.getAllByTestId('shared-game-table')).toHaveLength(1);
     expect(screen.getAllByTestId('opponent-rail')).toHaveLength(1);

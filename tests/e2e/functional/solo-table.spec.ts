@@ -3,6 +3,7 @@ import { expect, installSeededBrowserRuntime, test } from '../fixtures';
 import { devices, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import type { GameState } from '../../../src/types';
 import { soloProgressGameStates } from '../../helpers/soloGameState';
+import { configureSoloSetup, finishSoloSetup, startFreshSoloGame } from '../helpers/soloFlow';
 
 type Viewport = { width: number; height: number };
 
@@ -475,12 +476,9 @@ async function configureSoloRoster(page: Page, playerCount: number) {
   await page.getByRole('button', { name: 'Open game settings' }).click();
   const settings = page.getByRole('dialog', { name: 'Settings' });
   await settings.getByRole('tab', { name: 'Game' }).click();
-  const opponentPicker = settings.getByRole('group', { name: 'Choose AI opponent count' });
-  await opponentPicker.getByRole('button', { name: String(playerCount - 1), exact: true }).click();
-  await page.waitForTimeout(250);
-  await settings.getByRole('button', { name: 'New Game' }).click();
-  await page.getByRole('button', { name: 'Replace Saved Game' }).click();
-  await expect(settings).toBeHidden();
+  await settings.getByRole('button', { name: 'Set up another game…' }).click();
+  await configureSoloSetup(page, { opponents: playerCount - 1 });
+  await finishSoloSetup(page);
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-player-count', String(playerCount));
 }
 
@@ -624,7 +622,8 @@ async function openSoloPhone(
     if (variant.textScale) {
       await expect(page.locator('html')).toHaveClass(/skyjo-test-text-scale-200/);
     }
-    await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+    await configureSoloSetup(page);
+    await finishSoloSetup(page);
     if (variant.safeAreaStress) {
       await page.locator('main.skyjo-surface').evaluate((main) => {
         main.style.setProperty('padding-top', '4px', 'important');
@@ -733,9 +732,9 @@ async function stageSoloPhoneState(page: Page, baseURL: string, state: GameState
     }
   );
   await page.goto(`${baseURL}/single-player`);
-  const resume = page.getByRole('dialog', { name: 'Continue your solo game?' });
-  await expect(resume).toBeVisible();
-  await resume.getByRole('button', { name: 'Continue Game' }).click();
+  const launcher = page.getByTestId('solo-launcher');
+  await expect(launcher).toBeVisible();
+  await launcher.getByRole('button', { name: 'Continue Solo' }).click();
   await expect(page.getByTestId('shared-game-table')).toHaveAttribute('data-phase', state.phase);
 }
 
@@ -1286,8 +1285,7 @@ async function finishHumanOpeningAndMeasureAi(page: Page): Promise<number> {
 
 test('solo opening is playable and exposes stable table geometry anchors', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 60);
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+  await startFreshSoloGame(page, skyjoServer.baseURL);
 
   const gameTable = page.locator('[data-testid="game-table"]:visible');
   const opponentRail = page.locator('[data-testid="opponent-rail"]:visible');
@@ -1313,7 +1311,7 @@ test('a complete solo turn is keyboard operable and restores actionable controls
   test.setTimeout(45_000);
   await installSeededBrowserRuntime(page, 61);
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
 
   const table = page.getByTestId('shared-game-table');
   const openingCards = page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true });
@@ -1764,7 +1762,7 @@ test('deferred update and minimized round summary share the fixed phone edge wit
 
 test('solo progress survives refresh and a service-worker update without auto-discarding', async ({ page, skyjoServer }) => {
   await installSeededBrowserRuntime(page, 68);
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   const openingCards = page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true });
   await openingCards.first().click();
 
@@ -1801,8 +1799,8 @@ test('solo progress survives refresh and a service-worker update without auto-di
   expect(serviceWorkerUpdated).toBe(true);
 
   await page.reload();
-  await expect(page.getByRole('dialog', { name: 'Continue your solo game?' })).toBeVisible();
-  await page.getByRole('button', { name: 'Continue Game' }).click();
+  await expect(page.getByTestId('solo-launcher')).toBeVisible();
+  await page.getByRole('button', { name: 'Continue Solo' }).click();
   await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
   await expect(page.getByRole('button', { name: /face-down\. Reveal this opening card/ }).filter({ visible: true })).toHaveCount(11);
 });
@@ -1815,15 +1813,7 @@ test('repeated responsive captures explicitly start a new durable game', async (
     { width: 820, height: 1180 }
   ]) {
     await page.setViewportSize(viewport);
-    await page.goto(`${skyjoServer.baseURL}/single-player`);
-    const gameTable = page.locator('[data-testid="game-table"]');
-    const resumeChoice = page.locator('[data-testid="solo-resume-choice"]');
-    await expect(gameTable.or(resumeChoice)).toBeVisible();
-    if (await resumeChoice.isVisible()) {
-      await page.getByRole('button', { name: 'New Game' }).click();
-      await page.getByRole('button', { name: 'Replace Saved Game' }).click();
-    }
-    await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+    await startFreshSoloGame(page, skyjoServer.baseURL);
     opponentRosters.push(await page.locator('[data-testid="opponent-rail"] h2').allTextContents());
   }
   expect(opponentRosters[1]).toEqual(opponentRosters[0]);
@@ -1835,7 +1825,7 @@ test('eight-player AI opening completes within normal and reduced-motion budgets
   test.setTimeout(60_000);
   await installSeededBrowserRuntime(page, 71);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
+  await startFreshSoloGame(page, skyjoServer.baseURL);
   await configureSoloRoster(page, 8);
 
   const normalDuration = await finishHumanOpeningAndMeasureAi(page);
@@ -1871,8 +1861,7 @@ test('centered table geometry is symmetric, contained, and overlap-free for 2, 3
   test.setTimeout(120_000);
   await installSeededBrowserRuntime(page, 70);
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto(`${skyjoServer.baseURL}/single-player`);
-  await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+  await startFreshSoloGame(page, skyjoServer.baseURL);
 
   const viewports = [
     { width: 390, height: 844 },
@@ -1900,8 +1889,7 @@ test.describe('responsive table settlement stress', () => {
     test.setTimeout(120_000);
     await installSeededBrowserRuntime(page, 72);
     await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.goto(`${skyjoServer.baseURL}/single-player`);
-    await expect(page.getByRole('heading', { name: 'Single Player' })).toBeVisible();
+    await startFreshSoloGame(page, skyjoServer.baseURL);
 
     const compactDesktop = { width: 1180, height: 820 };
     const phone = { width: 390, height: 844 };
