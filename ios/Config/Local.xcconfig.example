@@ -1,0 +1,6 @@
+// Copy this file to Local.xcconfig for machine-local development overrides.
+// Local.xcconfig is ignored by git. Never place credentials or signing assets here.
+
+// DEVELOPMENT_TEAM = YOUR_TEAM_ID
+// SKYJO_APP_BUNDLE_IDENTIFIER = com.example.skyjo.development
+// SKYJO_API_BASE_URL = http:$(SKYJO_URL_SLASH)$(SKYJO_URL_SLASH)127.0.0.1:4180

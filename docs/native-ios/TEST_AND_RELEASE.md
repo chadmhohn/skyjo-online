@@ -16,6 +16,8 @@ Run the iOS jobs on a pinned, documented macOS/Xcode image. Print `sw_vers`, `xc
 
 The build job compiles once for testing without signing; downstream jobs reuse derived products when safe. Upload failed `.xcresult`, screenshots, logs, and sanitized diagnostics for 14 days. Never attach cookies, credentials, invite tokens, APNs device tokens, raw private snapshots, signing assets, or production databases.
 
+IOS-1 pins `iOS / Build` to the GitHub-hosted `macos-26` image and selects Xcode 26.6 through `DEVELOPER_DIR`. The job records the concrete weekly runner image version, discovers an iPhone on the newest installed iOS runtime, and runs [`scripts/ios-build-test.sh`](../../scripts/ios-build-test.sh). That script gives `xcodebuild` an allowlisted environment without CI tokens or service credentials, scrubs machine-local paths from console and saved logs, and writes ignored evidence under `ios/Artifacts/`. Only failed `.xcresult` bundles and sanitized logs are uploaded, for 14 days.
+
 ## Test Layers
 
 ### Swift Domain And Persistence
