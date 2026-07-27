@@ -1,0 +1,10 @@
+#include "Base.xcconfig"
+
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) DEBUG
+SWIFT_OPTIMIZATION_LEVEL = -Onone
+ENABLE_TESTABILITY = YES
+
+// Debug defaults to the local Node service. Local.xcconfig may override it.
+SKYJO_API_BASE_URL = http:$(SKYJO_URL_SLASH)$(SKYJO_URL_SLASH)127.0.0.1:4180
+
+#include? "Local.xcconfig"

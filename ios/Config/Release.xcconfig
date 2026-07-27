@@ -1,0 +1,14 @@
+#include "Base.xcconfig"
+
+// Local signing and bundle settings may be supplied without changing the endpoint.
+#include? "Local.xcconfig"
+
+SWIFT_COMPILATION_MODE = wholemodule
+SWIFT_OPTIMIZATION_LEVEL = -O
+DEBUG_INFORMATION_FORMAT = dwarf-with-dsym
+ENABLE_TESTABILITY = NO
+VALIDATE_PRODUCT = YES
+
+// Keep this assignment after Local.xcconfig so Release always uses production HTTPS.
+SKYJO_URL_SLASH = /
+SKYJO_API_BASE_URL = https:$(SKYJO_URL_SLASH)$(SKYJO_URL_SLASH)skyjo.groundworkrevops.com

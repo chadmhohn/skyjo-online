@@ -1,0 +1,37 @@
+{
+  "configurations" : [
+    {
+      "id" : "D57AB8C3-BD79-4E46-82E9-42158596359C",
+      "name" : "CI",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:SkyjoNative.xcodeproj",
+      "identifier" : "A10000000000000000000001",
+      "name" : "SkyjoNative"
+    },
+    "testTimeoutsEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:SkyjoNative.xcodeproj",
+        "identifier" : "A10000000000000000000002",
+        "name" : "SkyjoAppTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:SkyjoNative.xcodeproj",
+        "identifier" : "A10000000000000000000003",
+        "name" : "SkyjoAppUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

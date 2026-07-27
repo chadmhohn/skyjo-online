@@ -69,32 +69,53 @@ The bootstrap issue creates:
 - `ios/Config/Local.xcconfig.example`: documented optional overrides.
 - ignored `ios/Config/Local.xcconfig`: local Team ID or alternate dev URL if needed.
 
-Proposed defaults:
+Committed shared defaults include:
 
 ```text
-PRODUCT_BUNDLE_IDENTIFIER = com.groundworkrevops.skyjo
+SKYJO_APP_BUNDLE_IDENTIFIER = com.groundworkrevops.skyjo
+SKYJO_URL_SLASH = /
 IPHONEOS_DEPLOYMENT_TARGET = 18.0
-SKYJO_API_BASE_URL = https://skyjo.groundworkrevops.com
+SKYJO_API_BASE_URL = https:$(SKYJO_URL_SLASH)$(SKYJO_URL_SLASH)skyjo.groundworkrevops.com
 SWIFT_VERSION = 6.0
 SWIFT_STRICT_CONCURRENCY = complete
 ```
 
-The bundle identifier is a working proposal until the Apple team confirms it is available. Do not bake secrets into an `.xcconfig` or Info.plist.
+The `SKYJO_URL_SLASH` indirection preserves both URL slashes because `.xcconfig` otherwise treats `//` as a comment opener. Use the same form for a Debug override such as `http:$(SKYJO_URL_SLASH)$(SKYJO_URL_SLASH)127.0.0.1:4180`. The bundle identifier is a working proposal until the Apple team confirms it is available. Do not bake secrets into an `.xcconfig` or Info.plist.
 
 ## Useful Native Commands
 
-Once the project exists, the committed scheme/test plan should make these work from the repository root:
+The stable clean-clone build/test entrypoint discovers an iPhone on the newest available iOS Simulator runtime and performs one unsigned `xcodebuild test` invocation with the committed scheme and test plan:
+
+```sh
+./scripts/ios-build-test.sh
+```
+
+The script first verifies that the resolved Release build setting remains the exact production HTTPS origin, then runs the equivalent of this command with its discovered simulator UUID and unique ignored artifact paths:
+
+```sh
+xcodebuild test \
+  -project ios/SkyjoNative.xcodeproj \
+  -scheme SkyjoNative \
+  -testPlan SkyjoCI \
+  -configuration Debug \
+  -destination 'platform=iOS Simulator,id=<discovered-uuid>' \
+  -destination-timeout 120 \
+  -derivedDataPath ios/Artifacts/DerivedData-<run> \
+  -resultBundlePath ios/Artifacts/SkyjoCI-<run>.xcresult \
+  -parallel-testing-enabled NO \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Additional inspection commands:
 
 ```sh
 xcodebuild -project ios/SkyjoNative.xcodeproj -scheme SkyjoNative -showdestinations
-xcodebuild -project ios/SkyjoNative.xcodeproj -scheme SkyjoNative -destination 'platform=iOS Simulator,name=iPhone 16 Pro Max' build
-xcodebuild -project ios/SkyjoNative.xcodeproj -scheme SkyjoNative -testPlan SkyjoCI -destination 'platform=iOS Simulator,name=iPhone 16 Pro Max' test
 xcrun simctl list devices available
 xcrun xcresulttool get test-results summary --path <result-bundle>
 xcrun xctrace list templates
 ```
 
-Simulator names change with Xcode. CI and scripts should discover an available destination or use a tested generic device family instead of assuming the example exists forever.
+Simulator names change with Xcode. The shared script selects by discovered UUID rather than assuming a device model. Set `SKYJO_IOS_ARTIFACTS_DIR` only when ignored build evidence must live somewhere other than `ios/Artifacts/`.
 
 ## Physical-Device-Only Checks
 
