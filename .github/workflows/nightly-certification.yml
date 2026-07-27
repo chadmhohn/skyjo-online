@@ -43,8 +43,9 @@ jobs:
           set -Eeuo pipefail
           source_sha="$(git rev-parse 'HEAD^{commit}')"
           [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
-          export SKYJO_RELEASE_SHA="$source_sha"
-          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$source_sha")"
+          SKYJO_RELEASE_SHA="$source_sha"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$source_sha")"
+          export SKYJO_RELEASE_SHA SOURCE_DATE_EPOCH
           echo "SKYJO_RELEASE_SHA=$source_sha" >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
           npm run build
