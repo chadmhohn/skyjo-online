@@ -730,6 +730,12 @@ describe('v0.3.2 workflow governance', () => {
     ]);
     expect(REQUIRED_CHECKS).toContain('CI / Load & Recovery');
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'CI / Load & Recovery')).toHaveLength(1);
+    expect(REQUIRED_CHECKS).toContain('iOS / Build');
+    expect(REQUIRED_CHECKS.filter((check: string) => check === 'iOS / Build')).toHaveLength(1);
+    expect(REQUIRED_CHECKS).toContain('iOS / Networking Contracts');
+    expect(REQUIRED_CHECKS.filter((check: string) => check === 'iOS / Networking Contracts')).toHaveLength(1);
+    expect(ci).toMatch(/ios-build:\s*\n\s*name: iOS \/ Build/);
+    expect(ci).toMatch(/ios-networking-contracts:\s*\n\s*name: iOS \/ Networking Contracts/);
     expect(ci).toMatch(/load-recovery:\s*\n\s*name: CI \/ Load & Recovery/);
     const loadRecoverySection = ci.match(/\n {2}load-recovery:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     expect(loadRecoverySection).toContain('test-results/certification');

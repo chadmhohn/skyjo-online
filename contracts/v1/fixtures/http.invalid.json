@@ -1,0 +1,142 @@
+{
+  "cases": [
+    {
+      "expectedLayer": "schema",
+      "name": "access flag has wrong type",
+      "schema": "account-http.schema.json",
+      "value": {
+        "authenticated": "yes"
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "account exposes internal field",
+      "schema": "account-http.schema.json",
+      "value": {
+        "user": {
+          "createdAt": 1784998800104,
+          "disabled": false,
+          "displayName": "Fixture User",
+          "email": "fixture.user@example.invalid",
+          "id": "30000000-0000-4000-8000-000000000003",
+          "internalField": "not-public",
+          "lastLoginAt": null,
+          "role": "player",
+          "updatedAt": 1784998800104
+        }
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "stats game omits AI attribution",
+      "schema": "stats-http.schema.json",
+      "value": {
+        "game": {
+          "completedAt": 1784998800000,
+          "createdByUserId": "30000000-0000-4000-8000-000000000003",
+          "id": "40000000-0000-4000-8000-000000000001",
+          "mode": "single",
+          "participants": [
+            {
+              "displayName": "Guest",
+              "id": "40000000-0000-4000-8000-000000000002",
+              "kind": "human",
+              "playerId": "20000000-0000-4000-8000-000000000002",
+              "rank": 1,
+              "roundScore": 69,
+              "totalScore": 219,
+              "userId": null,
+              "won": true
+            },
+            {
+              "displayName": "Host",
+              "id": "40000000-0000-4000-8000-000000000003",
+              "kind": "human",
+              "playerId": "10000000-0000-4000-8000-000000000001",
+              "rank": 2,
+              "roundScore": 156,
+              "totalScore": 306,
+              "userId": "30000000-0000-4000-8000-000000000003",
+              "won": false
+            }
+          ],
+          "roomCode": null,
+          "roundCount": 1,
+          "rounds": [
+            {
+              "displayName": "Host",
+              "id": "40000000-0000-4000-8000-000000000004",
+              "playerId": "10000000-0000-4000-8000-000000000001",
+              "round": 1,
+              "roundScore": 156,
+              "totalScore": 306,
+              "userId": "30000000-0000-4000-8000-000000000003"
+            },
+            {
+              "displayName": "Guest",
+              "id": "40000000-0000-4000-8000-000000000005",
+              "playerId": "20000000-0000-4000-8000-000000000002",
+              "round": 1,
+              "roundScore": 69,
+              "totalScore": 219,
+              "userId": null
+            }
+          ],
+          "winnerName": "Guest",
+          "winnerPlayerId": "20000000-0000-4000-8000-000000000002",
+          "winnerUserId": null
+        }
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "readiness schema is unsupported",
+      "schema": "operational.schema.json",
+      "value": {
+        "checks": {
+          "database": "ok",
+          "lastPersist": "ok",
+          "roomState": "ok"
+        },
+        "protocolVersion": 2,
+        "releaseSha": "0123456789abcdef0123456789abcdef01234567",
+        "schemaVersion": 3,
+        "status": "ready"
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "version timestamp is not canonical",
+      "schema": "operational.schema.json",
+      "value": {
+        "buildTimestamp": "not-a-date",
+        "protocolVersion": 2,
+        "releaseSha": "0123456789abcdef0123456789abcdef01234567"
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "API error omits code",
+      "schema": "api-error.schema.json",
+      "value": {
+        "error": "Missing code."
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "API error uses unknown code",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "NOT_STABLE",
+        "error": "Unknown."
+      }
+    },
+    {
+      "expectedLayer": "transport",
+      "name": "non-JSON response body",
+      "schema": "api-error.schema.json",
+      "value": "<html>not JSON</html>"
+    }
+  ],
+  "contractVersion": 1
+}

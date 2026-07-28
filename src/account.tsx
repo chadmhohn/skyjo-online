@@ -42,8 +42,11 @@ export interface StatsGame {
   roomCode: string | null;
   completedAt: number;
   roundCount: number;
+  winnerPlayerId: string | null;
   winnerName: string;
   winnerUserId: string | null;
+  createdByUserId: string | null;
+  finishedByAi: boolean;
   participants: StatsParticipant[];
   rounds: StatsRoundScore[];
 }

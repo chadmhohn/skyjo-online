@@ -45,6 +45,8 @@ ios/
 
 Commit the project, shared schemes, test plan, `.xcconfig` templates, privacy manifest, and fixtures. Keep personal signing values in ignored `Local.xcconfig` or Xcode-managed local state.
 
+The language-neutral boundary lives outside the Xcode workspace under `contracts/v1/`. Its JSON Schemas and generated fixtures are consumed by TypeScript today and are the portable inputs for subsequent Swift domain/realtime work. Contract bundle version 1 is independent of all runtime protocol, schema, release, and app-version numbers.
+
 ## Module Responsibilities
 
 ### SkyjoDomain
@@ -61,7 +63,8 @@ The TypeScript engine remains the reference implementation during the port. Once
 
 ### SkyjoNetworking
 
-- One `URLSession` configured with a persistent `HTTPCookieStorage` for the outer access and account HttpOnly cookies.
+- One dedicated `URLSession` configured with an explicitly supplied, persistent `HTTPCookieStorage` for the outer access and account HttpOnly cookies; tests inject an isolated cookie store.
+- `AccessSessionClient` owns typed `GET`, `POST`, and `DELETE /api/access/session` calls. It tolerates additive success fields, requires the typed `authenticated` field, rejects redirects and unexpected final URLs, caps requests at 256 KiB and responses at 64 KiB, and maps only known stable error codes to server messages.
 - Typed Codable request/response models for account, invite, stats, readiness, and version contracts.
 - An actor-owned `RoomConnection` around `URLSessionWebSocketTask`.
 - One in-flight command at a time, UUID command IDs, expected revisions, replay only with the identical ID/body, and authoritative snapshot convergence before enabling another action.
@@ -69,6 +72,8 @@ The TypeScript engine remains the reference implementation during the port. Once
 - Redacted snapshots are decoded into optional values. Never persist or log private drawn cards or raw frames.
 
 Do not store passwords just to recreate sessions. The server's signed cookies are the session. If a later credential-remembrance feature is approved, use Keychain Services and keep it separate from game storage.
+
+Unknown, malformed, or non-JSON error responses use a safe local fallback. This preserves forward compatibility without displaying untrusted server detail. The real access-cookie round trip is exercised against an isolated local `server.mjs` process by `./scripts/ios-build-test.sh --networking-contracts`; unit tests continue to use `URLProtocol` for malformed and boundary cases.
 
 ### SkyjoPersistence
 
@@ -133,15 +138,18 @@ Native states mirror the established web client: `idle`, `connecting`, `connecte
 
 ## Native-Specific Backend Work
 
-The present backend is reusable but not fully native-ready. Additive work is planned for:
+IOS-2 adds two native-enabling capabilities to the repository:
 
-1. A JSON access-session endpoint so the native app does not parse the HTML `/login` flow.
-2. A JSON invite redemption contract for universal-link handoff.
-3. `apple-app-site-association` hosting and Associated Domains.
-4. Authenticated APNs device registration/unregistration and APNs provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
-5. Versioned TypeScript-to-Swift conformance fixtures.
+1. The pre-gate JSON access-session endpoint, stable `{ code, error }` API failures, and an `ACCESS_REQUIRED` JSON response for unauthenticated API requests. The legacy HTML `/login` and PWA `error` message fallback remain intact.
+2. Versioned JSON Schemas and deterministic, sanitized fixtures under `contracts/v1/`.
 
-All additions must leave the current PWA and web-push paths working.
+These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. Remaining additive work is:
+
+1. A JSON invite redemption contract for universal-link handoff.
+2. `apple-app-site-association` hosting and Associated Domains.
+3. Authenticated APNs device registration/unregistration and APNs provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
+
+All additions must leave the current PWA and web-push paths working. Deploy server support before a native build depends on it; do not roll production back to a server that lacks a contract already required by a distributed native build.
 
 ## Security And Privacy
 

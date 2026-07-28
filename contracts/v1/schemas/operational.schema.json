@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/operational.schema.json",
+  "title": "Skyjo operational DTOs",
+  "oneOf": [
+    { "$ref": "#/$defs/version" },
+    { "$ref": "#/$defs/versionUnavailable" },
+    { "$ref": "#/$defs/readiness" }
+  ],
+  "$defs": {
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["releaseSha", "buildTimestamp", "protocolVersion"],
+      "properties": {
+        "releaseSha": { "type": "string", "pattern": "^(?:development|[a-f0-9]{7,64})$" },
+        "buildTimestamp": { "type": "string", "format": "date-time" },
+        "protocolVersion": { "const": 2 }
+      }
+    },
+    "versionUnavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": { "status": { "const": "unavailable" } }
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "releaseSha", "schemaVersion", "protocolVersion", "checks"],
+      "properties": {
+        "status": { "enum": ["ready", "not_ready"] },
+        "releaseSha": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^(?:development|[a-f0-9]{7,64})$" }] },
+        "schemaVersion": { "const": 2 },
+        "protocolVersion": { "const": 2 },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["database", "roomState", "lastPersist"],
+          "properties": {
+            "database": { "enum": ["ok", "error"] },
+            "roomState": { "enum": ["ok", "error"] },
+            "lastPersist": { "enum": ["ok", "error"] }
+          }
+        }
+      }
+    }
+  }
+}

@@ -10,7 +10,7 @@ The native client is a companion to the PWA, not a replacement deployment. Playe
 
 | Capability | Native v0.1.0 behavior | Source of truth |
 | --- | --- | --- |
-| Outer access gate | Enter the shared access password or redeem a room invite; retain the signed server session cookie | `server.mjs` plus the planned native JSON access endpoint |
+| Outer access gate | Enter the shared access password or redeem a room invite; retain the signed server session cookie | `server.mjs`, `contracts/v1/schemas/account-http.schema.json`, and `AccessSessionClient` |
 | Accounts | Sign up, sign in/out, edit display name, change password | `src/account.tsx`, `server.mjs`, `server-account-store.mjs` |
 | Solo setup | Continue an existing game or explicitly replace it; choose 1-7 bots and Easy, Medium, Hard, Ultra Hard, or deterministic Mixed | `src/App.tsx`, `src/SoloSetupFlow.tsx`, `src/SoloGamePrompt.tsx`, `src/soloAiSetup.ts` |
 | Solo play | Full rules, scoring, round continuity, bot identities/difficulties, offline play, atomic restore, and stats outbox | `src/game.ts`, `src/aiStrategy.ts`, `src/soloDurability.ts` |
@@ -68,6 +68,8 @@ Native code must match these repository contracts rather than a remembered versi
 - Multiplayer AI takeover stays server-owned and currently uses Hard behavior.
 
 Every bullet above needs at least one shared golden fixture or a Swift unit test before native parity is declared.
+
+The fixtures are compatibility assets under `contracts/v1`, not a new game/protocol release. Their bundle version advances independently from the multiplayer protocol, shared-snapshot envelope, database, room persistence, solo-AI strategy, PWA release, and native app version.
 
 ## Distribution Stages
 

@@ -59,6 +59,16 @@ Acceptance:
 - Native URLSession contract tests prove cookie persistence and safe error decoding against a local Node server.
 - Compatibility/versioning policy is documented.
 
+IOS-2 repository verification commands are:
+
+```sh
+npm run contracts:fixtures:check
+npm run test:unit:contracts
+./scripts/ios-build-test.sh --networking-contracts
+```
+
+`contracts/v1` is an independent portable bundle version, not shorthand for the multiplayer protocol, snapshot envelope, database, persistence, release, or native app version. The access endpoint and stable API-error envelope must be promoted and verified through the immutable server-release workflow before a native build that depends on them is distributed; completing these repository checks does not claim production deployment.
+
 ## [IOS-3 — Port Rules, Scoring, AI, And Redaction Models To Swift](https://github.com/chadmhohn/skyjo-online/issues/183)
 
 Implement `SkyjoDomain` without UI or I/O.

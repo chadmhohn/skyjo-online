@@ -19,6 +19,8 @@
 		B2000000000000000000000A /* SkyjoPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000003 /* SkyjoPersistence */; };
 		B2000000000000000000000B /* SkyjoDesignSystem in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000004 /* SkyjoDesignSystem */; };
 		B2000000000000000000000C /* SkyjoTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000005 /* SkyjoTestSupport */; };
+		B2000000000000000000000D /* AccessSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* AccessSessionClientTests.swift */; };
+		B2000000000000000000000E /* SkyjoNetworking in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000006 /* SkyjoNetworking */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -62,6 +64,7 @@
 		B10000000000000000000015 /* SkyjoPersistence */ = {isa = PBXFileReference; lastKnownFileType = folder; path = SkyjoPersistence; sourceTree = "<group>"; };
 		B10000000000000000000016 /* SkyjoDesignSystem */ = {isa = PBXFileReference; lastKnownFileType = folder; path = SkyjoDesignSystem; sourceTree = "<group>"; };
 		B10000000000000000000017 /* SkyjoTestSupport */ = {isa = PBXFileReference; lastKnownFileType = folder; path = SkyjoTestSupport; sourceTree = "<group>"; };
+		B10000000000000000000018 /* AccessSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessSessionClientTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -80,6 +83,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B2000000000000000000000E /* SkyjoNetworking in Frameworks */,
 				B2000000000000000000000C /* SkyjoTestSupport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -191,6 +195,7 @@
 			isa = PBXGroup;
 			children = (
 				B1000000000000000000000C /* BootstrapTests.swift */,
+				B10000000000000000000018 /* AccessSessionClientTests.swift */,
 			);
 			path = SkyjoAppTests;
 			sourceTree = "<group>";
@@ -253,6 +258,7 @@
 			name = SkyjoAppTests;
 			packageProductDependencies = (
 				A90000000000000000000005 /* SkyjoTestSupport */,
+				A90000000000000000000006 /* SkyjoNetworking */,
 			);
 			productName = SkyjoAppTests;
 			productReference = B1000000000000000000000A /* SkyjoAppTests.xctest */;
@@ -370,6 +376,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B20000000000000000000006 /* BootstrapTests.swift in Sources */,
+				B2000000000000000000000D /* AccessSessionClientTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -630,6 +637,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A80000000000000000000005 /* XCLocalSwiftPackageReference "Packages/SkyjoTestSupport" */;
 			productName = SkyjoTestSupport;
+		};
+		A90000000000000000000006 /* SkyjoNetworking */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A80000000000000000000002 /* XCLocalSwiftPackageReference "Packages/SkyjoNetworking" */;
+			productName = SkyjoNetworking;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

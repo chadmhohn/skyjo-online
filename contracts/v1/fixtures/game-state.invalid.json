@@ -1,0 +1,6748 @@
+{
+  "cases": [
+    {
+      "context": {
+        "readyForNextRoundPlayerIds": [],
+        "roomStatus": "playing",
+        "rosterPlayerIds": [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "expectedLayer": "schema",
+      "name": "unexpected top-level property",
+      "schema": "game-state.schema.json",
+      "value": {
+        "currentPlayerIndex": 0,
+        "discardPile": [
+          {
+            "faceUp": true,
+            "id": "card-110-9",
+            "removed": false,
+            "value": 9
+          }
+        ],
+        "drawPile": [
+          {
+            "faceUp": false,
+            "id": "card-147-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-11--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-85-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-112-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-94-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-90-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-58-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-72-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-80-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-127-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-138-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-84-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-74-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-103-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-143-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-62-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-12--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-132-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-39-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-3--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-114-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-111-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-37-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-122-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-45-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-97-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-53-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-86-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-106-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-43-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-70-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-130-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-14--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-118-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-27-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-26-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-64-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-28-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-126-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-121-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-75-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-61-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-25-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-78-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-51-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-56-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-42-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-54-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-49-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-16-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-30-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-46-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-134-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-34-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-107-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-13--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-128-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-141-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-83-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-129-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-35-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-116-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-99-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-44-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-60-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-73-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-57-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-136-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-139-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-82-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-2--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-113-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-68-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-124-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-38-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-6--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-81-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-15-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-115-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-96-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-77-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-48-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-20-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-40-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-67-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-24-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-10--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-7--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-144-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-33-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-36-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-22-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-123-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-23-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-149-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-19-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-4--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-133-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-100-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-21-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-87-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-142-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-9--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-145-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-1--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-93-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-55-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-29-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-69-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-18-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-47-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-5--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-52-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-0--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-131-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-89-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-31-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-8--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-109-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-98-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-148-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-91-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-137-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-17-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-66-4",
+            "removed": false,
+            "value": 4
+          }
+        ],
+        "drawnCard": null,
+        "finalTurnPlayerIds": [],
+        "internal": true,
+        "log": [
+          "Host chooses two opening cards to reveal."
+        ],
+        "nextStarterId": null,
+        "openingRevealCounts": {
+          "10000000-0000-4000-8000-000000000001": 0,
+          "20000000-0000-4000-8000-000000000002": 0
+        },
+        "phase": "opening-reveal",
+        "players": [
+          {
+            "grid": [
+              {
+                "faceUp": false,
+                "id": "card-63-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-104-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-79-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-41-2",
+                "removed": false,
+                "value": 2
+              },
+              {
+                "faceUp": false,
+                "id": "card-101-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-120-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-88-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": false,
+                "id": "card-119-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-140-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-65-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-59-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-102-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "10000000-0000-4000-8000-000000000001",
+            "kind": "human",
+            "name": "Host",
+            "roundScore": 0,
+            "totalScore": 0
+          },
+          {
+            "grid": [
+              {
+                "faceUp": false,
+                "id": "card-32-1",
+                "removed": false,
+                "value": 1
+              },
+              {
+                "faceUp": false,
+                "id": "card-95-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-71-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-92-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-125-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-146-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-76-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-117-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-108-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-50-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-135-11",
+                "removed": false,
+                "value": 11
+              },
+              {
+                "faceUp": false,
+                "id": "card-105-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "20000000-0000-4000-8000-000000000002",
+            "kind": "human",
+            "name": "Guest",
+            "roundScore": 0,
+            "totalScore": 0
+          }
+        ],
+        "round": 1,
+        "roundCloserId": null,
+        "roundHistory": [],
+        "selectedSource": null,
+        "winnerId": null
+      }
+    },
+    {
+      "context": {
+        "readyForNextRoundPlayerIds": [],
+        "roomStatus": "playing",
+        "rosterPlayerIds": [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "expectedLayer": "schema",
+      "name": "card value above twelve",
+      "schema": "game-state.schema.json",
+      "value": {
+        "currentPlayerIndex": 0,
+        "discardPile": [
+          {
+            "faceUp": true,
+            "id": "card-110-9",
+            "removed": false,
+            "value": 9
+          }
+        ],
+        "drawPile": [
+          {
+            "faceUp": false,
+            "id": "card-147-12",
+            "removed": false,
+            "value": 13
+          },
+          {
+            "faceUp": false,
+            "id": "card-11--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-85-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-112-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-94-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-90-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-58-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-72-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-80-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-127-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-138-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-84-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-74-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-103-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-143-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-62-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-12--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-132-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-39-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-3--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-114-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-111-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-37-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-122-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-45-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-97-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-53-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-86-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-106-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-43-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-70-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-130-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-14--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-118-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-27-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-26-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-64-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-28-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-126-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-121-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-75-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-61-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-25-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-78-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-51-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-56-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-42-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-54-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-49-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-16-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-30-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-46-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-134-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-34-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-107-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-13--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-128-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-141-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-83-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-129-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-35-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-116-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-99-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-44-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-60-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-73-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-57-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-136-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-139-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-82-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-2--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-113-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-68-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-124-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-38-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-6--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-81-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-15-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-115-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-96-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-77-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-48-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-20-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-40-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-67-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-24-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-10--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-7--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-144-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-33-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-36-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-22-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-123-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-23-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-149-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-19-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-4--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-133-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-100-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-21-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-87-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-142-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-9--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-145-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-1--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-93-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-55-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-29-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-69-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-18-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-47-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-5--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-52-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-0--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-131-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-89-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-31-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-8--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-109-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-98-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-148-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-91-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-137-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-17-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-66-4",
+            "removed": false,
+            "value": 4
+          }
+        ],
+        "drawnCard": null,
+        "finalTurnPlayerIds": [],
+        "log": [
+          "Host chooses two opening cards to reveal."
+        ],
+        "nextStarterId": null,
+        "openingRevealCounts": {
+          "10000000-0000-4000-8000-000000000001": 0,
+          "20000000-0000-4000-8000-000000000002": 0
+        },
+        "phase": "opening-reveal",
+        "players": [
+          {
+            "grid": [
+              {
+                "faceUp": false,
+                "id": "card-63-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-104-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-79-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-41-2",
+                "removed": false,
+                "value": 2
+              },
+              {
+                "faceUp": false,
+                "id": "card-101-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-120-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-88-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": false,
+                "id": "card-119-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-140-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-65-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-59-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-102-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "10000000-0000-4000-8000-000000000001",
+            "kind": "human",
+            "name": "Host",
+            "roundScore": 0,
+            "totalScore": 0
+          },
+          {
+            "grid": [
+              {
+                "faceUp": false,
+                "id": "card-32-1",
+                "removed": false,
+                "value": 1
+              },
+              {
+                "faceUp": false,
+                "id": "card-95-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-71-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-92-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-125-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-146-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-76-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-117-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-108-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-50-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-135-11",
+                "removed": false,
+                "value": 11
+              },
+              {
+                "faceUp": false,
+                "id": "card-105-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "20000000-0000-4000-8000-000000000002",
+            "kind": "human",
+            "name": "Guest",
+            "roundScore": 0,
+            "totalScore": 0
+          }
+        ],
+        "round": 1,
+        "roundCloserId": null,
+        "roundHistory": [],
+        "selectedSource": null,
+        "winnerId": null
+      }
+    },
+    {
+      "context": {
+        "readyForNextRoundPlayerIds": [],
+        "roomStatus": "playing",
+        "rosterPlayerIds": [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "expectedLayer": "schema",
+      "name": "short player grid",
+      "schema": "game-state.schema.json",
+      "value": {
+        "currentPlayerIndex": 0,
+        "discardPile": [
+          {
+            "faceUp": true,
+            "id": "card-110-9",
+            "removed": false,
+            "value": 9
+          }
+        ],
+        "drawPile": [
+          {
+            "faceUp": false,
+            "id": "card-147-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-11--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-85-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-112-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-94-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-90-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-58-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-72-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-80-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-127-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-138-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-84-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-74-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-103-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-143-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-62-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-12--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-132-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-39-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-3--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-114-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-111-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-37-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-122-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-45-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-97-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-53-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-86-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-106-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-43-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-70-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-130-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-14--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-118-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-27-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-26-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-64-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-28-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-126-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-121-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-75-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-61-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-25-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-78-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-51-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-56-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-42-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-54-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-49-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-16-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-30-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-46-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-134-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-34-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-107-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-13--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-128-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-141-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-83-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-129-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-35-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-116-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-99-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-44-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-60-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-73-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-57-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-136-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-139-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-82-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-2--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-113-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-68-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-124-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-38-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-6--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-81-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-15-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-115-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-96-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-77-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-48-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-20-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-40-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-67-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-24-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-10--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-7--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-144-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-33-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-36-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-22-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-123-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-23-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-149-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-19-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-4--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-133-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-100-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-21-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-87-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-142-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-9--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-145-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-1--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-93-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-55-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-29-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-69-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-18-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-47-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-5--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-52-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-0--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-131-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-89-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-31-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-8--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-109-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-98-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-148-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-91-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-137-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-17-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-66-4",
+            "removed": false,
+            "value": 4
+          }
+        ],
+        "drawnCard": null,
+        "finalTurnPlayerIds": [],
+        "log": [
+          "Host chooses two opening cards to reveal."
+        ],
+        "nextStarterId": null,
+        "openingRevealCounts": {
+          "10000000-0000-4000-8000-000000000001": 0,
+          "20000000-0000-4000-8000-000000000002": 0
+        },
+        "phase": "opening-reveal",
+        "players": [
+          {
+            "grid": [
+              {
+                "faceUp": false,
+                "id": "card-63-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-104-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-79-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-41-2",
+                "removed": false,
+                "value": 2
+              },
+              {
+                "faceUp": false,
+                "id": "card-101-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-120-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-88-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": false,
+                "id": "card-119-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-140-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-65-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-59-3",
+                "removed": false,
+                "value": 3
+              }
+            ],
+            "id": "10000000-0000-4000-8000-000000000001",
+            "kind": "human",
+            "name": "Host",
+            "roundScore": 0,
+            "totalScore": 0
+          },
+          {
+            "grid": [
+              {
+                "faceUp": false,
+                "id": "card-32-1",
+                "removed": false,
+                "value": 1
+              },
+              {
+                "faceUp": false,
+                "id": "card-95-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-71-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-92-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-125-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-146-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-76-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-117-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-108-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-50-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-135-11",
+                "removed": false,
+                "value": 11
+              },
+              {
+                "faceUp": false,
+                "id": "card-105-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "20000000-0000-4000-8000-000000000002",
+            "kind": "human",
+            "name": "Guest",
+            "roundScore": 0,
+            "totalScore": 0
+          }
+        ],
+        "round": 1,
+        "roundCloserId": null,
+        "roundHistory": [],
+        "selectedSource": null,
+        "winnerId": null
+      }
+    },
+    {
+      "context": {
+        "readyForNextRoundPlayerIds": [],
+        "roomStatus": "playing",
+        "rosterPlayerIds": [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "expectedLayer": "semantic",
+      "name": "duplicate physical card id",
+      "schema": "game-state.schema.json",
+      "value": {
+        "currentPlayerIndex": 0,
+        "discardPile": [
+          {
+            "faceUp": true,
+            "id": "card-110-9",
+            "removed": false,
+            "value": 9
+          }
+        ],
+        "drawPile": [
+          {
+            "faceUp": false,
+            "id": "card-63-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-11--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-85-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-112-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-94-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-90-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-58-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-72-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-80-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-127-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-138-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-84-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-74-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-103-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-143-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-62-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-12--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-132-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-39-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-3--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-114-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-111-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-37-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-122-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-45-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-97-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-53-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-86-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-106-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-43-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-70-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-130-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-14--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-118-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-27-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-26-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-64-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-28-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-126-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-121-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-75-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-61-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-25-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-78-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-51-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-56-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-42-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-54-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-49-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-16-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-30-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-46-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-134-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-34-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-107-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-13--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-128-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-141-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-83-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-129-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-35-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-116-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-99-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-44-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-60-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-73-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-57-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-136-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-139-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-82-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-2--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-113-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-68-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-124-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-38-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-6--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-81-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-15-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-115-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-96-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-77-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-48-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-20-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-40-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-67-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-24-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-10--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-7--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-144-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-33-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-36-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-22-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-123-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-23-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-149-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-19-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-4--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-133-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-100-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-21-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-87-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-142-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-9--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-145-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-1--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-93-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-55-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-29-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-69-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-18-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-47-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-5--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-52-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-0--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-131-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-89-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-31-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-8--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-109-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-98-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-148-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-91-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-137-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-17-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-66-4",
+            "removed": false,
+            "value": 4
+          }
+        ],
+        "drawnCard": null,
+        "finalTurnPlayerIds": [],
+        "log": [
+          "Host chooses two opening cards to reveal."
+        ],
+        "nextStarterId": null,
+        "openingRevealCounts": {
+          "10000000-0000-4000-8000-000000000001": 0,
+          "20000000-0000-4000-8000-000000000002": 0
+        },
+        "phase": "opening-reveal",
+        "players": [
+          {
+            "grid": [
+              {
+                "faceUp": false,
+                "id": "card-63-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-104-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-79-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-41-2",
+                "removed": false,
+                "value": 2
+              },
+              {
+                "faceUp": false,
+                "id": "card-101-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-120-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-88-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": false,
+                "id": "card-119-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-140-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-65-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-59-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-102-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "10000000-0000-4000-8000-000000000001",
+            "kind": "human",
+            "name": "Host",
+            "roundScore": 0,
+            "totalScore": 0
+          },
+          {
+            "grid": [
+              {
+                "faceUp": false,
+                "id": "card-32-1",
+                "removed": false,
+                "value": 1
+              },
+              {
+                "faceUp": false,
+                "id": "card-95-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-71-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-92-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-125-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-146-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-76-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-117-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-108-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-50-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-135-11",
+                "removed": false,
+                "value": 11
+              },
+              {
+                "faceUp": false,
+                "id": "card-105-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "20000000-0000-4000-8000-000000000002",
+            "kind": "human",
+            "name": "Guest",
+            "roundScore": 0,
+            "totalScore": 0
+          }
+        ],
+        "round": 1,
+        "roundCloserId": null,
+        "roundHistory": [],
+        "selectedSource": null,
+        "winnerId": null
+      }
+    },
+    {
+      "context": {
+        "readyForNextRoundPlayerIds": [],
+        "roomStatus": "playing",
+        "rosterPlayerIds": [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "expectedLayer": "semantic",
+      "name": "source outside replacement phase",
+      "schema": "game-state.schema.json",
+      "value": {
+        "currentPlayerIndex": 0,
+        "discardPile": [
+          {
+            "faceUp": true,
+            "id": "card-110-9",
+            "removed": false,
+            "value": 9
+          }
+        ],
+        "drawPile": [
+          {
+            "faceUp": false,
+            "id": "card-147-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-11--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-85-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-112-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-94-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-90-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-58-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-72-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-80-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-127-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-138-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-84-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-74-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-103-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-143-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-62-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-12--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-132-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-39-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-3--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-114-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-111-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-37-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-122-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-45-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-97-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-53-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-86-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-106-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-43-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-70-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-130-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-14--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-118-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-27-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-26-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-64-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-28-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-126-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-121-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-75-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-61-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-25-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-78-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-51-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-56-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-42-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-54-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-49-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-16-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-30-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-46-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-134-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-34-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-107-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-13--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-128-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-141-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-83-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-129-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-35-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-116-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-99-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-44-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-60-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-73-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-57-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-136-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-139-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-82-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-2--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-113-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-68-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-124-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-38-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-6--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-81-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-15-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-115-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-96-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-77-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-48-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-20-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-40-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-67-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-24-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-10--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-7--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-144-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-33-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-36-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-22-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-123-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-23-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-149-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-19-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-4--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-133-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-100-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-21-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-87-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-142-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-9--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-145-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-1--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-93-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-55-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-29-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-69-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-18-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-47-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-5--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-52-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-0--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-131-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-89-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-31-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-8--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-109-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-98-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-148-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-91-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-137-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-17-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-66-4",
+            "removed": false,
+            "value": 4
+          }
+        ],
+        "drawnCard": null,
+        "finalTurnPlayerIds": [],
+        "log": [
+          "Host starts round 1. Pick from the discard pile or draw blind.",
+          "Guest revealed an opening card.",
+          "Host finished opening reveals. Guest chooses two opening cards.",
+          "Host revealed an opening card.",
+          "Host chooses two opening cards to reveal."
+        ],
+        "nextStarterId": null,
+        "openingRevealCounts": {
+          "10000000-0000-4000-8000-000000000001": 2,
+          "20000000-0000-4000-8000-000000000002": 2
+        },
+        "phase": "choose-source",
+        "players": [
+          {
+            "grid": [
+              {
+                "faceUp": true,
+                "id": "card-63-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": true,
+                "id": "card-104-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-79-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-41-2",
+                "removed": false,
+                "value": 2
+              },
+              {
+                "faceUp": false,
+                "id": "card-101-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-120-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-88-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": false,
+                "id": "card-119-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-140-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-65-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": false,
+                "id": "card-59-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-102-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "10000000-0000-4000-8000-000000000001",
+            "kind": "human",
+            "name": "Host",
+            "roundScore": 12,
+            "totalScore": 0
+          },
+          {
+            "grid": [
+              {
+                "faceUp": true,
+                "id": "card-32-1",
+                "removed": false,
+                "value": 1
+              },
+              {
+                "faceUp": true,
+                "id": "card-95-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-71-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-92-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": false,
+                "id": "card-125-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": false,
+                "id": "card-146-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": false,
+                "id": "card-76-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": false,
+                "id": "card-117-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": false,
+                "id": "card-108-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": false,
+                "id": "card-50-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": false,
+                "id": "card-135-11",
+                "removed": false,
+                "value": 11
+              },
+              {
+                "faceUp": false,
+                "id": "card-105-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "20000000-0000-4000-8000-000000000002",
+            "kind": "human",
+            "name": "Guest",
+            "roundScore": 8,
+            "totalScore": 0
+          }
+        ],
+        "round": 1,
+        "roundCloserId": null,
+        "roundHistory": [],
+        "selectedSource": "draw",
+        "winnerId": null
+      }
+    },
+    {
+      "context": {
+        "readyForNextRoundPlayerIds": [],
+        "roomStatus": "finished",
+        "rosterPlayerIds": [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "expectedLayer": "semantic",
+      "name": "winner outside roster",
+      "schema": "game-state.schema.json",
+      "value": {
+        "currentPlayerIndex": 1,
+        "discardPile": [
+          {
+            "faceUp": true,
+            "id": "card-85-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": true,
+            "id": "card-111-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": true,
+            "id": "card-4--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": true,
+            "id": "card-147-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": true,
+            "id": "card-30-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": true,
+            "id": "card-78-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": true,
+            "id": "card-137-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": true,
+            "id": "card-76-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": true,
+            "id": "card-116-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": true,
+            "id": "card-126-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": true,
+            "id": "card-56-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": true,
+            "id": "card-102-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": true,
+            "id": "card-14--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": true,
+            "id": "card-67-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": true,
+            "id": "card-59-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": true,
+            "id": "card-144-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": true,
+            "id": "card-13--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": true,
+            "id": "card-110-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": true,
+            "id": "card-53-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": true,
+            "id": "card-80-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": true,
+            "id": "card-87-6",
+            "removed": false,
+            "value": 6
+          }
+        ],
+        "drawPile": [
+          {
+            "faceUp": false,
+            "id": "card-105-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-40-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-69-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-0--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-52-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-7--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-45-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-97-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-65-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-113-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-36-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-101-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-19-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-90-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-108-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-5--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-49-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-8--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-64-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-95-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-73-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-149-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-44-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-47-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-128-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-35-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-123-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-127-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-60-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-72-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-141-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-145-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-12--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-57-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-61-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-96-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-31-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-25-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-6--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-104-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-129-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-34-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-3--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-62-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-66-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-115-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-91-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-54-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-121-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-142-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-125-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-17-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-119-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-32-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-100-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-16-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-118-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-38-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-134-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-138-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-55-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-135-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-132-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-50-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-120-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-43-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-83-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-1--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-74-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-70-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-29-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-63-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-46-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-122-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-103-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-130-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-39-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-109-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-136-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-58-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-48-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-23-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-51-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-18-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-98-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-27-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-28-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-79-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-71-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-94-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-93-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-26-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-21-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-114-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-10--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-11--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-112-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-124-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-86-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-15-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-24-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-99-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-68-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-2--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-131-11",
+            "removed": false,
+            "value": 11
+          }
+        ],
+        "drawnCard": null,
+        "finalTurnPlayerIds": [],
+        "log": [
+          "Host ended the round. Host's round score doubled to 156. Guest leads with 219.",
+          "Guest discarded 6 and revealed a card.",
+          "Guest drew a blind card.",
+          "Host revealed their last card. Everyone else gets one final turn.",
+          "Host discarded 9 and revealed a card.",
+          "Host drew a blind card.",
+          "Guest discarded -2 and revealed a card.",
+          "Guest drew a blind card."
+        ],
+        "nextStarterId": "10000000-0000-4000-8000-000000000001",
+        "openingRevealCounts": {
+          "10000000-0000-4000-8000-000000000001": 2,
+          "20000000-0000-4000-8000-000000000002": 2
+        },
+        "phase": "game-over",
+        "players": [
+          {
+            "grid": [
+              {
+                "faceUp": true,
+                "id": "card-107-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": true,
+                "id": "card-92-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": true,
+                "id": "card-88-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": true,
+                "id": "card-140-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": true,
+                "id": "card-82-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": true,
+                "id": "card-42-2",
+                "removed": false,
+                "value": 2
+              },
+              {
+                "faceUp": true,
+                "id": "card-22-0",
+                "removed": false,
+                "value": 0
+              },
+              {
+                "faceUp": true,
+                "id": "card-81-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": true,
+                "id": "card-148-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": true,
+                "id": "card-89-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": true,
+                "id": "card-146-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": true,
+                "id": "card-37-1",
+                "removed": false,
+                "value": 1
+              }
+            ],
+            "id": "10000000-0000-4000-8000-000000000001",
+            "kind": "human",
+            "name": "Host",
+            "roundScore": 156,
+            "totalScore": 306
+          },
+          {
+            "grid": [
+              {
+                "faceUp": true,
+                "id": "card-106-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": true,
+                "id": "card-84-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": true,
+                "id": "card-75-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": true,
+                "id": "card-139-11",
+                "removed": false,
+                "value": 11
+              },
+              {
+                "faceUp": true,
+                "id": "card-133-11",
+                "removed": false,
+                "value": 11
+              },
+              {
+                "faceUp": true,
+                "id": "card-9--1",
+                "removed": false,
+                "value": -1
+              },
+              {
+                "faceUp": true,
+                "id": "card-33-1",
+                "removed": false,
+                "value": 1
+              },
+              {
+                "faceUp": true,
+                "id": "card-20-0",
+                "removed": false,
+                "value": 0
+              },
+              {
+                "faceUp": true,
+                "id": "card-41-2",
+                "removed": false,
+                "value": 2
+              },
+              {
+                "faceUp": true,
+                "id": "card-143-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": true,
+                "id": "card-77-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": true,
+                "id": "card-117-9",
+                "removed": false,
+                "value": 9
+              }
+            ],
+            "id": "20000000-0000-4000-8000-000000000002",
+            "kind": "human",
+            "name": "Guest",
+            "roundScore": 69,
+            "totalScore": 219
+          }
+        ],
+        "round": 1,
+        "roundCloserId": null,
+        "roundHistory": [
+          {
+            "closerId": "10000000-0000-4000-8000-000000000001",
+            "round": 1,
+            "scores": [
+              {
+                "name": "Host",
+                "playerId": "10000000-0000-4000-8000-000000000001",
+                "roundScore": 156,
+                "totalScore": 306
+              },
+              {
+                "name": "Guest",
+                "playerId": "20000000-0000-4000-8000-000000000002",
+                "roundScore": 69,
+                "totalScore": 219
+              }
+            ]
+          }
+        ],
+        "selectedSource": null,
+        "winnerId": "foreign-player"
+      }
+    },
+    {
+      "context": {
+        "readyForNextRoundPlayerIds": [],
+        "roomStatus": "playing",
+        "rosterPlayerIds": [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "expectedLayer": "semantic",
+      "name": "history order differs from roster",
+      "schema": "game-state.schema.json",
+      "value": {
+        "currentPlayerIndex": 1,
+        "discardPile": [
+          {
+            "faceUp": true,
+            "id": "card-3--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": true,
+            "id": "card-39-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": true,
+            "id": "card-132-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": true,
+            "id": "card-12--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": true,
+            "id": "card-62-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": true,
+            "id": "card-143-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": true,
+            "id": "card-103-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": true,
+            "id": "card-74-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": true,
+            "id": "card-84-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": true,
+            "id": "card-138-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": true,
+            "id": "card-127-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": true,
+            "id": "card-80-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": true,
+            "id": "card-72-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": true,
+            "id": "card-58-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": true,
+            "id": "card-90-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": true,
+            "id": "card-94-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": true,
+            "id": "card-112-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": true,
+            "id": "card-85-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": true,
+            "id": "card-11--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": true,
+            "id": "card-147-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": true,
+            "id": "card-110-9",
+            "removed": false,
+            "value": 9
+          }
+        ],
+        "drawPile": [
+          {
+            "faceUp": false,
+            "id": "card-114-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-111-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-37-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-122-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-45-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-97-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-53-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-86-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-106-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-43-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-70-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-130-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-14--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-118-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-27-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-26-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-64-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-28-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-126-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-121-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-75-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-61-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-25-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-78-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-51-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-56-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-42-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-54-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-49-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-16-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-30-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-46-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-134-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-34-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-107-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-13--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-128-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-141-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-83-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-129-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-35-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-116-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-99-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-44-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-60-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-73-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-57-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-136-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-139-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-82-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-2--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-113-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-68-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-124-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-38-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-6--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-81-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-15-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-115-9",
+            "removed": false,
+            "value": 9
+          },
+          {
+            "faceUp": false,
+            "id": "card-96-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-77-5",
+            "removed": false,
+            "value": 5
+          },
+          {
+            "faceUp": false,
+            "id": "card-48-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-20-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-40-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-67-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-24-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-10--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-7--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-144-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-33-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-36-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-22-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-123-10",
+            "removed": false,
+            "value": 10
+          },
+          {
+            "faceUp": false,
+            "id": "card-23-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-149-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-19-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-4--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-133-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-100-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-21-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-87-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-142-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-9--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-145-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-1--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-93-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-55-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-29-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-69-4",
+            "removed": false,
+            "value": 4
+          },
+          {
+            "faceUp": false,
+            "id": "card-18-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-47-2",
+            "removed": false,
+            "value": 2
+          },
+          {
+            "faceUp": false,
+            "id": "card-5--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-52-3",
+            "removed": false,
+            "value": 3
+          },
+          {
+            "faceUp": false,
+            "id": "card-0--2",
+            "removed": false,
+            "value": -2
+          },
+          {
+            "faceUp": false,
+            "id": "card-131-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-89-6",
+            "removed": false,
+            "value": 6
+          },
+          {
+            "faceUp": false,
+            "id": "card-31-1",
+            "removed": false,
+            "value": 1
+          },
+          {
+            "faceUp": false,
+            "id": "card-8--1",
+            "removed": false,
+            "value": -1
+          },
+          {
+            "faceUp": false,
+            "id": "card-109-8",
+            "removed": false,
+            "value": 8
+          },
+          {
+            "faceUp": false,
+            "id": "card-98-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-148-12",
+            "removed": false,
+            "value": 12
+          },
+          {
+            "faceUp": false,
+            "id": "card-91-7",
+            "removed": false,
+            "value": 7
+          },
+          {
+            "faceUp": false,
+            "id": "card-137-11",
+            "removed": false,
+            "value": 11
+          },
+          {
+            "faceUp": false,
+            "id": "card-17-0",
+            "removed": false,
+            "value": 0
+          },
+          {
+            "faceUp": false,
+            "id": "card-66-4",
+            "removed": false,
+            "value": 4
+          }
+        ],
+        "drawnCard": null,
+        "finalTurnPlayerIds": [],
+        "log": [
+          "Host ended the round. Host leads with 79.",
+          "Guest discarded -2 and revealed a card.",
+          "Guest drew a blind card.",
+          "Host revealed their last card. Everyone else gets one final turn.",
+          "Host discarded 1 and revealed a card.",
+          "Host drew a blind card.",
+          "Guest discarded 11 and revealed a card.",
+          "Guest drew a blind card."
+        ],
+        "nextStarterId": "10000000-0000-4000-8000-000000000001",
+        "openingRevealCounts": {
+          "10000000-0000-4000-8000-000000000001": 2,
+          "20000000-0000-4000-8000-000000000002": 2
+        },
+        "phase": "round-over",
+        "players": [
+          {
+            "grid": [
+              {
+                "faceUp": true,
+                "id": "card-63-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": true,
+                "id": "card-104-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": true,
+                "id": "card-79-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": true,
+                "id": "card-41-2",
+                "removed": false,
+                "value": 2
+              },
+              {
+                "faceUp": true,
+                "id": "card-101-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": true,
+                "id": "card-120-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": true,
+                "id": "card-88-6",
+                "removed": false,
+                "value": 6
+              },
+              {
+                "faceUp": true,
+                "id": "card-119-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": true,
+                "id": "card-140-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": true,
+                "id": "card-65-4",
+                "removed": false,
+                "value": 4
+              },
+              {
+                "faceUp": true,
+                "id": "card-59-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": true,
+                "id": "card-102-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "10000000-0000-4000-8000-000000000001",
+            "kind": "human",
+            "name": "Host",
+            "roundScore": 79,
+            "totalScore": 79
+          },
+          {
+            "grid": [
+              {
+                "faceUp": true,
+                "id": "card-32-1",
+                "removed": false,
+                "value": 1
+              },
+              {
+                "faceUp": true,
+                "id": "card-95-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": true,
+                "id": "card-71-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": true,
+                "id": "card-92-7",
+                "removed": false,
+                "value": 7
+              },
+              {
+                "faceUp": true,
+                "id": "card-125-10",
+                "removed": false,
+                "value": 10
+              },
+              {
+                "faceUp": true,
+                "id": "card-146-12",
+                "removed": false,
+                "value": 12
+              },
+              {
+                "faceUp": true,
+                "id": "card-76-5",
+                "removed": false,
+                "value": 5
+              },
+              {
+                "faceUp": true,
+                "id": "card-117-9",
+                "removed": false,
+                "value": 9
+              },
+              {
+                "faceUp": true,
+                "id": "card-108-8",
+                "removed": false,
+                "value": 8
+              },
+              {
+                "faceUp": true,
+                "id": "card-50-3",
+                "removed": false,
+                "value": 3
+              },
+              {
+                "faceUp": true,
+                "id": "card-135-11",
+                "removed": false,
+                "value": 11
+              },
+              {
+                "faceUp": true,
+                "id": "card-105-8",
+                "removed": false,
+                "value": 8
+              }
+            ],
+            "id": "20000000-0000-4000-8000-000000000002",
+            "kind": "human",
+            "name": "Guest",
+            "roundScore": 86,
+            "totalScore": 86
+          }
+        ],
+        "round": 1,
+        "roundCloserId": null,
+        "roundHistory": [
+          {
+            "closerId": "10000000-0000-4000-8000-000000000001",
+            "round": 1,
+            "scores": [
+              {
+                "name": "Guest",
+                "playerId": "20000000-0000-4000-8000-000000000002",
+                "roundScore": 86,
+                "totalScore": 86
+              },
+              {
+                "name": "Host",
+                "playerId": "10000000-0000-4000-8000-000000000001",
+                "roundScore": 79,
+                "totalScore": 79
+              }
+            ]
+          }
+        ],
+        "selectedSource": null,
+        "winnerId": null
+      }
+    }
+  ],
+  "contractVersion": 1
+}

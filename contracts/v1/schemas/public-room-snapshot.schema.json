@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/public-room-snapshot.schema.json",
+  "title": "Skyjo public room snapshot",
+  "$ref": "#/$defs/publicRoomSnapshot",
+  "$defs": {
+    "publicCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "value", "faceUp", "removed"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^(?:grid-[0-7]-(?:[0-9]|1[01])|discard-top|drawn-card)$" },
+        "value": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/cardValue" }] },
+        "faceUp": { "type": "boolean" },
+        "removed": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "faceUp": { "const": false } }, "required": ["faceUp"] },
+          "then": { "properties": { "value": { "type": "null" } } },
+          "else": { "properties": { "value": { "$ref": "common.schema.json#/$defs/cardValue" } } }
+        }
+      ]
+    },
+    "publicPlayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "name", "grid", "totalScore", "roundScore"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "kind": { "$ref": "common.schema.json#/$defs/playerKind" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "grid": { "type": "array", "minItems": 12, "maxItems": 12, "items": { "$ref": "#/$defs/publicCard" } },
+        "totalScore": { "$ref": "common.schema.json#/$defs/score" },
+        "roundScore": { "$ref": "common.schema.json#/$defs/score" }
+      }
+    },
+    "publicRoundScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["playerId", "name", "roundScore", "totalScore"],
+      "properties": {
+        "playerId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "roundScore": { "$ref": "common.schema.json#/$defs/score" },
+        "totalScore": { "$ref": "common.schema.json#/$defs/score" }
+      }
+    },
+    "publicRoundHistory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round", "closerId", "scores"],
+      "properties": {
+        "round": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "closerId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "scores": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/publicRoundScore" } }
+      }
+    },
+    "publicGameState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["players", "drawPileCount", "discardPile", "currentPlayerIndex", "phase", "selectedSource", "hasDrawnCard", "drawnCard", "round", "log", "winnerId", "nextStarterId", "roundCloserId", "finalTurnPlayerIds", "openingRevealCounts", "roundHistory"],
+      "properties": {
+        "players": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/publicPlayer" } },
+        "drawPileCount": { "type": "integer", "minimum": 0, "maximum": 150 },
+        "discardPile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "top"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0, "maximum": 150 },
+            "top": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/publicCard" }] }
+          }
+        },
+        "currentPlayerIndex": { "type": "integer", "minimum": 0, "maximum": 7 },
+        "phase": { "$ref": "common.schema.json#/$defs/turnPhase" },
+        "selectedSource": { "enum": [null, "draw", "discard"] },
+        "hasDrawnCard": { "type": "boolean" },
+        "drawnCard": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/publicCard" }] },
+        "round": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "log": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 320 } },
+        "winnerId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/identifier" }] },
+        "nextStarterId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/identifier" }] },
+        "roundCloserId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/identifier" }] },
+        "finalTurnPlayerIds": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "$ref": "common.schema.json#/$defs/identifier" } },
+        "openingRevealCounts": {
+          "type": "object",
+          "maxProperties": 8,
+          "propertyNames": { "$ref": "common.schema.json#/$defs/identifier" },
+          "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 2 }
+        },
+        "roundHistory": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/publicRoundHistory" } }
+      }
+    },
+    "roomPlayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "connected", "host", "controller", "disconnectedAt", "aiTakeoverAt"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "connected": { "type": "boolean" },
+        "host": { "type": "boolean" },
+        "joinedAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" },
+        "lastSeenAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" },
+        "controller": { "enum": ["human", "ai"] },
+        "disconnectedAt": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/epochMilliseconds" }] },
+        "aiTakeoverAt": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/epochMilliseconds" }] }
+      }
+    },
+    "chatMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "playerId", "playerName", "text", "createdAt"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "playerId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "playerName": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 280 },
+        "createdAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" }
+      }
+    },
+    "publicRoomSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "hostId", "players", "chatMessages", "readyForNextRoundPlayerIds", "state", "status", "updatedAt", "completedGameId", "finishedByAi", "hostTransferAt", "revision", "serverNow"],
+      "properties": {
+        "code": { "$ref": "common.schema.json#/$defs/roomCode" },
+        "hostId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "players": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/roomPlayer" } },
+        "chatMessages": { "type": "array", "maxItems": 80, "items": { "$ref": "#/$defs/chatMessage" } },
+        "readyForNextRoundPlayerIds": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "$ref": "common.schema.json#/$defs/identifier" } },
+        "state": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/publicGameState" }] },
+        "status": { "enum": ["waiting", "playing", "finished"] },
+        "updatedAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" },
+        "completedGameId": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/identifier" }] },
+        "finishedByAi": { "type": "boolean" },
+        "hostTransferAt": { "oneOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/epochMilliseconds" }] },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "serverNow": { "$ref": "common.schema.json#/$defs/epochMilliseconds" }
+      }
+    }
+  }
+}

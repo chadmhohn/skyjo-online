@@ -81,6 +81,55 @@ async function waitForHealth(url) {
   throw lastError || new Error('server did not become healthy');
 }
 
+async function assertOversizedAccessPasswordRejected(repoRoot) {
+  const oversizedPassword = 'x'.repeat(4097);
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-access-bound-'));
+  let child;
+  try {
+    child = spawn(process.execPath, ['server.mjs'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        HOST: '127.0.0.1',
+        PORT: '0',
+        SKYJO_ACCESS_PASSWORD: oversizedPassword,
+        SKYJO_DB_FILE: path.join(temporaryDirectory, 'skyjo.sqlite'),
+        SKYJO_INVITE_SECRET: 'oversized-access-test-invite-secret',
+        SKYJO_ROOMS_FILE: path.join(temporaryDirectory, 'rooms.json'),
+        SKYJO_SESSION_SECRET: 'oversized-access-test-session-secret',
+        SKYJO_VAPID_PRIVATE_KEY: '',
+        SKYJO_VAPID_PUBLIC_KEY: ''
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let output = '';
+    child.stdout.on('data', (data) => { output += String(data); });
+    child.stderr.on('data', (data) => { output += String(data); });
+    const exitCode = await new Promise((resolve, reject) => {
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGKILL');
+      }, 5000);
+      child.once('error', (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once('exit', (code) => {
+        clearTimeout(timeout);
+        if (timedOut) reject(new Error('oversized access-password startup check timed out'));
+        else resolve(code);
+      });
+    });
+    assert.equal(exitCode, 1, 'an access password outside the JSON contract fails startup');
+    assert.match(output, /authentication secrets are missing or invalid/i);
+    assert.equal(output.includes(oversizedPassword), false, 'startup validation never prints the configured password');
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
 async function login(url, password, next = '/') {
   const response = await fetch(`${url}/login`, {
     method: 'POST',
@@ -104,6 +153,20 @@ async function accountRequest(url, siteCookie, path, body, method = 'POST') {
     body: JSON.stringify(body)
   });
   const payload = await response.json().catch(() => ({}));
+  return { response, payload };
+}
+
+async function accessSessionRequest(url, { method = 'GET', body, cookie, contentType } = {}) {
+  const headers = {};
+  if (cookie) headers.Cookie = cookie;
+  if (contentType) headers['Content-Type'] = contentType;
+  const response = await fetch(`${url}/api/access/session`, {
+    method,
+    headers,
+    ...(body === undefined ? {} : { body }),
+    redirect: 'manual'
+  });
+  const payload = await response.json();
   return { response, payload };
 }
 
@@ -485,6 +548,7 @@ const port = await getOpenPort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const password = 'test-password';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+await assertOversizedAccessPasswordRejected(repoRoot);
 const server = spawn(process.execPath, ['server.mjs'], {
   cwd: repoRoot,
   env: {
@@ -545,7 +609,142 @@ try {
   const protectedShareLink = await fetch(`${baseUrl}/lobby?room=ABCDE`, { redirect: 'manual' });
   assert.equal(protectedShareLink.status, 302);
   assert.equal(protectedShareLink.headers.get('location'), '/login?next=%2Flobby%3Froom%3DABCDE');
+
+  const unauthenticatedApi = await fetch(`${baseUrl}/api/account/me?invite=invalid`, { redirect: 'manual' });
+  assert.equal(unauthenticatedApi.status, 401, 'unauthenticated APIs fail with JSON instead of redirecting');
+  assert.deepEqual(await unauthenticatedApi.json(), {
+    code: 'ACCESS_REQUIRED',
+    error: 'Skyjo access is required.'
+  });
+
+  const initialAccess = await accessSessionRequest(baseUrl);
+  assert.equal(initialAccess.response.status, 200);
+  assert.deepEqual(initialAccess.payload, { authenticated: false });
+  assert.match(initialAccess.response.headers.get('content-type') || '', /^application\/json\b/);
+  assert.match(initialAccess.response.headers.get('cache-control') || '', /no-store/i);
+
+  const malformedAccess = await accessSessionRequest(baseUrl, { cookie: 'skyjo_smoke=%E0%A4%A' });
+  assert.equal(malformedAccess.response.status, 200, 'malformed cookies do not escape as server errors');
+  assert.deepEqual(malformedAccess.payload, { authenticated: false });
+
+  const unsupportedAccessMethod = await accessSessionRequest(baseUrl, { method: 'PATCH' });
+  assert.equal(unsupportedAccessMethod.response.status, 405);
+  assert.equal(unsupportedAccessMethod.response.headers.get('allow'), 'GET, POST, DELETE');
+  assert.deepEqual(unsupportedAccessMethod.payload, {
+    code: 'METHOD_NOT_ALLOWED',
+    error: 'Method not allowed.'
+  });
+
+  const unsupportedAccessMedia = await accessSessionRequest(baseUrl, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+    contentType: 'text/plain'
+  });
+  assert.equal(unsupportedAccessMedia.response.status, 415);
+  assert.equal(unsupportedAccessMedia.payload.code, 'UNSUPPORTED_MEDIA_TYPE');
+
+  for (const body of [
+    {},
+    { password: '' },
+    { password: 123 },
+    { password, unexpected: true },
+    { password: 'x'.repeat(4097) }
+  ]) {
+    const invalidAccess = await accessSessionRequest(baseUrl, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      contentType: 'application/json; charset=utf-8'
+    });
+    assert.equal(invalidAccess.response.status, 400);
+    assert.equal(invalidAccess.payload.code, 'INVALID_REQUEST');
+  }
+
+  const maximumLengthAccess = await accessSessionRequest(baseUrl, {
+    method: 'POST',
+    body: JSON.stringify({ password: 'x'.repeat(4096) }),
+    contentType: 'application/json'
+  });
+  assert.equal(maximumLengthAccess.response.status, 401, 'a 4096-character credential is inside the request bound');
+  assert.equal(maximumLengthAccess.payload.code, 'ACCESS_AUTHENTICATION_FAILED');
+
+  const malformedAccessJson = await accessSessionRequest(baseUrl, {
+    method: 'POST',
+    body: '{"password":',
+    contentType: 'application/json'
+  });
+  assert.equal(malformedAccessJson.response.status, 400);
+  assert.equal(malformedAccessJson.payload.code, 'INVALID_JSON');
+
+  const nonObjectAccessJson = await accessSessionRequest(baseUrl, {
+    method: 'POST',
+    body: '[]',
+    contentType: 'application/json'
+  });
+  assert.equal(nonObjectAccessJson.response.status, 400);
+  assert.equal(nonObjectAccessJson.payload.code, 'EXPECTED_JSON_OBJECT');
+
+  const oversizedAccess = await accessSessionRequest(baseUrl, {
+    method: 'POST',
+    body: JSON.stringify({ password: 'x'.repeat(256 * 1024) }),
+    contentType: 'application/json'
+  });
+  assert.equal(oversizedAccess.response.status, 413);
+  assert.equal(oversizedAccess.payload.code, 'REQUEST_TOO_LARGE');
+
+  const rejectedAccess = await accessSessionRequest(baseUrl, {
+    method: 'POST',
+    body: JSON.stringify({ password: 'wrong-password' }),
+    contentType: 'application/json'
+  });
+  assert.equal(rejectedAccess.response.status, 401);
+  assert.deepEqual(rejectedAccess.payload, {
+    code: 'ACCESS_AUTHENTICATION_FAILED',
+    error: 'Authentication failed.'
+  });
+  assert.equal(rejectedAccess.response.headers.get('set-cookie'), null);
+
+  const grantedAccess = await accessSessionRequest(baseUrl, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+    contentType: 'application/json'
+  });
+  assert.equal(grantedAccess.response.status, 200);
+  assert.deepEqual(grantedAccess.payload, { authenticated: true });
+  const grantedCookieHeaders = grantedAccess.response.headers.getSetCookie();
+  assert.equal(grantedCookieHeaders.length, 1);
+  assert.match(grantedCookieHeaders[0], /^skyjo_smoke=.+; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+$/);
+  const grantedCookie = grantedCookieHeaders[0].split(';', 1)[0];
+  const confirmedAccess = await accessSessionRequest(baseUrl, { cookie: grantedCookie });
+  assert.deepEqual(confirmedAccess.payload, { authenticated: true });
+
+  const accessLogoutAccount = await createAccount(
+    baseUrl,
+    grantedCookie,
+    'access-logout@example.com',
+    'Access Logout'
+  );
+  const accountCookie = accessLogoutAccount.cookie
+    .split('; ')
+    .find((value) => value.startsWith('skyjo_account='));
+  assert.ok(accountCookie, 'access logout setup returned an account cookie');
+  const deletedAccess = await accessSessionRequest(baseUrl, {
+    method: 'DELETE',
+    cookie: accessLogoutAccount.cookie
+  });
+  assert.equal(deletedAccess.response.status, 200);
+  assert.deepEqual(deletedAccess.payload, { authenticated: false });
+  const expiredCookies = deletedAccess.response.headers.getSetCookie();
+  assert.equal(expiredCookies.length, 2, 'access logout expires both session layers');
+  assert.ok(expiredCookies.some((value) => /^skyjo_smoke=;/.test(value) && /Max-Age=0/.test(value)));
+  assert.ok(expiredCookies.some((value) => /^skyjo_account=;/.test(value) && /Max-Age=0/.test(value)));
+
+  const repeatedDelete = await accessSessionRequest(baseUrl, { method: 'DELETE' });
+  assert.equal(repeatedDelete.response.status, 200, 'access logout is idempotent');
+  assert.equal(repeatedDelete.response.headers.getSetCookie().length, 2);
+
   const cookie = await login(baseUrl, password, '/lobby?room=ABCDE');
+  const revokedAccount = await getJson(baseUrl, `${cookie}; ${accountCookie}`, '/api/account/me');
+  assert.equal(revokedAccount.user, null, 'access logout revokes the current account session when available');
   const authenticatedShell = await fetch(`${baseUrl}/`, { headers: { Cookie: cookie } });
   assert.equal(authenticatedShell.status, 200);
   assert.match(authenticatedShell.headers.get('cache-control') || '', /no-store/i);
@@ -579,7 +778,10 @@ try {
     confirmPassword: 'different-password'
   });
   assert.equal(controlledValidation.response.status, 400, 'controlled validation remains a client error');
-  assert.deepEqual(controlledValidation.payload, { error: 'Passwords must match.' });
+  assert.deepEqual(controlledValidation.payload, {
+    code: 'PASSWORDS_MUST_MATCH',
+    error: 'Passwords must match.'
+  });
   assert.equal(controlledValidation.response.headers.get('x-content-type-options'), 'nosniff');
   const pushConfig = await getJson(baseUrl, hostAccount.cookie, '/api/push/config');
   assert.equal(typeof pushConfig.enabled, 'boolean', 'push config reports enabled state');
@@ -683,7 +885,11 @@ try {
     expectedAccountUserId: hostAccount.user.id
   });
   assert.equal(internalFailure.response.status, 500, 'unknown persistence failures stay server errors');
-  assert.deepEqual(internalFailure.payload, { error: 'Request failed.' }, 'unknown exception details are not disclosed');
+  assert.deepEqual(
+    internalFailure.payload,
+    { code: 'REQUEST_FAILED', error: 'Request failed.' },
+    'unknown exception details are not disclosed'
+  );
   assert.equal(internalFailure.response.headers.get('x-content-type-options'), 'nosniff');
   assert.doesNotMatch(JSON.stringify(internalFailure.payload), /sqlite|constraint|script|internal-sqlite-marker/i);
 

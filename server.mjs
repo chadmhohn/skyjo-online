@@ -109,6 +109,7 @@ const databaseRetryDelayMs = Math.max(100, Number(process.env.SKYJO_DATABASE_RET
 const roomsSaveDebounceMs = 250;
 const maxRoomChatMessages = 80;
 const maxRoomChatMessageLength = 280;
+const maxAccessPasswordLength = 4096;
 const inviteCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const roomCodeLength = 5;
 const secureCodeMaxAttempts = 128;
@@ -154,7 +155,14 @@ const mimeTypes = new Map([
   ['.webp', 'image/webp']
 ]);
 
-if (!accessPassword || !sessionSecret || typeof inviteSecret !== 'string' || inviteSecret.length < 16) {
+const accessPasswordLength = typeof accessPassword === 'string' ? [...accessPassword].length : 0;
+if (
+  accessPasswordLength < 1 ||
+  accessPasswordLength > maxAccessPasswordLength ||
+  !sessionSecret ||
+  typeof inviteSecret !== 'string' ||
+  inviteSecret.length < 16
+) {
   console.error('Skyjo authentication secrets are missing or invalid.');
   console.error('Set the access, session, and invite secrets before running npm start.');
   process.exit(1);
@@ -252,10 +260,14 @@ function createSessionCookie() {
 
 function parseCookies(header = '') {
   const cookies = new Map();
-  for (const part of header.split(';')) {
+  for (const part of String(header || '').split(';')) {
     const [rawName, ...rawValue] = part.trim().split('=');
     if (!rawName || rawValue.length === 0) continue;
-    cookies.set(rawName, decodeURIComponent(rawValue.join('=')));
+    try {
+      cookies.set(rawName, decodeURIComponent(rawValue.join('=')));
+    } catch {
+      cookies.delete(rawName);
+    }
   }
   return cookies;
 }
@@ -1651,8 +1663,8 @@ function appendRoomChatMessage(room, player, text) {
   return message;
 }
 
-function sendApiError(res, status, message) {
-  sendJsonResponse(res, status, { error: message });
+function sendApiError(res, status, code, message, headers = {}) {
+  sendJsonResponse(res, status, { code, error: message }, headers);
 }
 
 function accountSessionHeaders(session) {
@@ -1664,7 +1676,7 @@ function accountSessionHeaders(session) {
 function requireAccountForApi(req, res) {
   const user = currentAccountUser(req);
   if (!user) {
-    sendApiError(res, 401, 'Sign in to your Skyjo account.');
+    sendApiError(res, 401, 'ACCOUNT_AUTHENTICATION_REQUIRED', 'Sign in to your Skyjo account.');
     return null;
   }
   return user;
@@ -1674,7 +1686,7 @@ function requireAdminForApi(req, res) {
   const user = requireAccountForApi(req, res);
   if (!user) return null;
   if (user.role !== 'admin') {
-    sendApiError(res, 403, 'Admin privileges are required.');
+    sendApiError(res, 403, 'ADMIN_REQUIRED', 'Admin privileges are required.');
     return null;
   }
   return user;
@@ -1710,7 +1722,7 @@ async function handleApiRequest(req, res, url) {
       const body = await readJsonBody(req);
       const user = await accountStore.authenticate(body.email, body.password);
       if (!user) {
-        sendApiError(res, 401, 'Email or password did not match.');
+        sendApiError(res, 401, 'ACCOUNT_AUTHENTICATION_FAILED', 'Email or password did not match.');
         return true;
       }
       const session = accountStore.createSession(user.id, accountSessionTtlMs);
@@ -1757,7 +1769,7 @@ async function handleApiRequest(req, res, url) {
       const user = requireAccountForApi(req, res);
       if (!user) return true;
       if (!pushNotificationsEnabled) {
-        sendApiError(res, 503, 'Push notifications are not configured.');
+        sendApiError(res, 503, 'PUSH_NOT_CONFIGURED', 'Push notifications are not configured.');
         return true;
       }
       const body = await readJsonBody(req);
@@ -1782,11 +1794,11 @@ async function handleApiRequest(req, res, url) {
       const roomCode = cleanServerRoomCode(body.roomCode);
       const room = rooms.get(roomCode);
       if (!room) {
-        sendApiError(res, 404, 'Room not found.');
+        sendApiError(res, 404, 'ROOM_NOT_FOUND', 'Room not found.');
         return true;
       }
       if (!room.players.some((player) => player.userId === user.id)) {
-        sendApiError(res, 403, 'Join the room before sharing it.');
+        sendApiError(res, 403, 'ROOM_MEMBERSHIP_REQUIRED', 'Join the room before sharing it.');
         return true;
       }
       const invite = createRoomInviteToken(room);
@@ -1846,7 +1858,7 @@ async function handleApiRequest(req, res, url) {
       if (!user) return true;
       const game = accountStore.getVisibleGame(user, gameMatch[1]);
       if (!game) {
-        sendApiError(res, 404, 'Game not found.');
+        sendApiError(res, 404, 'GAME_NOT_FOUND', 'Game not found.');
         return true;
       }
       sendJsonResponse(res, 200, { game });
@@ -1859,7 +1871,7 @@ async function handleApiRequest(req, res, url) {
       if (!user) return true;
       const playerStats = accountStore.getVisiblePlayerStats(user, playerMatch[1]);
       if (!playerStats) {
-        sendApiError(res, 404, 'Player not found.');
+        sendApiError(res, 404, 'PLAYER_NOT_FOUND', 'Player not found.');
         return true;
       }
       sendJsonResponse(res, 200, playerStats);
@@ -1903,7 +1915,7 @@ async function handleApiRequest(req, res, url) {
       if (!adminUser) return true;
       const body = await readJsonBody(req);
       if (adminUser.id === adminUserMatch[1] && (body.disabled === true || body.disabled === 1 || body.role === 'player')) {
-        sendApiError(res, 400, 'You cannot revoke your own admin access.');
+        sendApiError(res, 400, 'ADMIN_SELF_REVOKE_FORBIDDEN', 'You cannot revoke your own admin access.');
         return true;
       }
       const user = accountStore.patchUser(adminUserMatch[1], {
@@ -1919,9 +1931,68 @@ async function handleApiRequest(req, res, url) {
   } catch (error) {
     const publicError = publicApiErrorResponse(error);
     if (publicError.status === 500) console.error('API request failed:', error);
-    sendApiError(res, publicError.status, publicError.message);
+    sendApiError(res, publicError.status, publicError.code, publicError.message);
     return true;
   }
+}
+
+function requestUsesJson(req) {
+  const contentType = typeof req.headers['content-type'] === 'string'
+    ? req.headers['content-type'].split(';', 1)[0].trim().toLowerCase()
+    : '';
+  return contentType === 'application/json';
+}
+
+function validAccessSessionBody(body) {
+  if (Object.keys(body).length !== 1 || !Object.hasOwn(body, 'password')) return false;
+  if (typeof body.password !== 'string') return false;
+  const passwordLength = [...body.password].length;
+  return passwordLength >= 1 && passwordLength <= maxAccessPasswordLength;
+}
+
+async function handleAccessSessionRequest(req, res, url) {
+  if (url.pathname !== '/api/access/session') return false;
+
+  if (req.method === 'GET') {
+    sendJsonResponse(res, 200, { authenticated: hasValidSession(req) });
+    return true;
+  }
+
+  if (req.method === 'DELETE') {
+    try {
+      accountStore?.deleteSession(accountToken(req));
+    } catch {
+      console.error('Account session revocation failed during access logout.');
+    }
+    sendJsonResponse(res, 200, { authenticated: false }, {
+      'Set-Cookie': [cookieHeader('', 0), accountCookieHeader('', 0)]
+    });
+    return true;
+  }
+
+  if (req.method !== 'POST') {
+    sendApiError(res, 405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', {
+      Allow: 'GET, POST, DELETE'
+    });
+    return true;
+  }
+
+  try {
+    if (!requestUsesJson(req)) throw new PublicApiError('UNSUPPORTED_MEDIA_TYPE');
+    const body = await readJsonBody(req);
+    if (!validAccessSessionBody(body)) throw new PublicApiError('INVALID_REQUEST');
+    if (!timingSafeEqualString(body.password, accessPassword)) {
+      throw new PublicApiError('ACCESS_AUTHENTICATION_FAILED');
+    }
+    sendJsonResponse(res, 200, { authenticated: true }, {
+      'Set-Cookie': cookieHeader(createSessionCookie(), Math.floor(sessionTtlMs / 1000))
+    });
+  } catch (error) {
+    const publicError = publicApiErrorResponse(error);
+    if (publicError.status === 500) console.error('Access session request failed.');
+    sendApiError(res, publicError.status, publicError.code, publicError.message);
+  }
+  return true;
 }
 
 function renderLogin(error = false, next = '/', inviteCodeError = false, inviteRateLimited = false, nonce = htmlNonce()) {
@@ -2157,7 +2228,7 @@ const server = http.createServer(async (req, res) => {
       ))
     ) {
       if (url.pathname.startsWith('/api/')) {
-        sendJsonResponse(res, 503, { error: 'Service unavailable.' }, { 'Retry-After': '1' });
+        sendApiError(res, 503, 'SERVICE_UNAVAILABLE', 'Service unavailable.', { 'Retry-After': '1' });
       } else {
         send(res, 503, 'Service unavailable.', {
           'Content-Type': 'text/plain; charset=utf-8',
@@ -2198,6 +2269,8 @@ const server = http.createServer(async (req, res) => {
       await handleTestPwaActivationBarrierRequest(req, res, url);
       return;
     }
+
+    if (await handleAccessSessionRequest(req, res, url)) return;
 
     if (isPublicPwaAsset(url.pathname)) {
       await serveStatic(req, res);
@@ -2256,6 +2329,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (!hasValidSession(req)) {
+      if (url.pathname.startsWith('/api/')) {
+        sendApiError(res, 401, 'ACCESS_REQUIRED', 'Skyjo access is required.');
+        return;
+      }
       if (url.searchParams.has('invite') && (await handleRoomInviteAccess(res, url))) return;
       const next = safeRedirectPath(`${url.pathname}${url.search}`);
       send(res, 302, '', { Location: `/login?next=${encodeURIComponent(next)}` });
@@ -2264,11 +2341,11 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname.startsWith('/api/')) {
       if (!(await ensureAccountStore())) {
-        sendApiError(res, 503, 'Service is not ready.');
+        sendApiError(res, 503, 'SERVICE_NOT_READY', 'Service is not ready.');
         return;
       }
       if (await handleApiRequest(req, res, url)) return;
-      sendApiError(res, 404, 'API route not found.');
+      sendApiError(res, 404, 'API_ROUTE_NOT_FOUND', 'API route not found.');
       return;
     }
 

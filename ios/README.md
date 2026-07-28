@@ -24,7 +24,24 @@ The stable clean-clone command dynamically selects an iPhone on the newest avail
 ./scripts/ios-build-test.sh
 ```
 
-The script performs one unsigned `xcodebuild test`, writes ignored local evidence under `ios/Artifacts/`, and excludes credentials and CI tokens from the Xcode process environment. To inspect destinations without running tests:
+The script verifies the Release API origin, installs locked Node dependencies when needed, builds `server-dist`, and launches the real `server.mjs` on a dynamic loopback port with a fixed non-secret access fixture, generated test-only session/invite secrets, and temporary SQLite/room files. It passes only the loopback URL to the simulator, performs one unsigned `xcodebuild test`, proves the native access-cookie round trip against that server, terminates the exact child, and deletes the validated temporary state/raw log. Its exit finalizer scans raw evidence for generated secrets and stages only verified sanitized files into the exact ignored directory CI may upload under `ios/Artifacts/`. Credentials and CI tokens never enter the `xcodebuild` environment.
+
+Run the focused access/networking gate used by `iOS / Networking Contracts` with:
+
+```sh
+./scripts/ios-build-test.sh --networking-contracts
+```
+
+Verify the portable schemas and deterministic fixture corpus separately:
+
+```sh
+npm run contracts:fixtures:check
+npm run test:unit:contracts
+```
+
+Use `npm run contracts:fixtures:update` only after an intentional schema or canonical-producer change. The update is guarded against replacing a dirty fixture directory; review the generated corpus and SHA-256 manifest before committing.
+
+To inspect destinations without running tests:
 
 ```sh
 xcodebuild \
@@ -38,12 +55,14 @@ xcodebuild \
 - `SkyjoNative.xcodeproj` contains the app, unit-test, and UI-test targets plus a shared scheme.
 - `SkyjoApp/` contains only the native application shell and resources. It does not embed a web view.
 - `Packages/SkyjoDomain` is the pure domain boundary.
-- `Packages/SkyjoNetworking` and `Packages/SkyjoPersistence` depend only on `SkyjoDomain`.
+- `Packages/SkyjoNetworking` and `Packages/SkyjoPersistence` depend only on `SkyjoDomain`. `AccessSessionClient` uses an actor plus an injected dedicated `URLSession`/cookie store, rejects redirects, bounds payloads, decodes stable `{ code, error }` failures, and uses a safe fallback for unknown or malformed errors.
 - `Packages/SkyjoDesignSystem` contains reusable SwiftUI presentation primitives.
 - `Packages/SkyjoTestSupport` aggregates all four package boundaries for tests and is never linked into the production app.
 - `TestPlans/SkyjoCI.xctestplan` enables unit, package-graph, resource, launch, and no-web-view checks with coverage.
 
 All packages use Swift 6 language mode, require iOS 18 or later, and have no remote dependencies.
+
+Language-neutral schemas and fixtures live at [`contracts/v1`](../contracts/v1), outside the Swift package graph. Contract bundle version 1 is independent of the multiplayer protocol, snapshot envelope, presence, database, room persistence, PWA/server release, and native app version.
 
 ## Configuration
 

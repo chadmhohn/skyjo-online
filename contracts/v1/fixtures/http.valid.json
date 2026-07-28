@@ -1,0 +1,691 @@
+{
+  "cases": [
+    {
+      "name": "access signed out",
+      "schema": "account-http.schema.json",
+      "value": {
+        "authenticated": false
+      }
+    },
+    {
+      "name": "access signed in",
+      "schema": "account-http.schema.json",
+      "value": {
+        "authenticated": true
+      }
+    },
+    {
+      "name": "account absent",
+      "schema": "account-http.schema.json",
+      "value": {
+        "user": null
+      }
+    },
+    {
+      "name": "account user",
+      "schema": "account-http.schema.json",
+      "value": {
+        "user": {
+          "createdAt": 1784998800104,
+          "disabled": false,
+          "displayName": "Fixture User",
+          "email": "fixture.user@example.invalid",
+          "id": "30000000-0000-4000-8000-000000000003",
+          "lastLoginAt": null,
+          "role": "player",
+          "updatedAt": 1784998800104
+        }
+      }
+    },
+    {
+      "name": "operation succeeded",
+      "schema": "account-http.schema.json",
+      "value": {
+        "ok": true
+      }
+    },
+    {
+      "name": "recorded stats game",
+      "schema": "stats-http.schema.json",
+      "value": {
+        "game": {
+          "completedAt": 1784998800000,
+          "createdByUserId": "30000000-0000-4000-8000-000000000003",
+          "finishedByAi": false,
+          "id": "40000000-0000-4000-8000-000000000001",
+          "mode": "single",
+          "participants": [
+            {
+              "displayName": "Guest",
+              "id": "40000000-0000-4000-8000-000000000002",
+              "kind": "human",
+              "playerId": "20000000-0000-4000-8000-000000000002",
+              "rank": 1,
+              "roundScore": 69,
+              "totalScore": 219,
+              "userId": null,
+              "won": true
+            },
+            {
+              "displayName": "Host",
+              "id": "40000000-0000-4000-8000-000000000003",
+              "kind": "human",
+              "playerId": "10000000-0000-4000-8000-000000000001",
+              "rank": 2,
+              "roundScore": 156,
+              "totalScore": 306,
+              "userId": "30000000-0000-4000-8000-000000000003",
+              "won": false
+            }
+          ],
+          "roomCode": null,
+          "roundCount": 1,
+          "rounds": [
+            {
+              "displayName": "Host",
+              "id": "40000000-0000-4000-8000-000000000004",
+              "playerId": "10000000-0000-4000-8000-000000000001",
+              "round": 1,
+              "roundScore": 156,
+              "totalScore": 306,
+              "userId": "30000000-0000-4000-8000-000000000003"
+            },
+            {
+              "displayName": "Guest",
+              "id": "40000000-0000-4000-8000-000000000005",
+              "playerId": "20000000-0000-4000-8000-000000000002",
+              "round": 1,
+              "roundScore": 69,
+              "totalScore": 219,
+              "userId": null
+            }
+          ],
+          "winnerName": "Guest",
+          "winnerPlayerId": "20000000-0000-4000-8000-000000000002",
+          "winnerUserId": null
+        }
+      }
+    },
+    {
+      "name": "stats games list",
+      "schema": "stats-http.schema.json",
+      "value": {
+        "games": [
+          {
+            "completedAt": 1784998800000,
+            "createdByUserId": "30000000-0000-4000-8000-000000000003",
+            "finishedByAi": false,
+            "id": "40000000-0000-4000-8000-000000000001",
+            "mode": "single",
+            "participants": [
+              {
+                "displayName": "Guest",
+                "id": "40000000-0000-4000-8000-000000000002",
+                "kind": "human",
+                "playerId": "20000000-0000-4000-8000-000000000002",
+                "rank": 1,
+                "roundScore": 69,
+                "totalScore": 219,
+                "userId": null,
+                "won": true
+              },
+              {
+                "displayName": "Host",
+                "id": "40000000-0000-4000-8000-000000000003",
+                "kind": "human",
+                "playerId": "10000000-0000-4000-8000-000000000001",
+                "rank": 2,
+                "roundScore": 156,
+                "totalScore": 306,
+                "userId": "30000000-0000-4000-8000-000000000003",
+                "won": false
+              }
+            ],
+            "roomCode": null,
+            "roundCount": 1,
+            "rounds": [
+              {
+                "displayName": "Host",
+                "id": "40000000-0000-4000-8000-000000000004",
+                "playerId": "10000000-0000-4000-8000-000000000001",
+                "round": 1,
+                "roundScore": 156,
+                "totalScore": 306,
+                "userId": "30000000-0000-4000-8000-000000000003"
+              },
+              {
+                "displayName": "Guest",
+                "id": "40000000-0000-4000-8000-000000000005",
+                "playerId": "20000000-0000-4000-8000-000000000002",
+                "round": 1,
+                "roundScore": 69,
+                "totalScore": 219,
+                "userId": null
+              }
+            ],
+            "winnerName": "Guest",
+            "winnerPlayerId": "20000000-0000-4000-8000-000000000002",
+            "winnerUserId": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "stats summary",
+      "schema": "stats-http.schema.json",
+      "value": {
+        "admin": null,
+        "coPlayers": [],
+        "recentGames": [
+          {
+            "completedAt": 1784998800000,
+            "createdByUserId": "30000000-0000-4000-8000-000000000003",
+            "finishedByAi": false,
+            "id": "40000000-0000-4000-8000-000000000001",
+            "mode": "single",
+            "participants": [
+              {
+                "displayName": "Guest",
+                "id": "40000000-0000-4000-8000-000000000002",
+                "kind": "human",
+                "playerId": "20000000-0000-4000-8000-000000000002",
+                "rank": 1,
+                "roundScore": 69,
+                "totalScore": 219,
+                "userId": null,
+                "won": true
+              },
+              {
+                "displayName": "Host",
+                "id": "40000000-0000-4000-8000-000000000003",
+                "kind": "human",
+                "playerId": "10000000-0000-4000-8000-000000000001",
+                "rank": 2,
+                "roundScore": 156,
+                "totalScore": 306,
+                "userId": "30000000-0000-4000-8000-000000000003",
+                "won": false
+              }
+            ],
+            "roomCode": null,
+            "roundCount": 1,
+            "rounds": [
+              {
+                "displayName": "Host",
+                "id": "40000000-0000-4000-8000-000000000004",
+                "playerId": "10000000-0000-4000-8000-000000000001",
+                "round": 1,
+                "roundScore": 156,
+                "totalScore": 306,
+                "userId": "30000000-0000-4000-8000-000000000003"
+              },
+              {
+                "displayName": "Guest",
+                "id": "40000000-0000-4000-8000-000000000005",
+                "playerId": "20000000-0000-4000-8000-000000000002",
+                "round": 1,
+                "roundScore": 69,
+                "totalScore": 219,
+                "userId": null
+              }
+            ],
+            "winnerName": "Guest",
+            "winnerPlayerId": "20000000-0000-4000-8000-000000000002",
+            "winnerUserId": null
+          }
+        ],
+        "self": {
+          "averageTotalScore": 306,
+          "bestTotalScore": 306,
+          "gamesPlayed": 1,
+          "multiplayerGames": 0,
+          "singlePlayerGames": 1,
+          "winRate": 0,
+          "wins": 0
+        }
+      }
+    },
+    {
+      "name": "player stats",
+      "schema": "stats-http.schema.json",
+      "value": {
+        "games": [
+          {
+            "completedAt": 1784998800000,
+            "createdByUserId": "30000000-0000-4000-8000-000000000003",
+            "finishedByAi": false,
+            "id": "40000000-0000-4000-8000-000000000001",
+            "mode": "single",
+            "participants": [
+              {
+                "displayName": "Guest",
+                "id": "40000000-0000-4000-8000-000000000002",
+                "kind": "human",
+                "playerId": "20000000-0000-4000-8000-000000000002",
+                "rank": 1,
+                "roundScore": 69,
+                "totalScore": 219,
+                "userId": null,
+                "won": true
+              },
+              {
+                "displayName": "Host",
+                "id": "40000000-0000-4000-8000-000000000003",
+                "kind": "human",
+                "playerId": "10000000-0000-4000-8000-000000000001",
+                "rank": 2,
+                "roundScore": 156,
+                "totalScore": 306,
+                "userId": "30000000-0000-4000-8000-000000000003",
+                "won": false
+              }
+            ],
+            "roomCode": null,
+            "roundCount": 1,
+            "rounds": [
+              {
+                "displayName": "Host",
+                "id": "40000000-0000-4000-8000-000000000004",
+                "playerId": "10000000-0000-4000-8000-000000000001",
+                "round": 1,
+                "roundScore": 156,
+                "totalScore": 306,
+                "userId": "30000000-0000-4000-8000-000000000003"
+              },
+              {
+                "displayName": "Guest",
+                "id": "40000000-0000-4000-8000-000000000005",
+                "playerId": "20000000-0000-4000-8000-000000000002",
+                "round": 1,
+                "roundScore": 69,
+                "totalScore": 219,
+                "userId": null
+              }
+            ],
+            "winnerName": "Guest",
+            "winnerPlayerId": "20000000-0000-4000-8000-000000000002",
+            "winnerUserId": null
+          }
+        ],
+        "summary": {
+          "averageTotalScore": 306,
+          "bestTotalScore": 306,
+          "gamesPlayed": 1,
+          "multiplayerGames": 0,
+          "singlePlayerGames": 1,
+          "winRate": 0,
+          "wins": 0
+        },
+        "user": {
+          "createdAt": 1784998800104,
+          "disabled": false,
+          "displayName": "Fixture User",
+          "email": "fixture.user@example.invalid",
+          "id": "30000000-0000-4000-8000-000000000003",
+          "lastLoginAt": null,
+          "role": "player",
+          "updatedAt": 1784998800104
+        }
+      }
+    },
+    {
+      "name": "release version",
+      "schema": "operational.schema.json",
+      "value": {
+        "buildTimestamp": "2026-07-27T18:00:00.000Z",
+        "protocolVersion": 2,
+        "releaseSha": "0123456789abcdef0123456789abcdef01234567"
+      }
+    },
+    {
+      "name": "release unavailable",
+      "schema": "operational.schema.json",
+      "value": {
+        "status": "unavailable"
+      }
+    },
+    {
+      "name": "service ready",
+      "schema": "operational.schema.json",
+      "value": {
+        "checks": {
+          "database": "ok",
+          "lastPersist": "ok",
+          "roomState": "ok"
+        },
+        "protocolVersion": 2,
+        "releaseSha": "0123456789abcdef0123456789abcdef01234567",
+        "schemaVersion": 2,
+        "status": "ready"
+      }
+    },
+    {
+      "name": "service not ready",
+      "schema": "operational.schema.json",
+      "value": {
+        "checks": {
+          "database": "error",
+          "lastPersist": "error",
+          "roomState": "error"
+        },
+        "protocolVersion": 2,
+        "releaseSha": null,
+        "schemaVersion": 2,
+        "status": "not_ready"
+      }
+    },
+    {
+      "name": "API error ACCESS_REQUIRED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCESS_REQUIRED",
+        "error": "Skyjo access is required."
+      }
+    },
+    {
+      "name": "API error ACCOUNT_AUTHENTICATION_REQUIRED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCOUNT_AUTHENTICATION_REQUIRED",
+        "error": "Sign in to your Skyjo account."
+      }
+    },
+    {
+      "name": "API error ACCOUNT_AUTHENTICATION_FAILED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCOUNT_AUTHENTICATION_FAILED",
+        "error": "Email or password did not match."
+      }
+    },
+    {
+      "name": "API error ADMIN_REQUIRED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ADMIN_REQUIRED",
+        "error": "Admin privileges are required."
+      }
+    },
+    {
+      "name": "API error PUSH_NOT_CONFIGURED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "PUSH_NOT_CONFIGURED",
+        "error": "Push notifications are not configured."
+      }
+    },
+    {
+      "name": "API error ROOM_NOT_FOUND",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ROOM_NOT_FOUND",
+        "error": "Room not found."
+      }
+    },
+    {
+      "name": "API error ROOM_MEMBERSHIP_REQUIRED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ROOM_MEMBERSHIP_REQUIRED",
+        "error": "Join the room before sharing it."
+      }
+    },
+    {
+      "name": "API error GAME_NOT_FOUND",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "GAME_NOT_FOUND",
+        "error": "Game not found."
+      }
+    },
+    {
+      "name": "API error PLAYER_NOT_FOUND",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "PLAYER_NOT_FOUND",
+        "error": "Player not found."
+      }
+    },
+    {
+      "name": "API error ADMIN_SELF_REVOKE_FORBIDDEN",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ADMIN_SELF_REVOKE_FORBIDDEN",
+        "error": "You cannot revoke your own admin access."
+      }
+    },
+    {
+      "name": "API error SERVICE_UNAVAILABLE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "SERVICE_UNAVAILABLE",
+        "error": "Service unavailable."
+      }
+    },
+    {
+      "name": "API error SERVICE_NOT_READY",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "SERVICE_NOT_READY",
+        "error": "Service is not ready."
+      }
+    },
+    {
+      "name": "API error API_ROUTE_NOT_FOUND",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "API_ROUTE_NOT_FOUND",
+        "error": "API route not found."
+      }
+    },
+    {
+      "name": "API error ACCESS_AUTHENTICATION_FAILED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCESS_AUTHENTICATION_FAILED",
+        "error": "Authentication failed."
+      }
+    },
+    {
+      "name": "API error INVALID_REQUEST",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVALID_REQUEST",
+        "error": "Request did not match the expected contract."
+      }
+    },
+    {
+      "name": "API error UNSUPPORTED_MEDIA_TYPE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "UNSUPPORTED_MEDIA_TYPE",
+        "error": "Content-Type must be application/json."
+      }
+    },
+    {
+      "name": "API error METHOD_NOT_ALLOWED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "METHOD_NOT_ALLOWED",
+        "error": "Method not allowed."
+      }
+    },
+    {
+      "name": "API error INVALID_EMAIL",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVALID_EMAIL",
+        "error": "Enter a valid email address."
+      }
+    },
+    {
+      "name": "API error WEAK_PASSWORD",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "WEAK_PASSWORD",
+        "error": "Use a password with at least 8 characters."
+      }
+    },
+    {
+      "name": "API error INVALID_ROLE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVALID_ROLE",
+        "error": "Invalid account role."
+      }
+    },
+    {
+      "name": "API error ACCOUNT_EXISTS",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCOUNT_EXISTS",
+        "error": "An account already exists for that email."
+      }
+    },
+    {
+      "name": "API error ACCOUNT_NOT_FOUND",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCOUNT_NOT_FOUND",
+        "error": "Account not found."
+      }
+    },
+    {
+      "name": "API error CURRENT_PASSWORD_MISMATCH",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "CURRENT_PASSWORD_MISMATCH",
+        "error": "Current password did not match."
+      }
+    },
+    {
+      "name": "API error LAST_ADMIN",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "LAST_ADMIN",
+        "error": "Keep at least one active admin."
+      }
+    },
+    {
+      "name": "API error INVALID_PUSH_SUBSCRIPTION",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVALID_PUSH_SUBSCRIPTION",
+        "error": "Push subscription is invalid."
+      }
+    },
+    {
+      "name": "API error MISSING_PUSH_KEYS",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "MISSING_PUSH_KEYS",
+        "error": "Push subscription is missing keys."
+      }
+    },
+    {
+      "name": "API error INCOMPLETE_GAME",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INCOMPLETE_GAME",
+        "error": "Only completed games can be recorded."
+      }
+    },
+    {
+      "name": "API error INVALID_ROOM_CODE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVALID_ROOM_CODE",
+        "error": "Room code is not valid."
+      }
+    },
+    {
+      "name": "API error PASSWORDS_MUST_MATCH",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "PASSWORDS_MUST_MATCH",
+        "error": "Passwords must match."
+      }
+    },
+    {
+      "name": "API error MISSING_HUMAN_PLAYER",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "MISSING_HUMAN_PLAYER",
+        "error": "Single-player game is missing a human player."
+      }
+    },
+    {
+      "name": "API error ACCOUNT_SESSION_CHANGED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCOUNT_SESSION_CHANGED",
+        "error": "Account changed. Sign in again before syncing this game."
+      }
+    },
+    {
+      "name": "API error STATS_CLIENT_UPGRADE_REQUIRED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "STATS_CLIENT_UPGRADE_REQUIRED",
+        "error": "Update Skyjo before syncing saved game stats."
+      }
+    },
+    {
+      "name": "API error INVALID_COMPLETED_AT",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVALID_COMPLETED_AT",
+        "error": "Game completion time is invalid."
+      }
+    },
+    {
+      "name": "API error REQUEST_TOO_LARGE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "REQUEST_TOO_LARGE",
+        "error": "Request body too large."
+      }
+    },
+    {
+      "name": "API error INVALID_JSON",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVALID_JSON",
+        "error": "Request body must be valid JSON."
+      }
+    },
+    {
+      "name": "API error EXPECTED_JSON_OBJECT",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "EXPECTED_JSON_OBJECT",
+        "error": "Expected a JSON object."
+      }
+    },
+    {
+      "name": "API error CODE_ALLOCATION_FAILED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "CODE_ALLOCATION_FAILED",
+        "error": "A secure code could not be created. Try again."
+      }
+    },
+    {
+      "name": "API error INVITE_CODE_LIMIT",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVITE_CODE_LIMIT",
+        "error": "Too many active invite codes. Try again later."
+      }
+    },
+    {
+      "name": "API error REQUEST_FAILED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "REQUEST_FAILED",
+        "error": "Request failed."
+      }
+    }
+  ],
+  "contractVersion": 1
+}

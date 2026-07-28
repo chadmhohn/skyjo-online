@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/protocol-v2-client-frame.schema.json",
+  "title": "Skyjo multiplayer protocol-v2 client frames",
+  "oneOf": [
+    { "$ref": "#/$defs/createRoom" },
+    { "$ref": "#/$defs/joinRoom" },
+    { "$ref": "#/$defs/setPresence" },
+    { "$ref": "#/$defs/command" }
+  ],
+  "$defs": {
+    "createRoom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "name"],
+      "properties": {
+        "type": { "const": "create-room" },
+        "protocolVersion": { "const": 2 },
+        "snapshotEnvelopeVersion": { "const": 2 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 24 }
+      }
+    },
+    "joinRoom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "code", "name"],
+      "dependentRequired": { "recoveryCommandId": ["playerId"] },
+      "properties": {
+        "type": { "const": "join-room" },
+        "protocolVersion": { "const": 2 },
+        "presenceVersion": { "const": 1 },
+        "snapshotEnvelopeVersion": { "const": 2 },
+        "code": { "$ref": "common.schema.json#/$defs/roomCode" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "playerId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "recoveryCommandId": { "$ref": "common.schema.json#/$defs/uuid" }
+      }
+    },
+    "setPresence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "visible"],
+      "properties": {
+        "type": { "const": "set-presence" },
+        "visible": { "type": "boolean" }
+      }
+    },
+    "cardIndexAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "cardIndex"],
+      "properties": {
+        "type": { "enum": ["reveal-opening-card", "replace-card", "discard-and-reveal"] },
+        "cardIndex": { "type": "integer", "minimum": 0, "maximum": 11 }
+      }
+    },
+    "unitAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["choose-discard", "cancel-discard", "draw-blind", "start-game", "reset-room", "leave-room"] }
+      }
+    },
+    "playerAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "playerId"],
+      "properties": {
+        "type": { "enum": ["remove-player", "takeover-player-with-ai"] },
+        "playerId": { "$ref": "common.schema.json#/$defs/identifier" }
+      }
+    },
+    "readyAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "ready"],
+      "properties": {
+        "type": { "const": "set-next-round-ready" },
+        "ready": { "type": "boolean" }
+      }
+    },
+    "chatAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "send-chat-message" },
+        "text": { "type": "string", "maxLength": 280 }
+      }
+    },
+    "action": {
+      "oneOf": [
+        { "$ref": "#/$defs/cardIndexAction" },
+        { "$ref": "#/$defs/unitAction" },
+        { "$ref": "#/$defs/playerAction" },
+        { "$ref": "#/$defs/readyAction" },
+        { "$ref": "#/$defs/chatAction" }
+      ]
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "commandId", "expectedRevision", "action"],
+      "properties": {
+        "type": { "const": "command" },
+        "protocolVersion": { "const": 2 },
+        "commandId": { "$ref": "common.schema.json#/$defs/uuid" },
+        "expectedRevision": { "$ref": "common.schema.json#/$defs/revision" },
+        "action": { "$ref": "#/$defs/action" }
+      }
+    }
+  }
+}

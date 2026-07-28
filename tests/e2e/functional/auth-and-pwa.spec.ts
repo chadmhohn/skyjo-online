@@ -158,7 +158,10 @@ test('single-player stats deduplicate one UUID without collapsing an equal-score
     }
   });
   expect(missingExpectedAccount.status()).toBe(426);
-  expect(await missingExpectedAccount.json()).toEqual({ error: 'Update Skyjo before syncing saved game stats.' });
+  expect(await missingExpectedAccount.json()).toEqual({
+    code: 'STATS_CLIENT_UPGRADE_REQUIRED',
+    error: 'Update Skyjo before syncing saved game stats.'
+  });
   expect(malformedExpectedAccount.status()).toBe(426);
   expect(changedAccount.status()).toBe(409);
 

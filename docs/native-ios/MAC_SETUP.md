@@ -9,7 +9,7 @@ Install:
 1. Latest stable Xcode from the Mac App Store or Apple Developer downloads.
 2. The current iOS Simulator runtime through Xcode Settings > Components.
 3. Git and GitHub CLI (`gh`).
-4. Node 24 and npm 11 for the existing backend, fixture generation, and PWA regression suite. The repository's `.node-version` is authoritative.
+4. Node 24 and npm 11 for the existing backend, fixture generation, PWA regression suite, and real native networking contract tests. The repository's `.node-version` is authoritative.
 
 No CocoaPods, Ruby toolchain, JavaScript runtime inside the app, Tuist, or XcodeGen is required by the chosen architecture. If the bootstrap issue later chooses a project generator, record that in an ADR and make bootstrap reproducible.
 
@@ -84,13 +84,13 @@ The `SKYJO_URL_SLASH` indirection preserves both URL slashes because `.xcconfig`
 
 ## Useful Native Commands
 
-The stable clean-clone build/test entrypoint discovers an iPhone on the newest available iOS Simulator runtime and performs one unsigned `xcodebuild test` invocation with the committed scheme and test plan:
+The stable clean-clone build/test entrypoint discovers an iPhone on the newest available iOS Simulator runtime, builds the local Node server, launches it with isolated temporary state and test-only secrets on a dynamic loopback port, and performs one unsigned `xcodebuild test` invocation with the committed scheme and test plan:
 
 ```sh
 ./scripts/ios-build-test.sh
 ```
 
-The script first verifies that the resolved Release build setting remains the exact production HTTPS origin, then runs the equivalent of this command with its discovered simulator UUID and unique ignored artifact paths:
+The script first verifies that the resolved Release build setting remains the exact production HTTPS origin. It then passes only the dynamic loopback URL into the simulator test environment; the test target and loopback server share a fixed, explicitly non-secret access fixture. It runs the equivalent of this command with its discovered simulator UUID and unique ignored artifact paths:
 
 ```sh
 xcodebuild test \
@@ -116,6 +116,25 @@ xcrun xctrace list templates
 ```
 
 Simulator names change with Xcode. The shared script selects by discovered UUID rather than assuming a device model. Set `SKYJO_IOS_ARTIFACTS_DIR` only when ignored build evidence must live somewhere other than `ios/Artifacts/`.
+
+Run only the access-session URLSession contract target, including the real local Node cookie round trip, with:
+
+```sh
+./scripts/ios-build-test.sh --networking-contracts
+```
+
+The harness generates UUID-based test-only session/invite secrets, creates temporary SQLite and room-state files, terminates the exact server child, removes the validated temporary directory, and sanitizes saved logs. Its exit finalizer scans raw evidence for the generated secrets and stages only verified files into the current run's validated artifact directory; CI never uploads the raw location. The fixed access fixture is non-secret and works only with the loopback test server; the harness never uses the production URL, production secrets, or production state.
+
+Verify or deliberately regenerate the portable fixture corpus with:
+
+```sh
+npm run contracts:fixtures:check
+npm run test:unit:contracts
+# Only after an intentional contract/producer change:
+npm run contracts:fixtures:update
+```
+
+The check command does not write. The update command generates into a temporary sibling and refuses to replace a fixture directory with existing git changes; review its schema, semantic, privacy, fixture, and SHA-256 manifest diff before committing.
 
 ## Physical-Device-Only Checks
 

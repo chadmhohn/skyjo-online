@@ -12,6 +12,10 @@ const roomCodePattern = /^[A-Z0-9]{5}$/;
 const roomInstanceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const defaultRedeemedInviteRetentionMs = 24 * 60 * 60 * 1000;
 const publicApiErrors = new Map([
+  ['ACCESS_AUTHENTICATION_FAILED', Object.freeze({ status: 401, message: 'Authentication failed.' })],
+  ['INVALID_REQUEST', Object.freeze({ status: 400, message: 'Request did not match the expected contract.' })],
+  ['UNSUPPORTED_MEDIA_TYPE', Object.freeze({ status: 415, message: 'Content-Type must be application/json.' })],
+  ['METHOD_NOT_ALLOWED', Object.freeze({ status: 405, message: 'Method not allowed.' })],
   ['INVALID_EMAIL', Object.freeze({ status: 400, message: 'Enter a valid email address.' })],
   ['WEAK_PASSWORD', Object.freeze({ status: 400, message: 'Use a password with at least 8 characters.' })],
   ['INVALID_ROLE', Object.freeze({ status: 400, message: 'Invalid account role.' })],
@@ -34,7 +38,7 @@ const publicApiErrors = new Map([
   ['CODE_ALLOCATION_FAILED', Object.freeze({ status: 503, message: 'A secure code could not be created. Try again.' })],
   ['INVITE_CODE_LIMIT', Object.freeze({ status: 429, message: 'Too many active invite codes. Try again later.' })]
 ]);
-const unknownApiError = Object.freeze({ status: 500, message: 'Request failed.' });
+const unknownApiError = Object.freeze({ status: 500, code: 'REQUEST_FAILED', message: 'Request failed.' });
 
 export class PublicApiError extends Error {
   constructor(code) {
@@ -47,7 +51,8 @@ export class PublicApiError extends Error {
 
 export function publicApiErrorResponse(error) {
   if (!(error instanceof PublicApiError)) return unknownApiError;
-  return publicApiErrors.get(error.code) || unknownApiError;
+  const response = publicApiErrors.get(error.code);
+  return response ? { ...response, code: error.code } : unknownApiError;
 }
 
 export function createUniqueRandomCode({
@@ -387,6 +392,7 @@ export class AccountStore {
   constructor(filePath = resolveAccountDatabasePath(), options = {}) {
     this.filePath = filePath;
     this.now = options.now || Date.now;
+    this.randomUuid = options.randomUuid || crypto.randomUUID;
     this.db = null;
   }
 
@@ -527,7 +533,7 @@ export class AccountStore {
     const cleanName = normalizeDisplayName(displayName || normalizedEmail.split('@')[0]);
     const { hash, salt } = await hashPassword(password);
     const timestamp = this.now();
-    const id = crypto.randomUUID();
+    const id = this.randomUuid();
 
     try {
       this.db
@@ -793,7 +799,7 @@ export class AccountStore {
       if (existing?.id) return this.getGame(existing.id);
     }
 
-    const gameId = crypto.randomUUID();
+    const gameId = this.randomUuid();
     const receivedAt = this.now();
     let completedAt = receivedAt;
     if (mode === 'single' && requestedCompletedAt !== undefined) {
@@ -851,7 +857,7 @@ export class AccountStore {
       );
       rankedPlayers.forEach((player, index) => {
         participantInsert.run(
-          crypto.randomUUID(),
+          this.randomUuid(),
           gameId,
           playerAccounts[player.id] || null,
           player.id,
@@ -873,7 +879,7 @@ export class AccountStore {
         const scores = Array.isArray(round.scores) ? round.scores : [];
         for (const score of scores) {
           roundInsert.run(
-            crypto.randomUUID(),
+            this.randomUuid(),
             gameId,
             Number(round.round) || 1,
             score.playerId,
