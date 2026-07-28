@@ -1108,10 +1108,16 @@ try {
     body: JSON.stringify({ token: expiredInvite.token })
   });
   assert.equal(expiredNativeInvite.response.status, 410, 'expired native invite fails closed');
-  assert.deepEqual(expiredNativeInvite.payload, {
-    code: 'INVITE_INVALID_OR_EXPIRED',
-    error: 'This invite is invalid or has expired.'
-  });
+  assert.equal(
+    expiredNativeInvite.payload !== null
+      && typeof expiredNativeInvite.payload === 'object'
+      && !Array.isArray(expiredNativeInvite.payload)
+      && Object.keys(expiredNativeInvite.payload).sort().join(',') === 'code,error'
+      && expiredNativeInvite.payload.code === 'INVITE_INVALID_OR_EXPIRED'
+      && expiredNativeInvite.payload.error === 'This invite is invalid or has expired.',
+    true,
+    'expired native invite returns only the generic failure contract'
+  );
   assert.equal(expiredNativeInvite.response.headers.get('set-cookie'), null);
   const nativeInvite = await nativeInviteRequest(baseUrl, {
     body: JSON.stringify({ token: signedInviteToken })
@@ -1270,10 +1276,16 @@ try {
     body: JSON.stringify({ token: resetRoomInvite.payload.path.slice('/invite/'.length) })
   });
   assert.equal(staleNativeInvite.response.status, 410, 'native invite detects a replaced room instance');
-  assert.deepEqual(staleNativeInvite.payload, {
-    code: 'INVITE_ROOM_UNAVAILABLE',
-    error: 'That room is no longer available. Ask the host for a new invite.'
-  });
+  assert.equal(
+    staleNativeInvite.payload !== null
+      && typeof staleNativeInvite.payload === 'object'
+      && !Array.isArray(staleNativeInvite.payload)
+      && Object.keys(staleNativeInvite.payload).sort().join(',') === 'code,error'
+      && staleNativeInvite.payload.code === 'INVITE_ROOM_UNAVAILABLE'
+      && staleNativeInvite.payload.error === 'That room is no longer available. Ask the host for a new invite.',
+    true,
+    'stale native invite returns only the generic unavailable-room contract'
+  );
   assert.equal(staleNativeInvite.response.headers.get('set-cookie'), null);
   const staleLongInvite = await fetch(`${baseUrl}${resetRoomInvite.payload.path}?open=browser`, { redirect: 'manual' });
   assert.equal(staleLongInvite.status, 410, 'long invite is stale after the room instance is replaced');
@@ -1496,6 +1508,6 @@ try {
   await serverClose;
   await fs.rm(tempDir, { recursive: true, force: true });
   if (server.exitCode && server.exitCode !== 0) {
-    console.error(serverLogs.join(''));
+    console.error('Chat smoke server diagnostics were suppressed because they may contain private invite or session data.');
   }
 }

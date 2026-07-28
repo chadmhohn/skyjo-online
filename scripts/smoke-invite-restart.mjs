@@ -104,8 +104,12 @@ async function assertShortInviteSecretIsRejected() {
     }, 5_000))
   ]);
   assert.notEqual(exitCode, 0, 'A short effective invite secret must fail startup.');
-  assert.match(output, /authentication secrets are missing or invalid/i);
   assert.equal(output.includes(rawShortSecret), false, 'Startup logs exposed the rejected invite secret.');
+  assert.equal(
+    /authentication secrets are missing or invalid/i.test(output),
+    true,
+    'Short-secret startup failure stays generic without logging diagnostic contents.'
+  );
 }
 
 async function stopServer(serverProcess) {
