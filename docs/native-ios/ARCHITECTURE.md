@@ -96,6 +96,12 @@ Do not enable CloudKit in v0.1.0. Cross-device merge and account-partition behav
 
 Solo replacement is transactional: persist the new validated session first, then remove the prior one. A failed replacement leaves the old game recoverable. Corrupt or incompatible records are quarantined or removed with a user-facing recovery message.
 
+The implemented store uses a custom real V1-to-V2 migration: it resolves impossible duplicate owner rows before V2 installs owner-level uniqueness, then restores each validated nonzero save sequence from its versioned payload. It validates snapshots before writes and after decoding, keys saves by owner plus stable game UUID, and rejects stale or conflicting save sequences. Turn autosaves are actor-coalesced and lifecycle flush is best effort, so storage latency or failure never blocks a legal in-memory turn.
+
+Signed-in completion atomically removes the active save and inserts an immutable idempotent stats request; an acknowledgement-loss retry preserves that first request and its original completion timestamp, while guest completion inserts no outbox row. Delivery is owner-scoped FIFO, capped at four per pass, generation-fenced across every await, and retried with exponential backoff capped at five minutes. Attempt counters use a portable saturating bound. Permanent delivery failures and corrupt FIFO heads remain visible blockers across relaunch. Recovery exposes an optional safe game UUID for presentation plus an actor-scoped opaque handle required to retry or discard the exact head, so malformed persisted identifiers cannot make the queue unrecoverable.
+
+The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, because a schema-valid 256-round Unicode history can exceed 256 KiB. The current Node JSON-body and native HTTP request boundary is separately 256 KiB; the IOS-7 solo integration must map size, invalid-payload, and unsupported-version responses to permanent outbox failures. CloudKit and PWA IndexedDB import remain outside v0.1.0.
+
 ### SkyjoDesignSystem
 
 - Card, grid, table band, player summary, score, connection banner, badges, controls, spacing, typography, colors, sounds, and haptics.

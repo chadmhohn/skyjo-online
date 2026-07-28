@@ -133,6 +133,12 @@
     "soloPersistence": [
       "src/soloDurability.ts"
     ],
+    "nativeSoloPersistence": [
+      "ios/Packages/SkyjoDomain/Sources/SkyjoDomain/SoloGameStateValidation.swift",
+      "ios/Packages/SkyjoPersistence/Sources/SkyjoPersistence",
+      "ios/Packages/SkyjoPersistence/Tests/SkyjoPersistenceTests",
+      "scripts/test-ios-domain-parity.sh"
+    ],
     "visualReference": [
       "src/GameTableLayout.tsx",
       "src/index.css",
@@ -159,6 +165,7 @@
     "contractFixturesNonWritingCheck": "npm run contracts:fixtures:check",
     "contractTypeScriptTests": "npm run test:unit:contracts",
     "contractFixturesIntentionalUpdate": "npm run contracts:fixtures:update",
+    "nativeDomainAndPersistence": "npm run test:domain:parity",
     "nativeNetworkingContracts": "./scripts/ios-build-test.sh --networking-contracts",
     "nativeFullBuildAndTest": "./scripts/ios-build-test.sh"
   },

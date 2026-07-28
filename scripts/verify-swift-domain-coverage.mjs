@@ -1,8 +1,11 @@
 import path from 'node:path';
 
 const sourceRoot = process.argv[2];
-if (!sourceRoot || process.argv.length !== 3) {
-  throw new Error('Usage: node scripts/verify-swift-domain-coverage.mjs <source-root>');
+const moduleName = process.argv[3] || 'SkyjoDomain';
+if (!sourceRoot || process.argv.length < 3 || process.argv.length > 4) {
+  throw new Error(
+    'Usage: node scripts/verify-swift-domain-coverage.mjs <source-root> [module-name]'
+  );
 }
 
 let input = '';
@@ -22,7 +25,7 @@ const files = (report?.data ?? [])
   .filter((file) => path.resolve(file.filename).startsWith(normalizedRoot));
 
 if (files.length === 0) {
-  throw new Error(`Coverage report contained no SkyjoDomain source under ${normalizedRoot}.`);
+  throw new Error(`Coverage report contained no ${moduleName} source under ${normalizedRoot}.`);
 }
 
 const totals = files.reduce(
@@ -38,8 +41,10 @@ if (!Number.isFinite(totals.count) || !Number.isFinite(totals.covered) || totals
 
 const percentage = (totals.covered / totals.count) * 100;
 process.stdout.write(
-  `SkyjoDomain line coverage: ${percentage.toFixed(2)}% (${totals.covered}/${totals.count})\n`
+  `${moduleName} line coverage: ${percentage.toFixed(2)}% (${totals.covered}/${totals.count})\n`
 );
 if (percentage < 90) {
-  throw new Error(`SkyjoDomain line coverage ${percentage.toFixed(2)}% is below the required 90.00%.`);
+  throw new Error(
+    `${moduleName} line coverage ${percentage.toFixed(2)}% is below the required 90.00%.`
+  );
 }
