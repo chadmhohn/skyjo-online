@@ -21,6 +21,12 @@
 		B2000000000000000000000C /* SkyjoTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000005 /* SkyjoTestSupport */; };
 		B2000000000000000000000D /* AccessSessionClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* AccessSessionClientTests.swift */; };
 		B2000000000000000000000E /* SkyjoNetworking in Frameworks */ = {isa = PBXBuildFile; productRef = A90000000000000000000006 /* SkyjoNetworking */; };
+		B2000000000000000000000F /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* AppModel.swift */; };
+		B20000000000000000000010 /* AccessGateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* AccessGateView.swift */; };
+		B20000000000000000000011 /* HomeShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* HomeShellView.swift */; };
+		B20000000000000000000012 /* StatsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* StatsViews.swift */; };
+		B20000000000000000000013 /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* AccountView.swift */; };
+		B20000000000000000000014 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* AppModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,6 +71,12 @@
 		B10000000000000000000016 /* SkyjoDesignSystem */ = {isa = PBXFileReference; lastKnownFileType = folder; path = SkyjoDesignSystem; sourceTree = "<group>"; };
 		B10000000000000000000017 /* SkyjoTestSupport */ = {isa = PBXFileReference; lastKnownFileType = folder; path = SkyjoTestSupport; sourceTree = "<group>"; };
 		B10000000000000000000018 /* AccessSessionClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessSessionClientTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000019 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		B1000000000000000000001A /* AccessGateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessGateView.swift; sourceTree = "<group>"; };
+		B1000000000000000000001B /* HomeShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeShellView.swift; sourceTree = "<group>"; };
+		B1000000000000000000001C /* StatsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsViews.swift; sourceTree = "<group>"; };
+		B1000000000000000000001D /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
+		B1000000000000000000001E /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -147,6 +159,7 @@
 			children = (
 				B10000000000000000000001 /* SkyjoNativeApp.swift */,
 				B10000000000000000000002 /* AppConfiguration.swift */,
+				B10000000000000000000019 /* AppModel.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -154,9 +167,45 @@
 		A30000000000000000000006 /* Features */ = {
 			isa = PBXGroup;
 			children = (
-				B10000000000000000000003 /* BootstrapHomeView.swift */,
+				A3000000000000000000000D /* Access */,
+				A3000000000000000000000E /* Account */,
+				A3000000000000000000000F /* Home */,
+				A30000000000000000000010 /* Stats */,
 			);
-			path = Features/Home;
+			path = Features;
+			sourceTree = "<group>";
+		};
+		A3000000000000000000000D /* Access */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000001A /* AccessGateView.swift */,
+			);
+			path = Access;
+			sourceTree = "<group>";
+		};
+		A3000000000000000000000E /* Account */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000001D /* AccountView.swift */,
+			);
+			path = Account;
+			sourceTree = "<group>";
+		};
+		A3000000000000000000000F /* Home */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000003 /* BootstrapHomeView.swift */,
+				B1000000000000000000001B /* HomeShellView.swift */,
+			);
+			path = Home;
+			sourceTree = "<group>";
+		};
+		A30000000000000000000010 /* Stats */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000001C /* StatsViews.swift */,
+			);
+			path = Stats;
 			sourceTree = "<group>";
 		};
 		A30000000000000000000007 /* Resources */ = {
@@ -196,6 +245,7 @@
 			children = (
 				B1000000000000000000000C /* BootstrapTests.swift */,
 				B10000000000000000000018 /* AccessSessionClientTests.swift */,
+				B1000000000000000000001E /* AppModelTests.swift */,
 			);
 			path = SkyjoAppTests;
 			sourceTree = "<group>";
@@ -368,6 +418,11 @@
 				B20000000000000000000001 /* SkyjoNativeApp.swift in Sources */,
 				B20000000000000000000002 /* AppConfiguration.swift in Sources */,
 				B20000000000000000000003 /* BootstrapHomeView.swift in Sources */,
+				B2000000000000000000000F /* AppModel.swift in Sources */,
+				B20000000000000000000010 /* AccessGateView.swift in Sources */,
+				B20000000000000000000011 /* HomeShellView.swift in Sources */,
+				B20000000000000000000012 /* StatsViews.swift in Sources */,
+				B20000000000000000000013 /* AccountView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -377,6 +432,7 @@
 			files = (
 				B20000000000000000000006 /* BootstrapTests.swift in Sources */,
 				B2000000000000000000000D /* AccessSessionClientTests.swift in Sources */,
+				B20000000000000000000014 /* AppModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
