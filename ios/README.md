@@ -76,7 +76,7 @@ All packages use Swift 6 language mode, require iOS 18 or later, and have no rem
 
 Language-neutral schemas and fixtures live at [`contracts/v1`](../contracts/v1), outside the Swift package graph. Contract bundle version 1 is independent of the multiplayer protocol, snapshot envelope, presence, database, room persistence, PWA/server release, and native app version.
 
-Native v0.1.0 does not import PWA IndexedDB saves. The local persistence envelope permits up to 2 MiB so every schema-bounded solo history can restore; the current HTTP request boundary remains 256 KiB. IOS-5's stats adapter must classify local/client or server `REQUEST_TOO_LARGE`, invalid-payload, and unsupported-version failures as permanent outbox failures so they remain visible for explicit retry after compatibility changes or confirmed discard.
+Native v0.1.0 does not import PWA IndexedDB saves. The local persistence envelope permits up to 2 MiB so every schema-bounded solo history can restore; the current HTTP request boundary remains 256 KiB. IOS-7's solo stats adapter must classify local/client or server `REQUEST_TOO_LARGE`, invalid-payload, and unsupported-version failures as permanent outbox failures so they remain visible for explicit retry after compatibility changes or confirmed discard.
 
 ## Configuration
 
