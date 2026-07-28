@@ -26,6 +26,9 @@ import type { GameState } from '../../../src/types';
 
 const v011Tag = 'v0.1.1';
 const v011Commit = '15b354786a0b0ced130b9cdb4da89b904b5942e8';
+const v032Tag = 'v0.3.2';
+const v032Commit = '130114e745c66c9f72305f05a0366e3f0ca10915';
+const v032PersistenceSha256 = 'd56fda0a22b8d4cd0cf6859a302c1d1fe70ab8abec0d49ed4ce603e97e6cecf3';
 const fixedNow = Date.parse('2026-07-11T12:00:00Z');
 const resetCommandId = '10000000-0000-4000-8000-000000000001';
 const currentRoomInstanceId = '33333333-3333-4333-8333-333333333333';
@@ -34,31 +37,33 @@ const resetActionDigest = createHash('sha256')
   .update(JSON.stringify({ type: 'reset-room' }))
   .digest('hex');
 
-type V011Room = {
+type TaggedRoom = {
   code: string;
   state: GameState | null;
   readyForNextRoundPlayerIds: string[];
   players: Array<Record<string, unknown>>;
+  chatMessages: Array<{ text: string; [key: string]: unknown }>;
   [key: string]: unknown;
 };
 
-type V011Document = {
+type TaggedDocument = {
   format: string;
   version: number;
   protocolVersion: number;
   savedAt: number;
-  rooms: V011Room[];
+  rooms: TaggedRoom[];
 };
 
-type V011Persistence = {
+type TaggedPersistence = {
   normalizeRoomsDocument: (
     value: unknown,
     options?: { now?: number; staleMs?: number; pruneStale?: boolean }
-  ) => { rooms: V011Room[] };
-  serializeRooms: (rooms: Map<string, V011Room>, savedAt?: number) => V011Document;
+  ) => { rooms: TaggedRoom[] };
+  serializeRooms: (rooms: Map<string, TaggedRoom>, savedAt?: number) => TaggedDocument;
 };
 
-let exactV011: V011Persistence;
+let exactV011: TaggedPersistence;
+let exactV032: TaggedPersistence;
 let tempDirectory = '';
 
 function repositoryRoot() {
@@ -83,7 +88,35 @@ async function importExactV011Persistence() {
   });
   const modulePath = path.join(tempDirectory, 'server-room-persistence-v0.1.1.mjs');
   await fs.writeFile(modulePath, source, 'utf8');
-  return import(`${pathToFileURL(modulePath).href}?commit=${v011Commit}`) as Promise<V011Persistence>;
+  return import(`${pathToFileURL(modulePath).href}?commit=${v011Commit}`) as Promise<TaggedPersistence>;
+}
+
+async function importExactV032Persistence() {
+  const root = repositoryRoot();
+  const resolvedCommit = execFileSync('git', ['rev-parse', `${v032Tag}^{commit}`], {
+    cwd: root,
+    encoding: 'utf8'
+  }).trim();
+  if (resolvedCommit !== v032Commit) {
+    throw new Error(`${v032Tag} resolved to ${resolvedCommit}; expected immutable commit ${v032Commit}.`);
+  }
+
+  const source = execFileSync('git', ['show', `${v032Tag}:server-room-persistence.mjs`], {
+    cwd: root,
+    encoding: 'utf8'
+  });
+  const sourceDigest = createHash('sha256').update(source).digest('hex');
+  if (sourceDigest !== v032PersistenceSha256) {
+    throw new Error(`${v032Tag} persistence source did not match its reviewed live-release digest.`);
+  }
+  const validationSource = execFileSync('git', ['show', `${v032Tag}:server-game-state-validation.mjs`], {
+    cwd: root,
+    encoding: 'utf8'
+  });
+  await fs.writeFile(path.join(tempDirectory, 'server-game-state-validation.mjs'), validationSource, 'utf8');
+  const modulePath = path.join(tempDirectory, 'server-room-persistence-v0.3.2.mjs');
+  await fs.writeFile(modulePath, source, 'utf8');
+  return import(`${pathToFileURL(modulePath).href}?commit=${v032Commit}`) as Promise<TaggedPersistence>;
 }
 
 function gameRoster() {
@@ -217,10 +250,11 @@ function highChurnReceipt(index: number) {
   };
 }
 
-describe('exact v0.1.1 room persistence compatibility', () => {
+describe('exact v0.1.1 room persistence compatibility plus live v0.3.2 wire bounds', () => {
   beforeAll(async () => {
-    tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-v011-compatibility-'));
+    tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-tagged-compatibility-'));
     exactV011 = await importExactV011Persistence();
+    exactV032 = await importExactV032Persistence();
   });
 
   afterAll(async () => {
@@ -280,7 +314,7 @@ describe('exact v0.1.1 room persistence compatibility', () => {
     expect(exactV011Golden.rooms[0]).not.toHaveProperty('resetAliases');
 
     const goldenBytes = `${JSON.stringify(exactV011Golden, null, 2)}\n`;
-    const goldenDocument = JSON.parse(goldenBytes) as V011Document;
+    const goldenDocument = JSON.parse(goldenBytes) as TaggedDocument;
     const currentNormalized = normalizeRoomsDocument(goldenDocument, { now: fixedNow + 1 });
     const restored = currentNormalized.rooms[0];
 
@@ -298,6 +332,33 @@ describe('exact v0.1.1 room persistence compatibility', () => {
     await fs.writeFile(goldenPath, goldenBytes, 'utf8');
     const loaded = await loadRoomsFromDisk(goldenPath, { now: fixedNow + 1 });
     expect(loaded).toEqual(currentNormalized.rooms);
+  });
+
+  it('keeps the maximum UTF-16 astral chat exact through the documented live v0.3.2 reader and writer', async () => {
+    const room = roomWithCurrentMetadata(activeBlindDrawState(), 'playing');
+    const boundaryChat = '🃏'.repeat(140);
+    expect(boundaryChat).toHaveLength(280);
+    room.chatMessages[0].text = boundaryChat;
+
+    const currentDocument = serializeRooms(new Map([[room.code, room]]), fixedNow);
+    expect(currentDocument.rooms[0].chatMessages[0]).toMatchObject({ text: boundaryChat });
+    expect(currentDocument.rooms[0].chatMessages[0]).not.toHaveProperty('textV2');
+    const oldNormalized = exactV032.normalizeRoomsDocument(structuredClone(currentDocument), {
+      now: fixedNow + 1
+    });
+    expect(oldNormalized.rooms[0].chatMessages[0].text).toBe(boundaryChat);
+    const oldRewritten = exactV032.serializeRooms(
+      new Map([[oldNormalized.rooms[0].code, oldNormalized.rooms[0]]]),
+      fixedNow + 1
+    );
+    expect(oldRewritten.rooms[0].chatMessages[0].text).toBe(boundaryChat);
+    const rollbackBytes = `${JSON.stringify(oldRewritten, null, 2)}\n`;
+    const rollbackPath = path.join(tempDirectory, 'v0.3.2-astral-chat.json');
+    await fs.writeFile(rollbackPath, rollbackBytes, 'utf8');
+
+    const [reopened] = await loadRoomsFromDisk(rollbackPath, { now: fixedNow + 2 });
+    expect(reopened.chatMessages).toHaveLength(1);
+    expect(reopened.chatMessages[0].text).toBe(boundaryChat);
   });
 
   it('keeps rollback compatibility after receipt churn while preserving the reset recovery receipt', () => {

@@ -222,9 +222,11 @@ Valid `action` shapes:
 - `{ type: "leave-room" }`
 - `{ type: "remove-player", playerId: UUID }`
 - `{ type: "takeover-player-with-ai", playerId: UUID }`
-- `{ type: "send-chat-message", text: string }` (maximum 280 characters before server cleaning)
+- `{ type: "send-chat-message", text: string }` (maximum 280 UTF-16 code units before server cleaning)
 
 Envelopes use exact keys. The server rejects legacy `update-state` frames with `upgrade-required`. Only one command may be in flight. Legal commands increment the room revision exactly once. An uncertain send is replayed only with the identical command ID, expected revision, and canonical action.
+
+Chat retains the established JavaScript/PWA UTF-16 bound: 140 astral symbols (280 code units) are accepted and 141 are rejected. Swift therefore checks `String.utf16.count`, not grapheme or scalar count. Command input containing malformed surrogate data is rejected; legacy persisted producer strings are converted to well-formed Unicode and truncated without splitting a surrogate pair before persistence or public projection. Chat remains the ordinary schema-2 `text` field with no additive wire/persistence member and no protocol or persistence version change. Compatibility tests pin and execute the documented live v0.3.2 room reader and cached PWA validator source by immutable tag, commit, and reviewed SHA-256 digest.
 
 ## Server Frames
 
@@ -238,6 +240,16 @@ The accepted union is:
 - `upgrade-required`: `{ type, protocolVersion: 2, message, commandId? }`.
 
 Validate exact fields, safe integer revisions, bounded arrays and strings, room/player membership, and `frame.revision == room.revision`. Close or fail safely on malformed server frames.
+
+### IOS-6 Native Realtime Boundary
+
+`SkyjoAPIClient.makeRoomConnection(confirmedAccount:)` creates an actor-owned `RoomConnection` on the same dedicated cookie-aware `URLSession` used by the HTTP client, so the WebSocket upgrade receives both authenticated session layers without exposing cookie values. All connections created by one API client share the same injected reset-recovery store; the live default is one process-wide application-support file actor.
+
+The native codec caps client frames at 16 KiB and server frames at 1 MiB, requires exact protocol-v2 keys, validates RFC UUID variant/version bits and JSON safe integers without trapping, preserves the previous PWA's UTF-16 string bounds, and rejects binary, malformed, oversized, semantically inconsistent, or privacy-invalid frames. A personalized snapshot establishes the viewer seat; later shared snapshots are accepted only for that synchronized viewer. Acknowledgement and authoritative snapshot may arrive in either order, but a command remains pending until both the matching acknowledgement revision and an accepted snapshot at that revision have converged. Reconnect replay uses the original canonical wire text, command UUID, and expected revision.
+
+Reset-room is the only command with a durable replay record because an uncertain reset changes the room code. Before sending it, the client atomically persists exactly the confirmed account UUID, prior room code, server-issued player ID, command UUID, and expected revision in a bounded 4 KiB exact-key file. The record contains no email, display name, chat, card, cookie, or raw frame. Recovery is fenced to the same confirmed account and command. Cancellation, connection replacement, explicit disconnect, command rejection, terminal room/seat errors, and protocol upgrade clear only the matching record. A failed clear remains visibly pending, blocks further mutations, and is retried before another command or recovery operation; the destructive command is never sent before persistence succeeds.
+
+Socket generation and lifecycle guards quarantine callbacks from retired sockets and stale actor reentrancy. The public event stream retains only the newest bounded status/snapshot/notice events, and every debug description redacts room codes, seats, command identifiers, messages, and snapshots. Invalid frames retire the affected socket, fail closed, and require a fresh synchronization before another command. `room-reset`, seat-removal/stale-seat, and `upgrade-required` terminate the affected admission and discard authoritative state before the UI can reuse it.
 
 ## Snapshot Privacy Contract
 

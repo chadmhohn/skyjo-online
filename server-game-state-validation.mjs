@@ -1,3 +1,8 @@
+import {
+  isWellFormedUnicode,
+  toWellFormedUnicode
+} from './server-unicode.mjs';
+
 const GAME_STATE_KEYS = Object.freeze([
   'players',
   'drawPile',
@@ -70,6 +75,7 @@ function boundedIdentifier(value, maximumLength, label) {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
+    !isWellFormedUnicode(value) ||
     value.length > maximumLength ||
     value.trim() !== value ||
     /[\u0000-\u001f\u007f]/.test(value)
@@ -80,16 +86,17 @@ function boundedIdentifier(value, maximumLength, label) {
 }
 
 function boundedName(value, label) {
+  const normalized = typeof value === 'string' ? toWellFormedUnicode(value) : value;
   if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > PERSISTED_GAME_STATE_LIMITS.playerNameLength ||
-    value.trim() !== value ||
-    /[\u0000\r\n]/.test(value)
+    typeof normalized !== 'string' ||
+    normalized.length === 0 ||
+    normalized.length > PERSISTED_GAME_STATE_LIMITS.playerNameLength ||
+    normalized.trim() !== normalized ||
+    /[\u0000\r\n]/.test(normalized)
   ) {
     fail(`${label} is invalid.`);
   }
-  return value;
+  return normalized;
 }
 
 function finiteScore(value, label) {
@@ -422,10 +429,14 @@ export function normalizePersistedGameState(value, validationContext) {
     fail('Game log must be a bounded array.');
   }
   const log = input.log.map((entry) => {
-    if (typeof entry !== 'string' || entry.length > PERSISTED_GAME_STATE_LIMITS.logEntryLength || /\u0000/.test(entry)) {
+    const normalized = typeof entry === 'string' ? toWellFormedUnicode(entry) : entry;
+    if (typeof normalized !== 'string' ||
+        !isWellFormedUnicode(normalized) ||
+        normalized.length > PERSISTED_GAME_STATE_LIMITS.logEntryLength ||
+        /\u0000/.test(normalized)) {
       fail('Game log entry is invalid.');
     }
-    return entry;
+    return normalized;
   });
   const winnerId = validPlayerReference(input.winnerId, context.rosterPlayerIds, context.playerIdSet, 'Winner id');
   const nextStarterId = validPlayerReference(input.nextStarterId, context.rosterPlayerIds, context.playerIdSet, 'Next starter id');

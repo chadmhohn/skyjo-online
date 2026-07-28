@@ -69,10 +69,12 @@ The TypeScript engine remains the reference implementation during the port. Once
 - Operational DTOs require schema 2 and protocol 2 plus valid release identity/timestamps. Unsupported values become an explicit upgrade state. Contract-required nullable keys must be present even when their value is `null`; absent keys fail decoding.
 - Canonical valid/invalid HTTP fixtures under `contracts/v1/fixtures/` are decoded by Swift tests in addition to focused `URLProtocol` boundary and safe-error tests.
 - Typed Codable request/response models remain the boundary for later invite and realtime contracts.
-- An actor-owned `RoomConnection` around `URLSessionWebSocketTask`.
-- One in-flight command at a time, UUID command IDs, expected revisions, replay only with the identical ID/body, and authoritative snapshot convergence before enabling another action.
-- Explicit foreground/background presence, jittered reconnect, reachability hints, eight-second initial sync timeout, and diagnostic connection states.
-- Redacted snapshots are decoded into optional values. Never persist or log private drawn cards or raw frames.
+- An actor-owned `RoomConnection` around `URLSessionWebSocketTask`, created by `SkyjoAPIClient` on its authenticated cookie session.
+- One in-flight command at a time, UUID command IDs, expected revisions, replay only with the identical ID/body, and acknowledgement-plus-authoritative-snapshot convergence before enabling another action.
+- Explicit foreground/background presence, jittered reconnect, reachability hints, eight-second initial sync timeout, socket-generation fencing, and diagnostic connection states.
+- Strict protocol-v2 admission/command/server-frame codecs with exact keys, bounded payloads, safe numeric conversion, well-formed Unicode under the legacy PWA's UTF-16 bounds, semantic room validation, and redacted debug output.
+- An account-fenced, exact-command reset-recovery record is persisted before reset wire transmission. A pending/failed cleanup is part of command availability and blocks later mutations until exact cleanup succeeds.
+- Redacted snapshots are decoded into optional values. Never persist or log private drawn cards, chat, room frames, or raw WebSocket payloads.
 
 Do not store passwords just to recreate sessions. The server's signed cookies are the session. If a later credential-remembrance feature is approved, use Keychain Services and keep it separate from game storage.
 
@@ -126,7 +128,7 @@ For multiplayer, optimistic board mutation is prohibited. A tap may show a short
 
 ## Realtime State Machine
 
-Native states mirror the established web client: `idle`, `connecting`, `connected`, `reconnecting`, `offline`, and `error`.
+Native states mirror the established web client: `idle`, `connecting`, `connected`, `reconnecting`, `offline`, `error`, and terminal `upgrade-required`.
 
 - Connect to `wss://skyjo.groundworkrevops.com/rooms` with both valid server cookies.
 - Send exactly one create/join request after open.
@@ -138,8 +140,12 @@ Native states mirror the established web client: `idle`, `connecting`, `connecte
 - Disable commands while offline, unsynchronized, or awaiting a command result.
 - On stale/future revision, accept the `resync`, clear the rejected pending action, explain it, and require a fresh user intent.
 - An exact replay uses the same command ID, expected revision, and action. Never generate a new ID for an uncertain in-flight command.
+- Accept matching acknowledgement and snapshot in either order, but keep the action pending until both converge.
+- Persist reset recovery before sending `reset-room`; fence it to the confirmed account, and clear the exact record on completion, abandonment, rejection, terminal room/seat errors, or upgrade.
+- Treat failed reset-record cleanup as pending work: expose it in connection status, reject later mutations until retry succeeds, and never infer that a never-sent reset became authoritative.
+- Retire the socket synchronously at the actor boundary and ignore every delayed send, receive, close, presence, timeout, or replay callback from an older generation.
 
-`URLSessionWebSocketTask` handles WebSocket transport and control frames. Integration tests must still prove compatibility with the server's 15-second heartbeat and half-open termination behavior.
+`URLSessionWebSocketTask` handles WebSocket transport and control frames. The networking-contract gate proves compatibility with the server's 15-second heartbeat and half-open termination behavior against a real local Node process, and drives a separate real Chromium PWA client through visible UI actions for mixed-client lifecycle, replay, takeover, and reclaim coverage.
 
 ## Native-Specific Backend Work
 

@@ -38,6 +38,7 @@ import {
   createRoomSnapshot,
   MULTIPLAYER_PROTOCOL_VERSION
 } from './server-dist/protocolV2.js';
+import { wellFormedUTF16Prefix } from './server-unicode.mjs';
 import {
   loadRoomsSnapshotFromDisk,
   reconcileCompletedRoomJournals,
@@ -1426,7 +1427,10 @@ function notifyAwayPlayersAfterMove(room, actor, nextState) {
 }
 
 function cleanChatText(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxRoomChatMessageLength);
+  return wellFormedUTF16Prefix(
+    String(value || '').replace(/\s+/g, ' ').trim(),
+    maxRoomChatMessageLength
+  );
 }
 
 function escapeHtml(value) {

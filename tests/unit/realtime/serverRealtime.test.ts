@@ -639,7 +639,7 @@ describe('serverRealtime transport seam', () => {
     expect({ code: context.room.code, updatedAt: context.room.updatedAt, player: context.player }).toEqual(beforeRoom);
   });
 
-  it('targeted-resynchronizes redundant same-seat presence without persistence or peer broadcast', () => {
+  it('requires exact set-presence keys without changing room state on malformed frames', () => {
     const harness = createHarness();
     const { socket } = harness.connect();
     const sibling = new FakeSocket();
@@ -656,9 +656,14 @@ describe('serverRealtime transport seam', () => {
 
     sibling.visible = false;
     socket.emit('message', '{"type":"set-presence"}');
-    expect(socket.visible).toBe(true);
+    socket.emit('message', '{"type":"set-presence","visible":true,"extra":true}');
+    expect(socket.visible).toBe(false);
     expect(context.player.connected).toBe(true);
-    expect(harness.sendCurrentRoom).toHaveBeenCalledTimes(2);
+    expect(harness.sendCurrentRoom).toHaveBeenCalledTimes(1);
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: 'error', protocolVersion: 2, code: 'invalid-presence', message: 'Invalid presence.' },
+      { type: 'error', protocolVersion: 2, code: 'invalid-presence', message: 'Invalid presence.' }
+    ]);
   });
 
   it('rejects an explicitly malformed presence value without changing room state', () => {

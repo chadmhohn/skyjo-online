@@ -23,6 +23,10 @@ import type {
   RoundHistoryEntry,
   TurnPhase
 } from './types';
+import {
+  isWellFormedUnicode,
+  wellFormedUTF16Prefix
+} from '../server-unicode.mjs';
 
 export const MULTIPLAYER_PROTOCOL_VERSION = 2 as const;
 export const EXPLICIT_PRESENCE_VERSION = 1 as const;
@@ -163,6 +167,8 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
+export { isWellFormedUnicode };
+
 function isCardIndex(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) < 12;
 }
@@ -187,6 +193,7 @@ function parseAction(value: unknown): GameCommand | null {
     case 'takeover-player-with-ai':
       return hasExactKeys(value, ['type', 'playerId']) &&
         typeof value.playerId === 'string' &&
+        isWellFormedUnicode(value.playerId) &&
         value.playerId.length > 0 &&
         value.playerId.length <= PUBLIC_SNAPSHOT_LIMITS.identifierLength
         ? { type: value.type, playerId: value.playerId }
@@ -196,7 +203,10 @@ function parseAction(value: unknown): GameCommand | null {
         ? { type: value.type, ready: value.ready }
         : null;
     case 'send-chat-message':
-      return hasExactKeys(value, ['type', 'text']) && typeof value.text === 'string' && value.text.length <= 280
+      return hasExactKeys(value, ['type', 'text']) &&
+        typeof value.text === 'string' &&
+        isWellFormedUnicode(value.text) &&
+        value.text.length <= PUBLIC_SNAPSHOT_LIMITS.chatMessageLength
         ? { type: value.type, text: value.text }
         : null;
     default:
@@ -329,7 +339,7 @@ function publicCard(card: Card, id: string, reveal: boolean): PublicCardSnapshot
 }
 
 function publicName(value: string): string {
-  return value.slice(0, PUBLIC_SNAPSHOT_LIMITS.nameLength);
+  return wellFormedUTF16Prefix(value, PUBLIC_SNAPSHOT_LIMITS.nameLength);
 }
 
 export function redactGameState(state: GameState, viewerPlayerId: string): PublicGameStateSnapshot {
@@ -337,7 +347,7 @@ export function redactGameState(state: GameState, viewerPlayerId: string): Publi
   const log = state.log
     .slice(0, PUBLIC_SNAPSHOT_LIMITS.logEntries)
     .map((entry) => entry.replace(/^(.+) drew a -?\d+\.$/, '$1 drew a blind card.'))
-    .map((entry) => entry.slice(0, PUBLIC_SNAPSHOT_LIMITS.logEntryLength));
+    .map((entry) => wellFormedUTF16Prefix(entry, PUBLIC_SNAPSHOT_LIMITS.logEntryLength));
   const discardTop = state.discardPile[0];
 
   return {
@@ -453,7 +463,7 @@ export function createRoomSnapshot(
       id: message.id,
       playerId: message.playerId,
       playerName: publicName(message.playerName),
-      text: message.text.slice(0, PUBLIC_SNAPSHOT_LIMITS.chatMessageLength),
+      text: wellFormedUTF16Prefix(message.text, PUBLIC_SNAPSHOT_LIMITS.chatMessageLength),
       createdAt: message.createdAt
     })),
     readyForNextRoundPlayerIds: [...room.readyForNextRoundPlayerIds],

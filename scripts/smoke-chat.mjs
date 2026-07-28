@@ -1101,7 +1101,7 @@ try {
     (message) => publicSnapshotFrame(message) && message.room.players.find((player) => player.id === guestJoined.playerId)?.connected === false,
     'guest away presence'
   );
-  guestSocket.send(JSON.stringify({ type: 'set-presence', protocolVersion: MULTIPLAYER_PROTOCOL_VERSION, visible: false }));
+  guestSocket.send(JSON.stringify({ type: 'set-presence', visible: false }));
   const guestAwayRoom = await guestAwayPromise;
   assert.equal(guestAwayRoom.room.players.find((player) => player.id === guestJoined.playerId)?.connected, false);
 
@@ -1110,7 +1110,7 @@ try {
     (message) => publicSnapshotFrame(message) && message.room.players.find((player) => player.id === guestJoined.playerId)?.connected === true,
     'guest online presence'
   );
-  guestSocket.send(JSON.stringify({ type: 'set-presence', protocolVersion: MULTIPLAYER_PROTOCOL_VERSION, visible: true }));
+  guestSocket.send(JSON.stringify({ type: 'set-presence', visible: true }));
   const guestOnlineRoom = await guestOnlinePromise;
   assert.equal(guestOnlineRoom.room.players.find((player) => player.id === guestJoined.playerId)?.connected, true);
 

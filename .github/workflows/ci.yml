@@ -209,6 +209,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node for native contract tests
@@ -219,6 +220,9 @@ jobs:
 
       - name: Install locked Node dependencies
         run: npm ci
+
+      - name: Install Chromium for the mixed PWA contract peer
+        run: npm exec -- playwright install chromium
 
       - name: Run native networking contract tests
         run: ./scripts/ios-build-test.sh --networking-contracts
@@ -309,7 +313,7 @@ jobs:
         run: npm ci
       - name: Run isolated data tests
         run: npm run test:unit:data
-      - name: Prove immutable v0.1.1 rollback compatibility
+      - name: Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility
         run: npm run test:compat:v011
       - name: Upload data coverage
         if: always()

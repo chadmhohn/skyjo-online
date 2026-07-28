@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
+import { wellFormedUTF16Prefix } from './server-unicode.mjs';
 
 const scryptAsync = promisify(crypto.scrypt);
 const defaultDbFile = path.join('.data', 'skyjo.sqlite');
@@ -303,7 +304,10 @@ function normalizeEmail(email) {
 }
 
 function normalizeDisplayName(name) {
-  return stringValue(name, 'Player').replace(/\s+/g, ' ').trim().slice(0, 24) || 'Player';
+  return wellFormedUTF16Prefix(
+    stringValue(name, 'Player').replace(/\s+/g, ' ').trim(),
+    24
+  ) || 'Player';
 }
 
 function assertEmail(email) {

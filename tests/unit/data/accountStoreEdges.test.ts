@@ -81,6 +81,20 @@ describe('account store defensive and fallback behavior', () => {
     expect(() => store.patchUser(player.id, { role: 'owner' })).toThrow(/role/i);
   });
 
+  it('normalizes account display names to a well-formed UTF-16 prefix', async () => {
+    const astral = '🃏'.repeat(30);
+    const malformed = String.fromCharCode(0xd800);
+    const user = await store.createUser({
+      email: 'unicode@example.com',
+      displayName: astral,
+      password: 'unicode-password'
+    });
+    expect(user.displayName).toBe('🃏'.repeat(12));
+    expect(user.displayName).toHaveLength(24);
+
+    expect(store.patchUser(user.id, { displayName: `A${malformed}B` }).displayName).toBe('A�B');
+  });
+
   it('handles missing and disabled sessions plus password failure paths', async () => {
     const user = await store.createUser({ email: 'ada@example.com', displayName: 'Ada', password: 'ada-password' });
     expect(store.createSession('missing-user', 1000)).toBeNull();
