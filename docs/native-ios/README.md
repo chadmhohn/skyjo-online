@@ -4,7 +4,7 @@ This directory is the portable source of truth for building a native Skyjo clien
 
 ## Baseline
 
-- Handoff reviewed: 2026-07-27 America/Denver.
+- Handoff reviewed: 2026-07-28 America/Denver.
 - Repository: `chadmhohn/skyjo-online`.
 - PWA release baseline: `v0.3.2` at `130114e745c66c9f72305f05a0366e3f0ca10915`.
 - Production `/version` and `/readyz` were verified against that SHA when this handoff was written.
@@ -13,6 +13,7 @@ This directory is the portable source of truth for building a native Skyjo clien
 - IOS-2 repository support includes the JSON access-session API and stable JSON API-error envelope described in [`BACKEND_CONTRACTS.md`](BACKEND_CONTRACTS.md). This is a source/PR statement, not evidence that production has been promoted beyond the dated v0.3.2 baseline above.
 - IOS-5 repository support includes the native typed access/account/stats client, shared two-cookie session jar, and accessible access/account/home/stats shell described in [`ARCHITECTURE.md`](ARCHITECTURE.md). This is also a source/PR statement, not evidence of production promotion or TestFlight distribution.
 - IOS-6 repository support includes the strict protocol-v2 codec, actor-owned authenticated room connection, account-fenced durable reset recovery, well-formed legacy UTF-16 compatibility, canonical realtime fixtures, and real Swift/Chromium mixed-client contract gate described in [`BACKEND_CONTRACTS.md`](BACKEND_CONTRACTS.md) and [`TEST_AND_RELEASE.md`](TEST_AND_RELEASE.md). The gate pins the documented v0.3.2 PWA source; it is still source/CI compatibility evidence, not proof of production promotion or native distribution.
+- APNs backend sequencing uses #203 then #204: the first source release freezes and validates an optional exact `apns_devices` envelope while retaining schema 2; it must be promoted and become the verified `previous` rollback anchor before the later feature creates or uses that table. Source/CI completion alone does not satisfy that production gate.
 - Native targets: iPhone and iPad. A Mac Catalyst or visionOS target is not part of v0.1.0.
 - Deployment target: iOS/iPadOS 18.0. Build and submission use the latest stable Xcode accepted by App Store Connect; as of this review, that is Xcode 26 and the iOS/iPadOS 26 SDK or later.
 

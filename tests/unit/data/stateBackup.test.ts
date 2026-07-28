@@ -5,7 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { createAccountStore, SCHEMA_MIGRATIONS } from '../../../server-account-store.mjs';
+import {
+  APNS_DEVICE_STORAGE_ENVELOPE,
+  createAccountStore,
+  SCHEMA_MIGRATIONS
+} from '../../../server-account-store.mjs';
 import { CURRENT_PROTOCOL_VERSION, writeReleaseIdentity } from '../../../server-release.mjs';
 import {
   createStateBackup,
@@ -80,6 +84,29 @@ async function createDatabase(filePath: string) {
   database.prepare('INSERT INTO parents (id) VALUES (?)').run(1);
   database.prepare('INSERT INTO children (id, parent_id) VALUES (?, ?)').run(1, 1);
   database.close();
+}
+
+function installAPNSDeviceEnvelope(database: DatabaseSync) {
+  database.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+}
+
+function apnsRows(database: DatabaseSync) {
+  return database.prepare(`
+    SELECT
+      installation_id,
+      user_id,
+      environment,
+      hex(token_ciphertext) AS token_ciphertext_hex,
+      hex(token_nonce) AS token_nonce_hex,
+      hex(token_auth_tag) AS token_auth_tag_hex,
+      hex(token_fingerprint) AS token_fingerprint_hex,
+      app_version,
+      locale,
+      created_at,
+      updated_at
+    FROM apns_devices
+    ORDER BY installation_id
+  `).all().map((row) => ({ ...row }));
 }
 
 describe('verified state backups', () => {
@@ -178,6 +205,89 @@ describe('verified state backups', () => {
       expect((await fs.stat(result.backupDirectory)).mode & 0o777).toBe(0o700);
       for (const name of names) expect((await fs.stat(path.join(result.backupDirectory, name))).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it('verifies, backs up, and restores the exact optional APNs envelope without changing row bytes or public schema', async () => {
+    let database = new DatabaseSync(databasePath);
+    database.exec('PRAGMA foreign_keys = ON');
+    database.prepare(`
+      INSERT INTO users (
+        id, email, display_name, password_hash, password_salt, role, disabled, created_at, updated_at, last_login_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      '20000000-0000-4000-8000-000000000001',
+      'backup-apns@example.com',
+      'Backup APNs',
+      'unused-hash',
+      'unused-salt',
+      'player',
+      0,
+      Date.parse(fixedTimestamp),
+      Date.parse(fixedTimestamp),
+      null
+    );
+    installAPNSDeviceEnvelope(database);
+    database.prepare(`
+      INSERT INTO apns_devices (
+        installation_id,
+        user_id,
+        environment,
+        token_ciphertext,
+        token_nonce,
+        token_auth_tag,
+        token_fingerprint,
+        app_version,
+        locale,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      '20000000-0000-4000-8000-000000000002',
+      '20000000-0000-4000-8000-000000000001',
+      'production',
+      Buffer.from('00017fff80fe', 'hex'),
+      Buffer.from('000102030405060708090a0b', 'hex'),
+      Buffer.from('f0e0d0c0b0a090807060504030201000', 'hex'),
+      Buffer.from('cd'.repeat(32), 'hex'),
+      '0.1.0 (42)',
+      'fr-CA',
+      Date.parse(fixedTimestamp),
+      Date.parse(fixedTimestamp) + 1
+    );
+    const expectedRows = apnsRows(database);
+    database.close();
+
+    const backup = await createBackup('apns-envelope-backup');
+    expect(backup.metadata.schemaVersion).toBe(2);
+    await expect(verifyStateBackup(backup.backupDirectory)).resolves.toMatchObject({
+      metadata: { schemaVersion: 2, database: { schemaVersion: 2 } }
+    });
+
+    const restored = await restoreStateBackup(backup.backupDirectory, {
+      destinationDirectory: path.join(tempDirectory, 'apns-envelope-restore'),
+      livePaths: []
+    });
+    expect(inspectSqliteState(restored.databasePath)).toEqual({
+      integrityCheck: 'ok',
+      foreignKeyCheck: 'ok',
+      schemaVersion: 2
+    });
+    database = new DatabaseSync(restored.databasePath, { readOnly: true });
+    try {
+      expect(apnsRows(database)).toEqual(expectedRows);
+    } finally {
+      database.close();
+    }
+  });
+
+  it('rejects a malformed optional APNs envelope before creating a backup', async () => {
+    const database = new DatabaseSync(databasePath);
+    installAPNSDeviceEnvelope(database);
+    database.exec('DROP INDEX idx_apns_devices_updated_at');
+    database.close();
+
+    await expect(createBackup('malformed-apns-envelope')).rejects.toThrow(/APNs device storage envelope/i);
+    await expect(fs.stat(path.join(tempDirectory, 'malformed-apns-envelope'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('backs up and restores the v0.1.1 release identity with the protocol-v1 room envelope', async () => {

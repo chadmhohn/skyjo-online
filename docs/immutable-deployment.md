@@ -189,6 +189,12 @@ CI independently verifies the tag syntax and ancestry. A separately signed produ
 
 Failure before step 7 leaves production untouched. Failure during or after local activation switches `current` back to `previous`, restarts it, and verifies it. A public-edge failure requests the same metadata-bound code rollback. The rollback command is rejected unless the current release, failed SHA, artifact digest, tag, run ID, and controller metadata all match.
 
+### APNs physical-table rollback floor
+
+The optional `apns_devices` table deliberately remains outside the schema migration ledger, so its rollout is protected by two immutable code releases rather than a database-version bump. First promote the #203 envelope release: it keeps public schema 2, accepts the table absent or exact-present, rejects structural drift, and never creates or uses device rows. Verify it in production, then perform one later healthy promotion so that exact envelope tag becomes `previous`. Only a subsequent #204 feature promotion may create the table from the frozen descriptor.
+
+The focused `npm run smoke:apns-rollback` gate starts two concurrent copies of the envelope server against a copied APNs-extended schema-2 database and proves readiness plus byte-preserving shutdown. Backup/restore and the normal copied-state canary repeat the envelope validation. Once any live database contains the table, the recorded envelope tag is a permanent code-rollback floor: never select an older `previous`, manually relink an older release, or restore a pre-table database to facilitate code rollback. Merge and a green main canary do not establish this production floor; the tag, promotion, readiness, PWA/account/invite/web-push/multiplayer checks, and resulting `previous` identity must be explicitly recorded.
+
 For the one-time legacy anchor, rollback output must be exactly `{"rolledBackTo":"legacy","legacy":true}`. Only that strictly parsed result allows CI to use the reduced legacy edge proof (`healthz`, login, and manifest) because the old service may not implement `/readyz` or `/version`. Every normal rollback must return a different full release SHA; CI passes that exact recovered SHA to the strict readiness/version public smoke. Extra output, malformed JSON, unexpected fields, or the failed SHA are rejected.
 
 ## Retention and recovery

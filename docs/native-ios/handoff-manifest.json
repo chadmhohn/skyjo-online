@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-07-27T00:00:00-06:00",
+  "reviewedAt": "2026-07-28T00:00:00-06:00",
   "repository": "chadmhohn/skyjo-online",
   "webBaseline": {
     "version": "0.3.2",
@@ -21,6 +21,15 @@
   },
   "contracts": {
     "databaseSchemaVersion": 2,
+    "optionalPhysicalTables": {
+      "apns_devices": {
+        "descriptor": "server-account-store.mjs#APNS_DEVICE_STORAGE_ENVELOPE",
+        "envelopeIssue": 203,
+        "featureIssue": 204,
+        "migrationLedgerVersion": 2,
+        "rollbackRule": "Promote the envelope release first and make its exact immutable tag the verified previous anchor before the feature creates the table; never roll back past it afterward"
+      }
+    },
     "roomPersistenceVersion": 2,
     "multiplayerProtocolVersion": 2,
     "explicitPresenceVersion": 1,
@@ -63,6 +72,11 @@
     "handoffIssue": 180,
     "externalTestFlightHumanGateIssue": 193,
     "publicAppStoreAccountDeletionIssue": 192,
+    "backendPrerequisiteIssues": {
+      "nativeInviteHandoff": 202,
+      "apnsRollbackEnvelope": 203,
+      "apnsRegistryAndProvider": 204
+    },
     "orderedImplementationIssues": [
       181,
       182,
@@ -104,6 +118,13 @@
       "contracts/v1/schemas/account-http.schema.json",
       "contracts/v1/schemas/stats-http.schema.json",
       "contracts/v1/schemas/api-error.schema.json"
+    ],
+    "apnsRollbackEnvelope": [
+      "server-account-store.mjs",
+      "server-state-backup.mjs",
+      "scripts/smoke-apns-rollback-compatibility.mjs",
+      "tests/unit/data/migrations.test.ts",
+      "tests/unit/data/stateBackup.test.ts"
     ],
     "portableContracts": [
       "contracts/README.md",
@@ -166,6 +187,7 @@
     "contractTypeScriptTests": "npm run test:unit:contracts",
     "contractFixturesIntentionalUpdate": "npm run contracts:fixtures:update",
     "nativeDomainAndPersistence": "npm run test:domain:parity",
+    "apnsRollbackEnvelope": "npm run smoke:apns-rollback",
     "nativeNetworkingContracts": "./scripts/ios-build-test.sh --networking-contracts",
     "nativeFullBuildAndTest": "./scripts/ios-build-test.sh"
   },
@@ -188,11 +210,12 @@
     "contracts/v1 machine-readable schemas and deterministic sanitized fixtures",
     "native URLSession access-client tests against an isolated real local Node server",
     "strict actor-owned native protocol-v2 room client with account-fenced durable reset recovery",
-    "real Swift and Playwright Chromium mixed-client networking contract gate pinned to cached PWA v0.3.2 compatibility"
+    "real Swift and Playwright Chromium mixed-client networking contract gate pinned to cached PWA v0.3.2 compatibility",
+    "schema-2 validation and byte-preserving backup/restore support for the exact optional APNs storage envelope; production rollback-floor verification remains pending"
   ],
   "plannedServerAdditions": [
     "native invite redemption and apple-app-site-association",
-    "authenticated APNs device registration and delivery",
+    "authenticated APNs device registration and delivery after the envelope release is promoted and becomes the verified previous rollback anchor",
     "account deletion before public App Store submission"
   ],
   "secretNamesOnly": [

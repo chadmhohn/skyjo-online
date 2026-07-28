@@ -159,6 +159,8 @@ Acceptance:
 
 Keep web push working while adding native device delivery.
 
+Server sequencing is tracked separately by [rollback-envelope #203](https://github.com/chadmhohn/skyjo-online/issues/203) and [registry/provider #204](https://github.com/chadmhohn/skyjo-online/issues/204). #203 must merge, receive an explicitly approved immutable production promotion, and become the verified `previous` rollback anchor before #204 creates the already-frozen physical table. Both releases retain public database schema 2. After table creation, never roll back to code older than the envelope release.
+
 Acceptance:
 
 - Additive SQLite migration and authenticated device registration/unregistration contract with installation ID, environment, token rotation, multi-device support, and invalid-token cleanup.

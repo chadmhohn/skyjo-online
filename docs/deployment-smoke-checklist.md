@@ -28,6 +28,8 @@ Use this as the concise release checklist. The trust model, bootstrap commands, 
 - [ ] The copied-state canary passed immediately before live activation.
 - [ ] Production stopped gracefully and flushed rooms before the backward-compatible migration.
 - [ ] `previous` and `current` changed atomically, and the hardened service started as `skyjo` using `/opt/skyjo-online/node/bin/node`.
+- [ ] If this is the APNs envelope release, record its immutable tag/SHA after production verification; do not claim #203 operationally complete until a later healthy promotion makes that exact tag `previous`.
+- [ ] If `apns_devices` may exist, both copied-state proof and the selected `previous` release accept only the frozen exact envelope and preserve representative encrypted rows byte-for-byte. The rollback target is not older than the recorded envelope tag.
 
 ## Local production proof
 
@@ -71,6 +73,7 @@ node scripts/smoke-public-release.mjs \
 - [ ] A local post-activation failure automatically switches code to `previous` and verifies it.
 - [ ] A public-edge failure requests the metadata-bound code rollback and verifies the recovered edge.
 - [ ] Normal rollback reports a full release SHA and passes strict readiness/version proof.
+- [ ] Once `apns_devices` exists, the resolved rollback SHA is the recorded envelope release or newer; a pre-envelope target is rejected operationally rather than attempted.
 - [ ] Only a controller-confirmed first-cutover legacy anchor may use the reduced legacy health/login/manifest proof.
 - [ ] No automated path restores or overwrites live SQLite or room state.
 - [ ] Five releases remain, plus anything referenced by `current` or `previous`; backup rotation keeps 30 daily and 12 monthly verified sets.

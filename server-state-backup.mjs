@@ -3,7 +3,10 @@ import fsConstants from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
-import { SCHEMA_MIGRATIONS } from './server-account-store.mjs';
+import {
+  SCHEMA_MIGRATIONS,
+  validateOptionalAPNSDeviceStorageEnvelope
+} from './server-account-store.mjs';
 import {
   normalizeRoomsDocument,
   parseRoomsDocument,
@@ -306,6 +309,7 @@ export function inspectSqliteState(filePath, options = {}) {
     const migrationState = validateSchemaMigrationHistory(database, {
       requireCurrent: options.requireCurrentSchema !== false
     });
+    validateOptionalAPNSDeviceStorageEnvelope(database);
     const schemaValidator = options.validateSchema;
     if (schemaValidator) {
       const result = schemaValidator(database, {

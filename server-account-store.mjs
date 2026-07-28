@@ -204,6 +204,75 @@ export const SCHEMA_MIGRATIONS = Object.freeze([
 
 export const CURRENT_SCHEMA_VERSION = SCHEMA_MIGRATIONS.at(-1).version;
 
+const apnsDeviceTableSql = `
+  CREATE TABLE apns_devices (
+    installation_id TEXT NOT NULL PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    environment TEXT NOT NULL CHECK (environment IN ('development', 'production')),
+    token_ciphertext BLOB NOT NULL CHECK (typeof(token_ciphertext) = 'blob' AND length(token_ciphertext) BETWEEN 1 AND 2048),
+    token_nonce BLOB NOT NULL CHECK (typeof(token_nonce) = 'blob' AND length(token_nonce) = 12),
+    token_auth_tag BLOB NOT NULL CHECK (typeof(token_auth_tag) = 'blob' AND length(token_auth_tag) = 16),
+    token_fingerprint BLOB NOT NULL CHECK (typeof(token_fingerprint) = 'blob' AND length(token_fingerprint) = 32),
+    app_version TEXT NOT NULL CHECK (length(app_version) BETWEEN 1 AND 64),
+    locale TEXT NOT NULL CHECK (length(locale) BETWEEN 1 AND 64),
+    created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer' AND created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (typeof(updated_at) = 'integer' AND updated_at >= created_at)
+  )
+`;
+
+const apnsDeviceIndexes = Object.freeze([
+  Object.freeze({
+    name: 'idx_apns_devices_environment_token',
+    unique: 1,
+    columns: Object.freeze(['environment', 'token_fingerprint']),
+    sql: 'CREATE UNIQUE INDEX idx_apns_devices_environment_token ON apns_devices(environment, token_fingerprint)'
+  }),
+  Object.freeze({
+    name: 'idx_apns_devices_user_updated_at',
+    unique: 0,
+    columns: Object.freeze(['user_id', 'updated_at']),
+    sql: 'CREATE INDEX idx_apns_devices_user_updated_at ON apns_devices(user_id, updated_at)'
+  }),
+  Object.freeze({
+    name: 'idx_apns_devices_updated_at',
+    unique: 0,
+    columns: Object.freeze(['updated_at']),
+    sql: 'CREATE INDEX idx_apns_devices_updated_at ON apns_devices(updated_at)'
+  })
+]);
+
+const apnsDeviceColumns = Object.freeze([
+  Object.freeze({ name: 'installation_id', type: 'TEXT', notnull: 1, pk: 1 }),
+  Object.freeze({ name: 'user_id', type: 'TEXT', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'environment', type: 'TEXT', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'token_ciphertext', type: 'BLOB', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'token_nonce', type: 'BLOB', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'token_auth_tag', type: 'BLOB', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'token_fingerprint', type: 'BLOB', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'app_version', type: 'TEXT', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'locale', type: 'TEXT', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'created_at', type: 'INTEGER', notnull: 1, pk: 0 }),
+  Object.freeze({ name: 'updated_at', type: 'INTEGER', notnull: 1, pk: 0 })
+]);
+
+/**
+ * Frozen physical schema shared with the later APNs feature migration.
+ *
+ * This schema-2 release only validates this descriptor. Runtime code must not
+ * execute these statements until the separately reviewed APNs feature release.
+ */
+export const APNS_DEVICE_STORAGE_ENVELOPE = Object.freeze({
+  version: 1,
+  tableName: 'apns_devices',
+  createTableSql: apnsDeviceTableSql.trim(),
+  columns: apnsDeviceColumns,
+  indexes: apnsDeviceIndexes,
+  createStatements: Object.freeze([
+    apnsDeviceTableSql.trim(),
+    ...apnsDeviceIndexes.map((index) => index.sql)
+  ])
+});
+
 const baselineColumns = Object.freeze({
   users: ['id', 'email', 'display_name', 'password_hash', 'password_salt', 'role', 'disabled', 'created_at', 'updated_at', 'last_login_at'],
   account_sessions: ['token_hash', 'user_id', 'created_at', 'expires_at'],
@@ -233,9 +302,128 @@ function tableColumns(db, tableName) {
   return db.prepare(`PRAGMA table_info(${JSON.stringify(tableName)})`).all();
 }
 
+function normalizedSql(sql) {
+  if (typeof sql !== 'string') return null;
+  return sql.trim().replace(/;\s*$/, '').replace(/\s+/g, ' ');
+}
+
+function exactRows(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+export function validateOptionalAPNSDeviceStorageEnvelope(db) {
+  const tableName = APNS_DEVICE_STORAGE_ENVELOPE.tableName;
+  const fail = () => {
+    throw new Error('Database APNs device storage envelope validation failed.');
+  };
+  const reservedNames = [tableName, ...APNS_DEVICE_STORAGE_ENVELOPE.indexes.map((index) => index.name)];
+  const reservedObjects = db
+    .prepare(`SELECT type, name, sql FROM sqlite_schema WHERE name COLLATE NOCASE IN (${reservedNames.map(() => '?').join(', ')})`)
+    .all(...reservedNames);
+  const table = reservedObjects.find((object) => object.type === 'table' && object.name === tableName);
+  if (!table) {
+    if (reservedObjects.length !== 0) fail();
+    return Object.freeze({ present: false, version: APNS_DEVICE_STORAGE_ENVELOPE.version });
+  }
+  const reservedIndexNames = new Set(APNS_DEVICE_STORAGE_ENVELOPE.indexes.map((index) => index.name));
+  if (
+    reservedObjects.length !== reservedIndexNames.size + 1 ||
+    reservedObjects.some((object) => (
+      object.name === tableName
+        ? object.type !== 'table'
+        : object.type !== 'index' || !reservedIndexNames.has(object.name)
+    ))
+  ) {
+    fail();
+  }
+  if (
+    table.name !== tableName ||
+    normalizedSql(table.sql) !== normalizedSql(APNS_DEVICE_STORAGE_ENVELOPE.createTableSql)
+  ) {
+    fail();
+  }
+
+  const columns = db.prepare(`PRAGMA table_xinfo(${JSON.stringify(tableName)})`).all().map((column) => ({
+    name: column.name,
+    type: column.type,
+    notnull: column.notnull,
+    pk: column.pk,
+    defaultValue: column.dflt_value,
+    hidden: column.hidden
+  }));
+  const expectedColumns = APNS_DEVICE_STORAGE_ENVELOPE.columns.map((column) => ({
+    ...column,
+    defaultValue: null,
+    hidden: 0
+  }));
+  if (!exactRows(columns, expectedColumns)) fail();
+
+  const foreignKeys = db.prepare(`PRAGMA foreign_key_list(${JSON.stringify(tableName)})`).all().map((foreignKey) => ({
+    table: foreignKey.table,
+    from: foreignKey.from,
+    to: foreignKey.to,
+    onUpdate: foreignKey.on_update,
+    onDelete: foreignKey.on_delete,
+    match: foreignKey.match
+  }));
+  if (!exactRows(foreignKeys, [{
+    table: 'users',
+    from: 'user_id',
+    to: 'id',
+    onUpdate: 'NO ACTION',
+    onDelete: 'CASCADE',
+    match: 'NONE'
+  }])) {
+    fail();
+  }
+
+  const expectedIndexes = new Map(APNS_DEVICE_STORAGE_ENVELOPE.indexes.map((index) => [index.name, index]));
+  const indexes = db.prepare(`PRAGMA index_list(${JSON.stringify(tableName)})`).all();
+  if (indexes.length !== expectedIndexes.size + 1) fail();
+  let primaryKeyIndexSeen = false;
+  for (const index of indexes) {
+    if (index.origin === 'pk') {
+      if (primaryKeyIndexSeen || index.unique !== 1 || index.partial !== 0) fail();
+      const keyColumns = db.prepare(`PRAGMA index_xinfo(${JSON.stringify(index.name)})`).all()
+        .filter((column) => column.key === 1)
+        .map((column) => ({ name: column.name, descending: column.desc, collation: column.coll }));
+      if (!exactRows(keyColumns, [{ name: 'installation_id', descending: 0, collation: 'BINARY' }])) fail();
+      primaryKeyIndexSeen = true;
+      continue;
+    }
+
+    const expected = expectedIndexes.get(index.name);
+    if (!expected || index.origin !== 'c' || index.unique !== expected.unique || index.partial !== 0) fail();
+    const schemaIndex = db
+      .prepare("SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ? AND tbl_name = ?")
+      .get(index.name, tableName);
+    if (normalizedSql(schemaIndex?.sql) !== normalizedSql(expected.sql)) fail();
+    const keyColumns = db.prepare(`PRAGMA index_xinfo(${JSON.stringify(index.name)})`).all()
+      .filter((column) => column.key === 1)
+      .map((column) => ({ name: column.name, descending: column.desc, collation: column.coll }));
+    if (!exactRows(
+      keyColumns,
+      expected.columns.map((name) => ({ name, descending: 0, collation: 'BINARY' }))
+    )) {
+      fail();
+    }
+    expectedIndexes.delete(index.name);
+  }
+  if (!primaryKeyIndexSeen || expectedIndexes.size !== 0) fail();
+
+  const indirectSchemaObjects = db
+    .prepare("SELECT name FROM sqlite_schema WHERE type IN ('trigger', 'view')")
+    .all();
+  if (indirectSchemaObjects.length !== 0) fail();
+
+  return Object.freeze({ present: true, version: APNS_DEVICE_STORAGE_ENVELOPE.version });
+}
+
 function validateBaselineSchema(db, { allowMigrationTables = false } = {}) {
   const expectedTables = new Set(Object.keys(baselineColumns));
-  const allowedExtraTables = allowMigrationTables ? new Set(['schema_migrations', 'invite_codes']) : new Set();
+  const allowedExtraTables = allowMigrationTables
+    ? new Set(['schema_migrations', 'invite_codes', APNS_DEVICE_STORAGE_ENVELOPE.tableName])
+    : new Set();
   const existingTables = db
     .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all()
@@ -251,6 +439,7 @@ function validateBaselineSchema(db, { allowMigrationTables = false } = {}) {
   if (existingTables.some((tableName) => !expectedTables.has(tableName) && !allowedExtraTables.has(tableName))) {
     throw new Error('Legacy database contains an unsupported table.');
   }
+  validateOptionalAPNSDeviceStorageEnvelope(db);
 
   const integrity = db.prepare('PRAGMA integrity_check').all();
   if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('Database integrity validation failed.');
@@ -495,6 +684,7 @@ export class AccountStore {
     try {
       if (!this.db || this.getSchemaVersion() !== CURRENT_SCHEMA_VERSION) return false;
       if (!tableColumns(this.db, 'invite_codes').some((column) => column.name === 'room_instance_id')) return false;
+      validateOptionalAPNSDeviceStorageEnvelope(this.db);
       if (this.db.prepare('SELECT 1 AS ready').get()?.ready !== 1) return false;
       return this.db.prepare('PRAGMA quick_check').all().every((row) => row.quick_check === 'ok');
     } catch {

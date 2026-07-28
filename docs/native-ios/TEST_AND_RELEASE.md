@@ -135,6 +135,15 @@ For an additive backend requirement:
 
 Server rollback must remain compatible with the released native client or the native feature must be remotely nonessential/fail safely. Do not couple a native build to an unpromoted server commit.
 
+APNs storage requires two distinct immutable server promotions even though both retain public database schema 2:
+
+1. Merge and promote #203, which validates but never creates or uses the exact optional `apns_devices` envelope.
+2. Verify that tag as production `current`, then promote one subsequent release so the envelope tag becomes the exact healthy `previous` rollback anchor.
+3. Only then may #204 create/use the frozen table. Its canary and production proof must show the envelope release starts against a copied APNs-extended database and preserves every row.
+4. Once the table exists, reject or operationally forbid rollback past the recorded envelope tag. Code rollback never restores SQLite.
+
+Closing #203 from a source PR is provisional. If promotion acceptance has not completed, reopen it immediately and keep #204 blocked. Apple/APNs credentials are not required for #203 source or CI, but tagging, promotion, backup, production verification, and rollback-anchor recording require explicit approval in the current conversation.
+
 For IOS-2 specifically, the new server is backward compatible with the PWA because `/login`, signed-cookie format, and the `error` string remain intact while `code` is additive. A pre-IOS-2 server is not forward compatible with native access: it may redirect the JSON endpoint to HTML login or omit the required envelope, and the native client intentionally fails closed. Deploy and verify the server first; do not roll it back after distributing a dependent native build unless that feature is disabled/fails safely and the compatibility impact is accepted. Passing local/CI checks alone is not a production-deployment claim.
 
 ## External TestFlight And Public App Store Gates

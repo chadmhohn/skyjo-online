@@ -41,6 +41,8 @@ rollback <run>-<attempt>-production <failed-40-sha> <artifact-sha256> <vX.Y.Z> <
 
 `promote` additionally requires a semver tag and resolves that public GitHub tag to the exact commit SHA. It creates and verifies a durable pre-activation backup, repeats the copied-state canary, gracefully stops production, changes state ownership for the non-root service, swaps `previous` and `current`, and performs readiness/version/authenticated smoke checks. Any post-link failure automatically switches code back to `previous` and rechecks it. Database files are never automatically restored after activation because migrations are additive and backward compatible.
 
+The future optional `apns_devices` physical table keeps the public migration ledger at schema 2 and therefore has a stricter release-order invariant. Promote the #203 envelope code first, verify it, then make that exact immutable tag `previous` through a later healthy promotion before #204 may create the frozen table. Once the table exists, that tag is the permanent minimum rollback target; older code rejects the table and must never be selected. `npm run smoke:apns-rollback`, copied-state backup/restore, and readiness prove the envelope release preserves exact rows without using them.
+
 After the workflow's public Cloudflare checks, `rollback` provides a narrow recovery action. It is allowed only when the current release SHA, stored artifact digest, and stored tag all match the request. It swaps code to `previous`, never restores state, and emits one sanitized JSON result. A first-cutover legacy result is exactly `{"rolledBackTo":"legacy","legacy":true}`; normal rollback reports the previous SHA and `legacy:false`.
 
 ## First cutover from the legacy checkout

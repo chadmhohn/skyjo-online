@@ -709,6 +709,7 @@ describe('v0.3.2 workflow governance', () => {
       runner,
       realtime,
       verifier,
+      apnsRollbackSmoke,
       packageDocument,
       packageLock,
       changelog,
@@ -722,6 +723,7 @@ describe('v0.3.2 workflow governance', () => {
       fs.readFile(path.join(root, 'scripts', 'run-automated-certification.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'src', 'serverRealtime.ts'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'verify-v030-release.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'smoke-apns-rollback-compatibility.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
       fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8'),
@@ -785,9 +787,18 @@ describe('v0.3.2 workflow governance', () => {
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
     expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-27');
-    expect(JSON.parse(packageDocument).version).toBe('0.3.2');
-    expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
-    expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('--retries=0');
+    const packageJson = JSON.parse(packageDocument);
+    expect(packageJson.version).toBe('0.3.2');
+    expect(packageJson.scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
+    expect(packageJson.scripts['test:e2e:certification']).toContain('--retries=0');
+    expect(packageJson.scripts['smoke:apns-rollback']).toBe(
+      'npm run build:server && node scripts/write-release-json.mjs && node scripts/smoke-apns-rollback-compatibility.mjs'
+    );
+    expect(packageJson.scripts['smoke:delivery']).toContain('npm run smoke:apns-rollback');
+    expect(packageJson.scripts['smoke:release']).toContain('npm run smoke:delivery');
+    expect(apnsRollbackSmoke).toContain('logs.includes(sensitiveCanary)');
+    expect(apnsRollbackSmoke).toContain('diagnostics withheld');
+    expect(apnsRollbackSmoke).not.toMatch(/console\.(?:error|log)\(logs\)/);
     expect(JSON.parse(packageLock).version).toBe('0.3.2');
     expect(changelog).toMatch(/^## 0\.3\.2 - 2026-07-27$/m);
     expect(certificationAddendum).toContain('physical `PASS V0.3 IOS`');
