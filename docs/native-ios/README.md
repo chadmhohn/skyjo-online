@@ -11,6 +11,7 @@ This directory is the portable source of truth for building a native Skyjo clien
 - Backend protocol: multiplayer protocol 2, shared snapshot envelope 2, explicit presence 1, persistence schema 2.
 - Repository contract bundle: `contracts/v1`. Its bundle version is an independent documentation/fixture axis; it does not change or imply the deployed release, multiplayer protocol, snapshot envelope, presence, database, room-persistence, or solo-AI version.
 - IOS-2 repository support includes the JSON access-session API and stable JSON API-error envelope described in [`BACKEND_CONTRACTS.md`](BACKEND_CONTRACTS.md). This is a source/PR statement, not evidence that production has been promoted beyond the dated v0.3.2 baseline above.
+- IOS-5 repository support includes the native typed access/account/stats client, shared two-cookie session jar, and accessible access/account/home/stats shell described in [`ARCHITECTURE.md`](ARCHITECTURE.md). This is also a source/PR statement, not evidence of production promotion or TestFlight distribution.
 - Native targets: iPhone and iPad. A Mac Catalyst or visionOS target is not part of v0.1.0.
 - Deployment target: iOS/iPadOS 18.0. Build and submission use the latest stable Xcode accepted by App Store Connect; as of this review, that is Xcode 26 and the iOS/iPadOS 26 SDK or later.
 

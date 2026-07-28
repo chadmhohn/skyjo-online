@@ -119,6 +119,7 @@ public enum SkyjoHTTPClientError: Error, Equatable, Sendable {
   case responseTooLarge(limit: Int)
   case server(statusCode: Int, code: SkyjoAPIErrorCode?, message: String)
   case transport(URLError.Code)
+  case unsupportedServerVersion
 
   public static let safeFallbackMessage = "Request failed."
 }
@@ -138,6 +139,8 @@ extension SkyjoHTTPClientError: LocalizedError {
       message
     case .transport:
       "The server could not be reached."
+    case .unsupportedServerVersion:
+      "Update Skyjo to connect to this server."
     }
   }
 }
@@ -317,11 +320,9 @@ private struct SkyjoAPIErrorPayload: Decodable, Sendable {
     let code = try container.decode(String.self, forKey: .code)
     let error = try container.decode(String.self, forKey: .error)
     guard
-      !code.isEmpty,
-      code.count <= 128,
+      (1...128).contains(code.unicodeScalars.count),
       code.allSatisfy({ $0 == "_" || $0.isASCII && ($0.isUppercase || $0.isNumber) }),
-      !error.isEmpty,
-      error.count <= 512
+      (1...512).contains(error.unicodeScalars.count)
     else {
       throw DecodingError.dataCorrupted(
         .init(codingPath: decoder.codingPath, debugDescription: "Invalid API-error bounds.")

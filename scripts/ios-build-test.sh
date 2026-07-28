@@ -381,6 +381,19 @@ if [[ "$server_build_status" -ne 0 ]]; then
   report_failure "The local Node server build failed."
 fi
 
+# The native bootstrap intentionally requires the same schema/protocol-backed
+# readiness identity as production. A focused server build does not create the
+# static release identity, so write the validated local identity before
+# starting the isolated contract server.
+set +e
+"${xcode_environment[@]}" node scripts/write-release-json.mjs \
+  2>&1 | sanitize_output | tee -a "$toolchain_log"
+release_identity_status=${PIPESTATUS[0]}
+set -e
+if [[ "$release_identity_status" -ne 0 ]]; then
+  report_failure "The local Node release identity could not be created."
+fi
+
 node_test_parent="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 node_test_dir="$(mktemp -d "$node_test_parent/skyjo-ios-node.XXXXXX")"
 if [[ "$node_test_dir" != "$node_test_parent"/skyjo-ios-node.* ]]; then
@@ -461,6 +474,9 @@ fi
 
 xcrun simctl boot "$simulator_udid" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$simulator_udid" -b >/dev/null
+# Start every contract/UI run from a clean app container so persistent-cookie
+# assertions measure this run rather than a prior local simulator install.
+xcrun simctl uninstall "$simulator_udid" com.groundworkrevops.skyjo >/dev/null 2>&1 || true
 simulator_test_environment_set=true
 # Remove the credential-bearing key used by older harness revisions before
 # Xcode can capture simulator-wide launchd diagnostics.

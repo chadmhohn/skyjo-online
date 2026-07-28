@@ -37,6 +37,29 @@ struct BootstrapTests {
     )
   }
 
+  @Test("Debug test-server overrides are limited to HTTP loopback")
+  func testServerOverride() throws {
+#if DEBUG
+    let configuration = try AppConfiguration(
+      bundle: .main,
+      processEnvironment: [AppConfiguration.testServerURLEnvironmentKey: "http://127.0.0.1:43123"]
+    )
+    #expect(configuration.apiBaseURL.absoluteString == "http://127.0.0.1:43123")
+
+    do {
+      _ = try AppConfiguration(
+        bundle: .main,
+        processEnvironment: [AppConfiguration.testServerURLEnvironmentKey: "https://example.com"]
+      )
+      Issue.record("Expected a non-loopback test override to fail closed.")
+    } catch let error as AppConfigurationError {
+      #expect(error == .invalidBaseURL("https://example.com"))
+    } catch {
+      Issue.record("Unexpected error type for a non-loopback test override.")
+    }
+#endif
+  }
+
   @Test("The local package graph compiles without a cycle")
   func packageGraph() {
     #expect(

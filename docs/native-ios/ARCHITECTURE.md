@@ -65,7 +65,10 @@ The TypeScript engine remains the reference implementation during the port. Once
 
 - One dedicated `URLSession` configured with an explicitly supplied, persistent `HTTPCookieStorage` for the outer access and account HttpOnly cookies; tests inject an isolated cookie store.
 - `AccessSessionClient` owns typed `GET`, `POST`, and `DELETE /api/access/session` calls. It tolerates additive success fields, requires the typed `authenticated` field, rejects redirects and unexpected final URLs, caps requests at 256 KiB and responses at 64 KiB, and maps only known stable error codes to server messages.
-- Typed Codable request/response models for account, invite, stats, readiness, and version contracts.
+- `SkyjoAPIClient` composes that access actor on the same session/cookie jar and adds typed current-account, signup/login/logout, profile/password, stats summary/list/detail/player, readiness, and version requests. General responses are capped at 2 MiB while the access route retains its 64 KiB boundary.
+- Operational DTOs require schema 2 and protocol 2 plus valid release identity/timestamps. Unsupported values become an explicit upgrade state. Contract-required nullable keys must be present even when their value is `null`; absent keys fail decoding.
+- Canonical valid/invalid HTTP fixtures under `contracts/v1/fixtures/` are decoded by Swift tests in addition to focused `URLProtocol` boundary and safe-error tests.
+- Typed Codable request/response models remain the boundary for later invite and realtime contracts.
 - An actor-owned `RoomConnection` around `URLSessionWebSocketTask`.
 - One in-flight command at a time, UUID command IDs, expected revisions, replay only with the identical ID/body, and authoritative snapshot convergence before enabling another action.
 - Explicit foreground/background presence, jittered reconnect, reachability hints, eight-second initial sync timeout, and diagnostic connection states.
@@ -100,11 +103,13 @@ Solo replacement is transactional: persist the new validated session first, then
 
 ### App And Features
 
-- `AppModel` is `@MainActor` and owns navigation plus authenticated product state.
+- `AppModel` is `@MainActor` and owns the implemented access/account/home/stats navigation plus authenticated product state. It publishes explicit loading, access-required, account-required, offline, empty, disabled/ended-session, not-ready, upgrade-required, and safe failure states.
+- Account-generation and per-request identity guards discard stale bootstrap, profile, password, logout, stats, game-detail, and player-history responses. Logout and replacement reset navigation to Home before establishing the next account state.
 - Each feature has a small observable model whose dependencies are injected as protocols.
 - Long-lived work is owned by actors/services, not detached `Task` calls in views.
 - Navigation state is typed and restorable where safe. Invite routes are validated before they affect state.
 - SwiftUI views render state and send intents; they do not implement game rules or WebSocket framing.
+- Passwords are cleared after submission and never stored or logged; session cookies never enter UI state. Native admin remains intentionally web-only, and the Account screen links the public-release deletion dependency tracked by issue #192.
 
 ## State Ownership
 
@@ -143,7 +148,7 @@ IOS-2 adds two native-enabling capabilities to the repository:
 1. The pre-gate JSON access-session endpoint, stable `{ code, error }` API failures, and an `ACCESS_REQUIRED` JSON response for unauthenticated API requests. The legacy HTML `/login` and PWA `error` message fallback remain intact.
 2. Versioned JSON Schemas and deterministic, sanitized fixtures under `contracts/v1/`.
 
-These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. Remaining additive work is:
+These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. IOS-5 consumes them with the typed native HTTP/session client and accessible access/account/home/stats shell described above. Its local simulator/server evidence proves source compatibility, not production promotion or native distribution. Remaining additive backend work is:
 
 1. A JSON invite redemption contract for universal-link handoff.
 2. `apple-app-site-association` hosting and Associated Domains.

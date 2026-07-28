@@ -16,7 +16,7 @@ Run the iOS jobs on a pinned, documented macOS/Xcode image. Print `sw_vers`, `xc
 
 The build job compiles once for testing without signing; downstream jobs reuse derived products when safe. Upload failed `.xcresult`, screenshots, logs, and sanitized diagnostics for 14 days. Never attach cookies, credentials, invite tokens, APNs device tokens, raw private snapshots, signing assets, or production databases.
 
-IOS-1 pins `iOS / Build` to the GitHub-hosted `macos-26` image and selects Xcode 26.6 through `DEVELOPER_DIR`. The job records the concrete weekly runner image version, discovers an iPhone on the newest installed iOS runtime, installs locked Node dependencies, and runs [`scripts/ios-build-test.sh`](../../scripts/ios-build-test.sh). IOS-2 adds the focused `iOS / Networking Contracts` job, which runs the same harness with `--networking-contracts`.
+IOS-1 pins `iOS / Build` to the GitHub-hosted `macos-26` image and selects Xcode 26.6 through `DEVELOPER_DIR`. The job records the concrete weekly runner image version, discovers an iPhone on the newest installed iOS runtime, installs locked Node dependencies, and runs [`scripts/ios-build-test.sh`](../../scripts/ios-build-test.sh). IOS-2 adds the focused `iOS / Networking Contracts` job, which runs the same harness with `--networking-contracts`. IOS-5 extends that gate through typed account/stats requests, canonical HTTP fixtures, exact DTO schema-bound mutations, future operational-axis routing, two-cookie client recreation, and loaded/detail/player/offline-retry state-model and accessibility coverage.
 
 IOS-3 adds `iOS / Domain & Persistence`, which runs `npm run test:domain:parity` on the same pinned macOS/Xcode image. The command regenerates and verifies the canonical TypeScript fixture model without writing, replays it through TypeScript and Swift, runs the pure Swift package tests with coverage, and fails below 90% aggregate executable-line coverage for `SkyjoDomain`. SwiftPM scratch and module-cache data stay under the ignored per-run `ios/Artifacts/DomainParity-*` directory.
 
@@ -44,7 +44,7 @@ npm run test:unit:contracts
 
 - `URLProtocol` fakes for deterministic HTTP/error behavior, including typed required success fields with additive-field tolerance, known/unknown/malformed errors, redirect rejection, and request/response bounds enforced while streaming.
 - Codable fixtures for every valid/invalid REST and WebSocket frame.
-- IOS-2 local Node integration proves real outer-cookie status/login/logout, wrong-password behavior, repeatable logout, and clearing both access/account cookie layers through native `URLSession`. Later issues extend the same local-server pattern to WebSocket upgrade, heartbeat, revisions, commands, redaction, reconnect, lifecycle, invites, and APNs registration APIs.
+- IOS-2/5 local Node integration proves real outer-cookie status/login/logout, wrong-password behavior, account signup/current/profile/password/logout, stats summary/list/detail/player behavior, client recreation with both cookie layers, repeatable logout, and clearing both cookies through native `URLSession`. Later issues extend the same local-server pattern to WebSocket upgrade, heartbeat, revisions, commands, redaction, reconnect, lifecycle, invites, and APNs registration APIs.
 - Mixed-client E2E with at least one Swift simulator and one Playwright web client.
 - Previous released PWA compatibility stays green for any server change.
 
@@ -57,6 +57,8 @@ The deterministic contract corpus lives under `contracts/v1/fixtures/`; its SHA-
 - System accessibility audit on primary screens plus explicit label/value/trait/order assertions for cards and table controls.
 - Screenshot artifacts at compact phone, large phone, iPad portrait, and iPad landscape sizes. Use available simulator discovery rather than permanently assuming one device name.
 - Dynamic Type at normal, xxxLarge, and an accessibility size; Reduce Motion; Increase Contrast; Differentiate Without Color; right-to-left smoke even if v0.1 ships English only.
+
+For IOS-5, retain model and UI evidence for access, signup/login, cookie-backed relaunch, profile, password change, logout, stats loading/empty/detail/player history, retry, offline, disabled/expired account, service-not-ready, and upgrade-required states. The account screen must show the web-only admin link only to an admin and visibly track issue #192 for public-release deletion. Exercise the account screen in phone portrait, landscape, and an accessibility Dynamic Type size, attach sanitized screenshots for the changed UI, and keep the full simulator run free of cookies and passwords.
 
 ### Performance And Reliability
 
