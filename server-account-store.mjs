@@ -313,14 +313,29 @@ function exactRows(actual, expected) {
 
 export function validateOptionalAPNSDeviceStorageEnvelope(db) {
   const tableName = APNS_DEVICE_STORAGE_ENVELOPE.tableName;
-  const table = db
-    .prepare("SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name = ?")
-    .get(tableName);
-  if (!table) return Object.freeze({ present: false, version: APNS_DEVICE_STORAGE_ENVELOPE.version });
-
   const fail = () => {
     throw new Error('Database APNs device storage envelope validation failed.');
   };
+  const reservedNames = [tableName, ...APNS_DEVICE_STORAGE_ENVELOPE.indexes.map((index) => index.name)];
+  const reservedObjects = db
+    .prepare(`SELECT type, name, sql FROM sqlite_schema WHERE name IN (${reservedNames.map(() => '?').join(', ')})`)
+    .all(...reservedNames);
+  const table = reservedObjects.find((object) => object.type === 'table' && object.name === tableName);
+  if (!table) {
+    if (reservedObjects.length !== 0) fail();
+    return Object.freeze({ present: false, version: APNS_DEVICE_STORAGE_ENVELOPE.version });
+  }
+  const reservedIndexNames = new Set(APNS_DEVICE_STORAGE_ENVELOPE.indexes.map((index) => index.name));
+  if (
+    reservedObjects.length !== reservedIndexNames.size + 1 ||
+    reservedObjects.some((object) => (
+      object.name === tableName
+        ? object.type !== 'table'
+        : object.type !== 'index' || !reservedIndexNames.has(object.name)
+    ))
+  ) {
+    fail();
+  }
   if (
     table.name !== tableName ||
     normalizedSql(table.sql) !== normalizedSql(APNS_DEVICE_STORAGE_ENVELOPE.createTableSql)

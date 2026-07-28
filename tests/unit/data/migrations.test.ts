@@ -183,6 +183,18 @@ describe('transactional database migrations', () => {
       }
     ],
     [
+      'reserved view instead of the table',
+      (db: DatabaseSync) => {
+        db.exec('DROP TABLE apns_devices; CREATE VIEW apns_devices AS SELECT id AS installation_id FROM users');
+      }
+    ],
+    [
+      'reserved index while the table is absent',
+      (db: DatabaseSync) => {
+        db.exec('DROP TABLE apns_devices; CREATE INDEX idx_apns_devices_updated_at ON users(updated_at)');
+      }
+    ],
+    [
       'missing unique index',
       (db: DatabaseSync) => db.exec('DROP INDEX idx_apns_devices_environment_token')
     ],
