@@ -234,9 +234,21 @@ describe('transactional database migrations', () => {
       }
     ],
     [
+      'case-variant reserved view instead of the table',
+      (db: DatabaseSync) => {
+        db.exec('DROP TABLE apns_devices; CREATE VIEW APNS_DEVICES AS SELECT id AS installation_id FROM users');
+      }
+    ],
+    [
       'reserved index while the table is absent',
       (db: DatabaseSync) => {
         db.exec('DROP TABLE apns_devices; CREATE INDEX idx_apns_devices_updated_at ON users(updated_at)');
+      }
+    ],
+    [
+      'case-variant reserved index while the table is absent',
+      (db: DatabaseSync) => {
+        db.exec('DROP TABLE apns_devices; CREATE INDEX IDX_APNS_DEVICES_UPDATED_AT ON users(updated_at)');
       }
     ],
     [

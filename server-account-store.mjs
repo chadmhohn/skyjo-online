@@ -318,7 +318,7 @@ export function validateOptionalAPNSDeviceStorageEnvelope(db) {
   };
   const reservedNames = [tableName, ...APNS_DEVICE_STORAGE_ENVELOPE.indexes.map((index) => index.name)];
   const reservedObjects = db
-    .prepare(`SELECT type, name, sql FROM sqlite_schema WHERE name IN (${reservedNames.map(() => '?').join(', ')})`)
+    .prepare(`SELECT type, name, sql FROM sqlite_schema WHERE name COLLATE NOCASE IN (${reservedNames.map(() => '?').join(', ')})`)
     .all(...reservedNames);
   const table = reservedObjects.find((object) => object.type === 'table' && object.name === tableName);
   if (!table) {
