@@ -9,10 +9,10 @@ import {
   parseClientCommand,
   redactGameState,
   reduceAuthoritativeGameCommand,
-  isWellFormedUnicode,
   type ClientCommand,
   type GameCommand
 } from '../../../src/protocolV2';
+import { isWellFormedUnicode } from '../../../server-unicode.mjs';
 import { createMultiplayerGame } from '../../../src/game';
 import { isMultiplayerRoomSnapshot } from '../../../src/roomConnection';
 import {

@@ -23,10 +23,7 @@ import type {
   RoundHistoryEntry,
   TurnPhase
 } from './types';
-import {
-  isWellFormedUnicode,
-  wellFormedUTF16Prefix
-} from '../server-unicode.mjs';
+import { wellFormedUTF16Prefix } from '../server-unicode.mjs';
 
 export const MULTIPLAYER_PROTOCOL_VERSION = 2 as const;
 export const EXPLICIT_PRESENCE_VERSION = 1 as const;
@@ -162,19 +159,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => actual.includes(key));
 }
 
-export { isWellFormedUnicode };
-
 function isCardIndex(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) < 12;
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) < 12;
 }
 
 function parseAction(value: unknown): GameCommand | null {
-  if (!isRecord(value) || typeof value.type !== 'string') return null;
+  if (!isRecord(value)) return null;
   switch (value.type) {
     case 'reveal-opening-card':
     case 'replace-card':
@@ -193,9 +187,9 @@ function parseAction(value: unknown): GameCommand | null {
     case 'takeover-player-with-ai':
       return hasExactKeys(value, ['type', 'playerId']) &&
         typeof value.playerId === 'string' &&
-        isWellFormedUnicode(value.playerId) &&
+        value.playerId.isWellFormed() &&
         value.playerId.length > 0 &&
-        value.playerId.length <= PUBLIC_SNAPSHOT_LIMITS.identifierLength
+        value.playerId.length <= 128
         ? { type: value.type, playerId: value.playerId }
         : null;
     case 'set-next-round-ready':
@@ -205,8 +199,8 @@ function parseAction(value: unknown): GameCommand | null {
     case 'send-chat-message':
       return hasExactKeys(value, ['type', 'text']) &&
         typeof value.text === 'string' &&
-        isWellFormedUnicode(value.text) &&
-        value.text.length <= PUBLIC_SNAPSHOT_LIMITS.chatMessageLength
+        value.text.isWellFormed() &&
+        value.text.length <= 280
         ? { type: value.type, text: value.text }
         : null;
     default:

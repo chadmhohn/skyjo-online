@@ -1,6 +1,5 @@
 import {
   EXPLICIT_PRESENCE_VERSION,
-  isWellFormedUnicode,
   MULTIPLAYER_PROTOCOL_VERSION,
   PUBLIC_SNAPSHOT_LIMITS,
   SHARED_SNAPSHOT_ENVELOPE_VERSION,
@@ -168,7 +167,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function isBoundedString(value: unknown, maximumLength: number, allowEmpty = false): value is string {
   return typeof value === 'string' &&
-    isWellFormedUnicode(value) &&
+    value.isWellFormed() &&
     (allowEmpty || value.length > 0) &&
     value.length <= maximumLength;
 }
