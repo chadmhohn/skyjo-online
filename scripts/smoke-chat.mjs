@@ -226,10 +226,10 @@ async function accessSessionRequest(url, { method = 'GET', body, cookie, content
   return { response, payload };
 }
 
-async function nativeInviteRequest(url, { method = 'POST', body, contentType = 'application/json' } = {}) {
+async function nativeInviteRequest(url, { method = 'POST', body, contentType = 'application/json', search = '' } = {}) {
   const headers = {};
   if (contentType) headers['Content-Type'] = contentType;
-  const response = await fetch(`${url}/api/rooms/invite/redeem`, {
+  const response = await fetch(`${url}/api/rooms/invite/redeem${search}`, {
     method,
     headers,
     ...(body === undefined ? {} : { body }),
@@ -710,6 +710,10 @@ try {
     await nativeInviteRequest(baseUrl, { body: '{"token":' }),
     await nativeInviteRequest(baseUrl, { body: '[]' }),
     await nativeInviteRequest(baseUrl, { body: JSON.stringify({ token: 'payload.signature', extra: true }) }),
+    await nativeInviteRequest(baseUrl, {
+      body: JSON.stringify({ token: 'payload.signature' }),
+      search: '?token=payload.signature'
+    }),
     await nativeInviteRequest(baseUrl, { body: JSON.stringify({ token: 'not-a-signed-token' }) }),
     await nativeInviteRequest(baseUrl, { body: JSON.stringify({ token: `a.${'b'.repeat(2047)}` }) }),
     await nativeInviteRequest(baseUrl, { body: JSON.stringify({ token: `a.${'b'.repeat(256 * 1024)}` }) })
@@ -720,6 +724,7 @@ try {
       [415, 'UNSUPPORTED_MEDIA_TYPE'],
       [400, 'INVALID_JSON'],
       [400, 'EXPECTED_JSON_OBJECT'],
+      [400, 'INVALID_REQUEST'],
       [400, 'INVALID_REQUEST'],
       [410, 'INVITE_INVALID_OR_EXPIRED'],
       [410, 'INVITE_INVALID_OR_EXPIRED'],
@@ -1247,7 +1252,7 @@ try {
   });
   assert.equal(staleShortInviteReplay.status, 303, 'consumed stale code becomes the generic invalid response');
   assert.equal(staleShortInviteReplay.headers.get('location'), '/login?inviteError=1');
-  const boundedNativeInviteAttempts = await Promise.all(Array.from({ length: 3 }, () => nativeInviteRequest(baseUrl, {
+  const boundedNativeInviteAttempts = await Promise.all(Array.from({ length: 2 }, () => nativeInviteRequest(baseUrl, {
     body: JSON.stringify({ token: 'payload.signature' })
   })));
   for (const attempt of boundedNativeInviteAttempts) {

@@ -2018,6 +2018,7 @@ async function handleNativeInviteRedemption(req, res, url) {
       });
       return true;
     }
+    if (url.search) throw new PublicApiError('INVALID_REQUEST');
     const body = await readJsonBody(req);
     if (!validNativeInviteRedemptionBody(body)) throw new PublicApiError('INVALID_REQUEST');
     if (!isRoomInviteToken(body.token)) throw new PublicApiError('INVITE_INVALID_OR_EXPIRED');

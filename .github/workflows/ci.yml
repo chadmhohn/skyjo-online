@@ -905,7 +905,7 @@ jobs:
             if [[ "$rollback_target" == legacy ]]; then
               node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --allow-legacy-rollback
             else
-              node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --release-sha "$rollback_target"
+              node scripts/smoke-public-release.mjs --base-url "$SKYJO_PUBLIC_BASE_URL" --release-sha "$rollback_target" --allow-pre-native-invite-rollback
             fi
             exit 1
           fi

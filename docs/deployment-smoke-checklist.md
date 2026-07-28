@@ -8,7 +8,7 @@ Use this as the concise release checklist. The trust model, bootstrap commands, 
 - [ ] Required unit, Chromium, WebKit, visual/accessibility, Lighthouse, and CodeQL checks pass.
 - [ ] `CI / Runtime Artifact` packages the build emitted by `CI / Quality & Security`; it does not invoke an application build again.
 - [ ] Archive allowlist, checksum, exact source SHA, production dependency inventory, CycloneDX SBOM, and GitHub provenance verification pass.
-- [ ] No application, account, VAPID, session, database, SSH, or smoke-account secret appears in source, artifacts, logs, or workflow inputs.
+- [ ] No application, account, VAPID, session, database, SSH, smoke-account secret, real invite token, or live room-instance UUID appears in source, artifacts, logs, or workflow inputs.
 
 ## Main canary
 
@@ -16,12 +16,14 @@ Use this as the concise release checklist. The trust model, bootstrap commands, 
 - [ ] The forced deploy identity accepted only the declared archive byte count and SHA-addressed filename.
 - [ ] The controller verified the checksum and release identity before extraction.
 - [ ] Copied-state migration and authenticated HTTP/WebSocket smoke passed on `127.0.0.1:4181` with push disabled.
+- [ ] The isolated canary served the exact synthetic Apple association document and rejected an invalid pre-gate native invite redemption without creating a session or mutating room state.
 - [ ] The canary stopped and its isolated state was cleaned without stopping or changing production.
 
 ## Release tag
 
 - [ ] The release commit is on protected `main`, and the exact commit's main CI run is green.
 - [ ] The new tag is immutable `vX.Y.Z`; it is not moved or reused.
+- [ ] The production `SKYJO_APPLE_APPLICATION_IDENTIFIER` is the Apple-confirmed full App ID prefix plus `com.groundworkrevops.skyjo`; it is neither missing nor the fixed synthetic test value.
 - [ ] The controller independently resolved the public GitHub tag to the archive's full SHA.
 - [ ] `current` and a verified rollback target exist before activation. The first cutover has an explicitly proven legacy anchor.
 - [ ] The pre-activation backup passed SQLite integrity, foreign-key, migration-history, room-format, checksum, and isolated-restore verification.
@@ -38,11 +40,13 @@ systemctl status skyjo-online.service --no-pager
 curl -fsS http://127.0.0.1:4180/healthz
 curl -fsS http://127.0.0.1:4180/readyz
 curl -fsS http://127.0.0.1:4180/version
+curl -fsS http://127.0.0.1:4180/.well-known/apple-app-site-association
 ```
 
 - [ ] Liveness returns exactly `ok`.
 - [ ] Readiness returns 200, all three checks are `ok`, and its release SHA is exact.
 - [ ] Version returns the same full SHA, valid build timestamp, and expected protocol.
+- [ ] Apple association GET and HEAD are direct public 200 responses with `application/json`, the confirmed single App ID, only `/invite/*`, and an exclusion for `?open=browser` before the include rule; neither response creates a cookie.
 - [ ] The controller's dedicated account login, identity lookup, and authenticated WebSocket open/close smoke passed without mutating a room.
 
 ## Public edge proof
@@ -57,14 +61,16 @@ node scripts/smoke-public-release.mjs \
 
 - [ ] Cloudflare serves public liveness, readiness, and version for the expected SHA.
 - [ ] `/login` returns the password form without creating a session.
-- [ ] `/manifest.webmanifest` is valid and public.
-- [ ] Readiness, version, login, and manifest are `no-store`.
+- [ ] `/manifest.webmanifest` and `/.well-known/apple-app-site-association` are valid and public.
+- [ ] The association response uses the documented bounded public cache; readiness, version, login, and manifest are `no-store`.
 
 ## Functional release proof
 
 - [ ] Single player starts, opening reveals complete, the human and AI each take legal turns, and no console error appears.
 - [ ] Two authenticated clients create/join a room, complete opening reveals, exchange one turn each, and observe identical state.
 - [ ] Refresh/rejoin restores the same room and seat.
+- [ ] On a trusted operator terminal, one disposable-room invite redeems through `POST /api/rooms/invite/redeem` with the token only in the HTTPS JSON body, returns exactly `roomCode` and `expiresAt` plus one outer-access cookie, and does not create an account, membership, seat, or room mutation. No token or room-instance UUID is retained in evidence.
+- [ ] The existing browser invite and `?open=browser` fallback still work, and the signed native app opens the Universal Link on a physical device under issue #188's human gate.
 - [ ] A graceful restart restores durable rooms and account history.
 
 ## Failure and rollback
@@ -76,6 +82,7 @@ node scripts/smoke-public-release.mjs \
 - [ ] Once `apns_devices` exists, the resolved rollback SHA is the recorded envelope release or newer; a pre-envelope target is rejected operationally rather than attempted.
 - [ ] Only a controller-confirmed first-cutover legacy anchor may use the reduced legacy health/login/manifest proof.
 - [ ] No automated path restores or overwrites live SQLite or room state.
+- [ ] A code rollback leaves invite signing material and durable state untouched; account for the bounded Apple association cache and retain safe browser handling for `/invite/*` in the rollback target.
 - [ ] Five releases remain, plus anything referenced by `current` or `previous`; backup rotation keeps 30 daily and 12 monthly verified sets.
 
 Never repair a release by editing files below `current`, running `npm install` on the VPS, pointing a symlink manually, disabling SSH host verification, widening sudo, or copying a database over live state.

@@ -21,5 +21,8 @@ describe('deployed smoke protocol contract', () => {
     expect(library).toContain('/api/rooms/invite/redeem');
     expect(library).toContain('INVITE_INVALID_OR_EXPIRED');
     expect(library).toMatch(/method: 'HEAD'/);
+    const publicSmoke = await fs.readFile(path.join(root, 'scripts', 'smoke-public-release.mjs'), 'utf8');
+    expect(publicSmoke).toContain('allowPreNativeInviteRollback');
+    expect(publicSmoke).toContain('pre-native-invite rollback must retain the shared access gate');
   });
 });

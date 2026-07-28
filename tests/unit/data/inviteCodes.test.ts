@@ -388,6 +388,7 @@ describe('native invite public configuration', () => {
       }
     });
     expect(() => createAppleAppSiteAssociation('com.groundworkrevops.skyjo')).toThrow(/identifier/i);
+    expect(() => createAppleAppSiteAssociation('XXXXXXXXXX.com.groundworkrevops.skyjo')).toThrow(/identifier/i);
     expect(JSON.stringify(createAppleAppSiteAssociation(productionIdentifier))).not.toMatch(/webcredentials|"\/":"\/\*"/);
   });
 
@@ -402,6 +403,10 @@ describe('native invite public configuration', () => {
     expect(() => resolveAppleApplicationIdentifier({ nodeEnv: 'staging' })).toThrow(/required/i);
     expect(() => resolveAppleApplicationIdentifier({})).toThrow(/required/i);
     expect(() => resolveAppleApplicationIdentifier({ value: 'bad', nodeEnv: 'test' })).toThrow(/invalid/i);
+    expect(() => resolveAppleApplicationIdentifier({
+      value: 'XXXXXXXXXX.com.groundworkrevops.skyjo',
+      nodeEnv: 'production'
+    })).toThrow(/invalid/i);
     expect(() => resolveAppleApplicationIdentifier({
       value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
       nodeEnv: 'production'

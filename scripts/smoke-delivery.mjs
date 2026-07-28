@@ -18,7 +18,7 @@ const root = path.resolve(import.meta.dirname, '..');
 const fullSha = 'a'.repeat(40);
 const appleAssociationBody = JSON.stringify(createAppleAppSiteAssociation(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER));
 
-async function withPublicFixture({ legacy = false } = {}, callback) {
+async function withPublicFixture({ legacy = false, nativeInviteHandoff = true } = {}, callback) {
   const server = http.createServer((request, response) => {
     const noStore = { 'cache-control': 'no-store' };
     if (request.url === '/healthz') {
@@ -26,13 +26,21 @@ async function withPublicFixture({ legacy = false } = {}, callback) {
       response.end('ok');
       return;
     }
-    if (!legacy && request.url === '/.well-known/apple-app-site-association') {
+    if (!legacy && nativeInviteHandoff && request.url === '/.well-known/apple-app-site-association') {
       response.writeHead(200, {
         'cache-control': 'public, max-age=3600',
         'content-length': Buffer.byteLength(appleAssociationBody),
         'content-type': 'application/json'
       });
       response.end(request.method === 'HEAD' ? '' : appleAssociationBody);
+      return;
+    }
+    if (!legacy && !nativeInviteHandoff && request.url === '/.well-known/apple-app-site-association') {
+      response.writeHead(302, {
+        ...noStore,
+        location: '/login?next=%2F.well-known%2Fapple-app-site-association'
+      });
+      response.end();
       return;
     }
     if (request.url === '/manifest.webmanifest') {
@@ -87,6 +95,20 @@ async function testPublicSmoke() {
       runPublicReleaseSmoke({ baseUrl, releaseSha: 'b'.repeat(40), timeoutMs: 50, retryMs: 10 }),
       /wrong release/i
     );
+  });
+  await withPublicFixture({ nativeInviteHandoff: false }, async (baseUrl) => {
+    await assert.rejects(
+      runPublicReleaseSmoke({ baseUrl, releaseSha: fullSha, timeoutMs: 50, retryMs: 10 }),
+      /Apple association/i
+    );
+    const result = await runPublicReleaseSmoke({
+      baseUrl,
+      releaseSha: fullSha,
+      allowPreNativeInviteRollback: true,
+      timeoutMs: 100,
+      retryMs: 10
+    });
+    assert.equal(result.releaseSha, fullSha);
   });
   await withPublicFixture({ legacy: true }, async (baseUrl) => {
     await assert.rejects(runPublicReleaseSmoke({ baseUrl, timeoutMs: 50, retryMs: 10 }), /readyz/i);
@@ -145,6 +167,7 @@ async function testWorkflowContract() {
   assert.match(workflow, /production:[\s\S]*?needs:[\s\S]*?- attest-runtime/);
   assert.match(workflow, /parse-code-rollback-result\.mjs --failed-release-sha "\$sha"/);
   assert.match(workflow, /smoke-public-release\.mjs --base-url "\$SKYJO_PUBLIC_BASE_URL" --release-sha "\$rollback_target"/);
+  assert.match(workflow, /--release-sha "\$rollback_target" --allow-pre-native-invite-rollback/);
   assert.doesNotMatch(workflow, /rollback_result.*=~.*legacy/);
   assert.doesNotMatch(workflow, /GITHUB_RUN_ATTEMPT/, 'workflow reruns must retain the same journal operation identity');
   assert.match(workflow, /run_id="\$\{GITHUB_RUN_ID\}-1-canary"/);

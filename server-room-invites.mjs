@@ -4,6 +4,7 @@ const roomCodePattern = /^[A-Z0-9]{5}$/;
 const roomInstanceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const roomInviteTokenPattern = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const appleApplicationIdentifierPattern = /^[A-Z0-9]{10}\.com\.groundworkrevops\.skyjo$/;
+const appleApplicationIdentifierPlaceholder = 'XXXXXXXXXX.com.groundworkrevops.skyjo';
 const inviteSignatureDomain = 'skyjo:room-invite-token:v2\0';
 
 export const SYNTHETIC_APPLE_APPLICATION_IDENTIFIER = 'TESTSKYJ01.com.groundworkrevops.skyjo';
@@ -24,7 +25,7 @@ export function resolveAppleApplicationIdentifier({
     if (explicitlyNonProduction || isolatedCanary) return SYNTHETIC_APPLE_APPLICATION_IDENTIFIER;
     throw new TypeError('Apple application identifier is required.');
   }
-  if (!appleApplicationIdentifierPattern.test(configured)) {
+  if (!appleApplicationIdentifierPattern.test(configured) || configured === appleApplicationIdentifierPlaceholder) {
     throw new TypeError('Apple application identifier is invalid.');
   }
   if (configured === SYNTHETIC_APPLE_APPLICATION_IDENTIFIER && !explicitlyNonProduction && !isolatedCanary) {
@@ -34,13 +35,14 @@ export function resolveAppleApplicationIdentifier({
 }
 
 export function createAppleAppSiteAssociation(applicationIdentifier) {
-  if (!appleApplicationIdentifierPattern.test(String(applicationIdentifier || ''))) {
+  const identifier = String(applicationIdentifier || '');
+  if (!appleApplicationIdentifierPattern.test(identifier) || identifier === appleApplicationIdentifierPlaceholder) {
     throw new TypeError('Apple application identifier is invalid.');
   }
   return {
     applinks: {
       details: [{
-        appIDs: [applicationIdentifier],
+        appIDs: [identifier],
         components: [
           {
             '/': '/invite/*',
