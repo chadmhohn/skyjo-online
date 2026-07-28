@@ -47,7 +47,7 @@ Run the IOS-3 cross-language domain gate used by `iOS / Domain & Persistence` wi
 npm run test:domain:parity
 ```
 
-That one command checks deterministic fixture generation, replays the rules and AI corpus through both TypeScript and Swift, runs the Swift domain invariant/privacy tests, and enforces at least 90% executable-line coverage for `SkyjoDomain`. Its SwiftPM scratch and coverage files remain in the ignored per-run `ios/Artifacts/DomainParity-*` directory.
+That one command checks deterministic fixture generation, replays the rules and AI corpus through both TypeScript and Swift, runs the Swift domain and persistence tests, and enforces independent executable-line coverage floors of at least 90% for both `SkyjoDomain` and `SkyjoPersistence`. Its SwiftPM scratch and coverage files remain in the ignored per-run `ios/Artifacts/DomainParity-*` directory.
 
 Use `npm run contracts:fixtures:update` only after an intentional schema or canonical-producer change. The update is guarded against replacing a dirty fixture directory; review the generated corpus and SHA-256 manifest before committing.
 
@@ -67,6 +67,7 @@ xcodebuild \
 - `Packages/SkyjoDomain` is the pure domain boundary.
 - `Packages/SkyjoNetworking` and `Packages/SkyjoPersistence` depend only on `SkyjoDomain`. `SkyjoAPIClient` composes the actor-owned `AccessSessionClient` with typed account, profile/password, stats, readiness, and version requests on the same injected dedicated `URLSession`/persistent cookie store. It rejects redirects and unexpected final URLs, bounds payloads, requires compatible operational versions, decodes stable `{ code, error }` failures, and uses a safe fallback for unknown or malformed errors. It also creates authenticated actor-owned `RoomConnection` instances sharing one account-fenced reset-recovery store. The realtime codec validates exact protocol-v2 frames and hidden-state semantics, and the state machine permits one exact-replay command until acknowledgement/snapshot convergence without optimistic mutation.
 - `SkyjoApp/App/AppModel.swift` owns the native access/account/home/stats navigation state. Request identities and account-generation guards prevent stale async responses from restoring state after logout or account replacement. Password fields are cleared after use, cookies are never surfaced to views, native admin remains a web link, and public-release account deletion remains tracked by issue #192.
+- `Packages/SkyjoPersistence` validates every solo snapshot, owns explicit SwiftData V1-to-V2 migration, partitions guest/account saves, enforces monotonic autosave sequences, replaces saves atomically, and retains a signed-in-only FIFO stats outbox with generation-fenced delivery and explicit terminal/corrupt-head recovery. CloudKit is disabled.
 - `Packages/SkyjoDesignSystem` contains reusable SwiftUI presentation primitives.
 - `Packages/SkyjoTestSupport` aggregates all four package boundaries for tests and is never linked into the production app.
 - `TestPlans/SkyjoCI.xctestplan` enables unit, package-graph, resource, launch, no-web-view, UI, and accessibility checks with coverage. Canonical `contracts/v1` HTTP/realtime fixtures, real local-server two-cookie relaunch simulation, state-model races, native access/account/stats flows, durable reset recovery, and real Swift/PWA mixed-room scenarios are part of the IOS-5/6 networking gate.
@@ -74,6 +75,8 @@ xcodebuild \
 All packages use Swift 6 language mode, require iOS 18 or later, and have no remote dependencies.
 
 Language-neutral schemas and fixtures live at [`contracts/v1`](../contracts/v1), outside the Swift package graph. Contract bundle version 1 is independent of the multiplayer protocol, snapshot envelope, presence, database, room persistence, PWA/server release, and native app version.
+
+Native v0.1.0 does not import PWA IndexedDB saves. The local persistence envelope permits up to 2 MiB so every schema-bounded solo history can restore; the current HTTP request boundary remains 256 KiB. IOS-5's stats adapter must classify local/client or server `REQUEST_TOO_LARGE`, invalid-payload, and unsupported-version failures as permanent outbox failures so they remain visible for explicit retry after compatibility changes or confirmed discard.
 
 ## Configuration
 

@@ -53,6 +53,7 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 - `src/index.css`: most layout and visual behavior, including the mobile locked play surface and desktop/tablet responsive rules.
 - `contracts/v1/`: language-neutral JSON Schemas plus generated, sanitized, hash-manifested fixtures for native/web compatibility. See `contracts/README.md` before changing a wire or DTO contract.
 - `ios/Packages/SkyjoNetworking/`: native HTTP and realtime transport boundary. `AccessSessionClient` uses a dedicated cookie-aware `URLSession`, rejects redirects, bounds payloads, and safely decodes stable API errors.
+- `ios/Packages/SkyjoPersistence/`: actor-owned native solo durability boundary. It validates snapshots, migrates SwiftData V1 to V2, partitions guest/account saves, enforces monotonic autosaves and atomic replacement, and owns the generation-fenced durable stats outbox. CloudKit and PWA save import are intentionally disabled for v0.1.0.
 - `scripts/ios-build-test.sh`: unsigned native test entrypoint. It builds the server, starts an isolated loopback Node instance with temporary state and test-only secrets, runs the committed Xcode test plan, sanitizes evidence, and tears the process/state down.
 - `scripts/smoke-*.mjs`: focused release smoke tests for validation, AI, persistence, and room/chat flows.
 - `deploy/` and `docs/atomic-vps-releases.md`: checksum-pinned Node 24 bootstrap, forced-command upload identity, hardened systemd units, isolated canary, atomic release controller, and code-only rollback contract.

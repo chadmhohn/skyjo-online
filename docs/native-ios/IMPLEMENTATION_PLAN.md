@@ -96,6 +96,8 @@ Acceptance:
 - Background/termination flush is best effort and never blocks a legal in-memory turn.
 - No PWA IndexedDB-import claim is made.
 
+Verification runs through `npm run test:domain:parity`, with independent 90% executable-line coverage floors for `SkyjoDomain` and `SkyjoPersistence`. Local envelopes allow 2 MiB for schema-bounded histories, while the current HTTP request boundary remains 256 KiB; IOS-5 must classify size, invalid-payload, and unsupported-version rejections as permanent outbox failures rather than retrying forever.
+
 ## [IOS-5 — Build Access, Account, Home, And Stats Foundations](https://github.com/chadmhohn/skyjo-online/issues/185)
 
 Implement the typed HTTP client and first native navigation shell.

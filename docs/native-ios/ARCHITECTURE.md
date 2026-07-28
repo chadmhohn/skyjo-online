@@ -96,6 +96,12 @@ Do not enable CloudKit in v0.1.0. Cross-device merge and account-partition behav
 
 Solo replacement is transactional: persist the new validated session first, then remove the prior one. A failed replacement leaves the old game recoverable. Corrupt or incompatible records are quarantined or removed with a user-facing recovery message.
 
+The implemented store migrates real V1 session/outbox rows to V2, validates snapshots before writes and after decoding, keys saves by owner plus stable game UUID, and rejects stale or conflicting save sequences. Turn autosaves are actor-coalesced and lifecycle flush is best effort, so storage latency or failure never blocks a legal in-memory turn.
+
+Signed-in completion atomically removes the active save and inserts an immutable idempotent stats request; guest completion inserts no outbox row. Delivery is owner-scoped FIFO, capped at four per pass, generation-fenced across every await, and retried with exponential backoff capped at five minutes. Permanent delivery failures and corrupt FIFO heads remain visible blockers across relaunch. Recovery exposes only the blocked game UUID and requires exact-owner/exact-game confirmation to retry or discard.
+
+The local Codable envelope allows 2 MiB because a schema-valid 256-round Unicode history can exceed 256 KiB. The current Node JSON-body and native HTTP request boundary is separately 256 KiB; IOS-5 must map size, invalid-payload, and unsupported-version responses to permanent outbox failures. CloudKit and PWA IndexedDB import remain outside v0.1.0.
+
 ### SkyjoDesignSystem
 
 - Card, grid, table band, player summary, score, connection banner, badges, controls, spacing, typography, colors, sounds, and haptics.
