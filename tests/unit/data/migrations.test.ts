@@ -122,7 +122,7 @@ describe('transactional database migrations', () => {
 
     let db = openDatabase(dbFile);
     installAPNSDeviceEnvelope(db);
-    db.prepare(`
+    const insertDevice = db.prepare(`
       INSERT INTO apns_devices (
         installation_id,
         user_id,
@@ -136,19 +136,64 @@ describe('transactional database migrations', () => {
         created_at,
         updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `);
+    const nonce = Buffer.from('0102030405060708090a0b0c', 'hex');
+    const authTag = Buffer.from('101112131415161718191a1b1c1d1e1f', 'hex');
+    const fingerprint = Buffer.from('F'.repeat(32), 'utf8');
+
+    expect(() => insertDevice.run(
+      '10000000-0000-4000-8000-000000000000',
+      user.id,
+      'development',
+      'C',
+      'N'.repeat(12),
+      'T'.repeat(16),
+      'F'.repeat(32),
+      '0.1.0 (1)',
+      'en-US',
+      fixedNow,
+      fixedNow + 1
+    )).toThrow(/CHECK constraint/i);
+    expect(() => insertDevice.run(
+      '10000000-0000-4000-8000-000000000000',
+      user.id,
+      'development',
+      Buffer.from('00ff807f10aa', 'hex'),
+      nonce,
+      authTag,
+      fingerprint,
+      '0.1.0 (1)',
+      'en-US',
+      fixedNow + 0.5,
+      fixedNow + 1.5
+    )).toThrow(/CHECK constraint/i);
+
+    insertDevice.run(
       '10000000-0000-4000-8000-000000000001',
       user.id,
       'development',
       Buffer.from('00ff807f10aa', 'hex'),
-      Buffer.from('0102030405060708090a0b0c', 'hex'),
-      Buffer.from('101112131415161718191a1b1c1d1e1f', 'hex'),
-      Buffer.from('ab'.repeat(32), 'hex'),
+      nonce,
+      authTag,
+      fingerprint,
       '0.1.0 (1)',
       'en-US',
       fixedNow,
       fixedNow + 1
     );
+    expect(() => insertDevice.run(
+      '10000000-0000-4000-8000-000000000002',
+      user.id,
+      'development',
+      Buffer.from('10aa', 'hex'),
+      nonce,
+      authTag,
+      'F'.repeat(32),
+      '0.1.0 (1)',
+      'en-US',
+      fixedNow,
+      fixedNow + 1
+    )).toThrow(/CHECK constraint/i);
     const beforeRows = apnsRows(db);
     const beforeMigrations = migrationRows(db);
     expect(validateOptionalAPNSDeviceStorageEnvelope(db)).toEqual({ present: true, version: 1 });
@@ -244,6 +289,55 @@ describe('transactional database migrations', () => {
     }
   });
 
+  it('rejects an indirect account trigger before normal account activity can mutate APNs rows', async () => {
+    const seedStore = await createAccountStore({ filePath: dbFile, now: () => fixedNow });
+    const user = await seedStore.createUser({
+      email: 'apns-trigger@example.com',
+      displayName: 'APNs Trigger',
+      password: 'apns-trigger-password'
+    });
+    seedStore.close();
+
+    let db = openDatabase(dbFile);
+    installAPNSDeviceEnvelope(db);
+    db.prepare(`
+      INSERT INTO apns_devices (
+        installation_id, user_id, environment, token_ciphertext, token_nonce,
+        token_auth_tag, token_fingerprint, app_version, locale, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      '10000000-0000-4000-8000-000000000003',
+      user.id,
+      'development',
+      Buffer.from('0102', 'hex'),
+      Buffer.alloc(12, 1),
+      Buffer.alloc(16, 2),
+      Buffer.alloc(32, 3),
+      '0.1.0 (1)',
+      'en-US',
+      fixedNow,
+      fixedNow + 1
+    );
+    db.exec(`
+      CREATE TRIGGER delete_apns_after_user_update
+      AFTER UPDATE ON users
+      BEGIN
+        DELETE FROM apns_devices;
+      END
+    `);
+    const beforeRows = apnsRows(db);
+    db.close();
+
+    await expect(createAccountStore({ filePath: dbFile, now: () => fixedNow + 2 }))
+      .rejects.toThrow(/APNs device storage envelope/i);
+    db = openDatabase(dbFile);
+    try {
+      expect(apnsRows(db)).toEqual(beforeRows);
+    } finally {
+      db.close();
+    }
+  });
+
   it('degrades readiness if the exact optional envelope changes after startup', async () => {
     const seed = await createAccountStore({ filePath: dbFile, now: () => fixedNow });
     seed.close();
@@ -252,6 +346,16 @@ describe('transactional database migrations', () => {
     db.close();
 
     const store = await createAccountStore({ filePath: dbFile, now: () => fixedNow + 1 });
+    expect(store.checkReadiness()).toBe(true);
+    store.db.exec(`
+      CREATE TRIGGER unexpected_user_trigger
+      AFTER UPDATE ON users
+      BEGIN
+        SELECT 1;
+      END
+    `);
+    expect(store.checkReadiness()).toBe(false);
+    store.db.exec('DROP TRIGGER unexpected_user_trigger');
     expect(store.checkReadiness()).toBe(true);
     store.db.exec('DROP INDEX idx_apns_devices_updated_at');
     expect(store.checkReadiness()).toBe(false);

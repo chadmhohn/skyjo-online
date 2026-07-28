@@ -290,11 +290,11 @@ APNs storage has an explicit two-release database contract. Issue #203 keeps the
 
 - `installation_id` as the primary key and `user_id` as a cascading foreign key to `users`;
 - a checked `development|production` environment;
-- bounded BLOB ciphertext, 12-byte nonce, 16-byte authentication tag, and 32-byte keyed fingerprint;
-- bounded app-version and locale strings plus creation/update timestamps;
+- storage-class-enforced BLOB ciphertext, 12-byte nonce, 16-byte authentication tag, and 32-byte keyed fingerprint;
+- bounded app-version and locale strings plus integer-storage-class creation/update timestamps;
 - unique `(environment, token_fingerprint)`, account/update, and retention indexes.
 
-The envelope release accepts the table absent or exact-present, rejects any partial/widened column, constraint, foreign-key, index, or trigger shape, and never creates or queries device rows. Startup, readiness, backup, restore, concurrent opens, and shutdown preserve exact-present rows byte-for-byte. The later #204 feature must execute this same descriptor transactionally and idempotently; it may not redefine the SQL or advance the migration ledger merely to add the frozen physical table.
+The envelope release accepts the table absent or exact-present, rejects any partial/widened column, storage-class constraint, foreign-key or index drift, and rejects all persistent database triggers while the optional table is present so baseline account activity cannot indirectly mutate rows. It never creates or queries device rows. Startup, readiness, backup, restore, concurrent opens, and shutdown preserve exact-present rows byte-for-byte. The later #204 feature must execute this same descriptor transactionally and idempotently; it may not redefine the SQL or advance the migration ledger merely to add the frozen physical table.
 
 Promote the envelope release first through an immutable tag. Confirm it as healthy production `current`, then promote one later release so the envelope tag is the verified `previous` rollback anchor before #204 may create storage. After `apns_devices` exists, code-only rollback must never target a pre-envelope release. Merge and CI evidence are not deployment evidence.
 

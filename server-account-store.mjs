@@ -209,14 +209,14 @@ const apnsDeviceTableSql = `
     installation_id TEXT NOT NULL PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     environment TEXT NOT NULL CHECK (environment IN ('development', 'production')),
-    token_ciphertext BLOB NOT NULL CHECK (length(token_ciphertext) BETWEEN 1 AND 2048),
-    token_nonce BLOB NOT NULL CHECK (length(token_nonce) = 12),
-    token_auth_tag BLOB NOT NULL CHECK (length(token_auth_tag) = 16),
-    token_fingerprint BLOB NOT NULL CHECK (length(token_fingerprint) = 32),
+    token_ciphertext BLOB NOT NULL CHECK (typeof(token_ciphertext) = 'blob' AND length(token_ciphertext) BETWEEN 1 AND 2048),
+    token_nonce BLOB NOT NULL CHECK (typeof(token_nonce) = 'blob' AND length(token_nonce) = 12),
+    token_auth_tag BLOB NOT NULL CHECK (typeof(token_auth_tag) = 'blob' AND length(token_auth_tag) = 16),
+    token_fingerprint BLOB NOT NULL CHECK (typeof(token_fingerprint) = 'blob' AND length(token_fingerprint) = 32),
     app_version TEXT NOT NULL CHECK (length(app_version) BETWEEN 1 AND 64),
     locale TEXT NOT NULL CHECK (length(locale) BETWEEN 1 AND 64),
-    created_at INTEGER NOT NULL CHECK (created_at >= 0),
-    updated_at INTEGER NOT NULL CHECK (updated_at >= created_at)
+    created_at INTEGER NOT NULL CHECK (typeof(created_at) = 'integer' AND created_at >= 0),
+    updated_at INTEGER NOT NULL CHECK (typeof(updated_at) = 'integer' AND updated_at >= created_at)
   )
 `;
 
@@ -411,10 +411,10 @@ export function validateOptionalAPNSDeviceStorageEnvelope(db) {
   }
   if (!primaryKeyIndexSeen || expectedIndexes.size !== 0) fail();
 
-  const triggers = db
-    .prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = ?")
-    .all(tableName);
-  if (triggers.length !== 0) fail();
+  const indirectTriggers = db
+    .prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger'")
+    .all();
+  if (indirectTriggers.length !== 0) fail();
 
   return Object.freeze({ present: true, version: APNS_DEVICE_STORAGE_ENVELOPE.version });
 }

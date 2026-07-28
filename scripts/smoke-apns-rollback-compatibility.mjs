@@ -198,7 +198,9 @@ try {
     'APNs rollback envelope smoke passed: two concurrent schema-2 servers opened copied future storage and preserved every row byte.'
   );
 } catch (error) {
-  if (logs) console.error(logs);
+  if (logs) {
+    console.error(`APNs rollback smoke server diagnostics withheld (${Buffer.byteLength(logs, 'utf8')} bytes).`);
+  }
   throw error;
 } finally {
   await Promise.allSettled(serverProcesses.map((serverProcess) => stopServer(serverProcess)));
