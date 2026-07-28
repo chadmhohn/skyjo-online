@@ -25,25 +25,42 @@ if (!allowedModes.has(mode) || process.argv.length > 3) {
   throw new Error('Usage: node scripts/generate-contract-fixtures.mjs [--check|--write]');
 }
 
-const [gameModule, protocolModule, runtimeModule, serverProtocolModule, accountModule, readinessModule] = await Promise.all([
+const [
+  gameModule,
+  protocolModule,
+  runtimeModule,
+  serverProtocolModule,
+  accountModule,
+  readinessModule,
+  aiStrategyModule,
+  aiProjectionModule,
+  soloAiSetupModule
+] = await Promise.all([
   import('../server-dist/game.js'),
   import('../server-dist/protocolV2.js'),
   import('../server-dist/runtime.js'),
   import('../server-dist/serverProtocolV2.js'),
   import('../server-account-store.mjs'),
-  import('../server-readiness.mjs')
+  import('../server-readiness.mjs'),
+  import('../server-dist/aiStrategy.js'),
+  import('../server-dist/aiProjection.js'),
+  import('../server-dist/soloAiSetup.js')
 ]);
 
 const {
   chooseDiscard,
+  cancelDiscardSelection,
   createMultiplayerGame,
   discardDrawnAndReveal,
   drawBlind,
   replaceCard,
-  revealOpeningCard
+  revealOpeningCard,
+  startFreshGame,
+  startNextRound
 } = gameModule;
 const {
   createRoomSnapshot,
+  redactGameState,
   MULTIPLAYER_PROTOCOL_VERSION,
   PUBLIC_SNAPSHOT_LIMITS,
   SHARED_SNAPSHOT_ENVELOPE_VERSION,
@@ -53,6 +70,9 @@ const { createSeededRandom } = runtimeModule;
 const { createProtocolV2MessageHandler } = serverProtocolModule;
 const { AccountStore, PublicApiError, publicApiErrorResponse } = accountModule;
 const { createReadinessResult, createVersionResult } = readinessModule;
+const { chooseAiMove, soloAiStrategyVersion } = aiStrategyModule;
+const { projectAiKnowledge } = aiProjectionModule;
+const { createSoloGameSetup, resolveSoloGameSetup } = soloAiSetupModule;
 
 function clone(value) {
   return structuredClone(value);
@@ -270,6 +290,484 @@ function createGameFixtures() {
     valid,
     invalid,
     states: { openingState, chooseSourceState, blindState, roundOverState, gameOverState, eightPlayerState }
+  };
+}
+
+function domainCard(id, value, faceUp = true, removed = false) {
+  return { id, value, faceUp, removed };
+}
+
+function domainGrid(prefix, values, { hidden = [], removed = [] } = {}) {
+  const hiddenIndexes = new Set(hidden);
+  const removedIndexes = new Set(removed);
+  return Array.from({ length: 12 }, (_, index) => domainCard(
+    `${prefix}-${index}`,
+    values[index] ?? 1,
+    !hiddenIndexes.has(index),
+    removedIndexes.has(index)
+  ));
+}
+
+function domainPlayer(
+  id,
+  name,
+  values,
+  { hidden = [], removed = [], totalScore = 0, kind = 'human' } = {}
+) {
+  const grid = domainGrid(`${id}-card`, values, { hidden, removed });
+  return {
+    id,
+    name,
+    kind,
+    grid,
+    totalScore,
+    roundScore: grid.reduce(
+      (total, card) => total + (card.faceUp && !card.removed ? card.value : 0),
+      0
+    )
+  };
+}
+
+function domainState(players, overrides = {}) {
+  return {
+    players,
+    drawPile: [domainCard('domain-draw-0', 2, false)],
+    discardPile: [domainCard('domain-discard-0', 3)],
+    currentPlayerIndex: 0,
+    phase: 'choose-source',
+    selectedSource: null,
+    drawnCard: null,
+    round: 1,
+    log: [],
+    winnerId: null,
+    nextStarterId: null,
+    roundCloserId: null,
+    finalTurnPlayerIds: [],
+    openingRevealCounts: {},
+    roundHistory: [],
+    ...overrides
+  };
+}
+
+function domainReplacementState(players, drawnCard, overrides = {}) {
+  return domainState(players, {
+    phase: 'choose-replacement',
+    selectedSource: 'draw',
+    drawnCard,
+    ...overrides
+  });
+}
+
+function applyDomainAction(state, action) {
+  switch (action.type) {
+    case 'reveal-opening-card':
+      return revealOpeningCard(state, action.cardIndex);
+    case 'choose-discard':
+      return chooseDiscard(state);
+    case 'cancel-discard':
+      return cancelDiscardSelection(state);
+    case 'draw-blind':
+      return drawBlind(state, createSeededRandom(action.randomSeed));
+    case 'replace-card':
+      return replaceCard(state, action.cardIndex);
+    case 'discard-and-reveal':
+      return discardDrawnAndReveal(state, action.cardIndex);
+    case 'start-next-round':
+      return startNextRound(state, createSeededRandom(action.randomSeed));
+    default:
+      throw new Error(`Unknown domain fixture action ${String(action.type)}.`);
+  }
+}
+
+function domainScenario(name, initialState, actions) {
+  let state = clone(initialState);
+  const expectedStates = [];
+  for (const action of actions) {
+    state = applyDomainAction(state, action);
+    expectedStates.push(clone(state));
+  }
+  return { name, initialState, actions, expectedStates };
+}
+
+function aiGrid(values = [], faceUpIndexes = []) {
+  const visible = new Set(faceUpIndexes);
+  return Array.from({ length: 12 }, (_, index) => ({
+    faceUp: visible.has(index),
+    removed: false,
+    value: visible.has(index) ? (values[index] ?? 0) : null
+  }));
+}
+
+function aiKnowledge(overrides = {}) {
+  return {
+    players: [
+      {
+        id: 'bot',
+        totalScore: 0,
+        grid: aiGrid([12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0, 1])
+      },
+      {
+        id: 'human',
+        totalScore: 0,
+        grid: aiGrid()
+      }
+    ],
+    currentPlayerIndex: 0,
+    phase: 'choose-source',
+    selectedSource: null,
+    drawnCardValue: null,
+    discardTopValue: 2,
+    discardPileCount: 1,
+    drawPileCount: 100,
+    knownValues: [12, 11, 2],
+    roundCloserId: null,
+    finalTurnPlayerIds: [],
+    ...overrides
+  };
+}
+
+function aiFixtureCase(name, difficulty, decisionKey, knowledge) {
+  return {
+    name,
+    difficulty,
+    decisionKey,
+    playerId: 'bot',
+    knowledge,
+    expectedMove: chooseAiMove(knowledge, { playerId: 'bot', difficulty, decisionKey })
+  };
+}
+
+function createDomainParityFixtures() {
+  const seededGames = [];
+  const seededSoloStates = new Map();
+  for (let aiOpponentCount = 1; aiOpponentCount <= 7; aiOpponentCount += 1) {
+    const seed = 0x51030000 + aiOpponentCount;
+    const expectedState = startFreshGame({
+      aiOpponentCount,
+      random: createSeededRandom(seed)
+    });
+    const name = `solo roster with ${aiOpponentCount} bot${aiOpponentCount === 1 ? '' : 's'}`;
+    seededGames.push({
+      name,
+      input: { kind: 'solo', seed, aiOpponentCount },
+      expectedState
+    });
+    seededSoloStates.set(aiOpponentCount, { name, state: expectedState });
+  }
+
+  for (const [name, seed, players] of [
+    [
+      'two-player multiplayer deck',
+      0x51031002,
+      [{ id: 'fixture-player-1', name: 'Ada' }, { id: 'fixture-player-2', name: 'Grace' }]
+    ],
+    [
+      'eight-player multiplayer deck',
+      0x51031008,
+      Array.from({ length: 8 }, (_, index) => ({
+        id: `fixture-player-${index + 1}`,
+        name: `Player ${index + 1}`
+      }))
+    ]
+  ]) {
+    seededGames.push({
+      name,
+      input: { kind: 'multiplayer', seed, players, round: 1, previousCloserId: null },
+      expectedState: createMultiplayerGame(players, 1, null, createSeededRandom(seed))
+    });
+  }
+
+  const openingInitial = createMultiplayerGame(
+    [{ id: 'opening-ada', name: 'Ada' }, { id: 'opening-grace', name: 'Grace' }],
+    1,
+    null,
+    createSeededRandom(0x51032001)
+  );
+  const openingActions = [
+    { type: 'reveal-opening-card', cardIndex: 0 },
+    { type: 'reveal-opening-card', cardIndex: 1 },
+    { type: 'reveal-opening-card', cardIndex: 0 },
+    { type: 'reveal-opening-card', cardIndex: 1 },
+    { type: 'choose-discard' },
+    { type: 'cancel-discard' },
+    { type: 'draw-blind', randomSeed: 0x51032002 },
+    { type: 'discard-and-reveal', cardIndex: 2 },
+    { type: 'choose-discard' },
+    { type: 'replace-card', cardIndex: 0 },
+    { type: 'draw-blind', randomSeed: 0x51032003 },
+    { type: 'replace-card', cardIndex: 1 }
+  ];
+
+  const columnPlayer = domainPlayer(
+    'column-ada',
+    'Ada',
+    [5, 1, 2, 3, 5, 2, 3, 4, 9, 3, 4, 5],
+    { hidden: [8, 11] }
+  );
+  const columnOther = domainPlayer(
+    'column-grace',
+    'Grace',
+    Array(12).fill(4),
+    { hidden: [0, 1] }
+  );
+  const columnInitial = domainReplacementState(
+    [columnPlayer, columnOther],
+    domainCard('column-drawn-five', 5),
+    { drawPile: [domainCard('column-draw', -1, false)] }
+  );
+
+  const tieValues = [-2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  const tieInitial = domainReplacementState(
+    [
+      domainPlayer('tie-closer', 'James', tieValues, { hidden: [11] }),
+      domainPlayer('tie-final', 'Grace', tieValues, { hidden: [11] })
+    ],
+    domainCard('tie-drawn-nine', 9),
+    { drawPile: [] }
+  );
+  const tieActions = [
+    { type: 'replace-card', cardIndex: 11 },
+    { type: 'choose-discard' },
+    { type: 'replace-card', cardIndex: 11 },
+    { type: 'start-next-round', randomSeed: 0x51033001 },
+    { type: 'reveal-opening-card', cardIndex: 0 },
+    { type: 'reveal-opening-card', cardIndex: 1 },
+    { type: 'reveal-opening-card', cardIndex: 0 },
+    { type: 'reveal-opening-card', cardIndex: 1 }
+  ];
+
+  const orderedFinalTurnsInitial = domainReplacementState(
+    [
+      domainPlayer('ordered-closer', 'Ada', tieValues, { hidden: [11] }),
+      domainPlayer('ordered-second', 'Grace', tieValues, { hidden: [11] }),
+      domainPlayer('ordered-third', 'James', tieValues, { hidden: [11] })
+    ],
+    domainCard('ordered-drawn-nine', 9),
+    { drawPile: [] }
+  );
+  const orderedFinalTurnActions = [
+    { type: 'replace-card', cardIndex: 11 },
+    { type: 'choose-discard' },
+    { type: 'replace-card', cardIndex: 11 },
+    { type: 'choose-discard' },
+    { type: 'replace-card', cardIndex: 11 }
+  ];
+
+  const strictLowInitial = domainReplacementState(
+    [
+      domainPlayer('low-closer', 'Ada', tieValues, { hidden: [11] }),
+      domainPlayer(
+        'high-final',
+        'Grace',
+        [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+        { hidden: [11] }
+      )
+    ],
+    domainCard('low-drawn-minus-two', -2),
+    { drawPile: [] }
+  );
+
+  const nonpositiveValues = [-2, -2, -2, -2, -1, -1, -1, -1, 1, 1, 1, 1];
+  const nonpositiveInitial = domainReplacementState(
+    [
+      domainPlayer('nonpositive-closer', 'You', nonpositiveValues, { hidden: [11] }),
+      domainPlayer('nonpositive-final', 'Ada', nonpositiveValues, { hidden: [11] })
+    ],
+    domainCard('nonpositive-drawn-one', 1),
+    { drawPile: [] }
+  );
+
+  const thresholdInitial = domainReplacementState(
+    [
+      domainPlayer('threshold-closer', 'James', tieValues, { hidden: [11], totalScore: 95 }),
+      domainPlayer('threshold-winner', 'Grace', tieValues, { hidden: [11], totalScore: 10 })
+    ],
+    domainCard('threshold-drawn-nine', 9),
+    { drawPile: [] }
+  );
+
+  const recycleInitial = domainState(
+    [domainPlayer('recycle-player', 'Ada', tieValues, { hidden: [0, 1] })],
+    {
+      drawPile: [],
+      discardPile: [
+        domainCard('recycle-top', 1),
+        domainCard('recycle-a', 4),
+        domainCard('recycle-b', 8)
+      ]
+    }
+  );
+
+  const finalTurnActions = [
+    { type: 'replace-card', cardIndex: 11 },
+    { type: 'choose-discard' },
+    { type: 'replace-card', cardIndex: 11 }
+  ];
+  const scenarios = [
+    domainScenario('opening, discard cancellation, blind reveal, and replacement', openingInitial, openingActions),
+    domainScenario('matching column clears above the replaced card in discard order', columnInitial, [
+      { type: 'replace-card', cardIndex: 8 }
+    ]),
+    domainScenario('every opponent gets a final turn, tied closer doubles, and closer starts next round', tieInitial, tieActions),
+    domainScenario(
+      'three-player final turns advance in seat order before scoring',
+      orderedFinalTurnsInitial,
+      orderedFinalTurnActions
+    ),
+    domainScenario('strict-low positive closer does not double', strictLowInitial, finalTurnActions),
+    domainScenario('nonpositive tied closer does not double', nonpositiveInitial, finalTurnActions),
+    domainScenario('game threshold selects the lowest-total winner', thresholdInitial, finalTurnActions),
+    domainScenario('empty draw pile deterministically recycles below the discard top', recycleInitial, [
+      { type: 'draw-blind', randomSeed: 0 }
+    ])
+  ];
+
+  const openingKnowledge = aiKnowledge({
+    phase: 'opening-reveal',
+    discardTopValue: null,
+    discardPileCount: 0,
+    players: [
+      { id: 'bot', totalScore: 0, grid: aiGrid() },
+      { id: 'human', totalScore: 0, grid: aiGrid() }
+    ],
+    knownValues: []
+  });
+  const placementKnowledge = aiKnowledge({
+    phase: 'choose-replacement',
+    selectedSource: 'draw',
+    drawnCardValue: -2,
+    knownValues: [12, 11, 2, -2]
+  });
+  const discardPlacementKnowledge = aiKnowledge({
+    phase: 'choose-replacement',
+    selectedSource: 'discard',
+    drawnCardValue: null,
+    discardTopValue: 2
+  });
+  const riskyGrid = aiGrid(Array(12).fill(0), Array.from({ length: 12 }, (_, index) => index));
+  riskyGrid[0] = { faceUp: false, removed: false, value: null };
+  riskyGrid[1] = { faceUp: true, removed: false, value: 4 };
+  const riskyKnowledge = aiKnowledge({
+    phase: 'choose-replacement',
+    selectedSource: 'draw',
+    drawnCardValue: 12,
+    players: [
+      { id: 'bot', totalScore: 0, grid: riskyGrid },
+      {
+        id: 'human',
+        totalScore: 0,
+        grid: aiGrid(Array(12).fill(0), Array.from({ length: 12 }, (_, index) => index))
+      }
+    ],
+    knownValues: [4, ...Array(23).fill(0), 12]
+  });
+  const aiCases = [];
+  for (const difficulty of ['easy', 'medium', 'hard', 'ultra']) {
+    aiCases.push(
+      aiFixtureCase(`opening ${difficulty}`, difficulty, `fixture-opening-${difficulty}`, openingKnowledge),
+      aiFixtureCase(`source ${difficulty}`, difficulty, `fixture-source-${difficulty}`, aiKnowledge()),
+      aiFixtureCase(`blind placement ${difficulty}`, difficulty, `fixture-placement-${difficulty}`, placementKnowledge),
+      aiFixtureCase(
+        `discard placement ${difficulty}`,
+        difficulty,
+        `fixture-discard-placement-${difficulty}`,
+        discardPlacementKnowledge
+      )
+    );
+  }
+  aiCases.push(
+    aiFixtureCase('hard risky closer reveal', 'hard', 'fixture-risky-close', riskyKnowledge),
+    aiFixtureCase('ultra risky closer replacement', 'ultra', 'fixture-risky-close', riskyKnowledge)
+  );
+
+  const redactionState = domainState(
+    [
+      domainPlayer(
+        'redaction-bot',
+        '😀'.repeat(16) + 'Bot',
+        [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+        { hidden: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], kind: 'ai' }
+      ),
+      domainPlayer(
+        'redaction-human',
+        'e\u0301'.repeat(16) + 'Human',
+        [6, 5, 4, 3, 2, 1, 0, -1, -2, 7, 8, 9],
+        { hidden: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }
+      )
+    ],
+    {
+      phase: 'choose-replacement',
+      selectedSource: 'draw',
+      drawnCard: domainCard('redaction-private-draw', 6),
+      drawPile: [domainCard('redaction-hidden-draw-a', 12, false), domainCard('redaction-hidden-draw-b', -2, false)],
+      discardPile: [domainCard('redaction-public-discard', 1)],
+      log: ['Bot drew a 6.', '😀'.repeat(170), 'e\u0301'.repeat(170)],
+      roundHistory: [{
+        round: 1,
+        closerId: 'redaction-bot',
+        scores: [
+          {
+            playerId: 'redaction-bot',
+            name: '😀'.repeat(16) + 'Bot',
+            roundScore: 1,
+            totalScore: 1
+          },
+          {
+            playerId: 'redaction-human',
+            name: 'e\u0301'.repeat(16) + 'Human',
+            roundScore: 2,
+            totalScore: 2
+          }
+        ]
+      }]
+    }
+  );
+  const redactionCases = ['redaction-bot', 'redaction-human'].map((viewerId) => ({
+    name: viewerId === 'redaction-bot' ? 'current drawer sees only its blind draw' : 'non-drawer cannot see the blind draw',
+    viewerId,
+    authoritativeState: redactionState,
+    expectedKnowledge: projectAiKnowledge(redactionState, viewerId),
+    expectedPublicSnapshot: redactGameState(redactionState, viewerId)
+  }));
+
+  const soloSetupCases = [];
+  for (let aiOpponentCount = 1; aiOpponentCount <= 7; aiOpponentCount += 1) {
+    const seeded = seededSoloStates.get(aiOpponentCount);
+    if (!seeded) throw new Error(`Missing seeded solo fixture for ${aiOpponentCount} bots.`);
+    const inputSetup = createSoloGameSetup(aiOpponentCount, 'mixed');
+    const gameId = `51030000-0000-4000-8000-${String(aiOpponentCount).padStart(12, '0')}`;
+    soloSetupCases.push({
+      name: `balanced Mixed setup with ${aiOpponentCount} bot${aiOpponentCount === 1 ? '' : 's'}`,
+      seededGame: seeded.name,
+      aiPlayerIds: seeded.state.players.filter((player) => player.kind === 'ai').map((player) => player.id).sort(),
+      gameId,
+      inputSetup,
+      expectedSetup: resolveSoloGameSetup(inputSetup, seeded.state, gameId)
+    });
+  }
+  const fixedState = seededSoloStates.get(1);
+  if (!fixedState) throw new Error('Missing seeded one-bot solo fixture.');
+  for (const difficulty of ['easy', 'medium', 'hard', 'ultra']) {
+    const inputSetup = createSoloGameSetup(1, difficulty);
+    soloSetupCases.push({
+      name: `fixed ${difficulty} setup`,
+      seededGame: fixedState.name,
+      aiPlayerIds: ['ai-1'],
+      gameId: '51030000-0000-4000-8000-000000000099',
+      inputSetup,
+      expectedSetup: resolveSoloGameSetup(inputSetup, fixedState.state, 'fixed-setup')
+    });
+  }
+
+  return {
+    contractVersion: 1,
+    domainRulesVersion: 1,
+    aiStrategyVersion: soloAiStrategyVersion,
+    seededGames,
+    scenarios,
+    aiCases,
+    redactionCases,
+    soloSetupCases
   };
 }
 
@@ -723,11 +1221,13 @@ async function createHttpFixtures(gameOverState) {
 
 async function generateFiles() {
   const games = createGameFixtures();
+  const domainParity = createDomainParityFixtures();
   const protocol = createProtocolFixtures(games.states);
   const http = await createHttpFixtures(games.states.gameOverState);
   const files = new Map([
     ['game-state.valid.json', serialize({ contractVersion: 1, cases: games.valid })],
     ['game-state.invalid.json', serialize({ contractVersion: 1, cases: games.invalid })],
+    ['domain-parity.json', serialize(domainParity)],
     ['protocol-client.valid.json', serialize({ contractVersion: 1, cases: protocol.clientValid })],
     ['protocol-client.invalid.json', serialize({ contractVersion: 1, cases: protocol.clientInvalid })],
     ['protocol-server.valid.json', serialize({ contractVersion: 1, cases: protocol.serverValid })],

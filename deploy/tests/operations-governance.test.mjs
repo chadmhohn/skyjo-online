@@ -1032,6 +1032,7 @@ test('workflow and systemd assets preserve pins, staged activation, and exact sc
   assert.match(dependabot, /package-ecosystem: github-actions[\s\S]*github-actions:/);
   assert.doesNotMatch(codeql, /uses: [^\n]+@v[0-9]/);
   assert.match(codeql, /name: CodeQL \/ Analyze/);
+  assert.match(ci, /name: iOS \/ Domain & Persistence[\s\S]*npm run test:domain:parity/);
   assert.match(ci, /Validate operations shells and systemd units[\s\S]*sh -n[\s\S]*systemd-analyze verify/);
   assert.match(ci, /production-incident:[\s\S]*needs:[\s\S]*- runtime-artifact[\s\S]*needs\.runtime-artifact\.result == 'success'/);
   assert.match(ci, /ref: \$\{\{ needs\.runtime-artifact\.outputs\.source-sha \}\}[\s\S]*SKYJO_INCIDENT_SOURCE: deployment/);

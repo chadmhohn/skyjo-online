@@ -11,7 +11,11 @@ let package = Package(
     .library(name: "SkyjoDomain", targets: ["SkyjoDomain"])
   ],
   targets: [
-    .target(name: "SkyjoDomain")
+    .target(name: "SkyjoDomain"),
+    .testTarget(
+      name: "SkyjoDomainTests",
+      dependencies: ["SkyjoDomain"]
+    )
   ],
   swiftLanguageModes: [.v6]
 )

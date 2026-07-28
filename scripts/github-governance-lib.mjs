@@ -4,6 +4,7 @@ export const RELEASE_TAG_IMMUTABILITY_RULESET_NAME = 'Immutable release tags';
 export const REQUIRED_CHECKS = Object.freeze([
   'CI / Quality & Security',
   'iOS / Build',
+  'iOS / Domain & Persistence',
   'iOS / Networking Contracts',
   'CI / Unit (domain)',
   'CI / Unit (data)',
