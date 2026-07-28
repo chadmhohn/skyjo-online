@@ -3,9 +3,13 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { createAccountStore } from '../server-account-store.mjs';
+import {
+  APNS_DEVICE_STORAGE_ENVELOPE,
+  createAccountStore
+} from '../server-account-store.mjs';
 import { loadRoomsSnapshotFromDisk, saveRoomsToDisk } from '../server-room-persistence.mjs';
 import { loadReleaseIdentity } from '../server-release.mjs';
 import { inspectSqliteState } from '../server-state-backup.mjs';
@@ -29,8 +33,51 @@ try {
   const roomsPath = path.join(sourceDirectory, 'rooms.json');
   await fs.mkdir(sourceDirectory);
   const store = await createAccountStore({ filePath: databasePath });
-  await store.createUser({ email: 'backup-smoke@example.com', displayName: 'Backup Smoke', password: 'backup-smoke-password' });
+  const user = await store.createUser({
+    email: 'backup-smoke@example.com',
+    displayName: 'Backup Smoke',
+    password: 'backup-smoke-password'
+  });
   store.close();
+  const sourceDatabase = new DatabaseSync(databasePath);
+  sourceDatabase.exec('PRAGMA foreign_keys = ON');
+  sourceDatabase.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+  sourceDatabase.prepare(`
+    INSERT INTO apns_devices (
+      installation_id, user_id, environment, token_ciphertext, token_nonce,
+      token_auth_tag, token_fingerprint, app_version, locale, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    '40000000-0000-4000-8000-000000000001',
+    user.id,
+    'development',
+    Buffer.from('00017fff80fe', 'hex'),
+    Buffer.from('000102030405060708090a0b', 'hex'),
+    Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+    Buffer.from('42'.repeat(32), 'hex'),
+    '0.1.0 (203)',
+    'en-US',
+    1,
+    2
+  );
+  const expectedAPNSRow = {
+    ...sourceDatabase.prepare(`
+      SELECT
+        installation_id,
+        user_id,
+        environment,
+        hex(token_ciphertext) AS token_ciphertext_hex,
+        hex(token_nonce) AS token_nonce_hex,
+        hex(token_auth_tag) AS token_auth_tag_hex,
+        hex(token_fingerprint) AS token_fingerprint_hex,
+        app_version,
+        locale,
+        created_at,
+        updated_at
+      FROM apns_devices
+    `).get()
+  };
+  sourceDatabase.close();
   await saveRoomsToDisk(new Map(), roomsPath);
 
   const backupDirectory = path.join(tempDirectory, 'verified backup');
@@ -77,6 +124,26 @@ try {
     foreignKeyCheck: 'ok',
     schemaVersion: 2
   });
+  const restoredDatabase = new DatabaseSync(path.join(restoreDirectory, 'skyjo.sqlite'), { readOnly: true });
+  const restoredAPNSRow = {
+    ...restoredDatabase.prepare(`
+      SELECT
+        installation_id,
+        user_id,
+        environment,
+        hex(token_ciphertext) AS token_ciphertext_hex,
+        hex(token_nonce) AS token_nonce_hex,
+        hex(token_auth_tag) AS token_auth_tag_hex,
+        hex(token_fingerprint) AS token_fingerprint_hex,
+        app_version,
+        locale,
+        created_at,
+        updated_at
+      FROM apns_devices
+    `).get()
+  };
+  restoredDatabase.close();
+  assert.deepEqual(restoredAPNSRow, expectedAPNSRow);
   const restoredRooms = await loadRoomsSnapshotFromDisk(path.join(restoreDirectory, 'rooms.json'));
   assert.equal(restoredRooms.version, 2);
   assert.deepEqual(restoredRooms.rooms, []);
@@ -95,7 +162,9 @@ try {
     ], { env: childEnv }),
     /live state target/i
   );
-  console.log('backup smoke passed: online SQLite snapshot, fixed checksums, verification, and isolated restore in paths with spaces');
+  console.log(
+    'backup smoke passed: online SQLite snapshot, fixed checksums, exact optional APNs-row preservation, and isolated restore in paths with spaces'
+  );
 } finally {
   await fs.rm(tempDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 }

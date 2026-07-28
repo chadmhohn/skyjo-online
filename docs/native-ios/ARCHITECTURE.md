@@ -164,9 +164,9 @@ These are repository capabilities, not a claim that production has been promoted
 
 1. A JSON invite redemption contract for universal-link handoff.
 2. `apple-app-site-association` hosting and Associated Domains.
-3. Authenticated APNs device registration/unregistration and APNs provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
+3. A two-release APNs storage sequence: #203 first freezes and validates an optional exact `apns_devices` physical table while retaining public schema 2; after that release is promoted and becomes the verified `previous` rollback anchor, #204 may create/use the same descriptor for authenticated registration and provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
 
-All additions must leave the current PWA and web-push paths working. Deploy server support before a native build depends on it; do not roll production back to a server that lacks a contract already required by a distributed native build.
+All additions must leave the current PWA and web-push paths working. Deploy server support before a native build depends on it. Once the optional APNs table exists, never roll production back past the promoted envelope release; do not roll production back to a server that lacks a contract already required by a distributed native build.
 
 ## Security And Privacy
 

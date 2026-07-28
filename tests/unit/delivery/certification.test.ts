@@ -785,9 +785,12 @@ describe('v0.3.2 workflow governance', () => {
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
     expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-27');
-    expect(JSON.parse(packageDocument).version).toBe('0.3.2');
-    expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
-    expect(JSON.parse(packageDocument).scripts['test:e2e:certification']).toContain('--retries=0');
+    const packageJson = JSON.parse(packageDocument);
+    expect(packageJson.version).toBe('0.3.2');
+    expect(packageJson.scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
+    expect(packageJson.scripts['test:e2e:certification']).toContain('--retries=0');
+    expect(packageJson.scripts['smoke:delivery']).toContain('npm run smoke:apns-rollback');
+    expect(packageJson.scripts['smoke:release']).toContain('npm run smoke:delivery');
     expect(JSON.parse(packageLock).version).toBe('0.3.2');
     expect(changelog).toMatch(/^## 0\.3\.2 - 2026-07-27$/m);
     expect(certificationAddendum).toContain('physical `PASS V0.3 IOS`');

@@ -284,7 +284,19 @@ Existing `/api/push/*` routes store browser PushSubscription/VAPID data. Native 
 - `PUT /api/push/apns/devices/:installationId` with `{ deviceToken, environment, appVersion, locale }`.
 - `DELETE /api/push/apns/devices/:installationId`.
 
-The server associates tokens with the authenticated account, supports multiple devices, rotates tokens, removes invalid tokens, and sends minimal turn-alert payloads through APNs. Device tokens and APNs errors are secrets/sensitive operations data. Define final route schemas, stable codes, database migration, retention, and web-push coexistence before implementation.
+The server associates tokens with the authenticated account, supports multiple devices, rotates tokens, removes invalid tokens, and sends minimal turn-alert payloads through APNs. Device tokens and APNs errors are secrets/sensitive operations data. Define final route schemas, stable codes, retention, and web-push coexistence before implementation.
+
+APNs storage has an explicit two-release database contract. Issue #203 keeps the public migration ledger and readiness contract at schema 2 while freezing `APNS_DEVICE_STORAGE_ENVELOPE` in `server-account-store.mjs`. That descriptor defines one optional `apns_devices` table with:
+
+- `installation_id` as the primary key and `user_id` as a cascading foreign key to `users`;
+- a checked `development|production` environment;
+- bounded BLOB ciphertext, 12-byte nonce, 16-byte authentication tag, and 32-byte keyed fingerprint;
+- bounded app-version and locale strings plus creation/update timestamps;
+- unique `(environment, token_fingerprint)`, account/update, and retention indexes.
+
+The envelope release accepts the table absent or exact-present, rejects any partial/widened column, constraint, foreign-key, index, or trigger shape, and never creates or queries device rows. Startup, readiness, backup, restore, concurrent opens, and shutdown preserve exact-present rows byte-for-byte. The later #204 feature must execute this same descriptor transactionally and idempotently; it may not redefine the SQL or advance the migration ledger merely to add the frozen physical table.
+
+Promote the envelope release first through an immutable tag. Confirm it as healthy production `current`, then promote one later release so the envelope tag is the verified `previous` rollback anchor before #204 may create storage. After `apns_devices` exists, code-only rollback must never target a pre-envelope release. Merge and CI evidence are not deployment evidence.
 
 ## Native Access Verification And Rollback Compatibility
 
