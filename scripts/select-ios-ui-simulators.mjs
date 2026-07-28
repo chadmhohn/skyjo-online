@@ -37,10 +37,11 @@ export function selectSimulatorMatrix(payload) {
   const iPads = available.filter((device) => device.name.startsWith('iPad'));
 
   const standard = selectByScore(iPhones, (name) => {
-    if (/ Pro$/.test(name)) return 0;
-    if (/iPhone [0-9]+$/.test(name)) return 10;
-    if (/e$/.test(name)) return 20;
-    if (/mini$/i.test(name)) return 30;
+    if (/mini$/i.test(name)) return 0;
+    if (/iPhone SE/i.test(name)) return 5;
+    if (/e$/i.test(name)) return 10;
+    if (/iPhone [0-9]+$/.test(name)) return 20;
+    if (/ Pro$/.test(name)) return 30;
     if (!/(Max|Plus|Air)/i.test(name)) return 40;
     return Number.POSITIVE_INFINITY;
   });

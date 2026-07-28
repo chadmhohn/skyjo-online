@@ -2,7 +2,7 @@
 
 IOS-7 bundles the three short card-effect cues already shipped by the PWA. The recordings are
 Creative Commons Zero and need no attribution, but their source and processing trail remains in
-[`public/audio/README.md`](../../../../../public/audio/README.md) for reproducibility.
+[`public/audio/README.md`](../../../../public/audio/README.md) for reproducibility.
 
 | Native resource | Purpose | Bytes | SHA-256 |
 | --- | --- | ---: | --- |

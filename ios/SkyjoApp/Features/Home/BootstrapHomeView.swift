@@ -181,7 +181,7 @@ private struct NativeRootView: View {
 #if DEBUG
       if model.applyUITestState(arguments: ProcessInfo.processInfo.arguments) {
         await model.synchronizeLocalSolo(dependencies.solo)
-        _ = dependencies.solo.applyUITestState(arguments: ProcessInfo.processInfo.arguments)
+        _ = await dependencies.solo.applyUITestState(arguments: ProcessInfo.processInfo.arguments)
         return
       }
 #endif
@@ -204,7 +204,9 @@ private struct NativeRootView: View {
       await model.synchronizeLocalSolo(dependencies.solo)
     }
     .onChange(of: dependencies.sessionInvalidation.generation) {
-      model.handleStatsAuthorizationInvalidation(dependencies.sessionInvalidation.reason)
+      guard let invalidation = dependencies.sessionInvalidation.pendingInvalidation else { return }
+      model.handleStatsAuthorizationInvalidation(invalidation)
+      dependencies.sessionInvalidation.consume(invalidation)
     }
     .onChange(of: scenePhase, initial: true) { _, phase in
       dependencies.solo.setSceneActive(phase == .active)

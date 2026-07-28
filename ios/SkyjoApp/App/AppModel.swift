@@ -183,6 +183,7 @@ final class AppModel {
 
   private let service: any SkyjoService
   private let preferences: SoloPreferencesStore?
+  private let sessionInvalidation: SessionInvalidationRelay?
   private var accountGeneration = 0
   private var bootstrapRequestID: UUID?
   private var statsRequestID: UUID?
@@ -215,10 +216,12 @@ final class AppModel {
   init(
     service: any SkyjoService,
     baseURL: URL,
-    preferences: SoloPreferencesStore? = nil
+    preferences: SoloPreferencesStore? = nil,
+    sessionInvalidation: SessionInvalidationRelay? = nil
   ) {
     self.service = service
     self.preferences = preferences
+    self.sessionInvalidation = sessionInvalidation
     adminURL = baseURL.appending(path: "admin")
   }
 
@@ -226,7 +229,8 @@ final class AppModel {
     self.init(
       service: dependencies.apiClient,
       baseURL: baseURL,
-      preferences: dependencies.preferences
+      preferences: dependencies.preferences,
+      sessionInvalidation: dependencies.sessionInvalidation
     )
   }
 
@@ -242,6 +246,7 @@ final class AppModel {
   func bootstrap() async {
     let requestID = UUID()
     bootstrapRequestID = requestID
+    sessionInvalidation?.setConfirmedAccount(nil)
     rootState = .loading
     do {
       let readiness = try await service.readiness()
@@ -362,6 +367,7 @@ final class AppModel {
         )
       }
       guard !authenticatedUser.disabled else {
+        resetAccountState(prefillEmail: authenticatedUser.email)
         rootState = .accountEnded
         return
       }
@@ -649,7 +655,8 @@ final class AppModel {
       rootState = .offlineReady(
         message: "Skyjo could not reach the service. Your account-owned solo save remains available."
       )
-    case "solo-setup-blocked-outbox", "solo-setup-corrupt-outbox":
+    case "solo-setup-blocked-outbox", "solo-setup-corrupt-outbox",
+         "solo-game-summary-outbox-unknown":
       let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000187")!
       establishAuthenticatedUser(
         AccountUser(
@@ -713,6 +720,7 @@ final class AppModel {
     invalidateAccountRequests()
     accountGeneration &+= 1
     user = authenticatedUser
+    sessionInvalidation?.setConfirmedAccount(authenticatedUser.id)
     preferences?.confirmAccess()
     preferences?.confirmAccount(authenticatedUser.id)
     selectedTab = .home
@@ -729,6 +737,8 @@ final class AppModel {
   }
 
   private func resetAccountState(prefillEmail: String? = nil) {
+    sessionInvalidation?.setConfirmedAccount(nil)
+    preferences?.confirmSignedOut()
     invalidateAccountRequests()
     accountGeneration &+= 1
     user = nil
@@ -851,6 +861,7 @@ final class AppModel {
   }
 
   func synchronizeLocalSolo(_ solo: SoloFeatureModel) async {
+    sessionInvalidation?.setConfirmedAccount(confirmedStatsAccountID)
     switch rootState {
     case .guest, .authenticated, .offlineReady:
       await solo.switchOwner(
@@ -862,10 +873,16 @@ final class AppModel {
     }
   }
 
-  func handleStatsAuthorizationInvalidation(_ reason: SessionInvalidationRelay.Reason) {
+  func handleStatsAuthorizationInvalidation(_ invalidation: SessionInvalidationRelay.Invalidation) {
+    guard rootState == .authenticated,
+          user?.id == invalidation.authorizationFence.accountID
+    else { return }
+    if let sessionInvalidation {
+      guard sessionInvalidation.pendingInvalidation == invalidation else { return }
+    }
     let email = user?.email
     resetAccountState(prefillEmail: email)
-    switch reason {
+    switch invalidation.reason {
     case .accessRequired:
       preferences?.clearConfirmedAccessAndAccount()
       authentication.errorMessage = ""
@@ -882,6 +899,7 @@ final class AppModel {
     fallback: AppRootState,
     message: String
   ) {
+    sessionInvalidation?.setConfirmedAccount(nil)
     guard preferences?.accessWasConfirmed == true else {
       rootState = fallback
       return

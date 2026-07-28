@@ -141,12 +141,14 @@ public enum SoloPersistenceError: Error, Equatable, Sendable {
 }
 
 public enum PersistenceCheckpoint: String, CaseIterable, Sendable {
+  case beforeSessionRead
   case beforeTransaction
   case afterNewSessionInsert
   case afterPriorSessionDelete
   case afterOutboxInsert
   case beforeCommit
   case afterCommitAcknowledgement
+  case beforeOutboxRead
   case beforeOutboxDelete
   case beforeOutboxRetryUpdate
 }

@@ -12,24 +12,69 @@ final class SessionInvalidationRelay {
     case accountSessionChanged
   }
 
-  private(set) var generation = 0
-  private(set) var reason = Reason.accountSessionChanged
+  struct AuthorizationFence: Equatable, Sendable {
+    let accountID: UUID
+    let generation: UInt64
+  }
 
-  func invalidate(_ reason: Reason) {
-    self.reason = reason
+  struct Invalidation: Equatable, Sendable {
+    let reason: Reason
+    let authorizationFence: AuthorizationFence
+  }
+
+  private(set) var generation = 0
+  private(set) var pendingInvalidation: Invalidation?
+  private var confirmedAccountID: UUID?
+  private var authorizationGeneration: UInt64 = 0
+
+  func setConfirmedAccount(_ accountID: UUID?) {
+    guard confirmedAccountID != accountID else { return }
+    confirmedAccountID = accountID
+    authorizationGeneration &+= 1
+    pendingInvalidation = nil
+  }
+
+  func authorizationFence(for accountID: UUID) -> AuthorizationFence? {
+    guard confirmedAccountID == accountID else { return nil }
+    return AuthorizationFence(accountID: accountID, generation: authorizationGeneration)
+  }
+
+  func invalidate(_ reason: Reason, ifCurrent fence: AuthorizationFence) {
+    guard authorizationFence(for: fence.accountID) == fence else { return }
+    confirmedAccountID = nil
+    authorizationGeneration &+= 1
+    pendingInvalidation = Invalidation(reason: reason, authorizationFence: fence)
     generation &+= 1
+  }
+
+  func consume(_ invalidation: Invalidation) {
+    guard pendingInvalidation == invalidation else { return }
+    pendingInvalidation = nil
   }
 }
 
 actor SoloStatsDeliveryAdapter {
   private let client: SkyjoAPIClient
-  private let invalidateAuthorization: @Sendable (SessionInvalidationRelay.Reason) async -> Void
+  private let authorizationFence: @Sendable (
+    UUID
+  ) async -> SessionInvalidationRelay.AuthorizationFence?
+  private let invalidateAuthorization: @Sendable (
+    SessionInvalidationRelay.Reason,
+    SessionInvalidationRelay.AuthorizationFence
+  ) async -> Void
 
   init(
     client: SkyjoAPIClient,
-    invalidateAuthorization: @escaping @Sendable (SessionInvalidationRelay.Reason) async -> Void
+    authorizationFence: @escaping @Sendable (
+      UUID
+    ) async -> SessionInvalidationRelay.AuthorizationFence?,
+    invalidateAuthorization: @escaping @Sendable (
+      SessionInvalidationRelay.Reason,
+      SessionInvalidationRelay.AuthorizationFence
+    ) async -> Void
   ) {
     self.client = client
+    self.authorizationFence = authorizationFence
     self.invalidateAuthorization = invalidateAuthorization
   }
 
@@ -40,6 +85,9 @@ actor SoloStatsDeliveryAdapter {
           request.expectedAccountUserId == accountID.uuidString.lowercased()
     else {
       throw StatsDeliveryError.permanent(.invalidPayload)
+    }
+    guard let fence = await authorizationFence(accountID) else {
+      throw StatsDeliveryError.authorizationChanged
     }
 
     do {
@@ -52,13 +100,16 @@ actor SoloStatsDeliveryAdapter {
         )
       )
     } catch let error as SkyjoHTTPClientError {
-      throw await map(error)
+      throw await map(error, authorizationFence: fence)
     } catch {
       throw StatsDeliveryError.retryable(.transport)
     }
   }
 
-  private func map(_ error: SkyjoHTTPClientError) async -> StatsDeliveryError {
+  private func map(
+    _ error: SkyjoHTTPClientError,
+    authorizationFence: SessionInvalidationRelay.AuthorizationFence
+  ) async -> StatsDeliveryError {
     switch error {
     case .requestTooLarge:
       return .permanent(.requestTooLarge)
@@ -70,11 +121,11 @@ actor SoloStatsDeliveryAdapter {
       return .retryable(.transport)
     case .server(let statusCode, let code, _):
       if code == .accessRequired {
-        await invalidateAuthorization(.accessRequired)
+        await invalidateAuthorization(.accessRequired, authorizationFence)
         return .authorizationChanged
       }
       if code == .accountAuthenticationRequired || code == .accountSessionChanged {
-        await invalidateAuthorization(.accountSessionChanged)
+        await invalidateAuthorization(.accountSessionChanged, authorizationFence)
         return .authorizationChanged
       }
       if code == .requestTooLarge {
@@ -133,18 +184,29 @@ final class AppDependencies {
 
     let container: ModelContainer
     var initialWarning: SoloPersistenceWarning?
+    let persistenceIsDurable: Bool
 #if DEBUG
     let usesSoloUITestFixture = ProcessInfo.processInfo.arguments.contains {
       $0.hasPrefix("--ui-state=solo-")
     }
+    let usesVolatileUITestFixture = ProcessInfo.processInfo.arguments.contains(
+      "--ui-state=solo-launcher-volatile"
+    )
 #else
     let usesSoloUITestFixture = false
+    let usesVolatileUITestFixture = false
 #endif
     if usesSoloUITestFixture {
       // UI fixtures still exercise normal owner synchronization, but must not inherit
       // an earlier simulator run's durable sessions or stats-delivery queue.
       container = try SkyjoPersistenceContainer.makeInMemory()
-      initialWarning = nil
+      persistenceIsDurable = !usesVolatileUITestFixture
+      initialWarning = usesVolatileUITestFixture
+        ? SoloPersistenceWarning(
+          kind: .unavailable,
+          message: "Saved games are unavailable on this device right now. This session can continue, but it is temporary."
+        )
+        : nil
     } else {
       do {
         let fileManager = FileManager.default
@@ -159,9 +221,11 @@ final class AppDependencies {
         container = try SkyjoPersistenceContainer.make(
           at: directory.appending(path: "solo-v2.sqlite")
         )
+        persistenceIsDurable = true
         initialWarning = nil
       } catch {
         container = try SkyjoPersistenceContainer.makeInMemory()
+        persistenceIsDurable = false
         initialWarning = SoloPersistenceWarning(
           kind: .unavailable,
           message: "Saved games are unavailable on this device right now. This session can continue, but it is temporary."
@@ -174,8 +238,11 @@ final class AppDependencies {
     let relay = sessionInvalidation
     let deliveryAdapter = SoloStatsDeliveryAdapter(
       client: apiClient,
-      invalidateAuthorization: { reason in
-        await MainActor.run { relay.invalidate(reason) }
+      authorizationFence: { accountID in
+        await MainActor.run { relay.authorizationFence(for: accountID) }
+      },
+      invalidateAuthorization: { reason, fence in
+        await MainActor.run { relay.invalidate(reason, ifCurrent: fence) }
       }
     )
     statsOutbox = StatsOutboxCoordinator(store: persistenceStore) { request in
@@ -187,7 +254,8 @@ final class AppDependencies {
       statsOutbox: statsOutbox,
       preferences: preferences,
       feedback: feedback,
-      initialWarning: initialWarning
+      initialWarning: initialWarning,
+      persistenceIsDurable: persistenceIsDurable
     )
   }
 }

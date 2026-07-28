@@ -23,6 +23,7 @@ public actor SoloAutosaveCoordinator {
   private var isCancelled = false
 
   public private(set) var latestWarning: SoloPersistenceWarning?
+  public private(set) var latestPersistedSnapshot: SoloSessionSnapshot?
 
   public init(
     store: SoloPersistenceStore,
@@ -89,7 +90,7 @@ public actor SoloAutosaveCoordinator {
     while !Task.isCancelled, let candidate = pending {
       pending = nil
       do {
-        _ = try await store.autosave(
+        let snapshot = try await store.autosave(
           owner: owner,
           gameID: gameID,
           state: candidate.state,
@@ -98,6 +99,7 @@ public actor SoloAutosaveCoordinator {
           savedAtMilliseconds: candidate.savedAtMilliseconds
         )
         guard !isCancelled else { break }
+        latestPersistedSnapshot = snapshot
         latestWarning = nil
       } catch let error as SoloPersistenceError {
         guard !isCancelled else { break }

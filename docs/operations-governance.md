@@ -8,7 +8,7 @@ The managed policy has these invariants:
 
 - `main` accepts pull requests only, requires linear history and resolved conversations, disallows deletion and force pushes, has no bypass actors, and requires zero approving human reviews.
 - A separate `v*` tag-creation ruleset permits only the authenticated user owner resolved from the repository API. A second no-bypass tag ruleset blocks every update and deletion, so the release actor may create a version tag exactly once but cannot move or remove it afterward.
-- The 13 named CI and CodeQL workflow checks must pass strictly against the current base before merging. Each required context is bound to the GitHub App that produced the unique successful check on current `main`. A separate CodeQL code-scanning rule blocks error-level findings and high-or-critical security findings; it does not rely on the workflow completion check to infer alert severity.
+- The 14 named CI and CodeQL workflow checks must pass strictly against the current base before merging. Each required context is bound to the GitHub App that produced the unique successful check on current `main`. A separate CodeQL code-scanning rule blocks error-level findings and high-or-critical security findings; it does not rely on the workflow completion check to infer alert severity.
 - Only squash merging is available. Auto-merge and automatic branch deletion are enabled.
 - Actions must use full commit SHAs. The default `GITHUB_TOKEN` is read-only and cannot approve pull requests; individual jobs must request narrower write permissions explicitly.
 - Dependabot alerts and automatic security fixes are enabled. Weekly npm and Actions updates are grouped by ecosystem and dependency type.
@@ -19,7 +19,7 @@ The reconciler is a dry run unless `--apply` and an exact confirmation are both 
 node scripts/configure-github-governance.mjs --repo chadmhohn/skyjo-online
 ```
 
-The dry run does not require a token and makes no network mutation. After this change is merged and the new `CodeQL / Analyze` check plus all 12 CI checks have each succeeded exactly once on current `main`, an administrator can apply it:
+The dry run does not require a token and makes no network mutation. After this change is merged and the new `CodeQL / Analyze` check plus all 13 CI checks have each succeeded exactly once on current `main`, an administrator can apply it:
 
 ```sh
 GITHUB_TOKEN="$(gh auth token)" node scripts/configure-github-governance.mjs \
@@ -29,6 +29,8 @@ GITHUB_TOKEN="$(gh auth token)" node scripts/configure-github-governance.mjs \
 ```
 
 Apply mode first reads current `main`, current Actions policy, and every repository ruleset. It refuses to change anything unless every required check is uniquely green with a trustworthy GitHub App identity and any existing managed ruleset has an unambiguous identity. It preserves the repository's current Actions allowlist selection, turns on SHA pinning, applies the settings, and reads back the full ruleset (including the CodeQL severity gate) plus repository, Actions, token, and Dependabot policies. It never deletes an unrelated ruleset.
+
+When a pull request introduces a new required context, that pull request must first verify the context manually and merge only while it is green. Wait for the same context to pass on the resulting exact `main` SHA, then rerun the reconciler so it can bind the producer identity and add the context to the managed ruleset. IOS-7 uses this one-time sequence for `iOS / UI & Accessibility`; neither the pull-request run nor the source-only update is permission to claim that branch protection already requires it.
 
 Repository governance is the immediate post-merge step for this issue: apply it as soon as the issue-63 main run, including CodeQL, is green. This is separate from VPS operations activation below, which must remain deferred until the tagged `v0.1.1` production cutover in issue 64.
 

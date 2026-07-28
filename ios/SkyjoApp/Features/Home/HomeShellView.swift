@@ -32,7 +32,7 @@ struct HomeShellView: View {
           } else {
             SignedOutFeatureView(
               title: "Sign in for stats",
-              message: "Guest solo games stay on this device and do not add account stats.",
+              message: signedOutStatsMessage,
               model: model
             )
           }
@@ -50,6 +50,17 @@ struct HomeShellView: View {
       }
     }
     .accessibilityIdentifier("shell.tabs")
+  }
+
+  private var signedOutStatsMessage: String {
+    if solo.owner.accountID != nil {
+      return solo.sessionStorageIsPersistent
+        ? "Account-owned solo results stay on this device and wait for sign-in confirmation before syncing to account stats."
+        : "Account-owned solo results exist only while Skyjo remains open and require sign-in confirmation before delivery."
+    }
+    return solo.sessionStorageIsPersistent
+      ? "Guest solo games stay on this device and do not add account stats."
+      : "Guest solo games are available only while Skyjo remains open and do not add account stats."
   }
 }
 
@@ -108,7 +119,9 @@ private struct HomeView: View {
               title: "Single Player",
               detail: solo.savedGameSummary == nil
                 ? "Start a native offline game with 1–7 bots."
-                : "Continue your saved round or review a new setup.",
+                : (solo.activeSessionIsPersistent
+                  ? "Continue your saved round or review a new setup."
+                  : "Continue this temporary round before closing Skyjo."),
               systemImage: "person.fill"
             )
           }
@@ -131,10 +144,22 @@ private struct HomeView: View {
         GroupBox(accountSnapshotTitle) {
           VStack(alignment: .leading, spacing: 12) {
             if user == nil, solo.owner.accountID == nil {
-              Text("Your active guest save restores on this device. Completed guest games are not uploaded to account stats.")
+              Text(
+                solo.sessionStorageIsPersistent
+                  ? (solo.savedGameSummary == nil
+                    ? "Guest solo games save on this device while in progress. Completed guest games are not uploaded to account stats."
+                    : "Your active guest save restores on this device. Completed guest games are not uploaded to account stats.")
+                  : "Guest games exist only while Skyjo remains open because device storage is unavailable. They are not uploaded to account stats."
+              )
                 .foregroundStyle(.secondary)
             } else if user == nil {
-              Text("This account-owned solo save remains available offline. Completed results stay on this device until the account is confirmed online.")
+              Text(
+                solo.sessionStorageIsPersistent
+                  ? (solo.savedGameSummary == nil
+                    ? "Account-owned solo games remain available offline. Completed results wait on this device until the account is confirmed online."
+                    : "This account-owned solo save remains available offline. Completed results stay on this device until the account is confirmed online.")
+                  : "Account-owned games exist only while Skyjo remains open. Pending results cannot survive termination until device storage recovers."
+              )
                 .foregroundStyle(.secondary)
             } else if let summary = model.statsSummary {
               HStack {
@@ -168,13 +193,26 @@ private struct HomeView: View {
 
   private var accountSnapshotTitle: String {
     if user != nil { return "Account snapshot" }
-    return solo.owner.accountID == nil ? "Guest play" : "Offline account save"
+    if !solo.activeSessionIsPersistent, solo.savedGameSummary != nil {
+      return solo.owner.accountID == nil ? "Temporary guest game" : "Temporary account game"
+    }
+    if solo.owner.accountID != nil, solo.savedGameSummary != nil {
+      return "Offline account save"
+    }
+    return solo.owner.accountID == nil ? "Guest play" : "Offline account play"
   }
 
   private var homeSubtitle: String {
     if user != nil { return "Your native Skyjo table is ready." }
     if solo.owner.accountID != nil {
-      return "Continue your account-owned solo save offline; results will sync after account confirmation."
+      if solo.savedGameSummary != nil {
+        return solo.activeSessionIsPersistent
+          ? "Continue your account-owned solo save offline; results will sync after account confirmation."
+          : "Continue this temporary account game while Skyjo remains open."
+      }
+      return solo.sessionStorageIsPersistent
+        ? "Start an account-owned solo game offline; results will sync after account confirmation."
+        : "Start a temporary account game while Skyjo remains open."
     }
     return "Play solo as a guest, or sign in when you want account stats."
   }

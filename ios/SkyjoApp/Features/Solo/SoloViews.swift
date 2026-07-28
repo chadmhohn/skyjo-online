@@ -11,30 +11,79 @@ struct SoloRootView: View {
 
   var body: some View {
     Group {
-      switch model.screen {
-      case .loading:
-        ProgressView("Loading saved game")
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .accessibilityIdentifier("solo.loading")
-      case .launcher:
-        SoloLauncherView(model: model)
-      case .setup:
-        SoloSetupView(model: model)
-      case .table:
-        SoloGameView(model: model, preferences: preferences)
+      if model.sessionReconciliationRequired {
+        SoloSessionReconciliationView(model: model)
+      } else {
+        switch model.screen {
+        case .loading:
+          ProgressView("Loading saved game")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("solo.loading")
+        case .launcher:
+          SoloLauncherView(model: model)
+        case .setup:
+          SoloSetupView(model: model)
+        case .table:
+          SoloGameView(model: model, preferences: preferences)
+        }
       }
     }
-    .navigationTitle(model.screen == .table ? "Solo Table" : "Single Player")
-    .navigationBarTitleDisplayMode(model.screen == .table ? .inline : .automatic)
+    .navigationTitle(
+      !model.sessionReconciliationRequired && model.screen == .table
+        ? "Solo Table"
+        : "Single Player"
+    )
+    .navigationBarTitleDisplayMode(
+      !model.sessionReconciliationRequired && model.screen == .table
+        ? .inline
+        : .automatic
+    )
     .sheet(isPresented: $model.isReplacementReviewPresented) {
       SoloReplacementReviewView(model: model)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
     }
     .onDisappear {
       if model.screen == .table {
         model.leaveTable()
       }
     }
+  }
+}
+
+@MainActor
+private struct SoloSessionReconciliationView: View {
+  @Bindable var model: SoloFeatureModel
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 18) {
+        SkyjoStatusBanner(
+          title: "Saved game status unknown",
+          message: "Skyjo must reload the authoritative saved game before play can continue.",
+          systemImage: "externaldrive.badge.exclamationmark"
+        )
+        if let error = model.lastActionError {
+          Text(error)
+            .foregroundStyle(.secondary)
+        }
+        Button {
+          Task { await model.retrySessionReconciliation() }
+        } label: {
+          HStack {
+            if model.isWorking { ProgressView() }
+            Text("Reload Saved Game")
+              .frame(maxWidth: .infinity, minHeight: 44)
+              .contentShape(Rectangle())
+          }
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(model.isWorking)
+        .accessibilityIdentifier("solo.reconciliation.reload")
+      }
+      .frame(maxWidth: 680, alignment: .leading)
+      .padding()
+    }
+    .accessibilityIdentifier("solo.reconciliation")
   }
 }
 
@@ -56,14 +105,19 @@ private struct SoloLauncherView: View {
 
         GroupBox {
           VStack(alignment: .leading, spacing: 14) {
-            Label("Saved game", systemImage: "arrow.clockwise.circle.fill")
+            Label(
+              model.activeSessionIsPersistent ? "Saved game" : "Temporary game",
+              systemImage: model.activeSessionIsPersistent
+                ? "arrow.clockwise.circle.fill"
+                : "hourglass"
+            )
               .font(.title2.bold())
             if let summary = model.savedGameSummary {
               LabeledContent("Round", value: summary.round.formatted())
               LabeledContent("Opponents", value: summary.opponents.formatted())
               LabeledContent("Difficulty", value: summary.difficulty.displayName)
               LabeledContent(
-                "Saved",
+                model.activeSessionIsPersistent ? "Saved" : "Updated",
                 value: Date(timeIntervalSince1970: Double(summary.savedAtMilliseconds) / 1_000)
                   .formatted(date: .abbreviated, time: .shortened)
               )
@@ -85,9 +139,21 @@ private struct SoloLauncherView: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(SoloSecondaryButtonStyle())
+            .disabled(model.hasUncommittedTerminalCompletion)
             .accessibilityIdentifier("solo.new-game")
-            .accessibilityHint("Reviews the replacement before changing this saved game")
+            .accessibilityHint(
+              model.activeSessionIsPersistent
+                ? "Reviews the replacement before changing this saved game"
+                : "Reviews the replacement before changing this temporary game"
+            )
+
+            if model.hasUncommittedTerminalCompletion {
+              Text("Save or recover the completed result before setting up another game.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("solo.launcher.completion-blocked")
+            }
           }
           .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -119,6 +185,20 @@ private struct SoloSetupView: View {
         }
       }
 
+      if let message = model.outboxRecoveryMessage {
+        Section {
+          HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+              .accessibilityHidden(true)
+            Text(message)
+          }
+            .foregroundStyle(.green)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(message)
+            .accessibilityIdentifier("solo.outbox.status")
+        }
+      }
+
       Section("Opponents") {
         Stepper(value: $model.setupOpponentCount, in: GameEngine.singlePlayerAIOpponentRange) {
           LabeledContent("Bots", value: model.setupOpponentCount.formatted())
@@ -132,7 +212,9 @@ private struct SoloSetupView: View {
       Section("Difficulty") {
         Picker("Bot difficulty", selection: $model.setupDifficulty) {
           ForEach(SoloAIDifficultySelection.allCases, id: \.self) { difficulty in
-            Text(difficulty.displayName).tag(difficulty)
+            Text(difficulty.displayName)
+              .tag(difficulty)
+              .accessibilityIdentifier("solo.setup.difficulty.\(difficulty.rawValue)")
           }
         }
         .pickerStyle(.navigationLink)
@@ -150,12 +232,19 @@ private struct SoloSetupView: View {
           Task { await model.reviewNewGame() }
         }
         .buttonStyle(.borderedProminent)
-        .disabled(model.isWorking)
+        .disabled(model.isWorking || model.hasUncommittedTerminalCompletion)
         .frame(maxWidth: .infinity, minHeight: 44)
         .accessibilityIdentifier("solo.setup.start")
 
+        if model.hasUncommittedTerminalCompletion {
+          Text("Save or recover the completed result before setting up another game.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("solo.setup.completion-blocked")
+        }
+
         if model.hasDurableActiveSession {
-          Button("Keep Saved Game") {
+          Button(model.activeSessionIsPersistent ? "Keep Saved Game" : "Keep Temporary Game") {
             model.cancelSetup()
           }
           .frame(maxWidth: .infinity, minHeight: 44)
@@ -190,20 +279,49 @@ private struct SoloReplacementReviewView: View {
   var body: some View {
     NavigationStack {
       List {
-        Section("Current saved game") {
+        Section {
           if let summary = model.savedGameSummary {
             LabeledContent("Round", value: summary.round.formatted())
+              .accessibilityElement(children: .combine)
+              .accessibilityLabel("Round")
+              .accessibilityValue(summary.round.formatted())
+              .accessibilityIdentifier("solo.replace.current-round")
             LabeledContent("Opponents", value: summary.opponents.formatted())
+              .accessibilityElement(children: .combine)
+              .accessibilityLabel("Opponents")
+              .accessibilityValue(summary.opponents.formatted())
+              .accessibilityIdentifier("solo.replace.current-opponents")
             LabeledContent("Difficulty", value: summary.difficulty.displayName)
+              .accessibilityElement(children: .combine)
+              .accessibilityLabel("Difficulty")
+              .accessibilityValue(summary.difficulty.displayName)
+              .accessibilityIdentifier("solo.replace.current-difficulty")
           }
+        } header: {
+          Text(model.activeSessionIsPersistent ? "Current saved game" : "Current temporary game")
+            .foregroundStyle(Color.primary)
         }
-        Section("Replacement") {
+        Section {
           LabeledContent("Opponents", value: model.setupOpponentCount.formatted())
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Opponents")
+            .accessibilityValue(model.setupOpponentCount.formatted())
+            .accessibilityIdentifier("solo.replace.new-opponents")
           LabeledContent("Difficulty", value: model.setupDifficulty.displayName)
-          Text("The current save is removed only after the replacement is fully validated and saved. A failure leaves the current game recoverable.")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Difficulty")
+            .accessibilityValue(model.setupDifficulty.displayName)
+            .accessibilityIdentifier("solo.replace.new-difficulty")
+          Text(
+            model.activeSessionIsPersistent
+              ? "The current save is removed only after the replacement is fully validated and saved. A failure leaves the current game recoverable."
+              : "The temporary game changes only after the replacement is fully validated in memory. It will not survive closing Skyjo while device storage is unavailable."
+          )
+            .foregroundStyle(Color.primary)
             .accessibilityIdentifier("solo.replace.recovery-copy")
+        } header: {
+          Text("Replacement")
+            .foregroundStyle(Color.primary)
         }
         if let error = model.lastActionError {
           Section("Replacement not saved") {
@@ -217,15 +335,25 @@ private struct SoloReplacementReviewView: View {
           }
         }
         Section {
-          Button("Replace Saved Game", role: .destructive) {
+          Button(
+            model.activeSessionIsPersistent ? "Replace Saved Game" : "Replace Temporary Game"
+          ) {
             Task {
               await model.confirmReplacement()
               if !model.isReplacementReviewPresented { dismiss() }
             }
           }
-          .disabled(model.isWorking)
+          .disabled(model.isWorking || model.hasUncommittedTerminalCompletion)
           .frame(minHeight: 44)
+          .buttonStyle(SoloDestructiveButtonStyle())
           .accessibilityIdentifier("solo.replace.confirm")
+
+          if model.hasUncommittedTerminalCompletion {
+            Text("Save or recover the completed result before replacing this game.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("solo.replace.completion-blocked")
+          }
         }
       }
       .navigationTitle("Review Replacement")
@@ -235,6 +363,8 @@ private struct SoloReplacementReviewView: View {
             model.isReplacementReviewPresented = false
             dismiss()
           }
+          .frame(minWidth: 44, minHeight: 44)
+          .contentShape(Rectangle())
           .accessibilityIdentifier("solo.replace.cancel")
         }
       }
@@ -254,25 +384,47 @@ private struct SoloGameView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
   @AccessibilityFocusState private var drawnDecisionFocused: Bool
+  @State private var isAccessibilityTableStatusPresented = false
 
   var body: some View {
     GeometryReader { proxy in
-      let wide = proxy.size.width >= 700
-      let compactHeight = proxy.size.height < 650
-      Group {
-        if dynamicTypeSize.isAccessibilitySize {
-          accessibleTable(size: proxy.size)
-        } else if compactHeight {
-          compactLandscapeTable(size: proxy.size)
-        } else {
-          standardTable(size: proxy.size, wide: wide)
+      let size = requestedLayoutSize(fallback: proxy.size)
+      let wide = size.width >= 700
+      let layout = SoloTableLayoutMode.resolve(
+        size: size,
+        usesAccessibilityText: dynamicTypeSize.isAccessibilitySize
+      )
+      ZStack(alignment: .top) {
+#if DEBUG
+        Color.clear
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel("Solo table safe-area test boundary")
+          .accessibilityIdentifier("solo.table.safe-area")
+          .allowsHitTesting(false)
+#endif
+        switch layout {
+        case .accessibility:
+          accessibleTable(size: size)
+        case .accessibilityLandscape:
+          compactLandscapeTable(
+            size: size,
+            accessibilityIdentifier: "solo.table.layout.accessibility-landscape"
+          )
+        case .compactLandscape:
+          compactLandscapeTable(
+            size: size,
+            accessibilityIdentifier: "solo.table.layout.compact-landscape"
+          )
+        case .standard:
+          standardTable(size: size, wide: wide)
         }
       }
-      .frame(width: proxy.size.width, height: proxy.size.height)
+      .frame(width: size.width, height: size.height)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       .background(Color(uiColor: .systemGroupedBackground))
     }
-    .accessibilityIdentifier("solo.table")
     .toolbar {
       ToolbarItemGroup(placement: .topBarTrailing) {
         if model.isScoreSummaryMinimized {
@@ -306,6 +458,9 @@ private struct SoloGameView: View {
     .sheet(isPresented: $model.isSettingsPresented) {
       SoloSettingsView(model: model, preferences: preferences)
     }
+    .sheet(isPresented: $isAccessibilityTableStatusPresented) {
+      accessibilityTableStatusSheet
+    }
     .onChange(of: model.isScoreSummaryPresented) { _, value in
       if !value { model.setScoreSummaryPresented(false) }
     }
@@ -320,75 +475,242 @@ private struct SoloGameView: View {
     }
   }
 
+  private var accessibilityTableStatusSheet: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 24) {
+          Text("Round \(model.game?.round ?? 1)")
+            .font(.largeTitle.bold())
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.accessibility-table-status.round")
+          Text(model.tableStatus)
+            .font(.title.bold())
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.accessibility-table-status.turn-state")
+
+          VStack(alignment: .leading, spacing: 10) {
+            Text("Current action")
+              .font(.headline)
+            Text(model.actionGuidance)
+              .font(.title2.weight(.semibold))
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("solo.accessibility-table-status.guidance")
+          }
+
+          VStack(alignment: .leading, spacing: 12) {
+            Text("Visible table information")
+              .font(.headline)
+            Text("Deck: \(model.game?.drawPile.count ?? 0) cards")
+              .font(.body)
+              .accessibilityIdentifier("solo.accessibility-table-status.deck")
+            Text(
+              "Discard top: \(model.game?.discardPile.first.map { spokenValue($0.value) } ?? "empty")"
+            )
+              .font(.body)
+              .accessibilityIdentifier("solo.accessibility-table-status.discard")
+            if model.isHumanTurn, let drawnCard = model.game?.drawnCard {
+              Text("Drawn card: \(spokenValue(drawnCard.value)); action: \(model.drawChoice.rawValue)")
+                .font(.body)
+                .accessibilityIdentifier("solo.accessibility-table-status.drawn")
+            }
+          }
+
+          VStack(alignment: .leading, spacing: 16) {
+            Text("Players and scores")
+              .font(.headline)
+            ForEach(model.game?.players ?? [], id: \.id) { player in
+              VStack(alignment: .leading, spacing: 4) {
+                Text(player.kind == .human ? "You" : player.name)
+                  .font(.title2.bold())
+                Text("Score: \(player.totalScore) points")
+                  .font(.body.monospacedDigit())
+                ForEach(Array(player.grid.enumerated()), id: \.offset) { index, card in
+                  let row = index / SkyjoRules.columns + 1
+                  let column = index % SkyjoRules.columns + 1
+                  Text(accessibilityCardSummary(card, row: row, column: column))
+                    .font(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier(
+                      "solo.accessibility-table-status.card.\(player.id).r\(row).c\(column)"
+                    )
+                }
+              }
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityElement(children: .contain)
+              .accessibilityIdentifier("solo.accessibility-table-status.player.\(player.id)")
+            }
+          }
+        }
+        .frame(maxWidth: 680, alignment: .leading)
+        .padding()
+      }
+      .navigationTitle("Table Status")
+      .toolbar {
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Done") {
+            isAccessibilityTableStatusPresented = false
+          }
+          .accessibilityIdentifier("solo.accessibility-table-status.done")
+        }
+      }
+    }
+    .presentationDetents([.large])
+    .accessibilityIdentifier("solo.accessibility-table-status")
+  }
+
   private func standardTable(size: CGSize, wide: Bool) -> some View {
-    let bandHeight = min(max(size.height * 0.18, 120), 150)
-    let localBoardHeight = min(max(size.height * 0.44, 270), 340)
+    let isShortPortrait = size.width < size.height && size.height < 650
+    let usesSingleOpponentPage = !wide && size.width < 400
+    let bandHeight = isShortPortrait ? 76 : min(max(size.height * 0.18, 120), 150)
+    // At the 550-point debug floor, 270 points of width gives every local card
+    // its 44-point minimum while reducing the board's intrinsic height enough
+    // to keep a complete 185-point opponent board inside the only scroll region.
+    let localBoardHeight: CGFloat
+    if isShortPortrait {
+      localBoardHeight = 195
+    } else if wide {
+      localBoardHeight = min(max(size.height * 0.44, 270), 340)
+    } else {
+      localBoardHeight = min(max(size.height * 0.42, 270), 300)
+    }
     return VStack(spacing: 10) {
-      gameHeader
-      opponentRegion(wide: wide)
+      gameHeader()
+      opponentRegion(
+        wide: wide,
+        boardsPerViewport: usesSingleOpponentPage ? 1 : 2,
+        boardMaxWidth: usesSingleOpponentPage ? 185 : nil,
+        allowsVerticalScrolling: isShortPortrait
+      )
         .frame(maxHeight: .infinity)
       actionBand(wide: wide)
         .frame(height: bandHeight)
+        .accessibilityIdentifier("solo.action-band")
         .accessibilitySortPriority(4)
       humanBoard(compact: false)
-        .frame(maxWidth: 520)
+        .frame(maxWidth: isShortPortrait ? 270 : 520)
         .frame(height: localBoardHeight)
         .frame(maxWidth: .infinity)
         .accessibilitySortPriority(2)
     }
     .padding(.horizontal, wide ? 20 : 8)
     .padding(.vertical, 6)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("solo.table.layout.standard")
   }
 
   private func accessibleTable(size: CGSize) -> some View {
-    ScrollView(.vertical) {
-      VStack(spacing: 12) {
-        gameHeader
-        opponentRegion(wide: size.width >= 700, boardsPerViewport: 1)
-          .frame(height: min(max(size.width * 0.88, 330), 390))
-        actionBand(wide: false)
-          .accessibilitySortPriority(4)
-        humanBoard(compact: false)
-          .frame(maxWidth: 520)
-          .frame(maxWidth: .infinity)
-          .accessibilitySortPriority(2)
-      }
-      .padding(.horizontal, size.width >= 700 ? 20 : 8)
-      .padding(.vertical, 6)
+    let wide = size.width >= 700
+    let isShortPortrait = size.width < size.height && size.height < 650
+    let usesDenseAccessibilityPresentation = false
+    // The two-row action grid needs 152 points for its 44-point controls at
+    // Accessibility XXXL. Keep only a small amount of breathing room on an
+    // SE-height viewport so the header, opponent strip, actions, and local
+    // board all remain anchored above the tab bar without a root scroll view.
+    let actionHeight: CGFloat = isShortPortrait ? 160 : (wide ? 230 : 190)
+    let localBoardHeight: CGFloat = isShortPortrait
+      ? 220
+      : min(max(size.height * 0.28, 220), wide ? 320 : 220)
+    let localBoardMaxWidth = min(
+      wide ? 360 : 220,
+      max(185, ((localBoardHeight - 80) / 3 * 4) + 8)
+    )
+    return VStack(spacing: isShortPortrait ? 4 : 8) {
+      gameHeader(
+        usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+      )
+      opponentRegion(
+        wide: wide,
+        boardsPerViewport: 1,
+        allowsVerticalScrolling: true,
+        usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+      )
+        .frame(minHeight: 44, maxHeight: .infinity)
+        .layoutPriority(-1)
+      actionBand(
+        wide: false,
+        usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+      )
+        .frame(height: actionHeight)
+        .accessibilityIdentifier("solo.action-band")
+        .accessibilitySortPriority(4)
+      humanBoard(
+        compact: true,
+        usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+      )
+        .frame(maxWidth: localBoardMaxWidth)
+        .frame(height: localBoardHeight)
+        .frame(maxWidth: .infinity)
+        .accessibilitySortPriority(2)
     }
-    .scrollIndicators(.visible)
-    .accessibilityIdentifier("solo.table.accessible-scroll")
+    .padding(.horizontal, wide ? 20 : 8)
+    .padding(.vertical, isShortPortrait ? 2 : 6)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("solo.table.layout.accessibility-fixed")
   }
 
-  private func compactLandscapeTable(size: CGSize) -> some View {
-    let opponentWidth = min(max(size.width * 0.26, 214), 240)
-    let localWidth = min(max(size.width * 0.32, 210), 320)
+  private func compactLandscapeTable(
+    size: CGSize,
+    accessibilityIdentifier: String
+  ) -> some View {
+    // At the 640-point phone-landscape floor, preserve enough width for four
+    // 44-point actions and four 44-point local-card columns. The opponent strip
+    // owns the only scrolling region and can therefore use the remaining sliver.
+    let opponentWidth = min(max(size.width * 0.28, 185), 200)
+    let localWidth = min(max(size.width * 0.33, 210), 280)
+    let usesDenseAccessibilityPresentation = false
     return VStack(spacing: 6) {
-      gameHeader
-      HStack(spacing: 8) {
-        opponentRegion(wide: false, boardsPerViewport: 1)
-          .frame(width: opponentWidth)
-          .frame(maxHeight: .infinity)
-        actionBand(wide: true, compactGuidance: true)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .accessibilitySortPriority(4)
-        humanBoard(compact: true)
-          .frame(width: localWidth)
-          .frame(maxHeight: .infinity)
-          .accessibilitySortPriority(2)
+      gameHeader(
+        usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+      )
+      GeometryReader { bodyProxy in
+        HStack(alignment: .bottom, spacing: 8) {
+          opponentRegion(
+            wide: false,
+            boardsPerViewport: 1,
+            usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+          )
+            .frame(width: opponentWidth, height: bodyProxy.size.height)
+          actionBand(
+            wide: true,
+            compactGuidance: true,
+            usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+          )
+            .frame(maxWidth: .infinity)
+            .frame(height: bodyProxy.size.height, alignment: .bottom)
+            .accessibilityIdentifier("solo.action-band")
+            .accessibilitySortPriority(4)
+          humanBoard(
+            compact: true,
+            usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+          )
+            .frame(width: localWidth)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .accessibilitySortPriority(2)
+        }
+        .frame(
+          width: bodyProxy.size.width,
+          height: bodyProxy.size.height,
+          alignment: .bottom
+        )
       }
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 4)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier(accessibilityIdentifier)
   }
 
   @ViewBuilder
-  private func humanBoard(compact: Bool) -> some View {
+  private func humanBoard(
+    compact: Bool,
+    usesDenseAccessibilityPresentation: Bool = false
+  ) -> some View {
     if let human = model.humanPlayer {
       PlayerBoardView(
         player: human,
         isLocal: true,
         isCompact: compact,
+        usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation,
         differentiateWithoutColor: differentiateWithoutColor,
         actionForIndex: { index in
           Task { await model.tapHumanCard(at: index) }
@@ -398,23 +720,31 @@ private struct SoloGameView: View {
     }
   }
 
-  private var gameHeader: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      VStack(alignment: .leading, spacing: 2) {
+  private func gameHeader(
+    usesDenseAccessibilityPresentation: Bool = false
+  ) -> some View {
+    let usesDensePresentation = usesAccessibilityLandscapeDensity
+      || usesDenseAccessibilityPresentation
+    return HStack(alignment: .center, spacing: 8) {
+      VStack(alignment: .leading, spacing: usesDensePresentation ? 0 : 2) {
         Text("Round \(model.game?.round ?? 1)")
-          .font(.headline)
+          .font(.caption.bold())
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("solo.table.round")
         Text(model.tableStatus)
-          .font(.caption)
-          .foregroundStyle(.secondary)
+          .font(.caption2)
+          .foregroundStyle(.primary)
+          .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("solo.table.turn-state")
       }
+      .layoutPriority(1)
       Spacer()
       if model.owner.accountID == nil {
-        Label("Guest", systemImage: "person.crop.circle.badge.questionmark")
-          .font(.caption.bold())
-          .labelStyle(.iconOnly)
+        Image(systemName: "person.crop.circle.badge.questionmark")
+          .resizable()
+          .scaledToFit()
+          .frame(width: 24, height: 24)
+          .frame(width: 44, height: 44)
           .accessibilityLabel("Guest game. Completed games are not added to account stats.")
           .accessibilityIdentifier("solo.table.guest")
       }
@@ -422,30 +752,44 @@ private struct SoloGameView: View {
         Button {
           model.setSettingsPresented(true)
         } label: {
-          Label("Save warning", systemImage: "externaldrive.badge.exclamationmark")
-            .font(.caption.bold())
+          Image(systemName: "externaldrive.badge.exclamationmark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 24, height: 24)
+            .frame(width: 44, height: 44)
         }
-        .frame(minWidth: 44, minHeight: 44)
+        .accessibilityLabel("Save warning")
         .accessibilityHint("Opens recovery details without interrupting the current turn")
         .accessibilityIdentifier("solo.table.persistence-warning")
       }
       Button {
         model.leaveTable()
       } label: {
-        Label("Exit", systemImage: "xmark.circle")
-          .labelStyle(.iconOnly)
+        Image(systemName: "xmark.circle")
+          .resizable()
+          .scaledToFit()
+          .frame(width: 28, height: 28)
+          .foregroundStyle(.primary)
           .frame(width: 44, height: 44)
           .contentShape(Rectangle())
       }
       .accessibilityLabel("Exit")
       .accessibilityIdentifier("solo.table.exit")
     }
+    .frame(minHeight: 44)
     .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("solo.table.header")
     .accessibilitySortPriority(5)
   }
 
   @ViewBuilder
-  private func opponentRegion(wide: Bool, boardsPerViewport: Int = 2) -> some View {
+  private func opponentRegion(
+    wide: Bool,
+    boardsPerViewport: Int = 2,
+    boardMaxWidth: CGFloat? = nil,
+    allowsVerticalScrolling: Bool = false,
+    usesDenseAccessibilityPresentation: Bool = false
+  ) -> some View {
     let opponents = model.game?.players.filter { $0.kind == .ai } ?? []
     if wide {
       ScrollView(.vertical) {
@@ -460,6 +804,7 @@ private struct SoloGameView: View {
               player: player,
               isLocal: false,
               isCompact: true,
+              usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation,
               differentiateWithoutColor: differentiateWithoutColor,
               actionForIndex: { _ in },
               isEnabledAtIndex: { _ in false }
@@ -468,18 +813,41 @@ private struct SoloGameView: View {
         }
       }
       .accessibilityIdentifier("solo.opponents.scroll")
-    } else {
-      ScrollView(.horizontal) {
-        LazyHStack(spacing: 6) {
+    } else if allowsVerticalScrolling {
+      ScrollView(.vertical) {
+        LazyVStack(alignment: .leading, spacing: 6) {
           ForEach(opponents, id: \.id) { player in
             PlayerBoardView(
               player: player,
               isLocal: false,
               isCompact: true,
+              usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation,
               differentiateWithoutColor: differentiateWithoutColor,
               actionForIndex: { _ in },
               isEnabledAtIndex: { _ in false }
             )
+            .frame(maxWidth: boardMaxWidth ?? .infinity, alignment: .leading)
+          }
+        }
+      }
+      .defaultScrollAnchor(.top)
+      .scrollIndicators(.visible)
+      .accessibilityIdentifier("solo.opponents.scroll")
+    } else {
+      ScrollView(.horizontal) {
+        LazyHStack(alignment: .top, spacing: 6) {
+          ForEach(opponents, id: \.id) { player in
+            PlayerBoardView(
+              player: player,
+              isLocal: false,
+              isCompact: true,
+              usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation,
+              differentiateWithoutColor: differentiateWithoutColor,
+              actionForIndex: { _ in },
+              isEnabledAtIndex: { _ in false }
+            )
+            .frame(maxWidth: boardMaxWidth ?? .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .containerRelativeFrame(
               .horizontal,
               count: opponents.count == 1 ? 1 : boardsPerViewport,
@@ -489,6 +857,7 @@ private struct SoloGameView: View {
         }
         .scrollTargetLayout()
       }
+      .defaultScrollAnchor(.leading)
       .scrollTargetBehavior(.viewAligned)
       .scrollIndicators(.visible)
       .accessibilityIdentifier("solo.opponents.scroll")
@@ -496,61 +865,84 @@ private struct SoloGameView: View {
   }
 
   @ViewBuilder
-  private func actionBand(wide: Bool, compactGuidance: Bool = false) -> some View {
+  private func actionBand(
+    wide: Bool,
+    compactGuidance: Bool = false,
+    usesDenseAccessibilityPresentation: Bool = false
+  ) -> some View {
     Group {
       if dynamicTypeSize.isAccessibilitySize {
         Grid(horizontalSpacing: 8, verticalSpacing: 8) {
           GridRow {
-            drawSlot
-            discardSlot
+            drawSlot(usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation)
+            discardSlot(usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation)
           }
           GridRow {
-            drawnSlot
-            guidanceSlot(compact: compactGuidance)
+            drawnSlot(usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation)
+            guidanceSlot(
+              compact: compactGuidance,
+              usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+            )
           }
         }
       } else {
         HStack(spacing: wide ? 12 : 6) {
-          drawSlot
-          discardSlot
-          drawnSlot
-          guidanceSlot(compact: compactGuidance)
+          drawSlot(usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation)
+          discardSlot(usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation)
+          drawnSlot(usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation)
+          guidanceSlot(
+            compact: compactGuidance,
+            usesDenseAccessibilityPresentation: usesDenseAccessibilityPresentation
+          )
         }
       }
     }
     .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("solo.action-band")
   }
 
-  private var drawSlot: some View {
+  private func drawSlot(
+    usesDenseAccessibilityPresentation: Bool
+  ) -> some View {
+    let usesDensePresentation = usesAccessibilityLandscapeDensity
+      || usesDenseAccessibilityPresentation
     return SkyjoActionSlot {
       Button {
         Task { await model.performHuman(.drawBlind) }
       } label: {
         VStack(spacing: 4) {
-          Image(systemName: "rectangle.stack.fill")
-          Text(dynamicTypeSize.isAccessibilitySize ? "Deck" : "Draw")
-            .lineLimit(1)
-            .minimumScaleFactor(0.5)
-          Text(model.game?.drawPile.count.formatted() ?? "0")
-            .font(.caption.monospacedDigit())
-            .lineLimit(1)
-            .minimumScaleFactor(0.5)
+          if !dynamicTypeSize.isAccessibilitySize {
+            Image(systemName: "rectangle.stack.fill")
+          }
+          Text("Deck")
+            .font(.caption2.weight(.semibold))
             .fixedSize(horizontal: false, vertical: true)
+          Text(model.game?.drawPile.count.formatted() ?? "0")
+            .font(.caption2.monospacedDigit().bold())
+            .fixedSize(horizontal: true, vertical: true)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityHidden(true)
       }
-      .buttonStyle(.bordered)
+      .buttonStyle(.plain)
       .disabled(!canChooseSource)
+      .allowsHitTesting(canChooseSource)
       .accessibilityLabel("Draw blind")
-      .accessibilityValue("\(model.game?.drawPile.count ?? 0) cards remain")
+      .accessibilityValue(
+        usesDensePresentation
+          ? "Visible deck count: \(model.game?.drawPile.count ?? 0); \(model.game?.drawPile.count ?? 0) cards remain"
+          : "\(model.game?.drawPile.count ?? 0) cards remain"
+      )
       .accessibilityIdentifier("solo.action.draw")
     }
+    .accessibilitySortPriority(4)
   }
 
-  private var discardSlot: some View {
-    SkyjoActionSlot {
+  private func discardSlot(
+    usesDenseAccessibilityPresentation: Bool
+  ) -> some View {
+    let usesDensePresentation = usesAccessibilityLandscapeDensity
+      || usesDenseAccessibilityPresentation
+    return SkyjoActionSlot {
       Button {
         Task {
           if model.game?.selectedSource == .discard {
@@ -561,87 +953,195 @@ private struct SoloGameView: View {
         }
       } label: {
         VStack(spacing: 4) {
-          Image(systemName: "rectangle.portrait.fill")
-          Text(dynamicTypeSize.isAccessibilitySize ? "Pile" : "Discard")
-            .lineLimit(1)
-            .minimumScaleFactor(0.5)
-          Text(model.game?.discardPile.first?.value.formatted() ?? "Empty")
-            .font(.headline.monospacedDigit())
-            .lineLimit(1)
-            .minimumScaleFactor(0.5)
+          if !dynamicTypeSize.isAccessibilitySize {
+            Image(systemName: "rectangle.portrait.fill")
+          }
+          Text("Discard")
+            .font(.caption2.weight(.semibold))
             .fixedSize(horizontal: false, vertical: true)
+          Text(model.game?.discardPile.first?.value.formatted() ?? "Empty")
+            .font(.caption2.monospacedDigit().bold())
+            .fixedSize(horizontal: true, vertical: true)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityHidden(true)
       }
-      .buttonStyle(.bordered)
-      .disabled(!(canChooseSource || model.game?.selectedSource == .discard))
+      .buttonStyle(.plain)
+      .disabled(!canUseDiscardAction)
+      .allowsHitTesting(canUseDiscardAction)
       .accessibilityLabel(
         model.game?.discardPile.first.map { "Discard pile, top card \(spokenValue($0.value))" }
           ?? "Discard pile, empty"
       )
-      .accessibilityHint(
-        model.game?.selectedSource == .discard
-          ? "Cancels the discard selection"
-          : "Takes the visible card"
+      .accessibilityValue(
+        discardActionAccessibilityValue(usesDensePresentation: usesDensePresentation)
       )
+      .accessibilityHint(discardActionAccessibilityHint)
       .accessibilityIdentifier("solo.action.discard")
     }
+    .accessibilitySortPriority(3)
   }
 
   @ViewBuilder
-  private var drawnSlot: some View {
-    SkyjoActionSlot(isOccupied: model.isHumanTurn && model.game?.drawnCard != nil) {
-      Group {
-        if model.isHumanTurn, let drawnCard = model.game?.drawnCard {
-          VStack(spacing: 4) {
-            Text("Drawn").font(.caption)
-            Text(drawnCard.value.formatted())
-              .font(.title2.monospacedDigit().bold())
-            Picker("Drawn card action", selection: $model.drawChoice) {
-              ForEach(SoloDrawChoice.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .accessibilityFocused($drawnDecisionFocused)
-            .accessibilityIdentifier("solo.action.drawn-choice")
-          }
-        } else {
-          Color.clear.accessibilityHidden(true)
+  private func drawnSlot(
+    usesDenseAccessibilityPresentation: Bool
+  ) -> some View {
+    let usesDensePresentation = usesAccessibilityLandscapeDensity
+      || usesDenseAccessibilityPresentation
+    let isOccupied = model.isHumanTurn && model.game?.drawnCard != nil
+    SkyjoActionSlot(isOccupied: isOccupied) {
+      // Keep the complete decision control in the layout even while hidden. Its intrinsic
+      // height reserves the Accessibility XXXL Grid row before a draw, so revealing the
+      // picker cannot move the action band or local board.
+      Menu {
+        ForEach(SoloDrawChoice.allCases) { choice in
+          Button(choice.rawValue) { model.selectDrawChoice(choice) }
         }
+      } label: {
+        VStack(spacing: 4) {
+          Text("Drawn")
+            .font(.caption2.weight(.semibold))
+            .fixedSize(horizontal: true, vertical: true)
+          HStack(spacing: 6) {
+            Text(isOccupied ? (model.game?.drawnCard?.value.formatted() ?? "—") : "—")
+              .font(.caption2.monospacedDigit().bold())
+              .fixedSize(horizontal: true, vertical: true)
+            Text(accessibilityLandscapeDrawChoice.capitalized)
+              .font(.caption2.weight(.semibold))
+              .fixedSize(horizontal: true, vertical: true)
+          }
+        }
+        .frame(minWidth: 44, minHeight: 44)
       }
+      .accessibilityLabel("Drawn card action")
+      .accessibilityValue(
+        "Visible card: \(model.game?.drawnCard.map { spokenValue($0.value) } ?? "unavailable"); visible action: \(model.drawChoice.rawValue)"
+      )
+      .accessibilityFocused($drawnDecisionFocused)
+      .accessibilityIdentifier("solo.action.drawn-choice")
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    .accessibilitySortPriority(2)
   }
 
-  private func guidanceSlot(compact: Bool) -> some View {
+  @ViewBuilder
+  private func guidanceSlot(
+    compact: Bool,
+    usesDenseAccessibilityPresentation: Bool
+  ) -> some View {
     let usesCompactCopy = compact || dynamicTypeSize.isAccessibilitySize
     let visibleGuidance = usesCompactCopy ? compactActionGuidance : model.actionGuidance
-    return SkyjoActionSlot {
-      VStack(spacing: 6) {
-        Image(systemName: guidanceImage)
-          .foregroundStyle(.tint)
+    SkyjoActionSlot {
+      if dynamicTypeSize.isAccessibilitySize {
+        Button {
+          isAccessibilityTableStatusPresented = true
+        } label: {
+          VStack(spacing: 4) {
+            Image(systemName: guidanceImage)
+              .resizable()
+              .scaledToFit()
+              .frame(width: 22, height: 22)
+              .foregroundStyle(.tint)
+              .accessibilityHidden(true)
+            Text(visibleGuidance)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(.primary)
+              .multilineTextAlignment(.center)
+              .fixedSize(horizontal: false, vertical: true)
+              .layoutPriority(1)
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .contentShape(Rectangle())
           .accessibilityHidden(true)
-        Text(visibleGuidance)
-          .font(dynamicTypeSize.isAccessibilitySize ? .caption : .footnote)
-          .foregroundStyle(.primary)
-          .multilineTextAlignment(.center)
-          .lineLimit(usesCompactCopy ? nil : 4)
-          .minimumScaleFactor(0.75)
-          .fixedSize(horizontal: false, vertical: true)
-          .layoutPriority(1)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.actionGuidance)
+        .accessibilityValue(
+          "Visible guidance: \(visibleGuidance)"
+        )
+        .accessibilityHint("Shows complete table status")
+        .accessibilityIdentifier("solo.action.guidance")
+      } else {
+        VStack(spacing: 6) {
+          if !dynamicTypeSize.isAccessibilitySize {
+            Image(systemName: guidanceImage)
+              .foregroundStyle(.tint)
+              .accessibilityHidden(true)
+          }
+          Text(visibleGuidance)
+            .font(dynamicTypeSize.isAccessibilitySize ? .caption : .footnote)
+            .foregroundStyle(.primary)
+            .multilineTextAlignment(.center)
+            .lineLimit(usesCompactCopy ? nil : 4)
+            .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.75)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(model.actionGuidance)
+        .accessibilityValue("Visible guidance: \(visibleGuidance)")
+        .accessibilityIdentifier("solo.action.guidance")
       }
-      .padding(6)
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .accessibilityElement(children: .combine)
-      .accessibilityLabel(model.actionGuidance)
-      .accessibilityValue("Visible guidance: \(visibleGuidance)")
-      .accessibilityIdentifier("solo.action.guidance")
     }
+    .accessibilitySortPriority(1)
   }
 
   private var canChooseSource: Bool {
     model.isHumanTurn && model.game?.phase == .chooseSource
+  }
+
+  private func accessibilityCardSummary(_ card: Card, row: Int, column: Int) -> String {
+    let position = "Row \(row), column \(column)"
+    if card.removed { return "\(position): cleared" }
+    if card.faceUp { return "\(position): \(spokenValue(card.value))" }
+    return "\(position): face down"
+  }
+
+  private var usesAccessibilityLandscapeDensity: Bool {
+    dynamicTypeSize.isAccessibilitySize && verticalSizeClass == .compact
+  }
+
+  private var accessibilityLandscapeTableStatus: String {
+    switch model.game?.phase {
+    case .roundOver: "ROUND\nOVER"
+    case .gameOver: "GAME\nOVER"
+    case .openingReveal, .chooseSource, .chooseReplacement:
+      model.isHumanTurn
+        ? "YOUR\nTURN"
+        : "\(model.currentPlayer?.name.uppercased() ?? "AI")\nTURN"
+    case nil: "PAUSED"
+    }
+  }
+
+  private var accessibilityLandscapeDrawChoice: String {
+    model.drawChoice == .place ? "PLACE" : "REVEAL"
+  }
+
+  private var canUseDiscardAction: Bool {
+    model.isHumanTurn && (canChooseSource || model.game?.selectedSource == .discard)
+  }
+
+  private func discardActionAccessibilityValue(
+    usesDensePresentation: Bool
+  ) -> String {
+    let availability: String
+    if !model.isHumanTurn {
+      availability = "Unavailable while another player is choosing"
+    } else if model.game?.selectedSource == .discard {
+      availability = "Selected"
+    } else {
+      availability = canChooseSource ? "Available" : "Unavailable for the current action"
+    }
+    guard usesDensePresentation else { return availability }
+    return "Visible top card: \(model.game?.discardPile.first.map { spokenValue($0.value) } ?? "empty"); \(availability)"
+  }
+
+  private var discardActionAccessibilityHint: String {
+    if !model.isHumanTurn { return "Wait for your turn" }
+    if model.game?.selectedSource == .discard { return "Cancels the discard selection" }
+    return canChooseSource ? "Takes the visible card" : "Finish the current action first"
   }
 
   private var guidanceImage: String {
@@ -666,6 +1166,17 @@ private struct SoloGameView: View {
     }
   }
 
+  private var accessibilityLandscapeGuidance: String {
+    switch model.game?.phase {
+    case .openingReveal: "REVEAL\n2 CARDS"
+    case .chooseSource: "CHOOSE\nPILE OR DECK"
+    case .chooseReplacement: "CHOOSE\nBOARD CARD"
+    case .roundOver: "REVIEW\nSCORES"
+    case .gameOver: "GAME\nCOMPLETE"
+    case nil: "Paused"
+    }
+  }
+
   private func isHumanCardEnabled(_ index: Int) -> Bool {
     guard model.isHumanTurn,
           let game = model.game,
@@ -685,35 +1196,89 @@ private struct SoloGameView: View {
       return false
     }
   }
+
+  private func requestedLayoutSize(fallback: CGSize) -> CGSize {
+#if DEBUG
+    guard let argument = ProcessInfo.processInfo.arguments.first(where: {
+      $0.hasPrefix("--ui-solo-geometry=")
+    }) else { return fallback }
+    let value = argument.dropFirst("--ui-solo-geometry=".count)
+    let dimensions = value.split(separator: "x", maxSplits: 1)
+    guard dimensions.count == 2,
+          let width = Double(dimensions[0]),
+          let height = Double(dimensions[1]),
+          width > 0,
+          height > 0
+    else { return fallback }
+    return CGSize(
+      width: min(CGFloat(width), fallback.width),
+      height: min(CGFloat(height), fallback.height)
+    )
+#else
+    return fallback
+#endif
+  }
+}
+
+enum SoloTableLayoutMode: Equatable {
+  case standard
+  case compactLandscape
+  case accessibility
+  case accessibilityLandscape
+
+  static func resolve(size: CGSize, usesAccessibilityText: Bool) -> Self {
+    let isLandscape = size.width > size.height
+    let hasThreeColumnWidth = size.width >= 620
+    if usesAccessibilityText {
+      return isLandscape && hasThreeColumnWidth && size.height < 650
+        ? .accessibilityLandscape
+        : .accessibility
+    }
+    return isLandscape && hasThreeColumnWidth && size.height < 650
+      ? .compactLandscape
+      : .standard
+  }
 }
 
 struct PlayerBoardView: View {
   @Environment(\.layoutDirection) private var layoutDirection
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
 
   let player: Player
   let isLocal: Bool
   let isCompact: Bool
+  let usesDenseAccessibilityPresentation: Bool
   let differentiateWithoutColor: Bool
   let actionForIndex: (Int) -> Void
   let isEnabledAtIndex: (Int) -> Bool
 
   var body: some View {
-    VStack(spacing: isCompact ? 2 : 7) {
-      HStack {
+    VStack(spacing: isCompact ? 1 : 7) {
+      HStack(alignment: .top, spacing: 4) {
         Text(isLocal ? "You" : player.name)
           .font(isCompact ? .caption2.bold() : .headline)
-          .lineLimit(1)
-          .minimumScaleFactor(0.7)
+          .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+          .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.7)
           .fixedSize(horizontal: false, vertical: true)
-        Spacer()
+        Spacer(minLength: 2)
         Text("\(player.totalScore) pts")
           .font((isCompact ? Font.caption2 : Font.caption).monospacedDigit())
-          .lineLimit(1)
-          .minimumScaleFactor(0.7)
+          .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+          .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.7)
           .fixedSize(horizontal: false, vertical: true)
       }
-      .accessibilityElement(children: .combine)
+      .accessibilityElement(children: .ignore)
+      .accessibilityAddTraits(.isHeader)
+      .accessibilityRespondsToUserInteraction(false)
+      .accessibilityLabel(isLocal ? "You" : player.name)
+      .accessibilityValue(
+        usesDenseAccessibilityLayout
+          ? "Visible player: \(isLocal ? "You" : player.name); visible score: \(player.totalScore) points"
+          : "\(player.totalScore) points"
+      )
       .accessibilityIdentifier("solo.board.header.\(isLocal ? "local" : "opponent").\(player.id)")
+      .accessibilitySortPriority(Double(player.grid.count + 1))
       LazyVGrid(
         columns: Array(repeating: GridItem(.flexible(), spacing: isCompact ? 1 : 6), count: 4),
         spacing: isCompact ? 1 : 6
@@ -728,6 +1293,7 @@ struct PlayerBoardView: View {
             hint: cardHint(card, index: index),
             isEnabled: isEnabledAtIndex(index),
             aspectRatio: isCompact ? 1 : 1.35,
+            usesDenseAccessibilityPresentation: usesDenseAccessibilityLayout,
             action: { actionForIndex(index) }
           )
           .overlay(alignment: .topTrailing) {
@@ -735,17 +1301,29 @@ struct PlayerBoardView: View {
               Image(systemName: card.value >= 9 ? "exclamationmark" : "checkmark")
                 .font(.caption2.bold())
                 .padding(3)
+                .allowsHitTesting(false)
+#if DEBUG
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                  card.value >= 9 ? "Visible exclamation mark marker" : "Visible checkmark marker"
+                )
+                .accessibilityIdentifier(
+                  "solo.card-marker.\(isLocal ? "local" : "opponent").\(player.id).r\(row).c\(column)"
+                )
+#else
                 .accessibilityHidden(true)
+#endif
             }
           }
           .accessibilityIdentifier("solo.card.\(isLocal ? "local" : "opponent").\(player.id).r\(row).c\(column)")
+          .accessibilitySortPriority(Double(player.grid.count - index))
         }
       }
       // Keep column placement deterministic and mirror logical columns ourselves.
       // LazyVGrid does not provide a stable item-ordering contract across layout directions.
       .environment(\.layoutDirection, .leftToRight)
     }
-    .padding(isCompact ? 3 : 10)
+    .padding(isCompact ? 1 : 10)
     .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
     .overlay {
       RoundedRectangle(cornerRadius: 12).stroke(.secondary, lineWidth: 1)
@@ -770,6 +1348,10 @@ struct PlayerBoardView: View {
     return layoutDirection == .rightToLeft
   }
 
+  private var usesDenseAccessibilityLayout: Bool {
+    usesDenseAccessibilityPresentation
+  }
+
   private func presentation(for card: Card) -> SkyjoCardFace {
     if card.removed { return .removed }
     if card.faceUp { return .faceUp(card.value) }
@@ -780,7 +1362,10 @@ struct PlayerBoardView: View {
     let prefix = isLocal ? "Your card" : "\(player.name)'s card"
     if card.removed { return "\(prefix), row \(row), column \(column), cleared" }
     if card.faceUp {
-      return "\(prefix), row \(row), column \(column), \(spokenValue(card.value))"
+      let marker = differentiateWithoutColor
+        ? "; visual marker: \(card.value >= 9 ? "exclamation mark" : "checkmark")"
+        : ""
+      return "\(prefix), row \(row), column \(column), \(spokenValue(card.value))\(marker)"
     }
     return "\(prefix), row \(row), column \(column), face down"
   }
@@ -824,19 +1409,31 @@ private struct SoloScoreSummaryView: View {
 
           if let error = model.completionError {
             SkyjoStatusBanner(title: "Result needs attention", message: error)
-            Button("Retry Saving Result") {
-              Task { await model.retryCompletion() }
+            Button(
+              model.completionRequiresSavedGameReload
+                ? "Reload Saved Game"
+                : "Retry Saving Result"
+            ) {
+              Task {
+                if model.completionRequiresSavedGameReload {
+                  await model.reloadSavedGameAfterCompletionFailure()
+                } else {
+                  await model.retryCompletion()
+                }
+              }
             }
             .buttonStyle(.borderedProminent)
             .disabled(model.isWorking)
             .frame(minHeight: 44)
-            .accessibilityIdentifier("solo.summary.retry-completion")
+            .accessibilityIdentifier(
+              model.completionRequiresSavedGameReload
+                ? "solo.summary.reload-saved-game"
+                : "solo.summary.retry-completion"
+            )
           } else if model.game?.phase == .gameOver {
             Label(
               model.completedStatsMessage,
-              systemImage: model.owner.accountID == nil
-                ? "person.crop.circle.badge.questionmark"
-                : (model.statsDeliveryIsConfirmed ? "checkmark.circle.fill" : "icloud.slash")
+              systemImage: model.statsDeliverySystemImage
             )
             .accessibilityIdentifier("solo.summary.stats-state")
           }
@@ -874,7 +1471,7 @@ private struct SoloScoreSummaryView: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(SoloSecondaryButtonStyle())
             .disabled(model.isWorking)
             .accessibilityIdentifier("solo.summary.change-setup")
           }
@@ -887,7 +1484,7 @@ private struct SoloScoreSummaryView: View {
           Button("Minimize") {
             model.setScoreSummaryPresented(false)
           }
-          .disabled(model.game?.phase == .gameOver && !model.completionCommitted)
+          .disabled(model.isWorking)
           .accessibilityIdentifier("solo.summary.minimize")
         }
       }
@@ -940,14 +1537,29 @@ private struct SoloSettingsView: View {
         if let setup = model.setup {
           Section("Current game") {
             LabeledContent("Opponents", value: setup.aiOpponentCount.formatted())
+              .accessibilityElement(children: .ignore)
+              .accessibilityLabel("Opponents")
+              .accessibilityValue(setup.aiOpponentCount.formatted())
+              .accessibilityIdentifier("solo.settings.current-opponents")
             LabeledContent("Difficulty", value: setup.difficulty.displayName)
+              .accessibilityElement(children: .ignore)
+              .accessibilityLabel("Difficulty")
+              .accessibilityValue(setup.difficulty.displayName)
+              .accessibilityIdentifier("solo.settings.current-difficulty")
             Button("Set Up Another Game") {
               dismiss()
               model.setSettingsPresented(false)
               model.showSetup()
             }
             .frame(minHeight: 44)
+            .disabled(model.hasUncommittedTerminalCompletion)
             .accessibilityIdentifier("solo.settings.new-game")
+            if model.hasUncommittedTerminalCompletion {
+              Text("Save or recover the completed result before setting up another game.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("solo.settings.completion-blocked")
+            }
           }
         }
 
@@ -965,9 +1577,7 @@ private struct SoloSettingsView: View {
         Section("Stats delivery") {
           Label(
             model.settingsStatsMessage,
-            systemImage: model.owner.accountID == nil
-              ? "person.crop.circle.badge.questionmark"
-              : (model.statsDeliveryIsConfirmed ? "checkmark.circle" : "icloud.slash")
+            systemImage: model.statsDeliverySystemImage
           )
           SoloRecoveryView(model: model)
         }
@@ -994,6 +1604,7 @@ private struct SoloSettingsView: View {
 private struct SoloRecoveryView: View {
   @Bindable var model: SoloFeatureModel
   @State private var confirmDiscard = false
+  @State private var confirmedDiscardHandle: StatsOutboxRecoveryHandle?
 
   var body: some View {
     if let kind = model.outboxStatus.blockedHeadKind {
@@ -1010,22 +1621,29 @@ private struct SoloRecoveryView: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.bordered)
-            .disabled(!model.statsDeliveryIsConfirmed)
+            .buttonStyle(SoloSecondaryButtonStyle())
+            .disabled(!recoveryIsAvailable)
+            .allowsHitTesting(recoveryIsAvailable)
             .accessibilityIdentifier("solo.outbox.retry")
           }
           Button(role: .destructive) {
-            confirmDiscard = true
+            confirmedDiscardHandle = model.outboxStatus.blockedHeadRecoveryHandle
+            confirmDiscard = confirmedDiscardHandle != nil
           } label: {
             Text("Discard Oldest Result")
               .frame(maxWidth: .infinity, minHeight: 44)
               .contentShape(Rectangle())
           }
-          .buttonStyle(.bordered)
-          .disabled(!model.statsDeliveryIsConfirmed)
+          .buttonStyle(SoloDestructiveButtonStyle())
+          .disabled(!recoveryIsAvailable)
+          .allowsHitTesting(recoveryIsAvailable)
           .accessibilityIdentifier("solo.outbox.discard")
           if !model.statsDeliveryIsConfirmed {
             Text("Confirm this account online before retrying or discarding its stored result.")
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+          } else if model.outboxStatus.blockedHeadRecoveryHandle == nil {
+            Text("Recovery details changed. Close and reopen this screen before trying again.")
               .font(.footnote)
               .foregroundStyle(.secondary)
           }
@@ -1039,13 +1657,69 @@ private struct SoloRecoveryView: View {
         titleVisibility: .visible
       ) {
         Button("Discard Result", role: .destructive) {
-          Task { await model.discardBlockedStats() }
+          guard let handle = confirmedDiscardHandle else { return }
+          Task {
+            await model.discardBlockedStats(expectedRecoveryHandle: handle)
+            confirmedDiscardHandle = nil
+          }
         }
-        Button("Cancel", role: .cancel) {}
+        Button("Cancel", role: .cancel) {
+          confirmedDiscardHandle = nil
+        }
       } message: {
         Text("This removes only the blocked local stats item. It cannot be recovered afterward.")
       }
     }
+  }
+
+  private var recoveryIsAvailable: Bool {
+    model.statsDeliveryIsConfirmed && model.outboxStatus.blockedHeadRecoveryHandle != nil
+  }
+}
+
+private struct SoloSecondaryButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .padding(.horizontal, 12)
+      .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
+      .background(
+        Color(uiColor: .secondarySystemBackground),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(
+            isEnabled ? Color.primary.opacity(0.72) : Color.secondary.opacity(0.4),
+            lineWidth: 1.5
+          )
+      }
+      .opacity(configuration.isPressed ? 0.78 : 1)
+  }
+}
+
+private struct SoloDestructiveButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .padding(.horizontal, 12)
+      .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
+      .background(
+        Color(uiColor: .secondarySystemBackground),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(
+            isEnabled ? Color.primary.opacity(0.85) : Color.secondary.opacity(0.4),
+            lineWidth: 2
+          )
+      }
+      .opacity(configuration.isPressed ? 0.78 : 1)
   }
 }
 

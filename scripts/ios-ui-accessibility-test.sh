@@ -76,29 +76,115 @@ ui_reduce_motion_states=()
 ui_differentiate_states=()
 ui_matrix_marker_states=()
 accessibility_helper="$derived_data/SimulatorAccessibility/skyjo-simulator-accessibility"
+finalizing=0
 
 restore_simulator_accessibility() {
   local index=""
+  local udid=""
+  local expected_contrast=""
+  local expected_reduce_motion=""
+  local expected_differentiate=""
+  local expected_marker=""
+  local actual_contrast=""
+  local actual_accessibility=""
+  local actual_marker=""
+  local command_status=0
+  local query_status=0
+  local restore_failed=0
   for index in "${!ui_udids[@]}"; do
-    xcrun simctl ui "${ui_udids[$index]}" increase_contrast "${ui_contrast_states[$index]}" \
-      >/dev/null 2>&1 || true
-    if [[ -x "$accessibility_helper" ]]; then
-      xcrun simctl spawn "${ui_udids[$index]}" "$accessibility_helper" \
-        "${ui_reduce_motion_states[$index]}" "${ui_differentiate_states[$index]}" \
-        >/dev/null 2>&1 || true
+    udid="${ui_udids[$index]}"
+    expected_contrast="${ui_contrast_states[$index]}"
+    expected_reduce_motion="${ui_reduce_motion_states[$index]}"
+    expected_differentiate="${ui_differentiate_states[$index]}"
+    expected_marker="${ui_matrix_marker_states[$index]-}"
+
+    xcrun simctl ui "$udid" increase_contrast "$expected_contrast" >/dev/null 2>&1
+    command_status=$?
+    actual_contrast="$(xcrun simctl ui "$udid" increase_contrast 2>/dev/null)"
+    query_status=$?
+    if [[ "$command_status" -ne 0 || "$query_status" -ne 0 || \
+          "$actual_contrast" != "$expected_contrast" ]]; then
+      printf 'ERROR: Failed to restore Increase Contrast on selected simulator %s.\n' \
+        "$((index + 1))" >&2
+      restore_failed=1
     fi
-    if [[ -n "${ui_matrix_marker_states[$index]}" ]]; then
-      xcrun simctl spawn "${ui_udids[$index]}" launchctl setenv \
-        SKYJO_IOS_UI_ACCESSIBILITY_MATRIX "${ui_matrix_marker_states[$index]}" \
-        >/dev/null 2>&1 || true
+
+    if [[ ! -x "$accessibility_helper" ]]; then
+      printf 'ERROR: Accessibility restoration helper is unavailable.\n' >&2
+      restore_failed=1
     else
-      xcrun simctl spawn "${ui_udids[$index]}" launchctl unsetenv \
-        SKYJO_IOS_UI_ACCESSIBILITY_MATRIX >/dev/null 2>&1 || true
+      actual_accessibility="$(
+        xcrun simctl spawn "$udid" "$accessibility_helper" \
+          "$expected_reduce_motion" "$expected_differentiate" 2>/dev/null
+      )"
+      command_status=$?
+      if [[ "$command_status" -ne 0 || \
+            "$actual_accessibility" != "$expected_reduce_motion"$'\t'"$expected_differentiate" ]]; then
+        printf 'ERROR: Failed to restore motion or color differentiation on selected simulator %s.\n' \
+          "$((index + 1))" >&2
+        restore_failed=1
+      fi
+      actual_accessibility="$(xcrun simctl spawn "$udid" "$accessibility_helper" 2>/dev/null)"
+      command_status=$?
+      if [[ "$command_status" -ne 0 || \
+            "$actual_accessibility" != "$expected_reduce_motion"$'\t'"$expected_differentiate" ]]; then
+        printf 'ERROR: Restored motion or color differentiation did not verify on selected simulator %s.\n' \
+          "$((index + 1))" >&2
+        restore_failed=1
+      fi
+    fi
+
+    if [[ -n "$expected_marker" ]]; then
+      xcrun simctl spawn "$udid" launchctl setenv \
+        SKYJO_IOS_UI_ACCESSIBILITY_MATRIX "$expected_marker" >/dev/null 2>&1
+    else
+      xcrun simctl spawn "$udid" launchctl unsetenv \
+        SKYJO_IOS_UI_ACCESSIBILITY_MATRIX >/dev/null 2>&1
+    fi
+    command_status=$?
+    actual_marker="$(
+      xcrun simctl spawn "$udid" launchctl getenv SKYJO_IOS_UI_ACCESSIBILITY_MATRIX \
+        2>/dev/null
+    )"
+    query_status=$?
+    if [[ "$command_status" -ne 0 || "$query_status" -ne 0 || \
+          "$actual_marker" != "$expected_marker" ]]; then
+      printf 'ERROR: Failed to restore the accessibility gate marker on selected simulator %s.\n' \
+        "$((index + 1))" >&2
+      restore_failed=1
     fi
   done
+  return "$restore_failed"
 }
 
-trap restore_simulator_accessibility EXIT
+handle_signal() {
+  local status="$1"
+  trap - HUP INT TERM
+  exit "$status"
+}
+
+finalize() {
+  local status="$1"
+  local cleanup_status=0
+  if [[ "$finalizing" -ne 0 ]]; then
+    return
+  fi
+  finalizing=1
+  trap - EXIT
+  trap '' HUP INT TERM
+  set +e
+  restore_simulator_accessibility
+  cleanup_status=$?
+  if [[ "$status" -eq 0 && "$cleanup_status" -ne 0 ]]; then
+    status=1
+  fi
+  exit "$status"
+}
+
+trap 'handle_signal 129' HUP
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
+trap 'finalize "$?"' EXIT
 while IFS=$'\t' read -r role runtime name udid; do
   [[ -n "$role" && -n "$runtime" && -n "$name" && "$udid" =~ ^[A-Fa-f0-9-]{36}$ ]] || {
     printf 'ERROR: Invalid simulator matrix record.\n' >&2
@@ -150,27 +236,38 @@ for udid in "$standard_udid" "$large_udid" "$ipad_udid"; do
     printf 'ERROR: Increase Contrast is unavailable on simulator %s.\n' "$udid" >&2
     exit 1
   }
-  ui_udids+=("$udid")
-  ui_contrast_states+=("$contrast_state")
   accessibility_state="$(xcrun simctl spawn "$udid" "$accessibility_helper")"
   IFS=$'\t' read -r reduce_motion_state differentiate_state <<< "$accessibility_state"
   [[ "$reduce_motion_state" =~ ^[01]$ && "$differentiate_state" =~ ^[01]$ ]] || {
     printf 'ERROR: Invalid simulator accessibility state for %s.\n' "$udid" >&2
     exit 1
   }
-  ui_reduce_motion_states+=("$reduce_motion_state")
-  ui_differentiate_states+=("$differentiate_state")
   matrix_marker_state="$(
     xcrun simctl spawn "$udid" launchctl getenv SKYJO_IOS_UI_ACCESSIBILITY_MATRIX \
-      2>/dev/null || true
+      2>/dev/null
   )"
+  ui_udids+=("$udid")
+  ui_contrast_states+=("$contrast_state")
+  ui_reduce_motion_states+=("$reduce_motion_state")
+  ui_differentiate_states+=("$differentiate_state")
   ui_matrix_marker_states+=("$matrix_marker_state")
   xcrun simctl ui "$udid" increase_contrast enabled
-  [[ "$(xcrun simctl spawn "$udid" "$accessibility_helper" 1 1)" == $'1\t1' ]] || {
+  [[ "$(xcrun simctl ui "$udid" increase_contrast)" == "enabled" ]] || {
+    printf 'ERROR: Failed to verify Increase Contrast on simulator %s.\n' "$udid" >&2
+    exit 1
+  }
+  [[ "$(xcrun simctl spawn "$udid" "$accessibility_helper" 1 1)" == $'1\t1' && \
+     "$(xcrun simctl spawn "$udid" "$accessibility_helper")" == $'1\t1' ]] || {
     printf 'ERROR: Failed to enable simulator accessibility adaptations for %s.\n' "$udid" >&2
     exit 1
   }
   xcrun simctl spawn "$udid" launchctl setenv SKYJO_IOS_UI_ACCESSIBILITY_MATRIX 1
+  [[ "$(
+    xcrun simctl spawn "$udid" launchctl getenv SKYJO_IOS_UI_ACCESSIBILITY_MATRIX
+  )" == "1" ]] || {
+    printf 'ERROR: Failed to verify the accessibility gate marker for %s.\n' "$udid" >&2
+    exit 1
+  }
 done
 
 xcode_environment=(
@@ -213,6 +310,9 @@ standard_tests=(
   testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards
   testSoloRepresentativeTurnKeepsEveryActionSlotStable
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
+  testSoloNarrowLandscapeKeepsActionsAndLocalBoardAnchored
+  testSoloAccessibilityXXXLNarrowLandscapeRemainsAnchored
+  testSoloShortPortraitUsesVerticalLayoutAndFitsItsDebugViewport
   testSoloScoreSummaryCanMinimizeAndRestore
   testSoloGameSummaryHasDistinctReplayAndSetupRoutes
   testSoloRecoveryIsExplicitAndSafe
@@ -235,15 +335,24 @@ ipad_portrait_tests=(
 ipad_landscape_tests=(
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
 )
+[[ "${#standard_tests[@]}" -eq 18 && \
+   "${#large_tests[@]}" -eq 2 && \
+   "${#ipad_portrait_tests[@]}" -eq 5 && \
+   "${#ipad_landscape_tests[@]}" -eq 1 ]] || {
+  printf 'ERROR: The expected accessibility matrix inventory changed.\n' >&2
+  exit 1
+}
 
 matrix_status=0
 run_matrix_entry() {
   local role="$1"
   local udid="$2"
-  shift 2
+  local expected_count="$3"
+  shift 3
   local result_bundle="$evidence_dir/$role.xcresult"
   local test_log="$evidence_dir/$role.log"
   local summary_log="$evidence_dir/$role-summary.log"
+  local summary_status=1
   local -a arguments=(
     test-without-building
     -quiet
@@ -272,16 +381,49 @@ run_matrix_entry() {
     set +e
     xcrun xcresulttool get test-results summary --path "$result_bundle" \
       2>&1 | sanitize_output | tee "$summary_log"
+    summary_status=${PIPESTATUS[0]}
     set -e
+  else
+    printf 'ERROR: Missing xcresult bundle for %s.\n' "$role" >&2
   fi
-  if [[ "$status" -ne 0 ]]; then
+  if [[ "$status" -ne 0 && "$matrix_status" -eq 0 ]]; then
     matrix_status="$status"
+  fi
+  if [[ "$summary_status" -ne 0 ]]; then
+    printf 'ERROR: Failed to extract the xcresult summary for %s.\n' "$role" >&2
+    if [[ "$matrix_status" -eq 0 ]]; then matrix_status=1; fi
+  elif ! node -e '
+    const fs = require("node:fs");
+    const summary = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const expected = Number(process.argv[2]);
+    const exactCounts = (value) =>
+      value &&
+      Number.isInteger(value.passedTests) && value.passedTests === expected &&
+      Number.isInteger(value.failedTests) && value.failedTests === 0 &&
+      Number.isInteger(value.skippedTests) && value.skippedTests === 0;
+    const configurations = summary.devicesAndConfigurations;
+    if (
+      summary.result !== "Passed" ||
+      !Number.isInteger(summary.totalTestCount) || summary.totalTestCount !== expected ||
+      !Number.isInteger(summary.expectedFailures) || summary.expectedFailures !== 0 ||
+      !exactCounts(summary) ||
+      !Array.isArray(configurations) || configurations.length !== 1 ||
+      !exactCounts(configurations[0]) ||
+      !Number.isInteger(configurations[0].expectedFailures) ||
+      configurations[0].expectedFailures !== 0
+    ) {
+      throw new Error("xcresult counts do not match the pinned matrix entry");
+    }
+  ' "$summary_log" "$expected_count"; then
+    printf 'ERROR: The xcresult summary did not prove the exact %s-test %s entry.\n' \
+      "$expected_count" "$role" >&2
+    if [[ "$matrix_status" -eq 0 ]]; then matrix_status=1; fi
   fi
 }
 
-run_matrix_entry standard-phone "$standard_udid" "${standard_tests[@]}"
-run_matrix_entry large-phone "$large_udid" "${large_tests[@]}"
-run_matrix_entry ipad-portrait "$ipad_udid" "${ipad_portrait_tests[@]}"
-run_matrix_entry ipad-landscape "$ipad_udid" "${ipad_landscape_tests[@]}"
+run_matrix_entry standard-phone "$standard_udid" 18 "${standard_tests[@]}"
+run_matrix_entry large-phone "$large_udid" 2 "${large_tests[@]}"
+run_matrix_entry ipad-portrait "$ipad_udid" 5 "${ipad_portrait_tests[@]}"
+run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
 
 exit "$matrix_status"

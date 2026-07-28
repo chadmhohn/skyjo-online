@@ -28,11 +28,15 @@ public enum SkyjoCardFace: Equatable, Sendable {
 
 @available(iOS 18.0, macOS 15.0, *)
 public struct SkyjoCardView: View {
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
+
   private let face: SkyjoCardFace
   private let label: String
   private let hint: String?
   private let isEnabled: Bool
   private let aspectRatio: CGFloat
+  private let usesDenseAccessibilityPresentation: Bool
   private let action: () -> Void
 
   public init(
@@ -41,6 +45,7 @@ public struct SkyjoCardView: View {
     hint: String? = nil,
     isEnabled: Bool = false,
     aspectRatio: CGFloat = 0.72,
+    usesDenseAccessibilityPresentation: Bool = false,
     action: @escaping () -> Void = {}
   ) {
     self.face = face
@@ -48,41 +53,64 @@ public struct SkyjoCardView: View {
     self.hint = hint
     self.isEnabled = isEnabled
     self.aspectRatio = aspectRatio
+    self.usesDenseAccessibilityPresentation = usesDenseAccessibilityPresentation
     self.action = action
   }
 
+  @ViewBuilder
   public var body: some View {
-    Button(action: action) {
-      ZStack {
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .fill(backgroundStyle)
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .strokeBorder(borderStyle, lineWidth: isEnabled ? 3 : 1.5)
-        cardContent
+    if isEnabled {
+      Button(action: action) {
+        cardSurface
       }
-      .aspectRatio(aspectRatio, contentMode: .fit)
-      .frame(minWidth: 44, minHeight: 44)
-      .contentShape(Rectangle())
+      .buttonStyle(.plain)
+      .accessibilityLabel(label)
+      .accessibilityHint(hint ?? "")
+    } else {
+      cardSurface
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
     }
-    .buttonStyle(.plain)
-    .disabled(!isEnabled)
-    .accessibilityLabel(label)
-    .accessibilityHint(hint ?? "")
-    .accessibilityAddTraits(isEnabled ? .isButton : [])
+  }
+
+  private var cardSurface: some View {
+    ZStack {
+      RoundedRectangle(cornerRadius: 9, style: .continuous)
+        .fill(backgroundStyle)
+      RoundedRectangle(cornerRadius: 9, style: .continuous)
+        .strokeBorder(borderStyle, lineWidth: isEnabled ? 3 : 1.5)
+      cardContent
+    }
+    .aspectRatio(aspectRatio, contentMode: .fit)
+    .frame(minWidth: 44, minHeight: 44)
+    .contentShape(Rectangle())
   }
 
   @ViewBuilder
   private var cardContent: some View {
     switch face {
     case .faceDown:
-      Image(systemName: "sparkles.rectangle.stack.fill")
-        .font(.title3.bold())
-        .foregroundStyle(.white)
-        .accessibilityHidden(true)
+      if usesDenseAccessibilityGlyphs {
+        Image(systemName: "sparkles.rectangle.stack.fill")
+          .resizable()
+          .scaledToFit()
+          .frame(width: 24, height: 24)
+          .foregroundStyle(.white)
+          .accessibilityHidden(true)
+      } else {
+        Image(systemName: "sparkles.rectangle.stack.fill")
+          .font(.title3.bold())
+          .foregroundStyle(.white)
+          .accessibilityHidden(true)
+      }
     case .faceUp(let value):
+      // Card values are user-facing text, including in the compact accessibility
+      // table. Keep one relative system style at every content-size category so
+      // Accessibility XXXL is rendered rather than replaced by a fitted glyph.
       Text(value.formatted())
-        .font(.title3.monospacedDigit().bold())
-        .minimumScaleFactor(0.6)
+        .font(.caption2.monospacedDigit().bold())
+        .fixedSize(horizontal: true, vertical: true)
         .foregroundStyle(foregroundColor(for: value))
         .accessibilityHidden(true)
     case .removed:
@@ -114,6 +142,11 @@ public struct SkyjoCardView: View {
 
   private func foregroundColor(for value: Int) -> Color {
     value >= 9 ? .red : .primary
+  }
+
+  private var usesDenseAccessibilityGlyphs: Bool {
+    usesDenseAccessibilityPresentation
+      || (dynamicTypeSize.isAccessibilitySize && verticalSizeClass == .compact)
   }
 }
 
@@ -182,6 +215,7 @@ public struct SkyjoActionSlot<Content: View>: View {
           .stroke(Color.primary.opacity(0.28), lineWidth: 1)
       }
       .opacity(isOccupied ? 1 : 0)
+      .allowsHitTesting(isOccupied)
       .accessibilityHidden(!isOccupied)
   }
 }

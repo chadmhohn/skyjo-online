@@ -107,6 +107,7 @@ public actor StatsOutboxCoordinator {
     do {
       let status = try await store.outboxStatus(accountID: accountID)
       guard isCurrent(accountID: accountID, generation: generation) else { return .empty }
+      latestWarning = status.blockedByTerminalFailure ? .statsNotSaved : nil
       return status
     } catch let error as SoloPersistenceError {
       guard isCurrent(accountID: accountID, generation: generation) else { return .empty }

@@ -1182,6 +1182,10 @@ struct AccessSessionClientTests {
       from: JSONEncoder().encode(submission)
     )
     let invalidationReason = LockedValue<SessionInvalidationRelay.Reason?>(nil)
+    let authorizationFence = SessionInvalidationRelay.AuthorizationFence(
+      accountID: accountID,
+      generation: 1
+    )
     StubURLProtocol.install { request in
       try stubResponse(
         for: request,
@@ -1197,9 +1201,16 @@ struct AccessSessionClientTests {
       environment: SkyjoNetworkEnvironment(baseURL: baseURL),
       session: session
     )
-    let adapter = SoloStatsDeliveryAdapter(client: client) { reason in
-      invalidationReason.set(reason)
-    }
+    let adapter = SoloStatsDeliveryAdapter(
+      client: client,
+      authorizationFence: { requestedAccountID in
+        requestedAccountID == accountID ? authorizationFence : nil
+      },
+      invalidateAuthorization: { reason, receivedFence in
+        #expect(receivedFence == authorizationFence)
+        invalidationReason.set(reason)
+      }
+    )
     defer {
       session.invalidateAndCancel()
       clearCookies(cookieStorage, for: baseURL)

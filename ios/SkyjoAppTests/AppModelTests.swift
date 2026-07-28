@@ -98,8 +98,8 @@ struct AppModelTests {
     }
   }
 
-  @Test("Offline solo hints never authorize stats and invalidation preserves the outer gate")
-  func offlineHintsAndAuthorizationInvalidation() async throws {
+  @Test("Offline solo hints never authorize stats")
+  func offlineHintsNeverAuthorizeStats() async throws {
     let suiteName = "skyjo.app-model.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -130,17 +130,151 @@ struct AppModelTests {
     }
     #expect(offlineModel.localSoloOwner == .account(accountID))
     #expect(offlineModel.confirmedStatsAccountID == nil)
+    #expect(preferences.lastConfirmedAccountID == accountID)
+  }
 
-    offlineModel.handleStatsAuthorizationInvalidation(.accountSessionChanged)
-    #expect(offlineModel.rootState == .guest)
-    #expect(preferences.accessWasConfirmed)
+  @Test("Stale stats authorization failures cannot invalidate a newer account or login generation")
+  func statsAuthorizationInvalidationIsOwnerAndGenerationFenced() async throws {
+    let accountA = UUID(uuidString: "30000000-0000-4000-8000-000000000099")!
+    let accountB = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let relay = SessionInvalidationRelay()
+
+    relay.setConfirmedAccount(accountA)
+    let staleAccountAFence = try #require(relay.authorizationFence(for: accountA))
+    relay.setConfirmedAccount(nil)
+    relay.setConfirmedAccount(accountB)
+    let accountBGeneration = relay.generation
+
+    relay.invalidate(.accountSessionChanged, ifCurrent: staleAccountAFence)
+
+    #expect(relay.generation == accountBGeneration)
+    #expect(relay.pendingInvalidation == nil)
+    #expect(relay.authorizationFence(for: accountB) != nil)
+
+    relay.setConfirmedAccount(nil)
+    relay.setConfirmedAccount(accountA)
+    let staleLoginFence = try #require(relay.authorizationFence(for: accountA))
+    relay.setConfirmedAccount(nil)
+    relay.setConfirmedAccount(accountA)
+    let currentLoginFence = try #require(relay.authorizationFence(for: accountA))
+    #expect(currentLoginFence != staleLoginFence)
+
+    relay.invalidate(.accessRequired, ifCurrent: staleLoginFence)
+
+    #expect(relay.pendingInvalidation == nil)
+    #expect(relay.authorizationFence(for: accountA) == currentLoginFence)
+
+    let modelRelay = SessionInvalidationRelay()
+    let model = AppModel(
+      service: MockSkyjoService(scenario: .normal),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      sessionInvalidation: modelRelay
+    )
+    await model.bootstrap()
+    #expect(model.rootState == .authenticated)
+    #expect(model.user?.id == accountB)
+
+    let staleQueuedInvalidation = SessionInvalidationRelay.Invalidation(
+      reason: .accountSessionChanged,
+      authorizationFence: staleAccountAFence
+    )
+    model.handleStatsAuthorizationInvalidation(staleQueuedInvalidation)
+    #expect(model.rootState == .authenticated)
+    #expect(model.user?.id == accountB)
+
+    let currentModelFence = try #require(modelRelay.authorizationFence(for: accountB))
+    modelRelay.invalidate(.accountSessionChanged, ifCurrent: currentModelFence)
+    let currentInvalidation = try #require(modelRelay.pendingInvalidation)
+    model.handleStatsAuthorizationInvalidation(currentInvalidation)
+    modelRelay.consume(currentInvalidation)
+
+    #expect(model.rootState == .guest)
+    #expect(model.user == nil)
+    #expect(modelRelay.pendingInvalidation == nil)
+
+    let accessRelay = SessionInvalidationRelay()
+    let accessModel = AppModel(
+      service: MockSkyjoService(scenario: .normal),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      sessionInvalidation: accessRelay
+    )
+    await accessModel.bootstrap()
+    let accessFence = try #require(accessRelay.authorizationFence(for: accountB))
+    accessRelay.invalidate(.accessRequired, ifCurrent: accessFence)
+    let accessInvalidation = try #require(accessRelay.pendingInvalidation)
+    accessModel.handleStatsAuthorizationInvalidation(accessInvalidation)
+    accessRelay.consume(accessInvalidation)
+
+    #expect(accessModel.rootState == .accessRequired)
+    #expect(accessModel.user == nil)
+  }
+
+  @Test("Every account-ended path retires the stale offline solo owner hint")
+  func accountEndedPathsRetireOfflineOwnerHint() async throws {
+    let suiteName = "skyjo.app-model.account-ended.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let preferences = SoloPreferencesStore(defaults: defaults)
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+
+    func makeModel(_ scenario: MockSkyjoService.Scenario) -> AppModel {
+      preferences.confirmAccess()
+      preferences.confirmAccount(accountID)
+      return AppModel(
+        service: MockSkyjoService(scenario: scenario),
+        baseURL: URL(string: "https://skyjo.example.invalid")!,
+        preferences: preferences
+      )
+    }
+
+    let bootstrapModel = makeModel(.disabled)
+    await bootstrapModel.bootstrap()
+    #expect(bootstrapModel.rootState == .accountEnded)
     #expect(preferences.lastConfirmedAccountID == nil)
 
-    preferences.confirmAccount(accountID)
-    offlineModel.handleStatsAuthorizationInvalidation(.accessRequired)
-    #expect(offlineModel.rootState == .accessRequired)
-    #expect(!preferences.accessWasConfirmed)
+    let accessModel = makeModel(.disabled)
+    accessModel.rootState = .accessRequired
+    accessModel.access.password = "synthetic-access-value"
+    await accessModel.submitAccess()
+    #expect(accessModel.rootState == .accountEnded)
     #expect(preferences.lastConfirmedAccountID == nil)
+
+    let authenticationModel = makeModel(.disabled)
+    authenticationModel.authentication.email = "native@example.invalid"
+    authenticationModel.authentication.password = "native-password"
+    await authenticationModel.submitAuthentication()
+    #expect(authenticationModel.rootState == .accountEnded)
+    #expect(authenticationModel.user == nil)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    let profileModel = makeModel(.disabledProfileUpdate)
+    await profileModel.bootstrap()
+    profileModel.accountSettings.displayName = "Native Prime"
+    await profileModel.updateProfile()
+    #expect(profileModel.rootState == .accountEnded)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    let passwordModel = makeModel(.passwordAccountNotFound)
+    await passwordModel.bootstrap()
+    passwordModel.accountSettings.currentPassword = "old-password"
+    passwordModel.accountSettings.password = "new-password"
+    passwordModel.accountSettings.confirmPassword = "new-password"
+    await passwordModel.changePassword()
+    #expect(passwordModel.rootState == .accountEnded)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    let offlineModel = AppModel(
+      service: MockSkyjoService(scenario: .offline),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      preferences: preferences
+    )
+    await offlineModel.bootstrap()
+    guard case .offlineReady = offlineModel.rootState else {
+      Issue.record("The outer access hint should still allow the local offline shell.")
+      return
+    }
+    #expect(offlineModel.localSoloOwner == .guest)
+    #expect(offlineModel.confirmedStatsAccountID == nil)
   }
 
   @Test("Unknown server detail stays hidden and forms disable invalid actions")
@@ -550,7 +684,7 @@ private actor MockSkyjoService: SkyjoService {
   }
 
   func loginAccount(email: String, password: String) async throws -> AccountUser {
-    makeUser()
+    makeUser(disabled: scenario == .disabled)
   }
 
   func logoutAccount() async throws {}
