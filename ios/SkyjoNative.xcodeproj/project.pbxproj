@@ -27,6 +27,8 @@
 		B20000000000000000000012 /* StatsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* StatsViews.swift */; };
 		B20000000000000000000013 /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* AccountView.swift */; };
 		B20000000000000000000014 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* AppModelTests.swift */; };
+		B20000000000000000000015 /* RealtimeConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001F /* RealtimeConnectionTests.swift */; };
+		B20000000000000000000016 /* MixedPWAControlClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* MixedPWAControlClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -77,6 +79,8 @@
 		B1000000000000000000001C /* StatsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsViews.swift; sourceTree = "<group>"; };
 		B1000000000000000000001D /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
 		B1000000000000000000001E /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
+		B1000000000000000000001F /* RealtimeConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeConnectionTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000020 /* MixedPWAControlClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixedPWAControlClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -246,6 +250,8 @@
 				B1000000000000000000000C /* BootstrapTests.swift */,
 				B10000000000000000000018 /* AccessSessionClientTests.swift */,
 				B1000000000000000000001E /* AppModelTests.swift */,
+				B1000000000000000000001F /* RealtimeConnectionTests.swift */,
+				B10000000000000000000020 /* MixedPWAControlClient.swift */,
 			);
 			path = SkyjoAppTests;
 			sourceTree = "<group>";
@@ -433,6 +439,8 @@
 				B20000000000000000000006 /* BootstrapTests.swift in Sources */,
 				B2000000000000000000000D /* AccessSessionClientTests.swift in Sources */,
 				B20000000000000000000014 /* AppModelTests.swift in Sources */,
+				B20000000000000000000015 /* RealtimeConnectionTests.swift in Sources */,
+				B20000000000000000000016 /* MixedPWAControlClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

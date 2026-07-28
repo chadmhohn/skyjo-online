@@ -397,17 +397,22 @@ export function registerRealtimeServer({
       }
 
       if (message.type === 'set-presence') {
+        if (
+          Object.keys(message).length !== 2 ||
+          !Object.prototype.hasOwnProperty.call(message, 'type') ||
+          !Object.prototype.hasOwnProperty.call(message, 'visible') ||
+          typeof message.visible !== 'boolean'
+        ) {
+          sendRealtimeJson(socket, { type: 'error', protocolVersion: 2, code: 'invalid-presence', message: 'Invalid presence.' });
+          return;
+        }
         const context = roomPlayer(socket);
         if (!context) {
           sendRealtimeJson(socket, { type: 'error', protocolVersion: 2, code: 'room-required', message: 'Join or create a room first.' });
           return;
         }
-        if ('visible' in message && typeof message.visible !== 'boolean') {
-          sendRealtimeJson(socket, { type: 'error', protocolVersion: 2, code: 'invalid-presence', message: 'Invalid presence.' });
-          return;
-        }
         const wasConnected = context.player.connected;
-        socket.visible = message.visible !== false;
+        socket.visible = message.visible;
         const timestamp = now();
         syncPlayerPresence(context.room, context.player, timestamp);
         const lifecycleChanged = message.visible === true && context.player.connected

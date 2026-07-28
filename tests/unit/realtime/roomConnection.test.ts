@@ -363,6 +363,7 @@ describe('room connection controller', () => {
     const overName = 'n'.repeat(PUBLIC_SNAPSHOT_LIMITS.nameLength + 1);
     const overLog = 'l'.repeat(PUBLIC_SNAPSHOT_LIMITS.logEntryLength + 1);
     const overChat = 'c'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength + 1);
+    const malformed = String.fromCharCode(0xd800);
     const mutations: Array<(candidate: MutableRoomFixture) => void> = [
       (candidate) => { candidate.code = 'ABCDEF'; },
       (candidate) => { candidate.hostId = overIdentifier; },
@@ -372,11 +373,14 @@ describe('room connection controller', () => {
       (candidate) => { candidate.chatMessages[0].playerId = overIdentifier; },
       (candidate) => { candidate.chatMessages[0].playerName = overName; },
       (candidate) => { candidate.chatMessages[0].text = overChat; },
+      (candidate) => { candidate.chatMessages[0].text = malformed; },
       (candidate) => { candidate.completedGameId = overIdentifier; },
       (candidate) => { candidate.readyForNextRoundPlayerIds = [overIdentifier]; },
       (candidate) => { candidate.state.players[0].id = overIdentifier; },
       (candidate) => { candidate.state.players[0].name = overName; },
       (candidate) => { candidate.state.log = [overLog]; },
+      (candidate) => { candidate.state.log = ['Alice drew a -2.']; },
+      (candidate) => { candidate.state.log = [malformed]; },
       (candidate) => { candidate.state.winnerId = overIdentifier; },
       (candidate) => { candidate.state.finalTurnPlayerIds = [overIdentifier]; },
       (candidate) => { candidate.state.openingRevealCounts = { [overIdentifier]: 2 }; },
@@ -396,6 +400,12 @@ describe('room connection controller', () => {
       mutate(candidate);
       expect(isMultiplayerRoomSnapshot(candidate)).toBe(false);
     }
+
+    const exactAstral = structuredClone(validActiveRoom()) as MutableRoomFixture;
+    exactAstral.chatMessages[0].text = '🃏'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength / 2);
+    expect(isMultiplayerRoomSnapshot(exactAstral)).toBe(true);
+    exactAstral.chatMessages[0].text += '🃏';
+    expect(isMultiplayerRoomSnapshot(exactAstral)).toBe(false);
   });
 
   it('uses the production WebSocket and timer defaults behind a deterministic fake-time boundary', async () => {

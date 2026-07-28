@@ -31,10 +31,27 @@ describe('current producer and consumer parity', () => {
     }
   });
 
-  it('parses all thirteen canonical command actions', () => {
+  it('parses every canonical command fixture and covers all thirteen actions', () => {
     const commands = clientValid.filter((fixture) => (fixture.value as { type?: unknown }).type === 'command');
-    expect(commands).toHaveLength(13);
     for (const fixture of commands) expect(parseClientCommand(fixture.value), fixture.name).toMatchObject({ ok: true });
+    const actionTypes = new Set(commands.map((fixture) => (
+      fixture.value as { action: { type: string } }
+    ).action.type));
+    expect([...actionTypes].sort()).toEqual([
+      'cancel-discard',
+      'choose-discard',
+      'discard-and-reveal',
+      'draw-blind',
+      'leave-room',
+      'remove-player',
+      'replace-card',
+      'reset-room',
+      'reveal-opening-card',
+      'send-chat-message',
+      'set-next-round-ready',
+      'start-game',
+      'takeover-player-with-ai'
+    ]);
   });
 
   it('rejects malformed command envelopes through the runtime parser', () => {

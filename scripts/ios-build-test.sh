@@ -32,6 +32,10 @@ node_test_parent=""
 node_test_dir=""
 node_server_raw_log=""
 node_server_pid=""
+pwa_driver_raw_stdout=""
+pwa_driver_raw_stderr=""
+pwa_driver_pid=""
+pwa_driver_control_url=""
 simulator_test_environment_set=false
 ios_test_access_fixture="skyjo-ios-contract-access-v1"
 ios_test_session_secret=""
@@ -86,9 +90,53 @@ sanitize_node_server_log() {
 }
 
 cleanup_node_server() {
+  local ephemeral_driver_safety_status=0
+  local private_value=""
   if [[ "$simulator_test_environment_set" == true && -n "${simulator_udid:-}" ]]; then
-    xcrun simctl spawn "$simulator_udid" launchctl unsetenv SKYJO_IOS_TEST_SERVER_URL \
-      >/dev/null 2>&1 || true
+    for environment_key in \
+      SKYJO_IOS_TEST_SERVER_URL \
+      SKYJO_IOS_PWA_CONTROL_URL \
+      SKYJO_IOS_TEST_MODE; do
+      xcrun simctl spawn "$simulator_udid" launchctl unsetenv "$environment_key" \
+        >/dev/null 2>&1 || true
+    done
+  fi
+
+  if [[ -n "$pwa_driver_pid" ]] && kill -0 "$pwa_driver_pid" 2>/dev/null; then
+    kill -TERM "$pwa_driver_pid" 2>/dev/null || true
+    for _ in {1..40}; do
+      if ! kill -0 "$pwa_driver_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+    done
+    if kill -0 "$pwa_driver_pid" 2>/dev/null; then
+      kill -KILL "$pwa_driver_pid" 2>/dev/null || true
+    fi
+    wait "$pwa_driver_pid" 2>/dev/null || true
+  fi
+
+  if [[ -n "$pwa_driver_raw_stdout" || -n "$pwa_driver_raw_stderr" ]]; then
+    if [[ ! -f "$pwa_driver_raw_stdout" || ! -f "$pwa_driver_raw_stderr" ]]; then
+      ephemeral_driver_safety_status=1
+    elif [[
+      "$(/usr/bin/wc -l < "$pwa_driver_raw_stdout" | tr -d '[:space:]')" != "1" ||
+      "$(< "$pwa_driver_raw_stdout")" != "{\"version\":1,\"type\":\"ready\",\"controlPort\":${pwa_driver_control_url##*:}}" ||
+      -s "$pwa_driver_raw_stderr"
+    ]]; then
+      ephemeral_driver_safety_status=1
+    fi
+    for private_value in \
+      "$ios_test_session_secret" \
+      "$ios_test_invite_secret" \
+      "$ios_test_access_fixture" \
+      "SKYJO_IOS_TEST_ACCESS_PASSWORD"; do
+      [[ -n "$private_value" ]] || continue
+      if /usr/bin/grep -a -F -q -- "$private_value" \
+        "$pwa_driver_raw_stdout" "$pwa_driver_raw_stderr" 2>/dev/null; then
+        ephemeral_driver_safety_status=1
+      fi
+    done
   fi
 
   if [[ -n "$node_server_pid" ]] && kill -0 "$node_server_pid" 2>/dev/null; then
@@ -115,6 +163,7 @@ cleanup_node_server() {
   ]]; then
     rm -rf -- "$node_test_dir"
   fi
+  return "$ephemeral_driver_safety_status"
 }
 
 validate_retained_artifacts() {
@@ -372,26 +421,48 @@ if [[ ! -x "$repo_root/node_modules/.bin/tsc" ]]; then
   fi
 fi
 
-set +e
-"${xcode_environment[@]}" npm run build:server \
-  2>&1 | sanitize_output | tee -a "$toolchain_log"
-server_build_status=${PIPESTATUS[0]}
-set -e
-if [[ "$server_build_status" -ne 0 ]]; then
-  report_failure "The local Node server build failed."
-fi
+if [[ "$test_mode" == "networking-contracts" ]]; then
+  set +e
+  "${xcode_environment[@]}" node scripts/verify-ios-pwa-v032-compatibility.mjs \
+    2>&1 | sanitize_output | tee -a "$toolchain_log"
+  pwa_compatibility_status=${PIPESTATUS[0]}
+  set -e
+  if [[ "$pwa_compatibility_status" -ne 0 ]]; then
+    report_failure "The immutable v0.3.2 PWA compatibility check failed."
+  fi
 
-# The native bootstrap intentionally requires the same schema/protocol-backed
-# readiness identity as production. A focused server build does not create the
-# static release identity, so write the validated local identity before
-# starting the isolated contract server.
-set +e
-"${xcode_environment[@]}" node scripts/write-release-json.mjs \
-  2>&1 | sanitize_output | tee -a "$toolchain_log"
-release_identity_status=${PIPESTATUS[0]}
-set -e
-if [[ "$release_identity_status" -ne 0 ]]; then
-  report_failure "The local Node release identity could not be created."
+  # A genuine Playwright peer needs the current production PWA in dist/ as
+  # well as the protocol-v2 server build and release identity.
+  set +e
+  "${xcode_environment[@]}" npm run build \
+    2>&1 | sanitize_output | tee -a "$toolchain_log"
+  server_build_status=${PIPESTATUS[0]}
+  set -e
+  if [[ "$server_build_status" -ne 0 ]]; then
+    report_failure "The local PWA and Node server build failed."
+  fi
+else
+  set +e
+  "${xcode_environment[@]}" npm run build:server \
+    2>&1 | sanitize_output | tee -a "$toolchain_log"
+  server_build_status=${PIPESTATUS[0]}
+  set -e
+  if [[ "$server_build_status" -ne 0 ]]; then
+    report_failure "The local Node server build failed."
+  fi
+
+  # The native bootstrap intentionally requires the same schema/protocol-backed
+  # readiness identity as production. A focused server build does not create the
+  # static release identity, so write the validated local identity before
+  # starting the isolated contract server.
+  set +e
+  "${xcode_environment[@]}" node scripts/write-release-json.mjs \
+    2>&1 | sanitize_output | tee -a "$toolchain_log"
+  release_identity_status=${PIPESTATUS[0]}
+  set -e
+  if [[ "$release_identity_status" -ne 0 ]]; then
+    report_failure "The local Node release identity could not be created."
+  fi
 fi
 
 node_test_parent="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
@@ -428,6 +499,14 @@ node_server_environment=(
   "SKYJO_VAPID_PRIVATE_KEY="
   "SKYJO_VAPID_PUBLIC_KEY="
 )
+if [[ "$test_mode" == "networking-contracts" ]]; then
+  node_server_environment+=(
+    "SKYJO_WAITING_HOST_TRANSFER_MS=1000"
+    "SKYJO_ACTIVE_PLAYER_GRACE_MS=1000"
+    "SKYJO_LIFECYCLE_TICK_MS=25"
+    "SKYJO_AI_ACTION_DELAY_MS=300"
+  )
+fi
 
 "${node_server_environment[@]}" node "$repo_root/server.mjs" > "$node_server_raw_log" 2>&1 &
 node_server_pid=$!
@@ -472,6 +551,69 @@ if [[ "$server_health" != "ok" ]]; then
   report_failure "The isolated Node server did not become healthy. See the sanitized Node log."
 fi
 
+if [[ "$test_mode" == "networking-contracts" ]]; then
+  pwa_driver_raw_stdout="$node_test_dir/pwa-driver.stdout"
+  pwa_driver_raw_stderr="$node_test_dir/pwa-driver.stderr"
+  pwa_driver_environment=(
+    /usr/bin/env -i
+    "PATH=$PATH"
+    "HOME=${HOME:-/tmp}"
+    "TMPDIR=$node_test_dir"
+    "USER=${USER:-runner}"
+    "LOGNAME=${LOGNAME:-${USER:-runner}}"
+    "LANG=${LANG:-en_US.UTF-8}"
+    "NODE_ENV=test"
+  )
+  "${pwa_driver_environment[@]}" node "$repo_root/scripts/ios-pwa-mixed-client-driver.mjs" \
+    < <(printf '{"version":1,"type":"start","serverOrigin":"%s"}\n' "$ios_test_server_url") \
+    > "$pwa_driver_raw_stdout" 2> "$pwa_driver_raw_stderr" &
+  pwa_driver_pid=$!
+
+  pwa_driver_control_port=""
+  for _ in {1..300}; do
+    pwa_driver_control_port="$(sed -nE 's/^\{"version":1,"type":"ready","controlPort":([0-9]+)\}$/\1/p' "$pwa_driver_raw_stdout" | head -n 1)"
+    if [[ -n "$pwa_driver_control_port" ]]; then
+      break
+    fi
+    if ! kill -0 "$pwa_driver_pid" 2>/dev/null; then
+      report_failure "The mixed PWA driver exited before becoming ready."
+    fi
+    sleep 0.1
+  done
+  if [[
+    ! "$pwa_driver_control_port" =~ ^[0-9]+$ ||
+    "$pwa_driver_control_port" -lt 1 ||
+    "$pwa_driver_control_port" -gt 65535
+  ]]; then
+    report_failure "The mixed PWA driver did not report a valid control endpoint."
+  fi
+  pwa_driver_control_url="http://127.0.0.1:$pwa_driver_control_port"
+  if [[
+    "$(/usr/bin/wc -l < "$pwa_driver_raw_stdout" | tr -d '[:space:]')" != "1" ||
+    "$(< "$pwa_driver_raw_stdout")" != "{\"version\":1,\"type\":\"ready\",\"controlPort\":$pwa_driver_control_port}" ||
+    -s "$pwa_driver_raw_stderr"
+  ]]; then
+    report_failure "The mixed PWA driver emitted unexpected startup output."
+  fi
+  pwa_driver_health=""
+  for _ in {1..50}; do
+    pwa_driver_health="$(curl --fail --silent --show-error --max-time 2 \
+      -H 'Content-Type: application/json' \
+      -H 'X-Skyjo-IOS-Mixed-Control: 1' \
+      "$pwa_driver_control_url/v1/health" 2>/dev/null || true)"
+    if [[ "$pwa_driver_health" == '{"version":1,"ready":true}' ]]; then
+      break
+    fi
+    if ! kill -0 "$pwa_driver_pid" 2>/dev/null; then
+      report_failure "The mixed PWA driver stopped before becoming healthy."
+    fi
+    sleep 0.1
+  done
+  if [[ "$pwa_driver_health" != '{"version":1,"ready":true}' ]]; then
+    report_failure "The mixed PWA driver did not become healthy."
+  fi
+fi
+
 xcrun simctl boot "$simulator_udid" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$simulator_udid" -b >/dev/null
 # Start every contract/UI run from a clean app container so persistent-cookie
@@ -495,6 +637,17 @@ fi
 if ! xcrun simctl spawn "$simulator_udid" launchctl setenv \
   SKYJO_IOS_TEST_SERVER_URL "$ios_test_server_url" >/dev/null 2>&1; then
   report_failure "Could not inject the isolated server URL into the selected simulator."
+fi
+if ! xcrun simctl spawn "$simulator_udid" launchctl setenv \
+  SKYJO_IOS_TEST_MODE "$test_mode" >/dev/null 2>&1; then
+  report_failure "Could not inject the native test mode into the selected simulator."
+fi
+if [[ "$test_mode" == "networking-contracts" ]]; then
+  if ! xcrun simctl spawn "$simulator_udid" launchctl setenv \
+    SKYJO_IOS_PWA_CONTROL_URL "$pwa_driver_control_url" >/dev/null 2>&1; then
+    report_failure "Could not inject the mixed PWA control URL into the selected simulator."
+  fi
+  printf 'Started isolated mixed PWA driver on a dynamic loopback port.\n' | tee -a "$toolchain_log"
 fi
 printf 'Started isolated local Node contract server on a dynamic loopback port.\n' | tee -a "$toolchain_log"
 printf 'Native test mode: %s\n' "$test_mode" | tee -a "$toolchain_log"

@@ -152,6 +152,21 @@
       }
     },
     {
+      "expectedLayer": "consumer",
+      "name": "UTF-16 astral chat over compatibility bound",
+      "schema": "protocol-v2-client-frame.schema.json",
+      "value": {
+        "action": {
+          "text": "🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏",
+          "type": "send-chat-message"
+        },
+        "commandId": "40000000-0000-4000-8000-000000000040",
+        "expectedRevision": 7,
+        "protocolVersion": 2,
+        "type": "command"
+      }
+    },
+    {
       "expectedLayer": "schema",
       "name": "identifier over bound",
       "schema": "protocol-v2-client-frame.schema.json",

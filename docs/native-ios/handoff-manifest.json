@@ -38,7 +38,15 @@
       "error"
     ],
     "pwaErrorFallbackField": "error",
-    "outerAccessRequiredCode": "ACCESS_REQUIRED"
+    "outerAccessRequiredCode": "ACCESS_REQUIRED",
+    "chatLengthUnit": "UTF-16 code units for compatibility with the documented cached PWA",
+    "maximumChatUTF16CodeUnits": 280,
+    "maximumAstralChatScalars": 140,
+    "pinnedPwaCompatibilityRelease": {
+      "tag": "v0.3.2",
+      "sourceSha": "130114e745c66c9f72305f05a0366e3f0ca10915",
+      "verificationScript": "scripts/verify-ios-pwa-v032-compatibility.mjs"
+    }
   },
   "nativeTarget": {
     "product": "SwiftUI iPhone and iPad app",
@@ -86,7 +94,8 @@
       "src/roomConnection.ts",
       "src/serverProtocolV2.ts",
       "src/serverRealtime.ts",
-      "src/serverRoomLifecycle.ts"
+      "src/serverRoomLifecycle.ts",
+      "server-unicode.mjs"
     ],
     "accountsAndStats": [
       "src/account.tsx",
@@ -105,6 +114,20 @@
     "nativeAccessClient": [
       "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/AccessSessionClient.swift",
       "ios/SkyjoAppTests/AccessSessionClientTests.swift",
+      "scripts/ios-build-test.sh"
+    ],
+    "nativeRealtimeClient": [
+      "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RealtimeContracts.swift",
+      "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RoomConnection.swift",
+      "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RoomResetRecoveryStore.swift",
+      "ios/SkyjoAppTests/RealtimeConnectionTests.swift"
+    ],
+    "mixedClientVerification": [
+      "deploy/tests/ios-build-harness.test.mjs",
+      "deploy/tests/ios-pwa-mixed-client-driver.test.mjs",
+      "ios/SkyjoAppTests/MixedPWAControlClient.swift",
+      "scripts/ios-pwa-mixed-client-driver.mjs",
+      "scripts/verify-ios-pwa-v032-compatibility.mjs",
       "scripts/ios-build-test.sh"
     ],
     "soloPersistence": [
@@ -141,18 +164,24 @@
   },
   "nativeNetworkingHarness": {
     "server": "real server.mjs on a dynamic 127.0.0.1 port",
+    "browserPeer": "real incognito Playwright Chromium driven through current PWA UI under a separate credential-free environment",
+    "previousPwaCompatibility": "exact v0.3.2 command and snapshot validators pinned by release commit and reviewed SHA-256 digests",
     "state": "temporary isolated SQLite and room files",
     "credentials": "fixed non-secret access fixture plus generated test-only session and invite secrets",
     "simulatorEnvironmentNames": [
-      "SKYJO_IOS_TEST_SERVER_URL"
+      "SKYJO_IOS_TEST_SERVER_URL",
+      "SKYJO_IOS_TEST_MODE",
+      "SKYJO_IOS_PWA_CONTROL_URL"
     ],
-    "cleanup": "on every trappable exit terminate the exact child, remove validated temporary state and raw log, scan raw evidence for generated secrets, and stage only verified ignored evidence for CI upload"
+    "cleanup": "on every trappable exit terminate the exact Chromium driver before the exact server child, remove validated temporary state, browser profile, and raw logs, scan raw evidence for generated secrets, and stage only verified ignored evidence for CI upload"
   },
   "repositoryCapabilitiesAwaitingDeploymentVerification": [
     "pre-gate GET/POST/DELETE JSON outer-access session API using the established signed cookie",
     "stable JSON API error envelope with code and legacy-compatible error fields",
     "contracts/v1 machine-readable schemas and deterministic sanitized fixtures",
-    "native URLSession access-client tests against an isolated real local Node server"
+    "native URLSession access-client tests against an isolated real local Node server",
+    "strict actor-owned native protocol-v2 room client with account-fenced durable reset recovery",
+    "real Swift and Playwright Chromium mixed-client networking contract gate pinned to cached PWA v0.3.2 compatibility"
   ],
   "plannedServerAdditions": [
     "native invite redemption and apple-app-site-association",

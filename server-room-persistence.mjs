@@ -7,6 +7,11 @@ import {
   PersistedGameStateValidationError,
   normalizePersistedGameState
 } from './server-game-state-validation.mjs';
+import {
+  isWellFormedUnicode,
+  toWellFormedUnicode,
+  wellFormedUTF16Prefix
+} from './server-unicode.mjs';
 
 export const DEFAULT_ROOMS_FILE = path.join('.data', 'rooms.json');
 export const ROOM_STALE_MS = 1000 * 60 * 60 * 6;
@@ -50,7 +55,9 @@ function stringValue(value, fallback = '') {
 
 function boundedIdentifier(value, label) {
   const normalized = stringValue(value).trim();
-  if (!normalized || normalized.length > MAX_PERSISTED_IDENTIFIER_LENGTH || /[\u0000-\u001f\u007f]/.test(normalized)) {
+  if (!normalized || !isWellFormedUnicode(normalized) ||
+      normalized.length > MAX_PERSISTED_IDENTIFIER_LENGTH ||
+      /[\u0000-\u001f\u007f]/.test(normalized)) {
     throw formatError(`${label} is invalid.`);
   }
   return normalized;
@@ -102,7 +109,10 @@ function normalizePlayer(value, roomIndex, fallbackTimestamp, restoredAt = fallb
     throw formatError(`Room ${roomIndex} contains an invalid player host state.`);
   }
   const id = boundedIdentifier(value.id, `Room ${roomIndex} player id`);
-  const name = stringValue(value.name, 'Player').trim().slice(0, 24) || 'Player';
+  const name = wellFormedUTF16Prefix(
+    toWellFormedUnicode(stringValue(value.name, 'Player')).trim(),
+    24
+  ) || 'Player';
   if (value.userId !== undefined && typeof value.userId !== 'string') {
     throw formatError(`Room ${roomIndex} contains an invalid player user id.`);
   }
@@ -197,8 +207,14 @@ function normalizeChatMessage(value, roomIndex, playersById) {
   }
   const id = boundedIdentifier(value.id, `Room ${roomIndex} chat message id`);
   const playerId = boundedIdentifier(value.playerId, `Room ${roomIndex} chat player id`);
-  const playerName = stringValue(value.playerName, 'Player').trim().slice(0, 24) || 'Player';
-  const text = stringValue(value.text).replace(/\s+/g, ' ').trim().slice(0, maxPersistedChatMessageLength);
+  const playerName = wellFormedUTF16Prefix(
+    toWellFormedUnicode(stringValue(value.playerName, 'Player')).trim(),
+    24
+  ) || 'Player';
+  const text = wellFormedUTF16Prefix(
+    toWellFormedUnicode(stringValue(value.text)).replace(/\s+/g, ' ').trim(),
+    maxPersistedChatMessageLength
+  );
   const createdAt = value.createdAt;
   if (!text || !Number.isFinite(createdAt) || createdAt < 0) {
     throw formatError(`Room ${roomIndex} contains a malformed chat message.`);

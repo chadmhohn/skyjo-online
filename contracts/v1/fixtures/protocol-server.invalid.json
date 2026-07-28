@@ -1414,6 +1414,506 @@
       }
     },
     {
+      "expectedLayer": "consumer",
+      "name": "UTF-16 astral snapshot chat over compatibility bound",
+      "schema": "protocol-v2-server-frame.schema.json",
+      "value": {
+        "protocolVersion": 2,
+        "revision": 7,
+        "room": {
+          "chatMessages": [
+            {
+              "createdAt": 1784998800000,
+              "id": "40000000-0000-4000-8000-000000000039",
+              "playerId": "20000000-0000-4000-8000-000000000002",
+              "playerName": "Guest",
+              "text": "🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏🃏"
+            }
+          ],
+          "code": "ABCDE",
+          "completedGameId": null,
+          "finishedByAi": false,
+          "hostId": "10000000-0000-4000-8000-000000000001",
+          "hostTransferAt": null,
+          "players": [
+            {
+              "aiTakeoverAt": null,
+              "connected": true,
+              "controller": "human",
+              "disconnectedAt": null,
+              "host": true,
+              "id": "10000000-0000-4000-8000-000000000001",
+              "joinedAt": 1784998790000,
+              "lastSeenAt": 1784998799900,
+              "name": "Host"
+            },
+            {
+              "aiTakeoverAt": null,
+              "connected": true,
+              "controller": "human",
+              "disconnectedAt": null,
+              "host": false,
+              "id": "20000000-0000-4000-8000-000000000002",
+              "joinedAt": 1784998790001,
+              "lastSeenAt": 1784998799901,
+              "name": "Guest"
+            }
+          ],
+          "readyForNextRoundPlayerIds": [],
+          "revision": 7,
+          "serverNow": 1784998800001,
+          "state": {
+            "currentPlayerIndex": 0,
+            "discardPile": {
+              "count": 1,
+              "top": {
+                "faceUp": true,
+                "id": "discard-top",
+                "removed": false,
+                "value": 9
+              }
+            },
+            "drawPileCount": 124,
+            "drawnCard": null,
+            "finalTurnPlayerIds": [],
+            "hasDrawnCard": true,
+            "log": [
+              "Host drew a blind card.",
+              "Host starts round 1. Pick from the discard pile or draw blind.",
+              "Guest revealed an opening card.",
+              "Host finished opening reveals. Guest chooses two opening cards.",
+              "Host revealed an opening card.",
+              "Host chooses two opening cards to reveal."
+            ],
+            "nextStarterId": null,
+            "openingRevealCounts": {
+              "10000000-0000-4000-8000-000000000001": 2,
+              "20000000-0000-4000-8000-000000000002": 2
+            },
+            "phase": "choose-replacement",
+            "players": [
+              {
+                "grid": [
+                  {
+                    "faceUp": true,
+                    "id": "grid-0-0",
+                    "removed": false,
+                    "value": 4
+                  },
+                  {
+                    "faceUp": true,
+                    "id": "grid-0-1",
+                    "removed": false,
+                    "value": 8
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-2",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-3",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-4",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-5",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-6",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-7",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-8",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-9",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-10",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-11",
+                    "removed": false,
+                    "value": null
+                  }
+                ],
+                "id": "10000000-0000-4000-8000-000000000001",
+                "kind": "human",
+                "name": "Host",
+                "roundScore": 12,
+                "totalScore": 0
+              },
+              {
+                "grid": [
+                  {
+                    "faceUp": true,
+                    "id": "grid-1-0",
+                    "removed": false,
+                    "value": 1
+                  },
+                  {
+                    "faceUp": true,
+                    "id": "grid-1-1",
+                    "removed": false,
+                    "value": 7
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-2",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-3",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-4",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-5",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-6",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-7",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-8",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-9",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-10",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-11",
+                    "removed": false,
+                    "value": null
+                  }
+                ],
+                "id": "20000000-0000-4000-8000-000000000002",
+                "kind": "human",
+                "name": "Guest",
+                "roundScore": 8,
+                "totalScore": 0
+              }
+            ],
+            "round": 1,
+            "roundCloserId": null,
+            "roundHistory": [],
+            "selectedSource": "draw",
+            "winnerId": null
+          },
+          "status": "playing",
+          "updatedAt": 1784998800000
+        },
+        "type": "snapshot"
+      }
+    },
+    {
+      "expectedLayer": "privacy",
+      "name": "private blind draw value leaked in log",
+      "schema": "protocol-v2-server-frame.schema.json",
+      "value": {
+        "protocolVersion": 2,
+        "revision": 7,
+        "room": {
+          "chatMessages": [],
+          "code": "ABCDE",
+          "completedGameId": null,
+          "finishedByAi": false,
+          "hostId": "10000000-0000-4000-8000-000000000001",
+          "hostTransferAt": null,
+          "players": [
+            {
+              "aiTakeoverAt": null,
+              "connected": true,
+              "controller": "human",
+              "disconnectedAt": null,
+              "host": true,
+              "id": "10000000-0000-4000-8000-000000000001",
+              "joinedAt": 1784998790000,
+              "lastSeenAt": 1784998799900,
+              "name": "Host"
+            },
+            {
+              "aiTakeoverAt": null,
+              "connected": true,
+              "controller": "human",
+              "disconnectedAt": null,
+              "host": false,
+              "id": "20000000-0000-4000-8000-000000000002",
+              "joinedAt": 1784998790001,
+              "lastSeenAt": 1784998799901,
+              "name": "Guest"
+            }
+          ],
+          "readyForNextRoundPlayerIds": [],
+          "revision": 7,
+          "serverNow": 1784998800001,
+          "state": {
+            "currentPlayerIndex": 0,
+            "discardPile": {
+              "count": 1,
+              "top": {
+                "faceUp": true,
+                "id": "discard-top",
+                "removed": false,
+                "value": 9
+              }
+            },
+            "drawPileCount": 124,
+            "drawnCard": null,
+            "finalTurnPlayerIds": [],
+            "hasDrawnCard": true,
+            "log": [
+              "Host drew a -2.",
+              "Host starts round 1. Pick from the discard pile or draw blind.",
+              "Guest revealed an opening card.",
+              "Host finished opening reveals. Guest chooses two opening cards.",
+              "Host revealed an opening card.",
+              "Host chooses two opening cards to reveal."
+            ],
+            "nextStarterId": null,
+            "openingRevealCounts": {
+              "10000000-0000-4000-8000-000000000001": 2,
+              "20000000-0000-4000-8000-000000000002": 2
+            },
+            "phase": "choose-replacement",
+            "players": [
+              {
+                "grid": [
+                  {
+                    "faceUp": true,
+                    "id": "grid-0-0",
+                    "removed": false,
+                    "value": 4
+                  },
+                  {
+                    "faceUp": true,
+                    "id": "grid-0-1",
+                    "removed": false,
+                    "value": 8
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-2",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-3",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-4",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-5",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-6",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-7",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-8",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-9",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-10",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-0-11",
+                    "removed": false,
+                    "value": null
+                  }
+                ],
+                "id": "10000000-0000-4000-8000-000000000001",
+                "kind": "human",
+                "name": "Host",
+                "roundScore": 12,
+                "totalScore": 0
+              },
+              {
+                "grid": [
+                  {
+                    "faceUp": true,
+                    "id": "grid-1-0",
+                    "removed": false,
+                    "value": 1
+                  },
+                  {
+                    "faceUp": true,
+                    "id": "grid-1-1",
+                    "removed": false,
+                    "value": 7
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-2",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-3",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-4",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-5",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-6",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-7",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-8",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-9",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-10",
+                    "removed": false,
+                    "value": null
+                  },
+                  {
+                    "faceUp": false,
+                    "id": "grid-1-11",
+                    "removed": false,
+                    "value": null
+                  }
+                ],
+                "id": "20000000-0000-4000-8000-000000000002",
+                "kind": "human",
+                "name": "Guest",
+                "roundScore": 8,
+                "totalScore": 0
+              }
+            ],
+            "round": 1,
+            "roundCloserId": null,
+            "roundHistory": [],
+            "selectedSource": "draw",
+            "winnerId": null
+          },
+          "status": "playing",
+          "updatedAt": 1784998800000
+        },
+        "type": "snapshot"
+      }
+    },
+    {
       "expectedLayer": "schema",
       "name": "ack result null",
       "schema": "protocol-v2-server-frame.schema.json",

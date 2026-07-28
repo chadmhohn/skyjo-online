@@ -117,13 +117,14 @@ xcrun xctrace list templates
 
 Simulator names change with Xcode. The shared script selects by discovered UUID rather than assuming a device model. Set `SKYJO_IOS_ARTIFACTS_DIR` only when ignored build evidence must live somewhere other than `ios/Artifacts/`.
 
-Run only the access-session URLSession contract target, including the real local Node cookie round trip, with:
+Install the locked Playwright Chromium runtime once, then run the focused HTTP/realtime networking contract target with:
 
 ```sh
+npm exec -- playwright install chromium
 ./scripts/ios-build-test.sh --networking-contracts
 ```
 
-The harness generates UUID-based test-only session/invite secrets, creates temporary SQLite and room-state files, terminates the exact server child, removes the validated temporary directory, and sanitizes saved logs. Its exit finalizer scans raw evidence for the generated secrets and stages only verified files into the current run's validated artifact directory; CI never uploads the raw location. The fixed access fixture is non-secret and works only with the loopback test server; the harness never uses the production URL, production secrets, or production state.
+Networking mode pins and executes the immutable v0.3.2 PWA protocol validator, builds the current PWA/server, and launches one real incognito Chromium peer in a separate credential-free environment. The harness generates UUID-based test-only session/invite secrets, creates temporary SQLite and room-state files, terminates Chromium before the exact server child, removes the validated browser profile/state directory, and sanitizes saved logs. Its exit finalizer scans raw evidence for the generated secrets and stages only verified files into the current run's validated artifact directory; CI never uploads the raw location. The fixed access fixture is non-secret and works only with the loopback test server; the harness never uses the production URL, production secrets, or production state.
 
 Verify or deliberately regenerate the portable fixture corpus with:
 

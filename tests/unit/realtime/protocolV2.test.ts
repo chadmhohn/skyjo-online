@@ -12,6 +12,7 @@ import {
   type ClientCommand,
   type GameCommand
 } from '../../../src/protocolV2';
+import { isWellFormedUnicode } from '../../../server-unicode.mjs';
 import { createMultiplayerGame } from '../../../src/game';
 import { isMultiplayerRoomSnapshot } from '../../../src/roomConnection';
 import {
@@ -84,6 +85,22 @@ describe('protocol v2 command schema and reducer', () => {
       expect(parsed).toMatchObject({ ok: true, command: { action } });
       if (parsed.ok) expect(parsed.canonicalAction).toBe(JSON.stringify(action));
     });
+  });
+
+  it('preserves the previous PWA UTF-16 chat bound for astral text', () => {
+    const maximum = '🙂'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength / 2);
+    const oversized = `${maximum}🙂`;
+    expect(maximum.length).toBe(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength);
+    expect(parseClientCommand(command({ type: 'send-chat-message', text: maximum })).ok).toBe(true);
+    expect(parseClientCommand(command({ type: 'send-chat-message', text: oversized })).ok).toBe(false);
+  });
+
+  it('rejects lone surrogate code units in text and identifier actions', () => {
+    for (const malformed of [String.fromCharCode(0xd800), String.fromCharCode(0xdc00)]) {
+      expect(parseClientCommand(command({ type: 'send-chat-message', text: `before${malformed}after` })).ok).toBe(false);
+      expect(parseClientCommand(command({ type: 'remove-player', playerId: `p${malformed}` })).ok).toBe(false);
+      expect(parseClientCommand(command({ type: 'takeover-player-with-ai', playerId: `p${malformed}` })).ok).toBe(false);
+    }
   });
 
   it('rejects legacy, wrong-version, forged, unbounded, and malformed commands without reflecting attacker ids', () => {
@@ -284,6 +301,24 @@ describe('protocol v2 player-specific projection', () => {
     expect(source.players[0].name).toBe('Alice');
   });
 
+  it('canonicalizes malformed producer text before public projection', () => {
+    const malformed = String.fromCharCode(0xd800);
+    const state = openedState();
+    state.players[0].name = `A${malformed}B`;
+    state.log = [`A${malformed}B`];
+    const source = roomWithState(state);
+    source.players[0].name = `A${malformed}B`;
+    source.chatMessages[0].playerName = `A${malformed}B`;
+    source.chatMessages[0].text = `A${malformed}B`;
+
+    const snapshot = createRoomSnapshot(source, 'p1');
+    expect(snapshot.players[0].name).toBe('A�B');
+    expect(snapshot.state?.players[0].name).toBe('A�B');
+    expect(snapshot.state?.log[0]).toBe('A�B');
+    expect(snapshot.chatMessages[0]).toMatchObject({ playerName: 'A�B', text: 'A�B' });
+    expect(isWellFormedUnicode(JSON.stringify(snapshot))).toBe(true);
+  });
+
   it('projects the persisted superset into the exact bounded public contract below the outbound cap', () => {
     const playerIds = Array.from(
       { length: PUBLIC_SNAPSHOT_LIMITS.players },
@@ -318,7 +353,9 @@ describe('protocol v2 player-specific projection', () => {
         id: `${String(index).padStart(3, '0')}${'c'.repeat(PUBLIC_SNAPSHOT_LIMITS.identifierLength - 3)}`,
         playerId: playerIds[index % playerIds.length],
         playerName: `${String(index % playerIds.length)}${'C'.repeat(23)}`,
-        text: 'T'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength),
+        text: index === 0
+          ? '🙂'.repeat((PUBLIC_SNAPSHOT_LIMITS.chatMessageLength / 2) + 1)
+          : 'T'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength),
         createdAt: index + 1
       })),
       readyForNextRoundPlayerIds: [],
@@ -337,6 +374,7 @@ describe('protocol v2 player-specific projection', () => {
       message.playerName.length === PUBLIC_SNAPSHOT_LIMITS.nameLength &&
       message.text.length === PUBLIC_SNAPSHOT_LIMITS.chatMessageLength
     )).toBe(true);
+    expect(snapshot.chatMessages[0].text).toBe('🙂'.repeat(PUBLIC_SNAPSHOT_LIMITS.chatMessageLength / 2));
     expect(snapshot.state?.log).toHaveLength(PUBLIC_SNAPSHOT_LIMITS.logEntries);
     expect(snapshot.state?.log.every((entry) => entry.length === PUBLIC_SNAPSHOT_LIMITS.logEntryLength)).toBe(true);
     expect(snapshot.state?.roundHistory).toHaveLength(PUBLIC_SNAPSHOT_LIMITS.historyEntries);

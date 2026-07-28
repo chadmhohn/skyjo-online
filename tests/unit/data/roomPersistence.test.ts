@@ -493,6 +493,31 @@ describe('room persistence', () => {
     expect(restored.chatMessages[0]).toMatchObject({ playerId: 'host-1', playerName: 'Ada' });
   });
 
+  it('canonicalizes persisted public text and rejects malformed identifier code units', () => {
+    const malformed = String.fromCharCode(0xd800);
+    const value = room();
+    value.players[0].name = `A${malformed}B${'🃏'.repeat(30)}`;
+    value.chatMessages[0].playerName = `C${malformed}D`;
+    value.chatMessages[0].text = `T${malformed}${'🃏'.repeat(300)}`;
+    const restored = normalizeRoomsDocument(
+      serializeRooms(new Map([[value.code, value]]), fixedNow),
+      { now: fixedNow }
+    ).rooms[0];
+
+    expect(restored.players[0].name.startsWith('A�B')).toBe(true);
+    expect(restored.players[0].name.length).toBeLessThanOrEqual(24);
+    expect(restored.chatMessages[0].playerName).toBe('C�D');
+    expect(restored.chatMessages[0].text).toHaveLength(280);
+    expect(Array.from(restored.chatMessages[0].text)).toHaveLength(141);
+    expect(restored.chatMessages[0].text.startsWith('T�')).toBe(true);
+
+    const invalidIdentifier = room();
+    invalidIdentifier.players[0].id = `host${malformed}`;
+    invalidIdentifier.hostId = invalidIdentifier.players[0].id;
+    invalidIdentifier.chatMessages[0].playerId = invalidIdentifier.players[0].id;
+    expect(() => serializeRooms(new Map([[invalidIdentifier.code, invalidIdentifier]]), fixedNow)).toThrow(/invalid/i);
+  });
+
   it('keeps distinct maximum-length identifiers exact instead of truncating them into a collision', () => {
     const prefix = 'p'.repeat(MAX_PERSISTED_IDENTIFIER_LENGTH - 1);
     const firstId = `${prefix}1`;

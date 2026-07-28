@@ -1122,6 +1122,7 @@ test('exact artifact inventory satisfies the stable controller server-module gra
   assert.ok(serverModules.includes('server-invite-codes.mjs'));
   assert.ok(serverModules.includes('server-room-invites.mjs'));
   assert.ok(serverModules.includes('server-push.mjs'));
+  assert.ok(serverModules.includes('server-unicode.mjs'));
   assert.equal(new Set(serverModules).size, serverModules.length, 'server-module inventory must not contain duplicates');
 
   for (const module of serverModules) {

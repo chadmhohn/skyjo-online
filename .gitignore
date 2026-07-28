@@ -17,6 +17,7 @@ vite.config.js
 vite.config.d.ts
 
 # Native Apple development
+/.build/
 DerivedData/
 *.xcresult
 *.xcarchive

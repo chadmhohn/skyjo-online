@@ -167,6 +167,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function isBoundedString(value: unknown, maximumLength: number, allowEmpty = false): value is string {
   return typeof value === 'string' &&
+    value.isWellFormed() &&
     (allowEmpty || value.length > 0) &&
     value.length <= maximumLength;
 }
@@ -267,7 +268,9 @@ function isGameStateSnapshot(value: unknown): boolean {
   if (value.drawnCard !== null && (value.drawnCard as PublicCardSnapshot).id !== 'drawn-card') return false;
   if (value.hasDrawnCard !== (value.phase === 'choose-replacement' && value.selectedSource === 'draw')) return false;
   if (!Number.isSafeInteger(value.round) || Number(value.round) < 1) return false;
-  if (!Array.isArray(value.log) || value.log.length > PUBLIC_SNAPSHOT_LIMITS.logEntries || !value.log.every((item) => isBoundedString(item, PUBLIC_SNAPSHOT_LIMITS.logEntryLength, true))) return false;
+  if (!Array.isArray(value.log) || value.log.length > PUBLIC_SNAPSHOT_LIMITS.logEntries || !value.log.every((item) =>
+    isBoundedString(item, PUBLIC_SNAPSHOT_LIMITS.logEntryLength, true) && !/^.+ drew a -?\d+\.$/.test(item)
+  )) return false;
   if (!isPublicIdentifierOrNull(value.winnerId) || !isPublicIdentifierOrNull(value.nextStarterId) || !isPublicIdentifierOrNull(value.roundCloserId)) return false;
   if (!Array.isArray(value.finalTurnPlayerIds) || value.finalTurnPlayerIds.length > PUBLIC_SNAPSHOT_LIMITS.players || !value.finalTurnPlayerIds.every(isPublicIdentifier)) return false;
   if (!isRecord(value.openingRevealCounts) || Object.keys(value.openingRevealCounts).length > PUBLIC_SNAPSHOT_LIMITS.players || !Object.keys(value.openingRevealCounts).every(isPublicIdentifier) || !Object.values(value.openingRevealCounts).every(Number.isFinite)) return false;

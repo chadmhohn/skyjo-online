@@ -598,12 +598,19 @@ public actor SkyjoAPIClient {
   private let environment: SkyjoNetworkEnvironment
   private let session: URLSession
   private let accessClient: AccessSessionClient
+  private let roomResetRecoveryStore: any RoomResetRecoveryStore
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
 
-  public init(environment: SkyjoNetworkEnvironment, session: URLSession) {
+  public init(
+    environment: SkyjoNetworkEnvironment,
+    session: URLSession,
+    roomResetRecoveryStore: any RoomResetRecoveryStore =
+      FileRoomResetRecoveryStore.applicationSupportStore()
+  ) {
     self.environment = environment
     self.session = session
+    self.roomResetRecoveryStore = roomResetRecoveryStore
     accessClient = AccessSessionClient(
       environment: environment,
       session: session,
@@ -613,9 +620,12 @@ public actor SkyjoAPIClient {
 
   public init(
     environment: SkyjoNetworkEnvironment,
-    persistentCookieStorage: HTTPCookieStorage = .shared
+    persistentCookieStorage: HTTPCookieStorage = .shared,
+    roomResetRecoveryStore: any RoomResetRecoveryStore =
+      FileRoomResetRecoveryStore.applicationSupportStore()
   ) {
     self.environment = environment
+    self.roomResetRecoveryStore = roomResetRecoveryStore
     let dedicatedSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: persistentCookieStorage)
     session = dedicatedSession
     accessClient = AccessSessionClient(
@@ -756,6 +766,37 @@ public actor SkyjoAPIClient {
 
   public func version() async throws -> ServiceVersion {
     try await request(path: "version", method: "GET", successStatusCodes: [200, 503])
+  }
+
+  /// Creates the realtime actor on the exact URLSession that owns both signed
+  /// HttpOnly session cookies. Cookie values never cross this API boundary.
+  public func makeRoomConnection(confirmedAccount: AccountUser) throws -> RoomConnection {
+    let webSocketURL = try Self.roomWebSocketURL(for: environment.baseURL)
+    return try RoomConnection(
+      webSocketURL: webSocketURL,
+      confirmedAccount: try ConfirmedRoomAccount(
+        accountID: confirmedAccount.id,
+        displayName: confirmedAccount.displayName
+      ),
+      environment: .live(session: session, resetRecoveryStore: roomResetRecoveryStore)
+    )
+  }
+
+  public nonisolated static func roomWebSocketURL(for baseURL: URL) throws -> URL {
+    guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
+          let scheme = components.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          components.host != nil,
+          components.user == nil,
+          components.password == nil,
+          components.query == nil,
+          components.fragment == nil,
+          components.path.isEmpty || components.path == "/"
+    else { throw RoomConnectionError.invalidWebSocketURL }
+    components.scheme = scheme == "https" ? "wss" : "ws"
+    components.path = "/rooms"
+    guard let url = components.url else { throw RoomConnectionError.invalidWebSocketURL }
+    return url
   }
 
   private func request<Response: Decodable & Sendable>(

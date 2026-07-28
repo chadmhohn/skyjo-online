@@ -736,6 +736,12 @@ describe('v0.3.2 workflow governance', () => {
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'iOS / Networking Contracts')).toHaveLength(1);
     expect(ci).toMatch(/ios-build:\s*\n\s*name: iOS \/ Build/);
     expect(ci).toMatch(/ios-networking-contracts:\s*\n\s*name: iOS \/ Networking Contracts/);
+    const iosBuildSection = ci.match(/\n {2}ios-build:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
+    const iosNetworkingSection = ci.match(/\n {2}ios-networking-contracts:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
+    expect(iosNetworkingSection).toMatch(/fetch-depth: 0/);
+    expect(iosNetworkingSection).toMatch(/npm exec -- playwright install chromium/);
+    expect(iosNetworkingSection).toMatch(/\.\/scripts\/ios-build-test\.sh --networking-contracts/);
+    expect(iosBuildSection).not.toMatch(/playwright install chromium/);
     expect(ci).toMatch(/load-recovery:\s*\n\s*name: CI \/ Load & Recovery/);
     const loadRecoverySection = ci.match(/\n {2}load-recovery:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     expect(loadRecoverySection).toContain('test-results/certification');

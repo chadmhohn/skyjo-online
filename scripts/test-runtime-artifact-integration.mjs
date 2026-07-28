@@ -93,6 +93,15 @@ try {
     controllerContract.entries.has('server-push.mjs'),
     'The packaged artifact must include the Web Push validation and delivery module imported at production startup.'
   );
+  assert.ok(
+    controllerContract.entries.has('server-unicode.mjs'),
+    'The packaged artifact must include the Unicode helper imported by the compiled protocol and persistence modules.'
+  );
+  assert.equal(
+    controllerContract.entries.has('server-unicode.d.mts'),
+    false,
+    'The source-only Unicode declaration must not be retained in the runtime artifact.'
+  );
   assert.ok(controllerContract.entries.has('node_modules/minimist/package.json'), 'The real production tree must exercise minimist pruning.');
   assert.equal(
     [...controllerContract.entries].some((entry) => entry.split('/').some(isForbiddenArchivePathSegment)),

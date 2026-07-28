@@ -262,6 +262,8 @@ describe('runtime artifact safety contract', () => {
     expect(isAllowedRuntimePath('server-invite-codes.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-room-invites.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-push.mjs')).toBe(true);
+    expect(isAllowedRuntimePath('server-unicode.mjs')).toBe(true);
+    expect(isAllowedRuntimePath('server-unicode.d.mts')).toBe(false);
     expect(isAllowedRuntimePath('scripts/smoke-deployed.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-chat.mjs')).toBe(false);
     expect(isAllowedRuntimePath('src/game.ts')).toBe(false);
@@ -332,6 +334,8 @@ describe('runtime artifact safety contract', () => {
     expect(result.files.has('server-invite-codes.mjs')).toBe(true);
     expect(result.files.has('server-room-invites.mjs')).toBe(true);
     expect(result.files.has('server-push.mjs')).toBe(true);
+    expect(result.files.has('server-unicode.mjs')).toBe(true);
+    expect(result.files.has('server-unicode.d.mts')).toBe(false);
     expect(result.files.has('server-dist/protocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverProtocolV2.js')).toBe(true);
     expect(result.files.has('server-dist/serverRealtime.js')).toBe(true);

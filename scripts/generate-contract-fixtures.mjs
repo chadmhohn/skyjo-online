@@ -797,7 +797,7 @@ function createBoundedPublicRoom(eightPlayerState) {
 }
 
 function createProtocolFixtures(states) {
-  const ids = scriptedSource('protocol fixture UUIDs', commandIds.slice(0, 14));
+  const ids = scriptedSource('protocol fixture UUIDs', commandIds.slice(0, 15));
   const actions = [
     { type: 'reveal-opening-card', cardIndex: 0 },
     { type: 'choose-discard' },
@@ -811,7 +811,8 @@ function createProtocolFixtures(states) {
     { type: 'leave-room' },
     { type: 'remove-player', playerId: guestId },
     { type: 'takeover-player-with-ai', playerId: guestId },
-    { type: 'send-chat-message', text: 'Fixture hello' }
+    { type: 'send-chat-message', text: 'Fixture hello' },
+    { type: 'send-chat-message', text: '🃏'.repeat(140) }
   ];
   const clientValid = [
     fixtureCase('create room', 'protocol-v2-client-frame.schema.json', {
@@ -828,17 +829,32 @@ function createProtocolFixtures(states) {
     }),
     fixtureCase('presence visible', 'protocol-v2-client-frame.schema.json', { type: 'set-presence', visible: true }),
     fixtureCase('presence hidden', 'protocol-v2-client-frame.schema.json', { type: 'set-presence', visible: false }),
-    ...actions.map((action) => fixtureCase(`command ${action.type}`, 'protocol-v2-client-frame.schema.json', command(ids.next(), 7, action)))
+    ...actions.map((action, index) => fixtureCase(
+      action.type === 'send-chat-message' && index === actions.length - 1
+        ? 'command send-chat-message at UTF-16 compatibility bound'
+        : `command ${action.type}`,
+      'protocol-v2-client-frame.schema.json',
+      command(ids.next(), 7, action)
+    ))
   ];
   ids.assertConsumed();
 
   const drawerRoom = createRoomSnapshot(roomSource(states.blindState), hostId, fixedEpoch + 1);
   const publicRoom = createRoomSnapshot(roomSource(states.blindState), guestId, fixedEpoch + 1);
   const boundedRoom = createBoundedPublicRoom(states.eightPlayerState);
+  const astralChatRoom = clone(publicRoom);
+  astralChatRoom.chatMessages = [{
+    id: commandIds[38],
+    playerId: guestId,
+    playerName: astralChatRoom.players.find((player) => player.id === guestId).name,
+    text: '🃏'.repeat(140),
+    createdAt: fixedEpoch
+  }];
   const serverValid = [
     fixtureCase('personalized snapshot', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, playerId: hostId, revision: 7, room: drawerRoom }),
     fixtureCase('shared public snapshot', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, revision: 7, room: publicRoom }),
     fixtureCase('bounded shared snapshot', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, revision: 7, room: boundedRoom }),
+    fixtureCase('UTF-16 astral chat at compatibility bound', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, revision: 7, room: astralChatRoom }),
     fixtureCase('stale revision resync', 'protocol-v2-server-frame.schema.json', { type: 'resync', protocolVersion: 2, playerId: hostId, revision: 7, room: drawerRoom, reason: 'stale-revision', commandId: commandIds[20] }),
     fixtureCase('future revision resync', 'protocol-v2-server-frame.schema.json', { type: 'resync', protocolVersion: 2, playerId: hostId, revision: 7, room: drawerRoom, reason: 'future-revision', commandId: commandIds[21] }),
     fixtureCase('room reset resync', 'protocol-v2-server-frame.schema.json', { type: 'resync', protocolVersion: 2, playerId: hostId, revision: 8, room: { ...drawerRoom, code: 'FGHIJ', revision: 8 }, reason: 'room-reset', commandId: commandIds[22] }),
@@ -863,6 +879,7 @@ function createProtocolFixtures(states) {
     fixtureCase('negative card index', 'protocol-v2-client-frame.schema.json', command(commandIds[32], 7, { type: 'replace-card', cardIndex: -1 }), { expectedLayer: 'schema' }),
     fixtureCase('card index twelve', 'protocol-v2-client-frame.schema.json', command(commandIds[33], 7, { type: 'replace-card', cardIndex: 12 }), { expectedLayer: 'schema' }),
     fixtureCase('chat over bound', 'protocol-v2-client-frame.schema.json', command(commandIds[34], 7, { type: 'send-chat-message', text: 'C'.repeat(281) }), { expectedLayer: 'schema' }),
+    fixtureCase('UTF-16 astral chat over compatibility bound', 'protocol-v2-client-frame.schema.json', command(commandIds[39], 7, { type: 'send-chat-message', text: '🃏'.repeat(141) }), { expectedLayer: 'consumer' }),
     fixtureCase('identifier over bound', 'protocol-v2-client-frame.schema.json', command(commandIds[35], 7, { type: 'remove-player', playerId: 'P'.repeat(129) }), { expectedLayer: 'schema' }),
     fixtureCase('canonical presence missing visible', 'protocol-v2-client-frame.schema.json', { type: 'set-presence' }, { expectedLayer: 'schema' }),
     fixtureCase('frame byte limit exceeded', 'protocol-v2-client-frame.schema.json', oversizedCreate, { expectedLayer: 'wire', wireBytes: Buffer.byteLength(JSON.stringify(oversizedCreate), 'utf8') })
@@ -878,6 +895,10 @@ function createProtocolFixtures(states) {
   revisionMismatch.revision = 6;
   const rosterMismatch = clone(publicRoom);
   rosterMismatch.state.players.pop();
+  const astralChatOverBound = clone(astralChatRoom);
+  astralChatOverBound.chatMessages[0].text = '🃏'.repeat(141);
+  const leakedBlindDrawLog = clone(publicRoom);
+  leakedBlindDrawLog.state.log[0] = 'Host drew a -2.';
   const serverInvalid = [
     fixtureCase('unexpected server key', 'protocol-v2-server-frame.schema.json', { ...serverValid[0].value, internal: true }, { expectedLayer: 'schema' }),
     fixtureCase('face-down value leak', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, revision: 7, room: leakedFaceDown }, { expectedLayer: 'schema' }),
@@ -885,6 +906,8 @@ function createProtocolFixtures(states) {
     fixtureCase('private draw leaked in shared frame', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, revision: 7, room: leakedSharedDraw }, { expectedLayer: 'privacy' }),
     fixtureCase('frame and room revisions differ', 'protocol-v2-server-frame.schema.json', revisionMismatch, { expectedLayer: 'consumer' }),
     fixtureCase('room and game rosters differ', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, revision: 7, room: rosterMismatch }, { expectedLayer: 'consumer' }),
+    fixtureCase('UTF-16 astral snapshot chat over compatibility bound', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, revision: 7, room: astralChatOverBound }, { expectedLayer: 'consumer' }),
+    fixtureCase('private blind draw value leaked in log', 'protocol-v2-server-frame.schema.json', { type: 'snapshot', protocolVersion: 2, revision: 7, room: leakedBlindDrawLog }, { expectedLayer: 'privacy' }),
     fixtureCase('ack result null', 'protocol-v2-server-frame.schema.json', { type: 'ack', protocolVersion: 2, commandId: commandIds[36], revision: 8, result: null }, { expectedLayer: 'schema' }),
     fixtureCase('resync lacks viewer', 'protocol-v2-server-frame.schema.json', { type: 'resync', protocolVersion: 2, revision: 7, room: publicRoom, reason: 'stale-revision' }, { expectedLayer: 'schema' }),
     fixtureCase('unknown resync reason', 'protocol-v2-server-frame.schema.json', { type: 'resync', protocolVersion: 2, playerId: hostId, revision: 7, room: drawerRoom, reason: 'unknown' }, { expectedLayer: 'schema' }),
