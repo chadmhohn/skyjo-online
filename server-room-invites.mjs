@@ -17,11 +17,13 @@ export function isRoomInviteToken(value) {
 export function resolveAppleApplicationIdentifier({
   value,
   nodeEnv,
-  canaryReleaseDirectory
+  canaryReleaseDirectory,
+  runtimeDirectory
 } = {}) {
   const explicitlyNonProduction = nodeEnv === 'development' || nodeEnv === 'test';
   const isolatedCanary = typeof canaryReleaseDirectory === 'string' &&
-    isolatedCanaryReleaseDirectoryPattern.test(canaryReleaseDirectory);
+    isolatedCanaryReleaseDirectoryPattern.test(canaryReleaseDirectory) &&
+    runtimeDirectory === canaryReleaseDirectory;
   const configured = typeof value === 'string' ? value : '';
   if (!configured) {
     if (explicitlyNonProduction || isolatedCanary) return SYNTHETIC_APPLE_APPLICATION_IDENTIFIER;

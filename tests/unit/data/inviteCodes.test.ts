@@ -393,13 +393,15 @@ describe('native invite public configuration', () => {
   });
 
   it('fails production-like configuration closed and confines the fixed synthetic ID to tests and canaries', () => {
+    const canaryReleaseDirectory = '/var/tmp/skyjo-deploy/30352572840-1-canary/release';
     expect(resolveAppleApplicationIdentifier({ value: productionIdentifier, nodeEnv: 'production' }))
       .toBe(productionIdentifier);
     expect(resolveAppleApplicationIdentifier({ nodeEnv: 'test' }))
       .toBe(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER);
     expect(resolveAppleApplicationIdentifier({
       nodeEnv: 'production',
-      canaryReleaseDirectory: '/var/tmp/skyjo-deploy/30352572840-1-canary/release'
+      canaryReleaseDirectory,
+      runtimeDirectory: canaryReleaseDirectory
     }))
       .toBe(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER);
     expect(() => resolveAppleApplicationIdentifier({ nodeEnv: 'production' })).toThrow(/required/i);
@@ -423,9 +425,16 @@ describe('native invite public configuration', () => {
       expect(() => resolveAppleApplicationIdentifier({
         value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
         nodeEnv: 'production',
-        canaryReleaseDirectory
+        canaryReleaseDirectory,
+        runtimeDirectory: canaryReleaseDirectory
       })).toThrow(/synthetic/i);
     }
+    expect(() => resolveAppleApplicationIdentifier({
+      value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+      nodeEnv: 'production',
+      canaryReleaseDirectory,
+      runtimeDirectory: '/srv/skyjo-online/releases/0123456789abcdef0123456789abcdef01234567'
+    })).toThrow(/synthetic/i);
   });
 
   it('publishes stable sanitized native redemption error codes', () => {

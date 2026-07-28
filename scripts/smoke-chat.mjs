@@ -146,6 +146,11 @@ async function assertProductionAppleIdentifierRequired(repoRoot) {
       label: 'synthetic with an arbitrary canary directory',
       value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
       canaryReleaseDirectory: '/tmp/not-a-controller-canary/release'
+    },
+    {
+      label: 'synthetic with a spoofed controller-shaped canary directory',
+      value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+      canaryReleaseDirectory: '/var/tmp/skyjo-deploy/30352572840-1-canary/release'
     }
   ];
 

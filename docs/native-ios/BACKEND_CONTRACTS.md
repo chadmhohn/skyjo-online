@@ -151,7 +151,7 @@ Issue #202 adds the backend-only native handoff in repository source. This is no
 - `GET` and `HEAD /.well-known/apple-app-site-association` are handled before the shared-password gate and return direct HTTP 200 responses with `Content-Type: application/json`, `Cache-Control: public, max-age=3600`, no redirect, and no cookie.
 - The exact document has one `applinks.details` item and one full Apple application identifier. Its first component excludes `/invite/*` when query item `open` equals `browser`; its second component includes only `/invite/*`. It contains no `webcredentials`, unrelated service, broad route, or wildcard domain.
 - `SKYJO_APPLE_APPLICATION_IDENTIFIER` supplies the complete application-identifier prefix plus `com.groundworkrevops.skyjo`. The prefix is not inferred from the Team ID. Production-like startup rejects a missing, malformed, placeholder, or fixed synthetic identifier.
-- Development, tests, and the isolated deployment canary use only `TESTSKYJ01.com.groundworkrevops.skyjo`. The canary exception requires the deployment controller's exact `/var/tmp/skyjo-deploy/<validated-run-id>/release` path shape in `SKYJO_CANARY_RELEASE_DIR`; an arbitrary nonempty value cannot authorize the synthetic identifier for the production service.
+- Development, tests, and the isolated deployment canary use only `TESTSKYJ01.com.groundworkrevops.skyjo`. The canary exception requires the deployment controller's exact `/var/tmp/skyjo-deploy/<validated-run-id>/release` path shape in `SKYJO_CANARY_RELEASE_DIR` and requires the running server module to reside in that same directory; an arbitrary or spoofed value cannot authorize the synthetic identifier for the production service.
 
 ### Native JSON Redemption
 

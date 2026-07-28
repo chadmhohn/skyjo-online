@@ -178,7 +178,8 @@ try {
   const appleApplicationIdentifier = resolveAppleApplicationIdentifier({
     value: process.env.SKYJO_APPLE_APPLICATION_IDENTIFIER,
     nodeEnv: process.env.NODE_ENV,
-    canaryReleaseDirectory: process.env.SKYJO_CANARY_RELEASE_DIR
+    canaryReleaseDirectory: process.env.SKYJO_CANARY_RELEASE_DIR,
+    runtimeDirectory: import.meta.dirname
   });
   appleAppSiteAssociation = JSON.stringify(createAppleAppSiteAssociation(appleApplicationIdentifier));
 } catch {
