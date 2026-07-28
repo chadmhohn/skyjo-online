@@ -137,52 +137,72 @@ async function assertOversizedAccessPasswordRejected(repoRoot) {
 }
 
 async function assertProductionAppleIdentifierRequired(repoRoot) {
-  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-apple-id-required-'));
-  let child;
-  try {
-    const environment = {
-      ...process.env,
-      NODE_ENV: 'production',
-      HOST: '127.0.0.1',
-      PORT: '0',
-      SKYJO_ACCESS_PASSWORD: 'apple-identifier-startup-password',
-      SKYJO_DB_FILE: path.join(temporaryDirectory, 'skyjo.sqlite'),
-      SKYJO_INVITE_SECRET: 'apple-identifier-startup-invite-secret',
-      SKYJO_ROOMS_FILE: path.join(temporaryDirectory, 'rooms.json'),
-      SKYJO_SESSION_SECRET: 'apple-identifier-startup-session-secret',
-      SKYJO_VAPID_PRIVATE_KEY: '',
-      SKYJO_VAPID_PUBLIC_KEY: ''
-    };
-    delete environment.SKYJO_APPLE_APPLICATION_IDENTIFIER;
-    delete environment.SKYJO_CANARY_RELEASE_DIR;
-    child = spawn(process.execPath, ['server.mjs'], {
-      cwd: repoRoot,
-      env: environment,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    let output = '';
-    child.stdout.on('data', (data) => { output += String(data); });
-    child.stderr.on('data', (data) => { output += String(data); });
-    const exitCode = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        child.kill('SIGKILL');
-        reject(new Error('missing Apple application identifier startup check timed out'));
-      }, 5_000);
-      child.once('error', (error) => {
-        clearTimeout(timeout);
-        reject(error);
+  const rejectedConfigurations = [
+    { label: 'missing' },
+    { label: 'malformed', value: 'not-an-application-identifier' },
+    { label: 'placeholder', value: 'XXXXXXXXXX.com.groundworkrevops.skyjo' },
+    { label: 'synthetic', value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER },
+    {
+      label: 'synthetic with an arbitrary canary directory',
+      value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+      canaryReleaseDirectory: '/tmp/not-a-controller-canary/release'
+    }
+  ];
+
+  for (const configuration of rejectedConfigurations) {
+    const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-apple-id-required-'));
+    let child;
+    try {
+      const environment = {
+        ...process.env,
+        NODE_ENV: 'production',
+        HOST: '127.0.0.1',
+        PORT: '0',
+        SKYJO_ACCESS_PASSWORD: 'apple-identifier-startup-password',
+        SKYJO_DB_FILE: path.join(temporaryDirectory, 'skyjo.sqlite'),
+        SKYJO_INVITE_SECRET: 'apple-identifier-startup-invite-secret',
+        SKYJO_ROOMS_FILE: path.join(temporaryDirectory, 'rooms.json'),
+        SKYJO_SESSION_SECRET: 'apple-identifier-startup-session-secret',
+        SKYJO_VAPID_PRIVATE_KEY: '',
+        SKYJO_VAPID_PUBLIC_KEY: ''
+      };
+      delete environment.SKYJO_APPLE_APPLICATION_IDENTIFIER;
+      delete environment.SKYJO_CANARY_RELEASE_DIR;
+      if (configuration.value) environment.SKYJO_APPLE_APPLICATION_IDENTIFIER = configuration.value;
+      if (configuration.canaryReleaseDirectory) {
+        environment.SKYJO_CANARY_RELEASE_DIR = configuration.canaryReleaseDirectory;
+      }
+      child = spawn(process.execPath, ['server.mjs'], {
+        cwd: repoRoot,
+        env: environment,
+        stdio: ['ignore', 'pipe', 'pipe']
       });
-      child.once('exit', (code) => {
-        clearTimeout(timeout);
-        resolve(code);
+      let output = '';
+      child.stdout.on('data', (data) => { output += String(data); });
+      child.stderr.on('data', (data) => { output += String(data); });
+      const exitCode = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`${configuration.label} Apple application identifier startup check timed out`));
+        }, 5_000);
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.once('exit', (code) => {
+          clearTimeout(timeout);
+          resolve(code);
+        });
       });
-    });
-    assert.equal(exitCode, 1, 'production fails startup without a full Apple application identifier');
-    assert.match(output, /Apple application identifier configuration is missing or invalid/i);
-    assert.equal(output.includes(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER), false, 'startup failure does not print a fallback identifier');
-  } finally {
-    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+      assert.equal(exitCode, 1, `production rejects ${configuration.label} Apple application identifier configuration`);
+      assert.match(output, /Apple application identifier configuration is missing or invalid/i);
+      if (configuration.value) {
+        assert.equal(output.includes(configuration.value), false, 'startup failure does not print the rejected identifier');
+      }
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    }
   }
 }
 

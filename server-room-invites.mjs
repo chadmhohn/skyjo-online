@@ -5,6 +5,7 @@ const roomInstanceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a
 const roomInviteTokenPattern = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const appleApplicationIdentifierPattern = /^[A-Z0-9]{10}\.com\.groundworkrevops\.skyjo$/;
 const appleApplicationIdentifierPlaceholder = 'XXXXXXXXXX.com.groundworkrevops.skyjo';
+const isolatedCanaryReleaseDirectoryPattern = /^\/var\/tmp\/skyjo-deploy\/[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(?:canary|production)\/release$/;
 const inviteSignatureDomain = 'skyjo:room-invite-token:v2\0';
 
 export const SYNTHETIC_APPLE_APPLICATION_IDENTIFIER = 'TESTSKYJ01.com.groundworkrevops.skyjo';
@@ -19,7 +20,8 @@ export function resolveAppleApplicationIdentifier({
   canaryReleaseDirectory
 } = {}) {
   const explicitlyNonProduction = nodeEnv === 'development' || nodeEnv === 'test';
-  const isolatedCanary = typeof canaryReleaseDirectory === 'string' && canaryReleaseDirectory.length > 0;
+  const isolatedCanary = typeof canaryReleaseDirectory === 'string' &&
+    isolatedCanaryReleaseDirectoryPattern.test(canaryReleaseDirectory);
   const configured = typeof value === 'string' ? value : '';
   if (!configured) {
     if (explicitlyNonProduction || isolatedCanary) return SYNTHETIC_APPLE_APPLICATION_IDENTIFIER;
