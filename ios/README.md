@@ -34,6 +34,14 @@ Run the focused access/networking gate used by `iOS / Networking Contracts` with
 
 Networking mode first verifies the immutable v0.3.2 PWA parser/validator source and its established UTF-16 wire bounds, builds the current production PWA, and starts a real incognito Chromium peer under a credential-isolated environment. The Swift tests drive that peer through a narrow loopback control client while all room creation/join/chat/lifecycle actions occur through the visible PWA UI. Driver profiles, logs, and temporary state remain inside the exact harness directory and are removed before sanitized evidence is staged.
 
+Run the focused native-solo UI gate used by `iOS / UI & Accessibility` with:
+
+```sh
+./scripts/ios-build-test.sh --ui-accessibility
+```
+
+UI/accessibility mode needs no backend, account, or credential. It discovers a standard iPhone, large iPhone, and iPad on the newest installed simulator runtime, builds once without signing, then exercises the solo launcher, replacement review, setup, table, scoring, settings, recovery, and accessibility states across phone portrait, phone landscape, iPad portrait, and iPad landscape. The ignored per-run artifact directory retains sanitized logs and each `.xcresult`, including keep-always screenshots, whether a matrix entry passes or fails.
+
 Verify the portable schemas and deterministic fixture corpus separately:
 
 ```sh
@@ -65,18 +73,19 @@ xcodebuild \
 - `SkyjoNative.xcodeproj` contains the app, unit-test, and UI-test targets plus a shared scheme.
 - `SkyjoApp/` contains only the native application shell and resources. It does not embed a web view.
 - `Packages/SkyjoDomain` is the pure domain boundary.
-- `Packages/SkyjoNetworking` and `Packages/SkyjoPersistence` depend only on `SkyjoDomain`. `SkyjoAPIClient` composes the actor-owned `AccessSessionClient` with typed account, profile/password, stats, readiness, and version requests on the same injected dedicated `URLSession`/persistent cookie store. It rejects redirects and unexpected final URLs, bounds payloads, requires compatible operational versions, decodes stable `{ code, error }` failures, and uses a safe fallback for unknown or malformed errors. It also creates authenticated actor-owned `RoomConnection` instances sharing one account-fenced reset-recovery store. The realtime codec validates exact protocol-v2 frames and hidden-state semantics, and the state machine permits one exact-replay command until acknowledgement/snapshot convergence without optimistic mutation.
-- `SkyjoApp/App/AppModel.swift` owns the native access/account/home/stats navigation state. Request identities and account-generation guards prevent stale async responses from restoring state after logout or account replacement. Password fields are cleared after use, cookies are never surfaced to views, native admin remains a web link, and public-release account deletion remains tracked by issue #192.
+- `Packages/SkyjoNetworking` and `Packages/SkyjoPersistence` depend only on `SkyjoDomain`. `SkyjoAPIClient` composes the actor-owned `AccessSessionClient` with typed account, profile/password, stats, solo-stats submission, readiness, and version requests on the same injected dedicated `URLSession`/persistent cookie store. It rejects redirects and unexpected final URLs, bounds payloads, requires compatible operational versions, decodes stable `{ code, error }` failures, and uses a safe fallback for unknown or malformed errors. It also creates authenticated actor-owned `RoomConnection` instances sharing one account-fenced reset-recovery store. The realtime codec validates exact protocol-v2 frames and hidden-state semantics, and the state machine permits one exact-replay command until acknowledgement/snapshot convergence without optimistic mutation.
+- `SkyjoApp/App/AppModel.swift` owns the native access/account/home/stats navigation state and injects the account-partitioned solo feature. Request identities and account-generation guards prevent stale async responses from restoring state after logout or account replacement. Password fields are cleared after use, cookies are never surfaced to views, native admin remains a web link, and public-release account deletion remains tracked by issue #192.
+- `SkyjoApp/Features/Solo/` owns the guest/offline-ready solo launcher, explicit replacement review, 1-7-opponent setup, pure-reducer game loop, stable board-first table, minimizable score summary, settings, owner/generation fences, lifecycle autosave, and visible stats-outbox recovery. Sound effects and haptics default on, music remains visibly unavailable and off for v0.1.0, and user choices persist through the declared `UserDefaults` privacy-manifest reason.
 - `Packages/SkyjoPersistence` validates every solo snapshot, owns a custom SwiftData V1-to-V2 migration that restores nonzero autosave sequences before enforcing one durable save per owner, partitions guest/account saves, enforces monotonic autosave sequences, replaces saves atomically, and retains a signed-in-only FIFO stats outbox with generation-fenced delivery and opaque terminal/corrupt-head recovery. CloudKit is disabled.
-- `Packages/SkyjoDesignSystem` contains reusable SwiftUI presentation primitives.
+- `Packages/SkyjoDesignSystem` contains reusable SwiftUI card, status, and stable action-slot primitives. Face-down cards structurally carry no value into the presentation or accessibility tree.
 - `Packages/SkyjoTestSupport` aggregates all four package boundaries for tests and is never linked into the production app.
-- `TestPlans/SkyjoCI.xctestplan` enables unit, package-graph, resource, launch, no-web-view, UI, and accessibility checks with coverage. Canonical `contracts/v1` HTTP/realtime fixtures, real local-server two-cookie relaunch simulation, state-model races, native access/account/stats flows, durable reset recovery, and real Swift/PWA mixed-room scenarios are part of the IOS-5/6 networking gate.
+- `TestPlans/SkyjoCI.xctestplan` enables unit, package-graph, resource, launch, no-web-view, UI, and accessibility checks with coverage. Canonical `contracts/v1` HTTP/realtime fixtures, real local-server two-cookie relaunch simulation, state-model races, native access/account/stats flows, durable reset recovery, real Swift/PWA mixed-room scenarios, and the IOS-7 multi-device solo UI matrix are committed gates.
 
 All packages use Swift 6 language mode, require iOS 18 or later, and have no remote dependencies.
 
 Language-neutral schemas and fixtures live at [`contracts/v1`](../contracts/v1), outside the Swift package graph. Contract bundle version 1 is independent of the multiplayer protocol, snapshot envelope, presence, database, room persistence, PWA/server release, and native app version.
 
-Native v0.1.0 does not import PWA IndexedDB saves. The local persistence envelope permits up to 2 MiB so every schema-bounded solo history can restore; the current HTTP request boundary remains 256 KiB. IOS-7's solo stats adapter must classify local/client or server `REQUEST_TOO_LARGE`, invalid-payload, and unsupported-version failures as permanent outbox failures so they remain visible for explicit retry after compatibility changes or confirmed discard.
+Native v0.1.0 does not import PWA IndexedDB saves. The local persistence envelope permits up to 2 MiB so every schema-bounded solo history can restore; the current HTTP request boundary remains 256 KiB. The implemented solo-stats adapter classifies local/client or server `REQUEST_TOO_LARGE`, invalid-payload, and unsupported-version failures as permanent outbox failures so they remain visible for explicit retry after compatibility changes or confirmed discard.
 
 ## Configuration
 

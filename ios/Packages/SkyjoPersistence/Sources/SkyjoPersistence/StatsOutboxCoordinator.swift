@@ -321,6 +321,9 @@ public actor StatsOutboxCoordinator {
         guard isCurrent(accountID: accountID, generation: generation), !Task.isCancelled else {
           return sanitizedAbortedResult
         }
+        if case StatsDeliveryError.authorizationChanged = error {
+          return sanitizedAbortedResult
+        }
         if case let StatsDeliveryError.permanent(category) = error {
           do {
             try await store.markOutboxTerminalFailure(

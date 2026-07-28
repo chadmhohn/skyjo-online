@@ -6,6 +6,9 @@ set -Eeuo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
+if [[ "$#" -eq 1 && "$1" == "--ui-accessibility" ]]; then
+  exec "$script_dir/ios-ui-accessibility-test.sh"
+fi
 repo_root_physical="$(cd "$script_dir/.." && pwd -P)"
 repo_root_system_alias="$repo_root_physical"
 if [[ "$repo_root_physical" == /private/* ]]; then
@@ -71,7 +74,7 @@ report_failure() {
 }
 
 if [[ "$#" -gt 1 ]]; then
-  report_failure "Usage: ./scripts/ios-build-test.sh [--networking-contracts]"
+  report_failure "Usage: ./scripts/ios-build-test.sh [--networking-contracts|--ui-accessibility]"
 fi
 case "${1:-}" in
   "") ;;
@@ -79,7 +82,7 @@ case "${1:-}" in
     test_mode="networking-contracts"
     ;;
   *)
-    report_failure "Usage: ./scripts/ios-build-test.sh [--networking-contracts]"
+    report_failure "Usage: ./scripts/ios-build-test.sh [--networking-contracts|--ui-accessibility]"
     ;;
 esac
 

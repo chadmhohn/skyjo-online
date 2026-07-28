@@ -222,6 +222,10 @@ public enum StatsFailureCategory: String, Codable, CaseIterable, Sendable {
 public enum StatsDeliveryError: Error, Equatable, Sendable {
   case retryable(StatsFailureCategory)
   case permanent(StatsFailureCategory)
+  /// The live account/access session changed while a request was in flight. The queue remains
+  /// untouched until the app confirms an account again; this is neither a payload failure nor a
+  /// retryable transport failure.
+  case authorizationChanged
 }
 
 /// An actor-scoped capability for the exact blocked FIFO head. Its token is intentionally not
@@ -240,6 +244,11 @@ public struct StatsOutboxRecoveryHandle: Equatable, Hashable, Sendable,
   public var debugDescription: String { description }
 }
 
+public enum StatsOutboxBlockedHeadKind: String, Equatable, Sendable {
+  case terminal
+  case corrupt
+}
+
 public struct StatsOutboxStatus: Equatable, Sendable {
   public let queued: Int
   public let terminalFailures: Int
@@ -251,6 +260,9 @@ public struct StatsOutboxStatus: Equatable, Sendable {
   /// Opaque capability required to retry or discard the exact currently blocked FIFO head.
   /// Unlike `blockedHeadGameID`, this remains available when persisted identifiers are corrupt.
   public let blockedHeadRecoveryHandle: StatsOutboxRecoveryHandle?
+  /// Safe recovery classification for the FIFO head. Aggregate failure counts cannot determine
+  /// which recovery action is valid for the first record.
+  public let blockedHeadKind: StatsOutboxBlockedHeadKind?
 
   public init(
     queued: Int,
@@ -258,7 +270,8 @@ public struct StatsOutboxStatus: Equatable, Sendable {
     corruptRecords: Int = 0,
     blockedByTerminalFailure: Bool,
     blockedHeadGameID: UUID? = nil,
-    blockedHeadRecoveryHandle: StatsOutboxRecoveryHandle? = nil
+    blockedHeadRecoveryHandle: StatsOutboxRecoveryHandle? = nil,
+    blockedHeadKind: StatsOutboxBlockedHeadKind? = nil
   ) {
     self.queued = queued
     self.terminalFailures = terminalFailures
@@ -266,6 +279,7 @@ public struct StatsOutboxStatus: Equatable, Sendable {
     self.blockedByTerminalFailure = blockedByTerminalFailure
     self.blockedHeadGameID = blockedHeadGameID
     self.blockedHeadRecoveryHandle = blockedHeadRecoveryHandle
+    self.blockedHeadKind = blockedHeadKind
   }
 
   static let empty = StatsOutboxStatus(
@@ -274,7 +288,8 @@ public struct StatsOutboxStatus: Equatable, Sendable {
     corruptRecords: 0,
     blockedByTerminalFailure: false,
     blockedHeadGameID: nil,
-    blockedHeadRecoveryHandle: nil
+    blockedHeadRecoveryHandle: nil,
+    blockedHeadKind: nil
   )
 }
 

@@ -1,28 +1,51 @@
+import SkyjoDesignSystem
 import SkyjoNetworking
+import SkyjoPersistence
 import SwiftUI
 
 @MainActor
 struct HomeShellView: View {
   @Bindable var model: AppModel
-  let user: AccountUser
+  let user: AccountUser?
+  @Bindable var solo: SoloFeatureModel
+  @Bindable var preferences: SoloPreferencesStore
+  let offlineMessage: String?
 
   var body: some View {
     TabView(selection: $model.selectedTab) {
       Tab("Home", systemImage: "house", value: .home) {
         NavigationStack {
-          HomeView(model: model, user: user)
+          HomeView(
+            model: model,
+            user: user,
+            solo: solo,
+            preferences: preferences,
+            offlineMessage: offlineMessage
+          )
         }
       }
 
       Tab("Stats", systemImage: "chart.bar", value: .stats) {
         NavigationStack {
-          StatsView(model: model)
+          if user != nil {
+            StatsView(model: model)
+          } else {
+            SignedOutFeatureView(
+              title: "Sign in for stats",
+              message: "Guest solo games stay on this device and do not add account stats.",
+              model: model
+            )
+          }
         }
       }
 
       Tab("Account", systemImage: "person.crop.circle", value: .account) {
         NavigationStack {
-          AccountView(model: model, user: user)
+          if let user {
+            AccountView(model: model, user: user)
+          } else {
+            AuthenticationView(model: model, embedsNavigation: false)
+          }
         }
       }
     }
@@ -33,7 +56,10 @@ struct HomeShellView: View {
 @MainActor
 private struct HomeView: View {
   @Bindable var model: AppModel
-  let user: AccountUser
+  let user: AccountUser?
+  @Bindable var solo: SoloFeatureModel
+  @Bindable var preferences: SoloPreferencesStore
+  let offlineMessage: String?
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   private var columns: [GridItem] {
@@ -47,20 +73,48 @@ private struct HomeView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 24) {
         VStack(alignment: .leading, spacing: 6) {
-          Text("Welcome, \(user.displayName)")
+          Text(user.map { "Welcome, \($0.displayName)" } ?? "Welcome to Skyjo")
             .font(.largeTitle.bold())
             .accessibilityIdentifier("home.welcome")
-          Text("Your native Skyjo table is ready.")
+          Text(homeSubtitle)
             .foregroundStyle(.primary)
         }
 
+        if let offlineMessage {
+          VStack(alignment: .leading, spacing: 10) {
+            SkyjoStatusBanner(
+              title: "Offline solo is available",
+              message: offlineMessage,
+              systemImage: "wifi.slash"
+            )
+            .accessibilityIdentifier("home.offline-banner")
+            Button {
+              Task { await model.bootstrap() }
+            } label: {
+              Text("Check Connection")
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("home.offline-retry")
+          }
+        }
+
         LazyVGrid(columns: columns, spacing: 12) {
-          FeatureCard(
-            title: "Single Player",
-            detail: "Native game play arrives in IOS-7.",
-            systemImage: "person.fill",
-            accessibilityIdentifier: "home.solo-disabled"
-          )
+          NavigationLink {
+            SoloRootView(model: solo, preferences: preferences)
+          } label: {
+            FeatureCardLabel(
+              title: "Single Player",
+              detail: solo.savedGameSummary == nil
+                ? "Start a native offline game with 1–7 bots."
+                : "Continue your saved round or review a new setup.",
+              systemImage: "person.fill"
+            )
+          }
+          .buttonStyle(AccessibleBorderedButtonStyle(addsContentPadding: false))
+          .accessibilityIdentifier("home.solo")
+          .accessibilityHint("Opens the native single-player table")
           FeatureCard(
             title: "Multiplayer",
             detail: "Native rooms arrive in IOS-8.",
@@ -69,9 +123,15 @@ private struct HomeView: View {
           )
         }
 
-        GroupBox("Account snapshot") {
+        GroupBox(accountSnapshotTitle) {
           VStack(alignment: .leading, spacing: 12) {
-            if let summary = model.statsSummary {
+            if user == nil, solo.owner.accountID == nil {
+              Text("Your active guest save restores on this device. Completed guest games are not uploaded to account stats.")
+                .foregroundStyle(.secondary)
+            } else if user == nil {
+              Text("This account-owned solo save remains available offline. Completed results stay on this device until the account is confirmed online.")
+                .foregroundStyle(.secondary)
+            } else if let summary = model.statsSummary {
               HStack {
                 StatValue(label: "Games", value: "\(summary.`self`.gamesPlayed)")
                 Spacer()
@@ -86,8 +146,8 @@ private struct HomeView: View {
                 .foregroundStyle(.secondary)
             }
 
-            Button("View Stats") {
-              model.selectedTab = .stats
+            Button(user == nil ? "Sign In" : "View Stats") {
+              model.selectedTab = user == nil ? .account : .stats
             }
             .accessibilityIdentifier("home.view-stats")
           }
@@ -100,6 +160,19 @@ private struct HomeView: View {
     .navigationTitle("Home")
     .accessibilityIdentifier("home.screen")
   }
+
+  private var accountSnapshotTitle: String {
+    if user != nil { return "Account snapshot" }
+    return solo.owner.accountID == nil ? "Guest play" : "Offline account save"
+  }
+
+  private var homeSubtitle: String {
+    if user != nil { return "Your native Skyjo table is ready." }
+    if solo.owner.accountID != nil {
+      return "Continue your account-owned solo save offline; results will sync after account confirmation."
+    }
+    return "Play solo as a guest, or sign in when you want account stats."
+  }
 }
 
 private struct FeatureCard: View {
@@ -110,24 +183,54 @@ private struct FeatureCard: View {
 
   var body: some View {
     Button {} label: {
-      VStack(alignment: .leading, spacing: 12) {
-        Image(systemName: systemImage)
-          .font(.title)
-        Text(title)
-          .font(.headline)
-          .fixedSize(horizontal: false, vertical: true)
-        Text(detail)
-          .font(.subheadline)
-          .multilineTextAlignment(.leading)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      .frame(maxWidth: .infinity, minHeight: 130, alignment: .leading)
-      .padding()
+      FeatureCardLabel(title: title, detail: detail, systemImage: systemImage)
     }
     .buttonStyle(AccessibleBorderedButtonStyle(addsContentPadding: false))
     .disabled(true)
     .accessibilityIdentifier(accessibilityIdentifier)
     .accessibilityHint("Unavailable in this foundation release")
+  }
+}
+
+private struct FeatureCardLabel: View {
+  let title: String
+  let detail: String
+  let systemImage: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Image(systemName: systemImage)
+        .font(.title)
+      Text(title)
+        .font(.headline)
+        .fixedSize(horizontal: false, vertical: true)
+      Text(detail)
+        .font(.subheadline)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: .infinity, minHeight: 130, alignment: .leading)
+    .padding()
+  }
+}
+
+@MainActor
+private struct SignedOutFeatureView: View {
+  let title: String
+  let message: String
+  @Bindable var model: AppModel
+
+  var body: some View {
+    ContentUnavailableView {
+      Label(title, systemImage: "person.crop.circle.badge.plus")
+    } description: {
+      Text(message)
+    } actions: {
+      Button("Open Account") { model.selectedTab = .account }
+        .buttonStyle(.borderedProminent)
+        .frame(minHeight: 44)
+    }
+    .navigationTitle("Stats")
   }
 }
 

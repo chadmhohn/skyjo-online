@@ -1,4 +1,5 @@
 import Foundation
+import SkyjoDomain
 
 public enum AccountRole: String, Decodable, Equatable, Sendable {
   case admin
@@ -473,6 +474,28 @@ public struct PlayerStats: Decodable, Equatable, Sendable {
   public let games: [StatsGame]
 }
 
+/// Immutable body used by the durable native solo-stats outbox. UUIDs are encoded in canonical
+/// lowercase form so an acknowledgement-loss retry sends the exact same idempotency key and
+/// account fence.
+public struct SinglePlayerStatsSubmission: Encodable, Equatable, Sendable {
+  public let state: GameState
+  public let clientGameKey: String
+  public let completedAt: Int64
+  public let expectedAccountUserId: String
+
+  public init(
+    state: GameState,
+    clientGameID: UUID,
+    completedAt: Int64,
+    expectedAccountUserID: UUID
+  ) {
+    self.state = state
+    clientGameKey = clientGameID.uuidString.lowercased()
+    self.completedAt = completedAt
+    expectedAccountUserId = expectedAccountUserID.uuidString.lowercased()
+  }
+}
+
 public enum ServiceReadinessStatus: String, Decodable, Equatable, Sendable {
   case ready
   case notReady = "not_ready"
@@ -758,6 +781,22 @@ public actor SkyjoAPIClient {
       throw SkyjoHTTPClientError.invalidSuccessPayload
     }
     return response
+  }
+
+  @discardableResult
+  public func submitSinglePlayerStats(
+    _ submission: SinglePlayerStatsSubmission
+  ) async throws -> StatsGame {
+    let response: GameEnvelope = try await request(
+      path: "api/stats/single-player",
+      method: "POST",
+      body: submission,
+      successStatusCodes: [201]
+    )
+    guard response.game.mode == .single else {
+      throw SkyjoHTTPClientError.invalidSuccessPayload
+    }
+    return response.game
   }
 
   public func readiness() async throws -> ServiceReadiness {

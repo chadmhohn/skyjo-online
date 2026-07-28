@@ -6,8 +6,14 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const audioDirectory = path.join(repoRoot, 'public', 'audio');
+const nativeAudioDirectory = path.join(repoRoot, 'ios', 'SkyjoApp', 'Resources', 'Audio');
 
 export const acceptedFlipSha256 = 'dc9c08e4b172d404ce2f1ba8380d552fdd1d302419e2872f067f0d761147df90';
+export const acceptedCueSha256 = Object.freeze({
+  'card-flip.mp3': acceptedFlipSha256,
+  'card-pickup.mp3': '5d6b866eb280804f86aae1d5d795da1a2260075a5c18b11472b84b33d31f68de',
+  'card-place.mp3': '37f3fb1cd7a08f741eb7431de2cde4ad5eef129aa18496d379221461926373b8'
+});
 export const requiredCueFiles = [
   'card-flip.mp3',
   'card-pickup.mp3',
@@ -163,17 +169,26 @@ function rounded(value, digits = 3) {
 
 export async function auditAudioAssets() {
   const directoryEntries = await fs.readdir(audioDirectory, { withFileTypes: true });
+  const nativeDirectoryEntries = await fs.readdir(nativeAudioDirectory, { withFileTypes: true });
   const cueFiles = directoryEntries
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.mp3'))
     .map((entry) => entry.name)
     .sort();
   const failures = [];
+  const nativeCueFiles = nativeDirectoryEntries
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.mp3'))
+    .map((entry) => entry.name)
+    .sort();
 
   if (cueFiles.includes(legacyAmbienceFile)) {
     failures.push(`${legacyAmbienceFile} must be removed; continuous ambience is outside issue #159.`);
   }
   for (const required of requiredCueFiles) {
     if (!cueFiles.includes(required)) failures.push(`Missing required cue ${required}.`);
+    if (!nativeCueFiles.includes(required)) failures.push(`Missing required native cue ${required}.`);
+  }
+  for (const unexpected of nativeCueFiles.filter((file) => !requiredCueFiles.includes(file))) {
+    failures.push(`Unexpected native cue ${unexpected}; document and gate new audio before bundling it.`);
   }
 
   const report = [];
@@ -184,6 +199,21 @@ export async function auditAudioAssets() {
     const filePath = path.join(audioDirectory, fileName);
     const bytes = await fs.readFile(filePath);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const acceptedSha256 = acceptedCueSha256[fileName];
+    if (acceptedSha256 && sha256 !== acceptedSha256) {
+      failures.push(`${fileName}: accepted SHA-256 changed (${sha256}).`);
+    }
+    let nativeBytes;
+    let nativeSha256;
+    try {
+      nativeBytes = await fs.readFile(path.join(nativeAudioDirectory, fileName));
+      nativeSha256 = createHash('sha256').update(nativeBytes).digest('hex');
+      if (!bytes.equals(nativeBytes)) {
+        failures.push(`${fileName}: native bundle copy is not byte-identical to public/audio.`);
+      }
+    } catch (error) {
+      failures.push(`${fileName}: native bundle copy could not be read (${error instanceof Error ? error.message : String(error)}).`);
+    }
     let probe;
     let pcm;
     try {
@@ -209,11 +239,7 @@ export async function auditAudioAssets() {
       failures.push(`${fileName}: ffprobe size ${probe.sizeBytes} does not match file size ${bytes.length}.`);
     }
 
-    if (fileName === 'card-flip.mp3') {
-      if (sha256 !== acceptedFlipSha256) {
-        failures.push(`card-flip.mp3: accepted SHA-256 changed (${sha256}).`);
-      }
-    } else {
+    if (fileName !== 'card-flip.mp3') {
       if (probe.durationSeconds > maxReplacementDurationSeconds) {
         failures.push(
           `${fileName}: duration ${probe.durationSeconds.toFixed(3)}s exceeds ${maxReplacementDurationSeconds.toFixed(3)}s.`
@@ -252,6 +278,8 @@ export async function auditAudioAssets() {
       file: fileName,
       finalSampleDbfs: rounded(pcm.finalSampleDbfs, 1),
       onsetMilliseconds: rounded(pcm.onsetSeconds * 1000, 1),
+      nativeSha256,
+      nativeSizeBytes: nativeBytes?.length,
       sampleRate: probe.sampleRate,
       sha256,
       sizeBytes: bytes.length,

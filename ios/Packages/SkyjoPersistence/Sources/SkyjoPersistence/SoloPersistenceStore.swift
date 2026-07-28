@@ -377,13 +377,21 @@ public actor SoloPersistenceStore: ModelActor {
       let blockedHeadRecoveryHandle = blocked
         ? records.first.map { recoveryHandle(for: $0) }
         : nil
+      let blockedHeadKind: StatsOutboxBlockedHeadKind? = if firstIsCorrupt {
+        .corrupt
+      } else if valid.first?.isTerminalFailure == true {
+        .terminal
+      } else {
+        nil
+      }
       return StatsOutboxStatus(
         queued: records.count,
         terminalFailures: terminalFailures,
         corruptRecords: corruptRecords,
         blockedByTerminalFailure: blocked,
         blockedHeadGameID: blockedHeadGameID,
-        blockedHeadRecoveryHandle: blockedHeadRecoveryHandle
+        blockedHeadRecoveryHandle: blockedHeadRecoveryHandle,
+        blockedHeadKind: blockedHeadKind
       )
     } catch {
       modelContext.rollback()

@@ -7,7 +7,7 @@ import Testing
 @Suite("Native app state and navigation", .serialized)
 @MainActor
 struct AppModelTests {
-  @Test("Bootstrap routes access, account, and authenticated empty states")
+  @Test("Bootstrap routes access, guest, and authenticated empty states")
   func bootstrapRoutes() async {
     let accessModel = makeModel(scenario: .accessRequired)
     await accessModel.bootstrap()
@@ -15,7 +15,7 @@ struct AppModelTests {
 
     let accountModel = makeModel(scenario: .accountRequired)
     await accountModel.bootstrap()
-    #expect(accountModel.rootState == .accountRequired)
+    #expect(accountModel.rootState == .guest)
 
     let authenticatedModel = makeModel(scenario: .normal)
     await authenticatedModel.bootstrap()
@@ -96,6 +96,51 @@ struct AppModelTests {
       Issue.record("Expected the post-access account check to expose a retryable offline state.")
       return
     }
+  }
+
+  @Test("Offline solo hints never authorize stats and invalidation preserves the outer gate")
+  func offlineHintsAndAuthorizationInvalidation() async throws {
+    let suiteName = "skyjo.app-model.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let preferences = SoloPreferencesStore(defaults: defaults)
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+
+    let guestModel = AppModel(
+      service: MockSkyjoService(scenario: .accountRequired),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      preferences: preferences
+    )
+    await guestModel.bootstrap()
+    #expect(guestModel.rootState == .guest)
+    #expect(preferences.accessWasConfirmed)
+    #expect(guestModel.localSoloOwner == .guest)
+    #expect(guestModel.confirmedStatsAccountID == nil)
+
+    preferences.confirmAccount(accountID)
+    let offlineModel = AppModel(
+      service: MockSkyjoService(scenario: .offline),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      preferences: preferences
+    )
+    await offlineModel.bootstrap()
+    guard case .offlineReady = offlineModel.rootState else {
+      Issue.record("Prior outer access should keep only the local solo shell available offline.")
+      return
+    }
+    #expect(offlineModel.localSoloOwner == .account(accountID))
+    #expect(offlineModel.confirmedStatsAccountID == nil)
+
+    offlineModel.handleStatsAuthorizationInvalidation(.accountSessionChanged)
+    #expect(offlineModel.rootState == .guest)
+    #expect(preferences.accessWasConfirmed)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    preferences.confirmAccount(accountID)
+    offlineModel.handleStatsAuthorizationInvalidation(.accessRequired)
+    #expect(offlineModel.rootState == .accessRequired)
+    #expect(!preferences.accessWasConfirmed)
+    #expect(preferences.lastConfirmedAccountID == nil)
   }
 
   @Test("Unknown server detail stays hidden and forms disable invalid actions")
@@ -234,8 +279,8 @@ struct AppModelTests {
     profileModel.accountSettings.confirmPassword = "new-password"
     profileModel.selectedTab = .account
     await profileModel.changePassword()
-    #expect(profileModel.rootState == .accountRequired)
-    #expect(profileModel.selectedTab == .home)
+    #expect(profileModel.rootState == .guest)
+    #expect(profileModel.selectedTab == .account)
     #expect(profileModel.accountSettings.currentPassword.isEmpty)
     #expect(profileModel.accountSettings.password.isEmpty)
     #expect(profileModel.authentication.email == "native@example.invalid")
@@ -245,7 +290,7 @@ struct AppModelTests {
     await logoutModel.bootstrap()
     logoutModel.selectedTab = .account
     await logoutModel.logoutAccount()
-    #expect(logoutModel.rootState == .accountRequired)
+    #expect(logoutModel.rootState == .guest)
     #expect(logoutModel.selectedTab == .home)
     #expect(logoutModel.user == nil)
   }
@@ -309,7 +354,7 @@ struct AppModelTests {
     #expect(model.access.isSubmitting)
     await service.completePendingCurrentAccount()
     await submitTask.value
-    #expect(model.rootState == .accountRequired)
+    #expect(model.rootState == .guest)
     #expect(!model.access.isSubmitting)
   }
 
@@ -330,11 +375,11 @@ struct AppModelTests {
     #expect(await service.hasPendingProfileRequest())
 
     await model.logoutAccount()
-    #expect(model.rootState == .accountRequired)
+    #expect(model.rootState == .guest)
     await service.completePendingProfile(displayName: "Stale profile")
     await profileTask.value
 
-    #expect(model.rootState == .accountRequired)
+    #expect(model.rootState == .guest)
     #expect(model.user == nil)
     #expect(model.accountSettings.profileMessage.isEmpty)
   }

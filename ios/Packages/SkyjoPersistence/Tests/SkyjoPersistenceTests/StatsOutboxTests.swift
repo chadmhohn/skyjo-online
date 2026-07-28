@@ -409,6 +409,7 @@ struct StatsOutboxTests {
     #expect(blockedStatus.corruptRecords == 1)
     #expect(blockedStatus.blockedByTerminalFailure)
     #expect(blockedStatus.blockedHeadGameID == gameID)
+    #expect(blockedStatus.blockedHeadKind == .corrupt)
     let recoveryHandle = try #require(blockedStatus.blockedHeadRecoveryHandle)
     let coordinator = StatsOutboxCoordinator(store: store) { _ in
       Issue.record("A corrupt outbox body must not reach delivery")
@@ -479,6 +480,7 @@ struct StatsOutboxTests {
     #expect(status.terminalFailures == 1)
     #expect(status.blockedByTerminalFailure)
     #expect(status.blockedHeadGameID == PersistenceTestSupport.guestGameID)
+    #expect(status.blockedHeadKind == .terminal)
     let recoveryHandle = try #require(status.blockedHeadRecoveryHandle)
     let blocked = await coordinator.flush(force: true)
     #expect(blocked.attempted == 0)
@@ -505,6 +507,54 @@ struct StatsOutboxTests {
     #expect(await coordinator.flush(force: true).delivered == 1)
     #expect(try await store.pendingOutboxCount(accountID: alice) == 0)
     #expect(try await store.pendingOutboxCount(accountID: bob) == 0)
+  }
+
+  @Test("Authorization changes abort without mutating or delaying the FIFO head")
+  func authorizationChangeLeavesHeadUntouched() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    let terminal = try PersistenceTestSupport.terminalState()
+    let accountID = PersistenceTestSupport.aliceID
+    let gameID = PersistenceTestSupport.guestGameID
+    try await store.completeSession(
+      owner: .account(accountID),
+      gameID: gameID,
+      state: terminal,
+      setup: try PersistenceTestSupport.setup(for: terminal, gameID: gameID),
+      saveSequence: 0,
+      completedAtMilliseconds: 10
+    )
+    let before = try #require(
+      try await store.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 20,
+        force: true,
+        limit: 1
+      ).first
+    )
+    let coordinator = StatsOutboxCoordinator(store: store) { _ in
+      throw StatsDeliveryError.authorizationChanged
+    }
+    await coordinator.setConfirmedAccount(accountID)
+
+    #expect(
+      await coordinator.flush(force: true)
+        == StatsFlushResult(attempted: 0, delivered: 0, pending: 0, aborted: true)
+    )
+
+    let after = try #require(
+      try await store.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 20,
+        force: true,
+        limit: 1
+      ).first
+    )
+    #expect(after.envelopeData == before.envelopeData)
+    #expect(after.attempts == before.attempts)
+    #expect(after.nextAttemptAtMilliseconds == before.nextAttemptAtMilliseconds)
+    #expect(!after.isTerminalFailure)
+    #expect(try await store.pendingOutboxCount(accountID: accountID) == 1)
   }
 
   @Test("Dead-letter status survives a disk-store relaunch")

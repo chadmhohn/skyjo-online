@@ -75,15 +75,26 @@ struct AccessGateView: View {
 struct AuthenticationView: View {
   @Bindable var model: AppModel
   @Bindable private var authentication: AuthenticationFormModel
+  private let embedsNavigation: Bool
 
-  init(model: AppModel) {
+  init(model: AppModel, embedsNavigation: Bool = true) {
     self.model = model
     _authentication = Bindable(model.authentication)
+    self.embedsNavigation = embedsNavigation
   }
 
   var body: some View {
-    NavigationStack {
-      Form {
+    Group {
+      if embedsNavigation {
+        NavigationStack { authenticationForm }
+      } else {
+        authenticationForm
+      }
+    }
+  }
+
+  private var authenticationForm: some View {
+    Form {
         Section {
           Picker("Account action", selection: $authentication.mode) {
             ForEach(AuthenticationMode.allCases) { mode in
@@ -159,10 +170,9 @@ struct AuthenticationView: View {
               .accessibilityIdentifier("auth.error")
           }
         }
-      }
-      .navigationTitle("Your Account")
-      .disabled(model.authentication.isSubmitting)
     }
+    .navigationTitle("Your Account")
+    .disabled(model.authentication.isSubmitting)
   }
 
   private func submit() {

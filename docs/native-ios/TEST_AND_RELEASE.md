@@ -20,6 +20,8 @@ IOS-1 pins `iOS / Build` to the GitHub-hosted `macos-26` image and selects Xcode
 
 IOS-3 adds `iOS / Domain & Persistence`, which runs `npm run test:domain:parity` on the same pinned macOS/Xcode image. The command regenerates and verifies the canonical TypeScript fixture model without writing, replays it through TypeScript and Swift, and runs the Swift package tests with coverage. IOS-4 extends the same command with `SkyjoPersistence` and enforces independent aggregate executable-line floors of 90% for `SkyjoDomain` and `SkyjoPersistence`; one target cannot mask a coverage regression in the other. SwiftPM scratch and module-cache data stay under the ignored per-run `ios/Artifacts/DomainParity-*` directory.
 
+IOS-7 adds the exact `iOS / UI & Accessibility` job. `./scripts/ios-build-test.sh --ui-accessibility` requires no backend or credentials, selects a standard iPhone, large iPhone, and iPad on the newest installed simulator runtime, builds the committed test plan once without signing, and runs the focused native-solo matrix in phone portrait/landscape plus iPad portrait/landscape. Each matrix entry retains its sanitized log and `.xcresult`, including keep-always screenshots, on success and failure.
+
 The harness gives Node and `xcodebuild` allowlisted environments without CI tokens or service credentials and starts the real `server.mjs` on a dynamic loopback port with a fixed non-secret access fixture, UUID-based test-only session/invite secrets, and temporary SQLite/room-state paths. Full mode builds `server-dist`; networking mode builds the production PWA bundle as well. The access fixture is compiled into the test target. Simulator environment contains only the loopback server URL, explicit test mode, and—in networking mode—the nonsecret loopback mixed-client control URL.
 
 The Chromium driver receives a one-line bounded bootstrap containing only the server origin and runs under a separate `env -i` allowlist; it never inherits server credentials/state paths. It uses Playwright's Chromium library directly with an incognito context and no trace, video, screenshot, or console capture. Its loopback-only exact command API accepts aliases rather than chat bodies/raw frames and never returns cookies, passwords, player/command identifiers, or WebSocket payloads. The simulator uses a separate cookie-disabled control session so host-scoped cookies cannot cross loopback ports. Before launch, the harness pins and executes the documented v0.3.2 PWA command/snapshot validators by immutable commit and SHA-256 and proves the established 280-UTF-16-unit boundary.
@@ -32,6 +34,7 @@ Local equivalents:
 npm run contracts:fixtures:check
 npm run test:unit:contracts
 ./scripts/ios-build-test.sh --networking-contracts
+./scripts/ios-build-test.sh --ui-accessibility
 ```
 
 ## Test Layers
@@ -68,6 +71,8 @@ The deterministic contract corpus lives under `contracts/v1/fixtures/`; its SHA-
 - Dynamic Type at normal, xxxLarge, and an accessibility size; Reduce Motion; Increase Contrast; Differentiate Without Color; right-to-left smoke even if v0.1 ships English only.
 
 For IOS-5, retain model and UI evidence for access, signup/login, cookie-backed relaunch, profile, password change, logout, stats loading/empty/detail/player history, retry, offline, disabled/expired account, service-not-ready, and upgrade-required states. The account screen must show the web-only admin link only to an admin and visibly track issue #192 for public-release deletion. Exercise the account screen in phone portrait, landscape, and an accessibility Dynamic Type size, attach sanitized screenshots for the changed UI, and keep the full simulator run free of cookies and passwords.
+
+For IOS-7, retain model and UI evidence for Continue/New Game and replacement cancellation, all setup choices and explanations, stable draw/discard/drawn/guidance slots, face-down accessibility redaction, round-summary minimization, settings, safe persistence/outbox recovery, and guest offline play. Exercise standard and large phones plus iPad portrait/landscape. The focused gate combines the system accessibility audit with explicit XXXL Dynamic Type, Reduce Motion, Increase Contrast, Differentiate Without Color, safe-area containment, and 44-point-target assertions.
 
 ### Performance And Reliability
 

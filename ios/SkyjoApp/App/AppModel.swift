@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SkyjoNetworking
+import SkyjoPersistence
 
 protocol SkyjoService: Sendable {
   func readiness() async throws -> ServiceReadiness
@@ -33,8 +34,10 @@ enum AppRootState: Equatable {
   case loading
   case accessRequired
   case accountRequired
+  case guest
   case authenticated
   case offline(message: String)
+  case offlineReady(message: String)
   case serviceNotReady
   case upgradeRequired
   case accountEnded
@@ -179,6 +182,7 @@ final class AppModel {
   private static let supportedProtocolVersion = 2
 
   private let service: any SkyjoService
+  private let preferences: SoloPreferencesStore?
   private var accountGeneration = 0
   private var bootstrapRequestID: UUID?
   private var statsRequestID: UUID?
@@ -206,10 +210,24 @@ final class AppModel {
   var games: [StatsGame] = []
   var gameDetailState = GameDetailLoadState.idle
   var playerHistoryState = PlayerHistoryLoadState.idle
+  private(set) var localSessionGeneration = 0
 
-  init(service: any SkyjoService, baseURL: URL) {
+  init(
+    service: any SkyjoService,
+    baseURL: URL,
+    preferences: SoloPreferencesStore? = nil
+  ) {
     self.service = service
+    self.preferences = preferences
     adminURL = baseURL.appending(path: "admin")
+  }
+
+  convenience init(dependencies: AppDependencies, baseURL: URL) {
+    self.init(
+      service: dependencies.apiClient,
+      baseURL: baseURL,
+      preferences: dependencies.preferences
+    )
   }
 
   convenience init(configuration: AppConfiguration) {
@@ -229,7 +247,10 @@ final class AppModel {
       let readiness = try await service.readiness()
       guard bootstrapRequestID == requestID else { return }
       guard readiness.status == .ready else {
-        rootState = .serviceNotReady
+        routeUnavailableForLocalSolo(
+          fallback: .serviceNotReady,
+          message: "The online service is recovering. Your local solo game remains available."
+        )
         return
       }
       guard
@@ -243,16 +264,19 @@ final class AppModel {
       let accessStatus = try await service.accessStatus()
       guard bootstrapRequestID == requestID else { return }
       guard accessStatus.authenticated else {
+        preferences?.clearConfirmedAccessAndAccount()
         resetAccountState()
         rootState = .accessRequired
         return
       }
+      preferences?.confirmAccess()
 
       let currentUser = try await service.currentAccount()
       guard bootstrapRequestID == requestID else { return }
       guard let currentUser else {
         resetAccountState()
-        rootState = .accountRequired
+        preferences?.confirmSignedOut()
+        rootState = .guest
         return
       }
       guard !currentUser.disabled else {
@@ -290,6 +314,7 @@ final class AppModel {
       access.errorMessage = "Authentication failed."
       return
     }
+    preferences?.confirmAccess()
 
     rootState = .loading
     do {
@@ -302,7 +327,8 @@ final class AppModel {
         rootState = .accountEnded
       } else {
         resetAccountState()
-        rootState = .accountRequired
+        preferences?.confirmSignedOut()
+        rootState = .guest
       }
     } catch {
       routeBootstrapError(error)
@@ -544,7 +570,9 @@ final class AppModel {
       else { return }
       resetAccountState(prefillEmail: expectedUser.email)
       authentication.errorMessage = "Password changed. Sign in with your new password."
-      rootState = .accountRequired
+      preferences?.confirmSignedOut()
+      selectedTab = .account
+      rootState = .guest
     } catch {
       guard
         isCurrentAccount(expectedUser.id, generation: expectedGeneration),
@@ -586,7 +614,8 @@ final class AppModel {
         logoutRequestID == requestID
       else { return }
       resetAccountState(prefillEmail: expectedUser.email)
-      rootState = .accountRequired
+      preferences?.confirmSignedOut()
+      rootState = .guest
     } catch {
       guard
         isCurrentAccount(expectedUser.id, generation: expectedGeneration),
@@ -609,6 +638,20 @@ final class AppModel {
       rootState = .loading
     case "offline":
       rootState = .offline(message: "Skyjo could not reach the service. Check your connection and try again.")
+    case "guest":
+      resetAccountState()
+      rootState = .guest
+    case "solo-offline-account":
+      let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000187")!
+      resetAccountState()
+      preferences?.confirmAccess()
+      preferences?.confirmAccount(accountID)
+      rootState = .offlineReady(
+        message: "Skyjo could not reach the service. Your account-owned solo save remains available."
+      )
+    case let value where value.hasPrefix("solo-"):
+      resetAccountState()
+      rootState = .guest
     case "not-ready":
       rootState = .serviceNotReady
     case "upgrade-required":
@@ -656,6 +699,8 @@ final class AppModel {
     invalidateAccountRequests()
     accountGeneration &+= 1
     user = authenticatedUser
+    preferences?.confirmAccess()
+    preferences?.confirmAccount(authenticatedUser.id)
     selectedTab = .home
     accountSettings.synchronize(with: authenticatedUser)
     accountSettings.profileMessage = ""
@@ -666,6 +711,7 @@ final class AppModel {
     authentication.clearSensitiveFields()
     authentication.errorMessage = ""
     rootState = .authenticated
+    localSessionGeneration &+= 1
   }
 
   private func resetAccountState(prefillEmail: String? = nil) {
@@ -691,6 +737,7 @@ final class AppModel {
     accountSettings.profileMessage = ""
     accountSettings.passwordMessage = ""
     accountSettings.clearSensitiveFields()
+    localSessionGeneration &+= 1
   }
 
   private func invalidateAccountRequests() {
@@ -714,9 +761,15 @@ final class AppModel {
     if error as? SkyjoHTTPClientError == .unsupportedServerVersion {
       rootState = .upgradeRequired
     } else if isOffline(error) {
-      rootState = .offline(message: "Skyjo could not reach the service. Check your connection and try again.")
+      routeUnavailableForLocalSolo(
+        fallback: .offline(message: "Skyjo could not reach the service. Check your connection and try again."),
+        message: "Skyjo could not reach the service. You can continue a local solo game; account stats will wait for a confirmed session."
+      )
     } else if isServiceUnavailable(error) {
-      rootState = .serviceNotReady
+      routeUnavailableForLocalSolo(
+        fallback: .serviceNotReady,
+        message: "The online service is unavailable. Your local solo game remains available."
+      )
     } else {
       rootState = .failed(message: userMessage(for: error))
     }
@@ -727,16 +780,27 @@ final class AppModel {
     guard case .server(_, let code, _) = error as? SkyjoHTTPClientError else { return false }
     switch code {
     case .accessRequired:
+      preferences?.clearConfirmedAccessAndAccount()
       resetAccountState()
       rootState = .accessRequired
       return true
     case .accountAuthenticationRequired:
       let email = accountWasKnown ? user?.email : authentication.email
       resetAccountState(prefillEmail: email)
-      rootState = accountWasKnown ? .accountEnded : .accountRequired
+      preferences?.confirmSignedOut()
+      authentication.errorMessage = accountWasKnown
+        ? "Your account session ended. Sign in again when you want account features."
+        : authentication.errorMessage
+      rootState = accountWasKnown ? .accountEnded : .guest
+      if !accountWasKnown {
+        selectedTab = .account
+      }
       return true
     case .serviceNotReady, .serviceUnavailable:
-      rootState = .serviceNotReady
+      routeUnavailableForLocalSolo(
+        fallback: .serviceNotReady,
+        message: "The online service is unavailable. Your local solo game remains available."
+      )
       return true
     default:
       return false
@@ -758,6 +822,59 @@ final class AppModel {
       return error.localizedDescription
     }
     return SkyjoHTTPClientError.safeFallbackMessage
+  }
+
+  var localSoloOwner: SoloOwnerPartition {
+    if let user { return .account(user.id) }
+    if case .offlineReady = rootState, let hintedID = preferences?.lastConfirmedAccountID {
+      return .account(hintedID)
+    }
+    return .guest
+  }
+
+  var confirmedStatsAccountID: UUID? {
+    rootState == .authenticated ? user?.id : nil
+  }
+
+  func synchronizeLocalSolo(_ solo: SoloFeatureModel) async {
+    switch rootState {
+    case .guest, .authenticated, .offlineReady:
+      await solo.switchOwner(
+        localSoloOwner,
+        confirmedAccountID: confirmedStatsAccountID
+      )
+    default:
+      await solo.invalidateStatsAuthorization()
+    }
+  }
+
+  func handleStatsAuthorizationInvalidation(_ reason: SessionInvalidationRelay.Reason) {
+    let email = user?.email
+    resetAccountState(prefillEmail: email)
+    switch reason {
+    case .accessRequired:
+      preferences?.clearConfirmedAccessAndAccount()
+      authentication.errorMessage = ""
+      rootState = .accessRequired
+    case .accountSessionChanged:
+      preferences?.confirmSignedOut()
+      authentication.errorMessage = "Your account session changed. Sign in again to resume stats delivery."
+      selectedTab = .account
+      rootState = .guest
+    }
+  }
+
+  private func routeUnavailableForLocalSolo(
+    fallback: AppRootState,
+    message: String
+  ) {
+    guard preferences?.accessWasConfirmed == true else {
+      rootState = fallback
+      return
+    }
+    statsState = .offline(message: "Stats are unavailable while you are offline.")
+    rootState = .offlineReady(message: message)
+    localSessionGeneration &+= 1
   }
 }
 
