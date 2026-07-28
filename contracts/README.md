@@ -23,7 +23,10 @@ Fixtures are synthetic and contain no credentials, cookies, tokens, production r
 npm run contracts:fixtures:check
 npm run contracts:fixtures:update
 npm run test:unit:contracts
+npm run test:domain:parity
 ```
+
+`domain-parity.json` is the executable IOS-3 golden corpus. It pins seeded deck and roster states, named rule transitions, strategy-version-1 AI decisions, hidden-information projections, and fixed/Mixed solo setup assignments. The domain-parity command checks the same corpus in TypeScript and Swift and enforces the Swift domain coverage floor.
 
 The update command generates into a temporary directory, hashes every fixture in `manifest.json`, and atomically replaces the fixture directory only when its existing git state is clean. The check command never writes and fails for missing, stale, or unexpected files.
 

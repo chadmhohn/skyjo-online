@@ -39,6 +39,14 @@ npm run contracts:fixtures:check
 npm run test:unit:contracts
 ```
 
+Run the IOS-3 cross-language domain gate used by `iOS / Domain & Persistence` with:
+
+```sh
+npm run test:domain:parity
+```
+
+That one command checks deterministic fixture generation, replays the rules and AI corpus through both TypeScript and Swift, runs the Swift domain invariant/privacy tests, and enforces at least 90% executable-line coverage for `SkyjoDomain`. Its SwiftPM scratch and coverage files remain in the ignored per-run `ios/Artifacts/DomainParity-*` directory.
+
 Use `npm run contracts:fixtures:update` only after an intentional schema or canonical-producer change. The update is guarded against replacing a dirty fixture directory; review the generated corpus and SHA-256 manifest before committing.
 
 To inspect destinations without running tests:

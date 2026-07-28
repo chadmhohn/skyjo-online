@@ -47,6 +47,7 @@
     "test": "npm run test:unit",
     "test:controller": "node --test deploy/tests/*.test.mjs",
     "test:compat:v011": "node scripts/smoke-v011-rollback-compatibility.mjs",
+    "test:domain:parity": "bash scripts/test-ios-domain-parity.sh",
     "test:ops": "node --test deploy/tests/operations-governance.test.mjs",
     "test:unit": "npm run test:unit:release && npm run test:unit:data && npm run test:unit:delivery",
     "test:unit:contracts": "npm run build:server && vitest run --config vitest.contracts.config.ts --coverage",
