@@ -1,3 +1,4 @@
+import Foundation
 import SkyjoDesignSystem
 import SkyjoDomain
 import SkyjoPersistence
@@ -109,6 +110,12 @@ private struct SoloSetupView: View {
       if let warning = model.persistenceWarning {
         Section {
           SkyjoStatusBanner(title: warningTitle(warning.kind), message: warning.message)
+        }
+      }
+
+      if model.outboxStatus.blockedHeadKind != nil {
+        Section {
+          SoloRecoveryView(model: model)
         }
       }
 
@@ -362,7 +369,7 @@ private struct SoloGameView: View {
         opponentRegion(wide: false, boardsPerViewport: 1)
           .frame(width: opponentWidth)
           .frame(maxHeight: .infinity)
-        actionBand(wide: true)
+        actionBand(wide: true, compactGuidance: true)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilitySortPriority(4)
         humanBoard(compact: true)
@@ -398,9 +405,10 @@ private struct SoloGameView: View {
           .font(.headline)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("solo.table.round")
-        Text(model.currentPlayer.map { $0.kind == .human ? "Your turn" : "\($0.name)'s turn" } ?? "Table paused")
+        Text(model.tableStatus)
           .font(.caption)
           .foregroundStyle(.secondary)
+          .accessibilityIdentifier("solo.table.turn-state")
       }
       Spacer()
       if model.owner.accountID == nil {
@@ -408,6 +416,7 @@ private struct SoloGameView: View {
           .font(.caption.bold())
           .labelStyle(.iconOnly)
           .accessibilityLabel("Guest game. Completed games are not added to account stats.")
+          .accessibilityIdentifier("solo.table.guest")
       }
       if model.persistenceWarning != nil {
         Button {
@@ -487,7 +496,7 @@ private struct SoloGameView: View {
   }
 
   @ViewBuilder
-  private func actionBand(wide: Bool) -> some View {
+  private func actionBand(wide: Bool, compactGuidance: Bool = false) -> some View {
     Group {
       if dynamicTypeSize.isAccessibilitySize {
         Grid(horizontalSpacing: 8, verticalSpacing: 8) {
@@ -497,7 +506,7 @@ private struct SoloGameView: View {
           }
           GridRow {
             drawnSlot
-            guidanceSlot
+            guidanceSlot(compact: compactGuidance)
           }
         }
       } else {
@@ -505,7 +514,7 @@ private struct SoloGameView: View {
           drawSlot
           discardSlot
           drawnSlot
-          guidanceSlot
+          guidanceSlot(compact: compactGuidance)
         }
       }
     }
@@ -514,7 +523,7 @@ private struct SoloGameView: View {
   }
 
   private var drawSlot: some View {
-    SkyjoActionSlot {
+    return SkyjoActionSlot {
       Button {
         Task { await model.performHuman(.drawBlind) }
       } label: {
@@ -605,24 +614,28 @@ private struct SoloGameView: View {
     }
   }
 
-  private var guidanceSlot: some View {
-    SkyjoActionSlot {
+  private func guidanceSlot(compact: Bool) -> some View {
+    let usesCompactCopy = compact || dynamicTypeSize.isAccessibilitySize
+    let visibleGuidance = usesCompactCopy ? compactActionGuidance : model.actionGuidance
+    return SkyjoActionSlot {
       VStack(spacing: 6) {
         Image(systemName: guidanceImage)
           .foregroundStyle(.tint)
           .accessibilityHidden(true)
-        Text(dynamicTypeSize.isAccessibilitySize ? compactActionGuidance : model.actionGuidance)
+        Text(visibleGuidance)
           .font(dynamicTypeSize.isAccessibilitySize ? .caption : .footnote)
           .foregroundStyle(.primary)
           .multilineTextAlignment(.center)
-          .lineLimit(dynamicTypeSize.isAccessibilitySize ? 5 : 4)
+          .lineLimit(usesCompactCopy ? nil : 4)
           .minimumScaleFactor(0.75)
           .fixedSize(horizontal: false, vertical: true)
+          .layoutPriority(1)
       }
       .padding(6)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .accessibilityElement(children: .combine)
       .accessibilityLabel(model.actionGuidance)
+      .accessibilityValue("Visible guidance: \(visibleGuidance)")
       .accessibilityIdentifier("solo.action.guidance")
     }
   }
@@ -675,6 +688,8 @@ private struct SoloGameView: View {
 }
 
 struct PlayerBoardView: View {
+  @Environment(\.layoutDirection) private var layoutDirection
+
   let player: Player
   let isLocal: Bool
   let isCompact: Bool
@@ -703,7 +718,8 @@ struct PlayerBoardView: View {
         columns: Array(repeating: GridItem(.flexible(), spacing: isCompact ? 1 : 6), count: 4),
         spacing: isCompact ? 1 : 6
       ) {
-        ForEach(Array(player.grid.enumerated()), id: \.offset) { index, card in
+        ForEach(visualGridIndices, id: \.self) { index in
+          let card = player.grid[index]
           let row = index / SkyjoRules.columns + 1
           let column = index % SkyjoRules.columns + 1
           SkyjoCardView(
@@ -725,6 +741,9 @@ struct PlayerBoardView: View {
           .accessibilityIdentifier("solo.card.\(isLocal ? "local" : "opponent").\(player.id).r\(row).c\(column)")
         }
       }
+      // Keep column placement deterministic and mirror logical columns ourselves.
+      // LazyVGrid does not provide a stable item-ordering contract across layout directions.
+      .environment(\.layoutDirection, .leftToRight)
     }
     .padding(isCompact ? 3 : 10)
     .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
@@ -734,6 +753,21 @@ struct PlayerBoardView: View {
     .accessibilityElement(children: .contain)
     .accessibilityLabel(isLocal ? "Your board" : "\(player.name)'s board")
     .accessibilityIdentifier("solo.board.\(isLocal ? "local" : "opponent").\(player.id)")
+  }
+
+  private var visualGridIndices: [Int] {
+    let indices = Array(player.grid.indices)
+    guard usesRightToLeftLayout else { return indices }
+    return stride(from: 0, to: indices.count, by: SkyjoRules.columns).flatMap { rowStart in
+      indices[rowStart..<min(rowStart + SkyjoRules.columns, indices.count)].reversed()
+    }
+  }
+
+  private var usesRightToLeftLayout: Bool {
+#if DEBUG
+    if ProcessInfo.processInfo.arguments.contains("--ui-layout-direction=rtl") { return true }
+#endif
+    return layoutDirection == .rightToLeft
   }
 
   private func presentation(for card: Card) -> SkyjoCardFace {
@@ -807,6 +841,11 @@ private struct SoloScoreSummaryView: View {
             .accessibilityIdentifier("solo.summary.stats-state")
           }
 
+          if let error = model.lastActionError, model.completionError == nil {
+            SkyjoStatusBanner(title: "New game not started", message: error)
+              .accessibilityIdentifier("solo.summary.new-game-error")
+          }
+
           SoloRecoveryView(model: model)
 
           if model.game?.phase == .roundOver {
@@ -820,20 +859,24 @@ private struct SoloScoreSummaryView: View {
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("solo.summary.next-round")
           } else if model.completionCommitted {
-            Button { model.replay() } label: {
+            Button {
+              Task { await model.playAgain() }
+            } label: {
               Text("Play Again")
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
-              .buttonStyle(.borderedProminent)
-              .accessibilityIdentifier("solo.summary.replay")
-            Button { model.replay() } label: {
+            .buttonStyle(.borderedProminent)
+            .disabled(model.isWorking)
+            .accessibilityIdentifier("solo.summary.replay")
+            Button { model.changeSetup() } label: {
               Text("Change Setup")
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
-              .buttonStyle(.bordered)
-              .accessibilityIdentifier("solo.summary.change-setup")
+            .buttonStyle(.bordered)
+            .disabled(model.isWorking)
+            .accessibilityIdentifier("solo.summary.change-setup")
           }
         }
         .padding()
@@ -858,6 +901,9 @@ private struct SoloSettingsView: View {
   @Bindable var model: SoloFeatureModel
   @Bindable var preferences: SoloPreferencesStore
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+  @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
   var body: some View {
     NavigationStack {
@@ -877,6 +923,16 @@ private struct SoloSettingsView: View {
             .disabled(true)
             .accessibilityIdentifier("solo.settings.music")
           Text("Music defaults off and remains unavailable until an original or licensed track is approved. Sound effects use the bundled CC0 card cues.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        }
+
+        Section("System accessibility") {
+          LabeledContent("Adaptations", value: accessibilityAdaptationSummary)
+            .accessibilityLabel("System accessibility adaptations")
+            .accessibilityValue(accessibilityAdaptationSummary)
+            .accessibilityIdentifier("solo.settings.accessibility-adaptations")
+          Text("Skyjo follows the system settings for motion, contrast, and color-independent card markers.")
             .font(.footnote)
             .foregroundStyle(.secondary)
         }
@@ -928,6 +984,10 @@ private struct SoloSettingsView: View {
       .task { await model.refreshOutboxStatus() }
     }
   }
+
+  private var accessibilityAdaptationSummary: String {
+    "Reduce Motion \(reduceMotion ? "on" : "off"); Increase Contrast \(colorSchemeContrast == .increased ? "on" : "off"); Differentiate Without Color \(differentiateWithoutColor ? "on" : "off")"
+  }
 }
 
 @MainActor
@@ -943,19 +1003,27 @@ private struct SoloRecoveryView: View {
             ? "The oldest result was rejected permanently. Retry after a compatibility fix, or discard only after confirming it is no longer needed."
             : "The oldest queued result is damaged and cannot be submitted. Discarding only this blocked item lets later results continue.")
           if kind == .terminal {
-            Button("Retry Oldest Result") {
+            Button {
               Task { await model.retryBlockedStats() }
+            } label: {
+              Text("Retry Oldest Result")
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.bordered)
             .disabled(!model.statsDeliveryIsConfirmed)
-            .frame(minHeight: 44)
             .accessibilityIdentifier("solo.outbox.retry")
           }
-          Button("Discard Oldest Result", role: .destructive) {
+          Button(role: .destructive) {
             confirmDiscard = true
+          } label: {
+            Text("Discard Oldest Result")
+              .frame(maxWidth: .infinity, minHeight: 44)
+              .contentShape(Rectangle())
           }
+          .buttonStyle(.bordered)
           .disabled(!model.statsDeliveryIsConfirmed)
-          .frame(minHeight: 44)
-            .accessibilityIdentifier("solo.outbox.discard")
+          .accessibilityIdentifier("solo.outbox.discard")
           if !model.statsDeliveryIsConfirmed {
             Text("Confirm this account online before retrying or discarding its stored result.")
               .font(.footnote)
@@ -964,6 +1032,7 @@ private struct SoloRecoveryView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }
+      .accessibilityIdentifier("solo.outbox.recovery")
       .confirmationDialog(
         "Discard this completed result?",
         isPresented: $confirmDiscard,

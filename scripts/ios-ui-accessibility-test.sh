@@ -70,6 +70,35 @@ xcrun simctl list --json devices available \
 standard_udid=""
 large_udid=""
 ipad_udid=""
+ui_udids=()
+ui_contrast_states=()
+ui_reduce_motion_states=()
+ui_differentiate_states=()
+ui_matrix_marker_states=()
+accessibility_helper="$derived_data/SimulatorAccessibility/skyjo-simulator-accessibility"
+
+restore_simulator_accessibility() {
+  local index=""
+  for index in "${!ui_udids[@]}"; do
+    xcrun simctl ui "${ui_udids[$index]}" increase_contrast "${ui_contrast_states[$index]}" \
+      >/dev/null 2>&1 || true
+    if [[ -x "$accessibility_helper" ]]; then
+      xcrun simctl spawn "${ui_udids[$index]}" "$accessibility_helper" \
+        "${ui_reduce_motion_states[$index]}" "${ui_differentiate_states[$index]}" \
+        >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${ui_matrix_marker_states[$index]}" ]]; then
+      xcrun simctl spawn "${ui_udids[$index]}" launchctl setenv \
+        SKYJO_IOS_UI_ACCESSIBILITY_MATRIX "${ui_matrix_marker_states[$index]}" \
+        >/dev/null 2>&1 || true
+    else
+      xcrun simctl spawn "${ui_udids[$index]}" launchctl unsetenv \
+        SKYJO_IOS_UI_ACCESSIBILITY_MATRIX >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+trap restore_simulator_accessibility EXIT
 while IFS=$'\t' read -r role runtime name udid; do
   [[ -n "$role" && -n "$runtime" && -n "$name" && "$udid" =~ ^[A-Fa-f0-9-]{36}$ ]] || {
     printf 'ERROR: Invalid simulator matrix record.\n' >&2
@@ -92,6 +121,23 @@ done < "$matrix_file"
   exit 1
 }
 
+host_arch="$(uname -m)"
+[[ "$host_arch" == "arm64" || "$host_arch" == "x86_64" ]] || {
+  printf 'ERROR: Unsupported simulator host architecture: %s\n' "$host_arch" >&2
+  exit 1
+}
+mkdir -p "$(dirname "$accessibility_helper")"
+xcrun --sdk iphonesimulator clang \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -arch "$host_arch" \
+  -mios-simulator-version-min=18.0 \
+  -isysroot "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  "$repo_root/scripts/ios-simulator-accessibility.c" \
+  -lAccessibility \
+  -o "$accessibility_helper"
+
 for udid in "$standard_udid" "$large_udid" "$ipad_udid"; do
   xcrun simctl boot "$udid" >/dev/null 2>&1 || true
   xcrun simctl bootstatus "$udid" -b
@@ -99,6 +145,32 @@ for udid in "$standard_udid" "$large_udid" "$ipad_udid"; do
   for key in SKYJO_IOS_TEST_SERVER_URL SKYJO_IOS_PWA_CONTROL_URL SKYJO_IOS_TEST_MODE SKYJO_IOS_TEST_ACCESS_PASSWORD; do
     xcrun simctl spawn "$udid" launchctl unsetenv "$key" >/dev/null 2>&1 || true
   done
+  contrast_state="$(xcrun simctl ui "$udid" increase_contrast)"
+  [[ "$contrast_state" == "enabled" || "$contrast_state" == "disabled" ]] || {
+    printf 'ERROR: Increase Contrast is unavailable on simulator %s.\n' "$udid" >&2
+    exit 1
+  }
+  ui_udids+=("$udid")
+  ui_contrast_states+=("$contrast_state")
+  accessibility_state="$(xcrun simctl spawn "$udid" "$accessibility_helper")"
+  IFS=$'\t' read -r reduce_motion_state differentiate_state <<< "$accessibility_state"
+  [[ "$reduce_motion_state" =~ ^[01]$ && "$differentiate_state" =~ ^[01]$ ]] || {
+    printf 'ERROR: Invalid simulator accessibility state for %s.\n' "$udid" >&2
+    exit 1
+  }
+  ui_reduce_motion_states+=("$reduce_motion_state")
+  ui_differentiate_states+=("$differentiate_state")
+  matrix_marker_state="$(
+    xcrun simctl spawn "$udid" launchctl getenv SKYJO_IOS_UI_ACCESSIBILITY_MATRIX \
+      2>/dev/null || true
+  )"
+  ui_matrix_marker_states+=("$matrix_marker_state")
+  xcrun simctl ui "$udid" increase_contrast enabled
+  [[ "$(xcrun simctl spawn "$udid" "$accessibility_helper" 1 1)" == $'1\t1' ]] || {
+    printf 'ERROR: Failed to enable simulator accessibility adaptations for %s.\n' "$udid" >&2
+    exit 1
+  }
+  xcrun simctl spawn "$udid" launchctl setenv SKYJO_IOS_UI_ACCESSIBILITY_MATRIX 1
 done
 
 xcode_environment=(
@@ -136,19 +208,29 @@ standard_tests=(
   testSoloLauncherMakesReplacementExplicitAndRecoverable
   testSoloOfflineAccountCopyAndRevalidationAreExplicit
   testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting
+  testSoloSetupRendersEverySupportedChoice
+  testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave
   testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards
+  testSoloRepresentativeTurnKeepsEveryActionSlotStable
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
   testSoloScoreSummaryCanMinimizeAndRestore
-  testSoloRecoveryAndAccessibilityXXXLRemainOperable
+  testSoloGameSummaryHasDistinctReplayAndSetupRoutes
+  testSoloRecoveryIsExplicitAndSafe
+  testSoloXXXLContentSizeIsUnclamped
+  testSoloAccessibilityAdaptationsAreActive
+  testSoloAccessibilityXXXLRemainsOperable
+  testSoloRightToLeftLayoutKeepsControlsContained
 )
 large_tests=(
   testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards
-  testSoloRecoveryAndAccessibilityXXXLRemainOperable
+  testSoloAccessibilityXXXLRemainsOperable
 )
 ipad_portrait_tests=(
   testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting
+  testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave
   testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards
-  testSoloRecoveryAndAccessibilityXXXLRemainOperable
+  testSoloRepresentativeTurnKeepsEveryActionSlotStable
+  testSoloAccessibilityXXXLRemainsOperable
 )
 ipad_landscape_tests=(
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling

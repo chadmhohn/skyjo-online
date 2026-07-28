@@ -133,26 +133,40 @@ final class AppDependencies {
 
     let container: ModelContainer
     var initialWarning: SoloPersistenceWarning?
-    do {
-      let fileManager = FileManager.default
-      let supportRoot = try fileManager.url(
-        for: .applicationSupportDirectory,
-        in: .userDomainMask,
-        appropriateFor: nil,
-        create: true
-      )
-      let directory = supportRoot.appending(path: "SkyjoNative", directoryHint: .isDirectory)
-      try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-      container = try SkyjoPersistenceContainer.make(
-        at: directory.appending(path: "solo-v2.sqlite")
-      )
-      initialWarning = nil
-    } catch {
+#if DEBUG
+    let usesSoloUITestFixture = ProcessInfo.processInfo.arguments.contains {
+      $0.hasPrefix("--ui-state=solo-")
+    }
+#else
+    let usesSoloUITestFixture = false
+#endif
+    if usesSoloUITestFixture {
+      // UI fixtures still exercise normal owner synchronization, but must not inherit
+      // an earlier simulator run's durable sessions or stats-delivery queue.
       container = try SkyjoPersistenceContainer.makeInMemory()
-      initialWarning = SoloPersistenceWarning(
-        kind: .unavailable,
-        message: "Saved games are unavailable on this device right now. This session can continue, but it is temporary."
-      )
+      initialWarning = nil
+    } else {
+      do {
+        let fileManager = FileManager.default
+        let supportRoot = try fileManager.url(
+          for: .applicationSupportDirectory,
+          in: .userDomainMask,
+          appropriateFor: nil,
+          create: true
+        )
+        let directory = supportRoot.appending(path: "SkyjoNative", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        container = try SkyjoPersistenceContainer.make(
+          at: directory.appending(path: "solo-v2.sqlite")
+        )
+        initialWarning = nil
+      } catch {
+        container = try SkyjoPersistenceContainer.makeInMemory()
+        initialWarning = SoloPersistenceWarning(
+          kind: .unavailable,
+          message: "Saved games are unavailable on this device right now. This session can continue, but it is temporary."
+        )
+      }
     }
     persistenceWarning = initialWarning
     persistenceStore = SoloPersistenceStore(modelContainer: container)

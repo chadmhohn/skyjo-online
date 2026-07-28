@@ -114,6 +114,11 @@ private struct HomeView: View {
           }
           .buttonStyle(AccessibleBorderedButtonStyle(addsContentPadding: false))
           .accessibilityIdentifier("home.solo")
+          .accessibilityValue(
+            solo.outboxStatus.blockedHeadKind == nil
+              ? ""
+              : "Stats delivery needs attention"
+          )
           .accessibilityHint("Opens the native single-player table")
           FeatureCard(
             title: "Multiplayer",

@@ -381,6 +381,75 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  func testSoloSetupRendersEverySupportedChoice() throws {
+    let choices: [(rawValue: String, name: String, explanation: String, opponents: Int)] = [
+      ("easy", "Easy", "Relaxed choices with more variety; a friendly place to learn.", 1),
+      ("medium", "Medium", "Balanced decisions and the default for a new player.", 2),
+      ("hard", "Hard", "Tracks revealed information and replaces cards more aggressively.", 3),
+      ("ultra", "Ultra Hard", "Evaluates deck outcomes and closing risk for the strongest challenge.", 4),
+      ("mixed", "Mixed", "Deterministically balances Easy, Medium, Hard, and Ultra opponents for this game.", 7),
+    ]
+
+    for choice in choices {
+      let app = launchSoloFixture(
+        "solo-setup",
+        additionalArguments: [
+          "--ui-solo-difficulty=\(choice.rawValue)",
+          "--ui-solo-opponents=\(choice.opponents)",
+        ]
+      )
+      let difficulty = element(in: app, identifier: "solo.setup.difficulty")
+      let explanation = element(in: app, identifier: "solo.setup.difficulty-explanation")
+      let botCount = element(in: app, identifier: "solo.setup.bot-count")
+      XCTAssertTrue(difficulty.waitForExistence(timeout: 8))
+      XCTAssertEqual(difficulty.value as? String, choice.name)
+      XCTAssertEqual(explanation.label, choice.explanation)
+      XCTAssertEqual(botCount.value as? String, choice.opponents.formatted())
+      XCTAssertTrue(app.buttons["solo.setup.start"].isEnabled)
+      attachScreenshot(app, name: "ios7-solo-setup-\(choice.rawValue)-\(choice.opponents)-bots")
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave() throws {
+    let app = launchSoloFixture("solo-setup-blocked-outbox")
+
+    XCTAssertTrue(element(in: app, identifier: "solo.setup").waitForExistence(timeout: 8))
+    let retry = app.buttons["solo.outbox.retry"]
+    let discard = app.buttons["solo.outbox.discard"]
+    XCTAssertTrue(retry.waitForExistence(timeout: 5))
+    XCTAssertTrue(discard.exists)
+    XCTAssertTrue(retry.isEnabled)
+    XCTAssertTrue(discard.isEnabled)
+    scrollToElementFullyVisible(retry, in: app)
+    XCTAssertGreaterThanOrEqual(retry.frame.height, 44)
+    scrollToElementFullyVisible(discard, in: app)
+    XCTAssertGreaterThanOrEqual(discard.frame.height, 44)
+    scrollToElementFullyVisible(app.buttons["solo.setup.start"], in: app)
+    attachScreenshot(app, name: "ios7-solo-setup-blocked-outbox")
+    try performAccessibilityAudit(on: app)
+    app.terminate()
+
+    let corruptApp = launchSoloFixture("solo-setup-corrupt-outbox")
+    let recovery = element(in: corruptApp, identifier: "solo.outbox.recovery")
+    XCTAssertTrue(recovery.waitForExistence(timeout: 8))
+    XCTAssertTrue(
+      corruptApp.staticTexts[
+        "The oldest queued result is damaged and cannot be submitted. Discarding only this blocked item lets later results continue."
+      ].exists
+    )
+    XCTAssertFalse(corruptApp.buttons["solo.outbox.retry"].exists)
+    let corruptDiscard = corruptApp.buttons["solo.outbox.discard"]
+    XCTAssertTrue(corruptDiscard.exists)
+    XCTAssertTrue(corruptDiscard.isEnabled)
+    scrollToElementFullyVisible(corruptDiscard, in: corruptApp)
+    XCTAssertGreaterThanOrEqual(corruptDiscard.frame.height, 44)
+    attachScreenshot(corruptApp, name: "ios7-solo-setup-corrupt-outbox")
+    try performAccessibilityAudit(on: corruptApp)
+  }
+
+  @MainActor
   func testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards() throws {
     let app = launchSoloFixture("solo-table")
 
@@ -388,8 +457,11 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(table.waitForExistence(timeout: 8))
     let draw = app.buttons["solo.action.draw"]
     let discard = app.buttons["solo.action.discard"]
+    let guest = element(in: app, identifier: "solo.table.guest")
     XCTAssertTrue(draw.exists)
     XCTAssertTrue(discard.exists)
+    XCTAssertTrue(guest.exists)
+    XCTAssertEqual(guest.label, "Guest game. Completed games are not added to account stats.")
     XCTAssertGreaterThanOrEqual(draw.frame.height, 44)
     XCTAssertGreaterThanOrEqual(discard.frame.height, 44)
     let originalDrawFrame = draw.frame
@@ -424,6 +496,45 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(table.waitForExistence(timeout: 5))
     attachScreenshot(app, name: "ios7-solo-phone-table")
     try performAccessibilityAudit(on: app)
+  }
+
+  @MainActor
+  func testSoloRepresentativeTurnKeepsEveryActionSlotStable() throws {
+    let app = launchSoloFixture("solo-turn")
+    let draw = app.buttons["solo.action.draw"]
+    let discard = app.buttons["solo.action.discard"]
+    let guidance = element(in: app, identifier: "solo.action.guidance")
+    XCTAssertTrue(draw.waitForExistence(timeout: 8))
+    XCTAssertTrue(discard.exists)
+    XCTAssertEqual(guidance.label, "Take the visible discard or draw a blind card.")
+    let originalDrawFrame = draw.frame
+    let originalDiscardFrame = discard.frame
+    let originalGuidanceFrame = guidance.frame
+
+    draw.tap()
+    let drawnChoice = element(in: app, identifier: "solo.action.drawn-choice")
+    XCTAssertTrue(drawnChoice.waitForExistence(timeout: 5))
+    XCTAssertEqual(guidance.label, "Choose any card to replace with the drawn card.")
+    XCTAssertEqual(draw.frame, originalDrawFrame)
+    XCTAssertEqual(discard.frame, originalDiscardFrame)
+    XCTAssertEqual(guidance.frame, originalGuidanceFrame)
+    attachScreenshot(app, name: "ios7-solo-turn-drawn-decision")
+
+    let replacement = element(in: app, identifier: "solo.card.local.human.r1.c1")
+    XCTAssertTrue(replacement.isHittable)
+    replacement.tap()
+    let drawnChoiceGone = NSPredicate(format: "exists == false")
+    XCTAssertEqual(
+      XCTWaiter.wait(
+        for: [XCTNSPredicateExpectation(predicate: drawnChoiceGone, object: drawnChoice)],
+        timeout: 5
+      ),
+      .completed
+    )
+    XCTAssertEqual(draw.frame, originalDrawFrame)
+    XCTAssertEqual(discard.frame, originalDiscardFrame)
+    XCTAssertEqual(guidance.frame, originalGuidanceFrame)
+    attachScreenshot(app, name: "ios7-solo-turn-complete")
   }
 
   @MainActor
@@ -470,6 +581,18 @@ final class SkyjoAppUITests: XCTestCase {
     }
     assertElement(app.buttons["solo.action.draw"], isContainedIn: window, tolerance: 2)
     assertElement(app.buttons["solo.action.discard"], isContainedIn: window, tolerance: 2)
+    let guidance = element(in: app, identifier: "solo.action.guidance")
+    XCTAssertTrue(guidance.exists)
+    XCTAssertEqual(guidance.label, "Reveal two of your face-down cards.")
+    XCTAssertEqual(
+      guidance.value as? String,
+      window.frame.height < 650
+        ? "Visible guidance: Reveal 2 cards"
+        : "Visible guidance: Reveal two of your face-down cards."
+    )
+    assertElement(guidance, isContainedIn: window, tolerance: 2)
+    XCTAssertGreaterThanOrEqual(guidance.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(guidance.frame.height, 44)
     attachScreenScreenshot(name: "ios7-solo-table-landscape")
   }
 
@@ -493,15 +616,133 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
-  func testSoloRecoveryAndAccessibilityXXXLRemainOperable() throws {
+  func testSoloGameSummaryHasDistinctReplayAndSetupRoutes() throws {
+    let replayApp = launchSoloFixture("solo-game-summary")
+    let heading = replayApp.staticTexts["solo.summary.heading"]
+    XCTAssertTrue(heading.waitForExistence(timeout: 8))
+    XCTAssertEqual(heading.label, "Game complete")
+    let statsState = element(in: replayApp, identifier: "solo.summary.stats-state")
+    XCTAssertTrue(statsState.exists)
+    XCTAssertEqual(statsState.label, "Guest game complete. Account stats were not recorded.")
+
+    replayApp.buttons["solo.summary.minimize"].tap()
+    let terminalStatus = element(in: replayApp, identifier: "solo.table.turn-state")
+    let terminalGuidance = element(in: replayApp, identifier: "solo.action.guidance")
+    XCTAssertTrue(terminalStatus.waitForExistence(timeout: 5))
+    XCTAssertEqual(terminalStatus.label, "Game complete")
+    XCTAssertEqual(terminalGuidance.label, "The game is complete.")
+    XCTAssertFalse(terminalStatus.label.contains("turn"))
+    XCTAssertFalse(terminalGuidance.label.contains("choosing"))
+    replayApp.buttons["solo.summary.restore"].tap()
+    XCTAssertTrue(heading.waitForExistence(timeout: 5))
+    attachScreenshot(replayApp, name: "ios7-solo-game-summary")
+
+    let playAgain = replayApp.buttons["solo.summary.replay"]
+    XCTAssertTrue(playAgain.isHittable)
+    playAgain.tap()
+    let headingGone = NSPredicate(format: "exists == false")
+    XCTAssertEqual(
+      XCTWaiter.wait(
+        for: [XCTNSPredicateExpectation(predicate: headingGone, object: heading)],
+        timeout: 8
+      ),
+      .completed
+    )
+    XCTAssertTrue(element(in: replayApp, identifier: "solo.table").waitForExistence(timeout: 8))
+    XCTAssertEqual(element(in: replayApp, identifier: "solo.table.turn-state").label, "Your turn")
+    let replayOpponents = replayApp.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "solo.board.opponent.")
+    ).allElementsBoundByIndex
+    XCTAssertEqual(replayOpponents.count, 3)
+    replayApp.terminate()
+
+    let setupApp = launchSoloFixture("solo-game-summary")
+    XCTAssertTrue(setupApp.staticTexts["solo.summary.heading"].waitForExistence(timeout: 8))
+    let changeSetup = setupApp.buttons["solo.summary.change-setup"]
+    XCTAssertTrue(changeSetup.isHittable)
+    changeSetup.tap()
+    XCTAssertTrue(element(in: setupApp, identifier: "solo.setup").waitForExistence(timeout: 8))
+    XCTAssertEqual(element(in: setupApp, identifier: "solo.setup.difficulty").value as? String, "Mixed")
+    XCTAssertEqual(element(in: setupApp, identifier: "solo.setup.bot-count").value as? String, "3")
+  }
+
+  @MainActor
+  func testSoloRecoveryIsExplicitAndSafe() throws {
     let recoveryApp = launchSoloFixture("solo-recovery")
     let warning = element(in: recoveryApp, identifier: "solo.persistence-warning")
     XCTAssertTrue(warning.waitForExistence(timeout: 8))
     XCTAssertTrue(warning.label.contains("Saved game recovered"))
     XCTAssertTrue(warning.label.contains("removed safely"))
     attachScreenshot(recoveryApp, name: "ios7-solo-recovery")
-    recoveryApp.terminate()
+  }
 
+  @MainActor
+  func testSoloXXXLContentSizeIsUnclamped() throws {
+    let standardTypeApp = launchSoloFixture("solo-table")
+    let standardRound = element(in: standardTypeApp, identifier: "solo.table.round")
+    XCTAssertTrue(standardRound.waitForExistence(timeout: 8))
+    let standardRoundHeight = standardRound.frame.height
+    standardTypeApp.terminate()
+
+    let xxxLargeApp = launchSoloFixture(
+      "solo-table",
+      additionalArguments: [
+        "-UIPreferredContentSizeCategoryName",
+        "UICTContentSizeCategoryXXXL",
+      ]
+    )
+    let xxxLargeRound = element(in: xxxLargeApp, identifier: "solo.table.round")
+    XCTAssertTrue(xxxLargeRound.waitForExistence(timeout: 8))
+    XCTAssertGreaterThan(xxxLargeRound.frame.height, standardRoundHeight)
+    assertElement(xxxLargeRound, isContainedIn: xxxLargeApp.windows.firstMatch, tolerance: 2)
+    attachScreenshot(xxxLargeApp, name: "ios7-solo-table-xxxl")
+  }
+
+  @MainActor
+  func testSoloAccessibilityAdaptationsAreActive() throws {
+    try XCTSkipUnless(
+      ProcessInfo.processInfo.environment["SKYJO_IOS_UI_ACCESSIBILITY_MATRIX"] == "1",
+      "The focused UI matrix owns and restores simulator accessibility settings."
+    )
+    let adaptationApp = launchSoloFixture("solo-table")
+    let differentiatedCard = element(
+      in: adaptationApp,
+      identifier: "solo.card.local.human.r1.c1"
+    )
+    XCTAssertTrue(differentiatedCard.waitForExistence(timeout: 8))
+    differentiatedCard.tap()
+    let revealedCard = NSPredicate(format: "label CONTAINS[c] %@", "card, row 1, column 1")
+    let faceUpCard = NSCompoundPredicate(andPredicateWithSubpredicates: [
+      revealedCard,
+      NSCompoundPredicate(
+        notPredicateWithSubpredicate: NSPredicate(format: "label CONTAINS[c] %@", "face down")
+      ),
+    ])
+    XCTAssertEqual(
+      XCTWaiter.wait(
+        for: [XCTNSPredicateExpectation(predicate: faceUpCard, object: differentiatedCard)],
+        timeout: 5
+      ),
+      .completed
+    )
+    attachScreenshot(adaptationApp, name: "ios7-solo-differentiate-without-color")
+    adaptationApp.buttons["solo.settings.open"].tap()
+    XCTAssertTrue(adaptationApp.navigationBars["Game Settings"].waitForExistence(timeout: 8))
+    let adaptations = element(
+      in: adaptationApp,
+      identifier: "solo.settings.accessibility-adaptations"
+    )
+    scrollToElementFullyVisible(adaptations, in: adaptationApp)
+    XCTAssertEqual(
+      adaptations.value as? String,
+      "Reduce Motion on; Increase Contrast on; Differentiate Without Color on"
+    )
+    attachScreenshot(adaptationApp, name: "ios7-solo-accessibility-adaptations")
+    try performAccessibilityAudit(on: adaptationApp)
+  }
+
+  @MainActor
+  func testSoloAccessibilityXXXLRemainsOperable() throws {
     let standardTypeApp = launchSoloFixture("solo-table")
     let standardRound = element(in: standardTypeApp, identifier: "solo.table.round")
     XCTAssertTrue(standardRound.waitForExistence(timeout: 8))
@@ -513,12 +754,6 @@ final class SkyjoAppUITests: XCTestCase {
       additionalArguments: [
         "-UIPreferredContentSizeCategoryName",
         "UICTContentSizeCategoryAccessibilityXXXL",
-        "-UIAccessibilityReduceMotion",
-        "YES",
-        "-UIAccessibilityDarkerSystemColorsEnabled",
-        "YES",
-        "-UIAccessibilityDifferentiateWithoutColor",
-        "YES",
       ]
     )
     let guidance = dynamicTypeApp.descendants(matching: .any).matching(
@@ -589,6 +824,41 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  func testSoloRightToLeftLayoutKeepsControlsContained() throws {
+    let app = launchSoloFixture(
+      "solo-table",
+      additionalArguments: [
+        "--ui-layout-direction=rtl",
+        "-AppleLanguages",
+        "(ar)",
+        "-AppleLocale",
+        "ar",
+      ]
+    )
+    let table = app.otherElements.matching(identifier: "solo.table").firstMatch
+    XCTAssertTrue(table.waitForExistence(timeout: 8))
+    let window = app.windows.firstMatch
+    let firstColumn = element(in: app, identifier: "solo.card.local.human.r1.c1")
+    let lastColumn = element(in: app, identifier: "solo.card.local.human.r1.c4")
+    XCTAssertTrue(firstColumn.exists)
+    XCTAssertTrue(lastColumn.exists)
+    XCTAssertGreaterThan(
+      firstColumn.frame.midX,
+      lastColumn.frame.midX,
+      "Arabic must exercise the right-to-left SwiftUI layout direction."
+    )
+    assertElement(firstColumn, isContainedIn: window, tolerance: 2)
+    assertElement(lastColumn, isContainedIn: window, tolerance: 2)
+    let draw = app.buttons["solo.action.draw"]
+    let discard = app.buttons["solo.action.discard"]
+    XCTAssertTrue(draw.isHittable)
+    XCTAssertTrue(discard.isHittable)
+    assertElement(draw, isContainedIn: window, tolerance: 2)
+    assertElement(discard, isContainedIn: window, tolerance: 2)
+    attachScreenshot(app, name: "ios7-solo-table-rtl")
+  }
+
+  @MainActor
   private func launchSoloFixture(
     _ state: String,
     orientation: UIDeviceOrientation? = .portrait,
@@ -603,6 +873,19 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(app.staticTexts["home.welcome"].waitForExistence(timeout: 8))
     let solo = element(in: app, identifier: "home.solo")
     XCTAssertTrue(solo.isHittable)
+    if state == "solo-setup-blocked-outbox" || state == "solo-setup-corrupt-outbox" {
+      let fixtureReady = NSPredicate(
+        format: "value == %@",
+        "Stats delivery needs attention"
+      )
+      XCTAssertEqual(
+        XCTWaiter.wait(
+          for: [XCTNSPredicateExpectation(predicate: fixtureReady, object: solo)],
+          timeout: 8
+        ),
+        .completed
+      )
+    }
     solo.tap()
     return app
   }

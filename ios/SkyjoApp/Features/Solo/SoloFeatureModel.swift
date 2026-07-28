@@ -37,6 +37,9 @@ final class SoloFeatureModel {
   @ObservationIgnored private var statsAuthorizationGeneration: UInt64 = 0
   @ObservationIgnored private var loadedSavedAtMilliseconds: Int64 = 0
   @ObservationIgnored private let initialWarning: SoloPersistenceWarning?
+#if DEBUG
+  @ObservationIgnored private var usesUITestState = false
+#endif
 
   private var loadWarning: SoloPersistenceWarning?
   private var operationWarning: SoloPersistenceWarning?
@@ -146,28 +149,46 @@ final class SoloFeatureModel {
     currentPlayer?.kind == .human
   }
 
-  var actionGuidance: String {
-    guard let game, let currentPlayer else { return "Choose a game to begin." }
-    if isWorking { return "Saving the completed game safely." }
-    if currentPlayer.kind == .ai { return "\(currentPlayer.name) is choosing a move." }
+  var tableStatus: String {
+    guard let game else { return "Table paused" }
     switch game.phase {
-    case .openingReveal:
-      return "Reveal two of your face-down cards."
-    case .chooseSource:
-      return "Take the visible discard or draw a blind card."
-    case .chooseReplacement:
-      if game.selectedSource == .discard {
-        return "Choose a card to replace, or cancel and draw blind."
-      }
-      return drawChoice == .place
-        ? "Choose any card to replace with the drawn card."
-        : "Choose a face-down card to reveal after discarding the draw."
+    case .roundOver:
+      return "Round complete"
+    case .gameOver:
+      return "Game complete"
+    case .openingReveal, .chooseSource, .chooseReplacement:
+      guard let currentPlayer else { return "Table paused" }
+      return currentPlayer.kind == .human ? "Your turn" : "\(currentPlayer.name)'s turn"
+    }
+  }
+
+  var actionGuidance: String {
+    guard let game else { return "Choose a game to begin." }
+    if isWorking { return "Saving the completed game safely." }
+    switch game.phase {
     case .roundOver:
       return "Round \(game.round) is complete. Review the scores when ready."
     case .gameOver:
       return completionCommitted
         ? "The game is complete."
         : "The game is complete, but its durable result still needs attention."
+    case .openingReveal:
+      guard let currentPlayer else { return "Table paused." }
+      if currentPlayer.kind == .ai { return "\(currentPlayer.name) is choosing opening cards." }
+      return "Reveal two of your face-down cards."
+    case .chooseSource:
+      guard let currentPlayer else { return "Table paused." }
+      if currentPlayer.kind == .ai { return "\(currentPlayer.name) is choosing a move." }
+      return "Take the visible discard or draw a blind card."
+    case .chooseReplacement:
+      guard let currentPlayer else { return "Table paused." }
+      if currentPlayer.kind == .ai { return "\(currentPlayer.name) is choosing a move." }
+      if game.selectedSource == .discard {
+        return "Choose a card to replace, or cancel and draw blind."
+      }
+      return drawChoice == .place
+        ? "Choose any card to replace with the drawn card."
+        : "Choose a face-down card to reveal after discarding the draw."
     }
   }
 
@@ -349,7 +370,14 @@ final class SoloFeatureModel {
     await commitCompletion()
   }
 
-  func replay() {
+  func playAgain() async {
+    guard completionCommitted else { return }
+    setupOpponentCount = setup?.aiOpponentCount ?? 1
+    setupDifficulty = setup?.difficulty ?? .medium
+    await startConfiguredGame(replacingGameID: nil)
+  }
+
+  func changeSetup() {
     guard completionCommitted else { return }
     setupOpponentCount = setup?.aiOpponentCount ?? 1
     setupDifficulty = setup?.difficulty ?? .medium
@@ -361,6 +389,7 @@ final class SoloFeatureModel {
   func setScoreSummaryPresented(_ presented: Bool) {
     isScoreSummaryPresented = presented
     isScoreSummaryMinimized = !presented
+      && (game?.phase == .roundOver || game?.phase == .gameOver)
     if presented { pauseAI() } else { scheduleAIIfNeeded() }
   }
 
@@ -374,6 +403,9 @@ final class SoloFeatureModel {
     feedback.setSceneActive(active)
     if active {
       scheduleAIIfNeeded()
+#if DEBUG
+      if usesUITestState { return }
+#endif
       let expectedGeneration = generation
       let expectedAuthorizationGeneration = statsAuthorizationGeneration
       let expectedOwner = owner
@@ -585,6 +617,8 @@ final class SoloFeatureModel {
       operationWarning = nil
       autosaveWarning = nil
       isReplacementReviewPresented = false
+      isScoreSummaryPresented = false
+      isScoreSummaryMinimized = false
       screen = .table
       feedback.baseline(gameID: snapshot.gameID, saveSequence: snapshot.saveSequence)
       scheduleAIIfNeeded()
@@ -616,17 +650,37 @@ final class SoloFeatureModel {
     expectedGeneration: UInt64,
     expectedOwner: SoloOwnerPartition
   ) async {
+    let staleAutosave = autosave
+    autosave = nil
+    await staleAutosave?.cancel()
+    guard generation == expectedGeneration, owner == expectedOwner else { return }
     do {
       let result = try await store.loadSession(for: expectedOwner)
       guard generation == expectedGeneration, owner == expectedOwner else { return }
       if let session = result.session {
         install(session)
         screen = .launcher
+        operationWarning = result.warning ?? conflictWarning
+      } else {
+        let preservedOutboxStatus = outboxStatus
+        clearVisibleSession()
+        outboxStatus = preservedOutboxStatus
+        screen = .setup
+        lastActionError = "The saved game was removed before replacement. No replacement was written; review this setup and start again."
+        operationWarning = result.warning ?? missingSessionConflictWarning
       }
-      operationWarning = result.warning ?? conflictWarning
     } catch {
       guard generation == expectedGeneration, owner == expectedOwner else { return }
       operationWarning = conflictWarning
+      if hasDurableActiveSession, let gameID, let setup {
+        autosave = SoloAutosaveCoordinator(
+          store: store,
+          owner: expectedOwner,
+          gameID: gameID,
+          setup: setup,
+          initialSaveSequence: saveSequence
+        )
+      }
     }
     isReplacementReviewPresented = false
   }
@@ -715,15 +769,16 @@ final class SoloFeatureModel {
     guard generation == expectedGeneration,
           owner == expectedOwner,
           self.gameID == gameID,
-          screen == .table,
-          !Task.isCancelled
+          screen == .table
     else { return }
-    if next.phase == .roundOver, screen == .table {
-      isScoreSummaryPresented = true
-      isScoreSummaryMinimized = false
+    if next.phase == .roundOver {
+      let canPresentSummary = sceneIsActive && !isSettingsPresented
+      isScoreSummaryPresented = canPresentSummary
+      isScoreSummaryMinimized = !canPresentSummary
       feedback.emit(.roundEnd, gameID: gameID, saveSequence: saveSequence)
       pauseAI()
     } else {
+      guard !Task.isCancelled else { return }
       scheduleAIIfNeeded()
     }
     if let expectedAutosave {
@@ -949,6 +1004,13 @@ final class SoloFeatureModel {
     )
   }
 
+  private var missingSessionConflictWarning: SoloPersistenceWarning {
+    SoloPersistenceWarning(
+      kind: .conflict,
+      message: "The saved game changed or was removed. No replacement was written, and this setup remains ready to start."
+    )
+  }
+
   private var emptyOutboxStatus: StatsOutboxStatus {
     StatsOutboxStatus(
       queued: 0,
@@ -958,6 +1020,10 @@ final class SoloFeatureModel {
   }
 
 #if DEBUG
+  func acceptForTesting(_ state: GameState) async {
+    await accept(state, feedbackEvent: .place)
+  }
+
   @discardableResult
   func applyUITestState(arguments: [String]) -> Bool {
     guard let stateArgument = arguments.first(where: { $0.hasPrefix("--ui-state=") }) else {
@@ -965,6 +1031,11 @@ final class SoloFeatureModel {
     }
     let value = String(stateArgument.dropFirst("--ui-state=".count))
     guard value.hasPrefix("solo-") else { return false }
+    usesUITestState = true
+    generation &+= 1
+    statsAuthorizationGeneration &+= 1
+    aiTask?.cancel()
+    aiTask = nil
     var random = SeededRandom(seed: 18_700)
     let fixtureGameID = UUID(uuidString: "70000000-0000-4000-8000-000000000187")!
     let state = GameEngine.startFreshGame(aiOpponentCount: 3, random: &random)
@@ -990,7 +1061,31 @@ final class SoloFeatureModel {
     case "solo-setup":
       clearVisibleSession()
       screen = .setup
+    case "solo-setup-blocked-outbox":
+      clearVisibleSession()
+      let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000187")!
+      owner = .account(accountID)
+      confirmedAccountID = accountID
+      outboxStatus = StatsOutboxStatus(
+        queued: 1,
+        terminalFailures: 1,
+        blockedByTerminalFailure: true,
+        blockedHeadGameID: fixtureGameID,
+        blockedHeadKind: .terminal
+      )
+      outboxWarning = SoloPersistenceWarning(
+        kind: .statsNotSaved,
+        message: "This completed game could not be saved to account stats. It remains on this device for recovery."
+      )
+      screen = .setup
     case "solo-table":
+      screen = .table
+    case "solo-turn":
+      var turnState = GameEngine.revealOpeningCard(state, at: 0)
+      turnState = GameEngine.revealOpeningCard(turnState, at: 1)
+      turnState = GameEngine.drainSoloAIOpening(turnState)
+      turnState.currentPlayerIndex = turnState.players.firstIndex(where: { $0.kind == .human }) ?? 0
+      game = turnState
       screen = .table
     case "solo-summary":
       var summaryState = state
@@ -1012,6 +1107,46 @@ final class SoloFeatureModel {
       game = summaryState
       screen = .table
       isScoreSummaryPresented = true
+    case "solo-game-summary":
+      var summaryState = state
+      summaryState.phase = .gameOver
+      summaryState.currentPlayerIndex = summaryState.players.lastIndex(where: { $0.kind == .ai }) ?? 0
+      summaryState.roundHistory = [
+        RoundHistoryEntry(
+          round: 1,
+          closerId: "human",
+          scores: summaryState.players.map {
+            RoundScore(
+              playerId: $0.id,
+              name: $0.name,
+              roundScore: GameEngine.scoreGrid($0.grid),
+              totalScore: GameEngine.scoreGrid($0.grid)
+            )
+          }
+        )
+      ]
+      game = summaryState
+      hasDurableActiveSession = false
+      completionCommitted = true
+      screen = .table
+      isScoreSummaryPresented = true
+    case "solo-setup-corrupt-outbox":
+      clearVisibleSession()
+      let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000187")!
+      owner = .account(accountID)
+      confirmedAccountID = accountID
+      outboxStatus = StatsOutboxStatus(
+        queued: 1,
+        terminalFailures: 0,
+        corruptRecords: 1,
+        blockedByTerminalFailure: true,
+        blockedHeadKind: .corrupt
+      )
+      outboxWarning = SoloPersistenceWarning(
+        kind: .statsNotSaved,
+        message: "The oldest completed result is damaged. It remains on this device until you discard that item."
+      )
+      screen = .setup
     case "solo-recovery":
       screen = .launcher
       loadWarning = SoloPersistenceWarning(
@@ -1035,6 +1170,18 @@ final class SoloFeatureModel {
       )
     default:
       return false
+    }
+    if let countArgument = arguments.first(where: { $0.hasPrefix("--ui-solo-opponents=") }),
+       let count = Int(countArgument.dropFirst("--ui-solo-opponents=".count))
+    {
+      setupOpponentCount = GameEngine.normalizedSinglePlayerAIOpponentCount(count)
+    }
+    if let difficultyArgument = arguments.first(where: { $0.hasPrefix("--ui-solo-difficulty=") }),
+       let difficulty = SoloAIDifficultySelection(
+         rawValue: String(difficultyArgument.dropFirst("--ui-solo-difficulty=".count))
+       )
+    {
+      setupDifficulty = difficulty
     }
     return true
   }

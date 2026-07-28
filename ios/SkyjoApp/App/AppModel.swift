@@ -649,6 +649,20 @@ final class AppModel {
       rootState = .offlineReady(
         message: "Skyjo could not reach the service. Your account-owned solo save remains available."
       )
+    case "solo-setup-blocked-outbox", "solo-setup-corrupt-outbox":
+      let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000187")!
+      establishAuthenticatedUser(
+        AccountUser(
+          id: accountID,
+          email: "fixture.solo@example.invalid",
+          displayName: "Solo Fixture",
+          role: .player,
+          disabled: false,
+          createdAt: 1_784_998_800_104,
+          updatedAt: 1_784_998_800_104,
+          lastLoginAt: nil
+        )
+      )
     case let value where value.hasPrefix("solo-"):
       resetAccountState()
       rootState = .guest

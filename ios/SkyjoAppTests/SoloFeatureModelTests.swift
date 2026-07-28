@@ -260,6 +260,135 @@ struct SoloFeatureModelTests {
     #expect(preserved.setup == original.setup)
   }
 
+  @Test("A replacement conflict with no authoritative save retires the phantom session")
+  func missingReplacementConflictReturnsToFreshSetup() async throws {
+    let harness = try makeHarness()
+    defer { harness.dispose() }
+    await harness.model.switchOwner(.guest, confirmedAccountID: nil)
+    await harness.model.reviewNewGame()
+    let removedID = try #require(harness.model.gameID)
+
+    harness.model.showSetup()
+    harness.model.setupOpponentCount = 3
+    harness.model.setupDifficulty = .ultra
+    await harness.model.reviewNewGame()
+    #expect(harness.model.isReplacementReviewPresented)
+    try await harness.store.deleteSession(owner: .guest, expectedGameID: removedID)
+
+    await harness.model.confirmReplacement()
+    #expect(harness.model.screen == .setup)
+    #expect(harness.model.game == nil)
+    #expect(harness.model.gameID == nil)
+    #expect(!harness.model.hasDurableActiveSession)
+    #expect(!harness.model.isReplacementReviewPresented)
+    #expect(harness.model.lastActionError?.contains("removed before replacement") == true)
+
+    await harness.model.reviewNewGame()
+    #expect(harness.model.screen == .table)
+    #expect(harness.model.hasDurableActiveSession)
+    #expect(!harness.model.isReplacementReviewPresented)
+    #expect(harness.model.gameID != removedID)
+  }
+
+  @Test("Cancellation after an accepted round end keeps scoring recoverable")
+  func cancelledRoundEndStillPresentsScoring() async throws {
+    let harness = try makeHarness()
+    defer { harness.dispose() }
+    await harness.model.switchOwner(.guest, confirmedAccountID: nil)
+    await harness.model.reviewNewGame()
+    let roundOver = try makeRoundOverState()
+
+    let cancelled = Task { @MainActor in
+      withUnsafeCurrentTask { $0?.cancel() }
+      await harness.model.acceptForTesting(roundOver)
+    }
+    await cancelled.value
+
+    #expect(harness.model.game?.phase == .roundOver)
+    #expect(harness.model.isScoreSummaryPresented || harness.model.isScoreSummaryMinimized)
+    #expect(harness.model.isScoreSummaryPresented)
+    #expect(harness.model.tableStatus == "Round complete")
+    #expect(harness.model.actionGuidance.hasPrefix("Round "))
+    #expect(!harness.model.actionGuidance.contains("choosing"))
+  }
+
+  @Test("Play Again starts the same setup while Change Setup remains an explicit edit route")
+  func completedGameRoutesAreDistinct() async throws {
+    let changeHarness = try makeHarness()
+    defer { changeHarness.dispose() }
+    await changeHarness.model.switchOwner(.guest, confirmedAccountID: nil)
+    changeHarness.model.setupOpponentCount = 1
+    changeHarness.model.setupDifficulty = .ultra
+    await changeHarness.model.reviewNewGame()
+    await changeHarness.model.acceptForTesting(
+      try makeTerminalState(from: #require(changeHarness.model.game))
+    )
+    #expect(changeHarness.model.completionCommitted)
+    #expect(changeHarness.model.game?.phase == .gameOver)
+    #expect(changeHarness.model.tableStatus == "Game complete")
+    #expect(!changeHarness.model.actionGuidance.contains("turn"))
+
+    changeHarness.model.changeSetup()
+    #expect(changeHarness.model.screen == .setup)
+    #expect(changeHarness.model.setupOpponentCount == 1)
+    #expect(changeHarness.model.setupDifficulty == .ultra)
+    #expect(changeHarness.model.game?.phase == .gameOver)
+
+    let replayHarness = try makeHarness()
+    defer { replayHarness.dispose() }
+    await replayHarness.model.switchOwner(.guest, confirmedAccountID: nil)
+    replayHarness.model.setupOpponentCount = 1
+    replayHarness.model.setupDifficulty = .hard
+    await replayHarness.model.reviewNewGame()
+    let completedGameID = try #require(replayHarness.model.gameID)
+    await replayHarness.model.acceptForTesting(
+      try makeTerminalState(from: #require(replayHarness.model.game))
+    )
+    #expect(replayHarness.model.completionCommitted)
+
+    await replayHarness.model.playAgain()
+    #expect(replayHarness.model.screen == .table)
+    #expect(replayHarness.model.game?.phase == .openingReveal)
+    #expect(replayHarness.model.gameID != completedGameID)
+    #expect(replayHarness.model.setup?.aiOpponentCount == 1)
+    #expect(replayHarness.model.setup?.difficulty == .hard)
+    #expect(replayHarness.model.hasDurableActiveSession)
+    #expect(!replayHarness.model.isScoreSummaryPresented)
+    #expect(!replayHarness.model.isScoreSummaryMinimized)
+  }
+
+  @Test("Blocked stats remain recoverable from setup when no active save exists")
+  func blockedStatsRemainVisibleWithoutActiveSave() async throws {
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000187")!
+    let harness = try SoloHarness { _ in
+      throw StatsDeliveryError.permanent(.unsupportedVersion)
+    }
+    defer { harness.dispose() }
+    let terminal = try makeTerminalState()
+    let gameID = UUID(uuidString: "70000000-0000-4000-8000-000000000189")!
+    let setup = try SoloAISetup.resolve(
+      SoloGameSetup(aiOpponentCount: 1, difficulty: .hard),
+      state: terminal,
+      gameId: gameID.uuidString.lowercased()
+    )
+    try await harness.store.completeSession(
+      owner: .account(accountID),
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      saveSequence: 0,
+      completedAtMilliseconds: 100
+    )
+
+    await harness.model.switchOwner(.account(accountID), confirmedAccountID: accountID)
+    #expect(harness.model.screen == .setup)
+    #expect(harness.model.game == nil)
+    #expect(!harness.model.hasDurableActiveSession)
+    #expect(harness.model.outboxStatus.blockedHeadKind == .terminal)
+    #expect(harness.model.outboxStatus.blockedHeadRecoveryHandle != nil)
+    #expect(harness.model.statsDeliveryIsConfirmed)
+  }
+
   @Test("Unconfirmed account rows stay local and become deliverable only after confirmation")
   func offlineAccountStatsAreTruthfulAndFenced() async throws {
     let delivery = StatsDeliveryCounter()
@@ -401,7 +530,14 @@ struct SoloFeatureModelTests {
 
   private func makeTerminalState() throws -> GameState {
     var random = SeededRandom(seed: 18_702)
-    var state = GameEngine.startFreshGame(aiOpponentCount: 1, random: &random)
+    return try makeTerminalState(
+      from: GameEngine.startFreshGame(aiOpponentCount: 1, random: &random)
+    )
+  }
+
+  private func makeTerminalState(from initial: GameState) throws -> GameState {
+    var random = SeededRandom(seed: 18_702)
+    var state = initial
     for _ in 0..<20 {
       for _ in 0..<1_000 where state.phase != .roundOver && state.phase != .gameOver {
         state = advance(state, random: &random)
