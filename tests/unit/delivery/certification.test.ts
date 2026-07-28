@@ -792,7 +792,7 @@ describe('v0.3.2 workflow governance', () => {
     expect(packageJson.scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
     expect(packageJson.scripts['test:e2e:certification']).toContain('--retries=0');
     expect(packageJson.scripts['smoke:apns-rollback']).toBe(
-      'npm run build:server && node scripts/smoke-apns-rollback-compatibility.mjs'
+      'npm run build:server && node scripts/write-release-json.mjs && node scripts/smoke-apns-rollback-compatibility.mjs'
     );
     expect(packageJson.scripts['smoke:delivery']).toContain('npm run smoke:apns-rollback');
     expect(packageJson.scripts['smoke:release']).toContain('npm run smoke:delivery');

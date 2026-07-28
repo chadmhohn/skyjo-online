@@ -411,10 +411,10 @@ export function validateOptionalAPNSDeviceStorageEnvelope(db) {
   }
   if (!primaryKeyIndexSeen || expectedIndexes.size !== 0) fail();
 
-  const indirectTriggers = db
-    .prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger'")
+  const indirectSchemaObjects = db
+    .prepare("SELECT name FROM sqlite_schema WHERE type IN ('trigger', 'view')")
     .all();
-  if (indirectTriggers.length !== 0) fail();
+  if (indirectSchemaObjects.length !== 0) fail();
 
   return Object.freeze({ present: true, version: APNS_DEVICE_STORAGE_ENVELOPE.version });
 }

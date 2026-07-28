@@ -270,6 +270,13 @@ describe('transactional database migrations', () => {
           UPDATE apns_devices SET locale = 'mutated' WHERE installation_id = NEW.installation_id;
         END
       `)
+    ],
+    [
+      'unexpected view',
+      (db: DatabaseSync) => db.exec(`
+        CREATE VIEW apns_device_projection AS
+        SELECT installation_id, token_ciphertext FROM apns_devices
+      `)
     ]
   ])('rejects a %s APNs envelope without changing the migration ledger', async (_label, corrupt) => {
     await createCurrentDatabase(dbFile);
@@ -356,6 +363,13 @@ describe('transactional database migrations', () => {
     `);
     expect(store.checkReadiness()).toBe(false);
     store.db.exec('DROP TRIGGER unexpected_user_trigger');
+    expect(store.checkReadiness()).toBe(true);
+    store.db.exec(`
+      CREATE VIEW apns_device_projection AS
+      SELECT installation_id, token_ciphertext FROM apns_devices
+    `);
+    expect(store.checkReadiness()).toBe(false);
+    store.db.exec('DROP VIEW apns_device_projection');
     expect(store.checkReadiness()).toBe(true);
     store.db.exec('DROP INDEX idx_apns_devices_updated_at');
     expect(store.checkReadiness()).toBe(false);
