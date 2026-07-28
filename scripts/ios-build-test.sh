@@ -256,7 +256,8 @@ fi
   report_failure "The selected developer directory does not contain the full Xcode toolchain: $DEVELOPER_DIR"
 [[ -f "$project_path/project.pbxproj" ]] || report_failure "Missing Xcode project: $project_path"
 
-xcode_version="$(xcodebuild -version | awk '/^Xcode / { print $2; exit }')"
+xcode_version_output="$(xcodebuild -version)"
+xcode_version="$(printf '%s\n' "$xcode_version_output" | awk '/^Xcode / { print $2; exit }')"
 if [[ ! "$xcode_version" =~ ^26\.6($|\.) ]]; then
   report_failure "Xcode 26.6 is required; selected version is ${xcode_version:-unknown}."
 fi
