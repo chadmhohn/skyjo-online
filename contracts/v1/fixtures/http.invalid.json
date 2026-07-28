@@ -116,6 +116,72 @@
     },
     {
       "expectedLayer": "schema",
+      "name": "native invite response exposes room identity",
+      "schema": "invite-http.schema.json",
+      "value": {
+        "expiresAt": 1785002400000,
+        "roomCode": "ABCDE",
+        "roomInstanceId": "redacted-internal-identity"
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "Apple association includes a broad route",
+      "schema": "invite-http.schema.json",
+      "value": {
+        "applinks": {
+          "details": [
+            {
+              "appIDs": [
+                "TESTSKYJ01.com.groundworkrevops.skyjo"
+              ],
+              "components": [
+                {
+                  "/": "/invite/*",
+                  "?": {
+                    "open": "browser"
+                  },
+                  "exclude": true
+                },
+                {
+                  "/": "/*"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "Apple association does not exclude browser fallback",
+      "schema": "invite-http.schema.json",
+      "value": {
+        "applinks": {
+          "details": [
+            {
+              "appIDs": [
+                "TESTSKYJ01.com.groundworkrevops.skyjo"
+              ],
+              "components": [
+                {
+                  "/": "/invite/*",
+                  "?": {
+                    "open": "browser"
+                  },
+                  "exclude": false
+                },
+                {
+                  "/": "/invite/*"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "expectedLayer": "schema",
       "name": "API error omits code",
       "schema": "api-error.schema.json",
       "value": {

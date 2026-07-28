@@ -15,5 +15,11 @@ describe('deployed smoke protocol contract', () => {
     expect(library).toContain("import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs'");
     expect(library).toMatch(/expectedProtocolVersion = CURRENT_PROTOCOL_VERSION/);
     expect(library).not.toMatch(/expectedProtocolVersion = 1/);
+    expect(entrypoint).toContain('resolveAppleApplicationIdentifier');
+    expect(entrypoint).toContain('expectedAppleApplicationIdentifier:');
+    expect(library).toContain('/.well-known/apple-app-site-association');
+    expect(library).toContain('/api/rooms/invite/redeem');
+    expect(library).toContain('INVITE_INVALID_OR_EXPIRED');
+    expect(library).toMatch(/method: 'HEAD'/);
   });
 });

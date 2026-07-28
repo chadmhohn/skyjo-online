@@ -489,6 +489,7 @@ node_server_environment=(
   "HOST=127.0.0.1"
   "PORT=0"
   "SKYJO_ACCESS_PASSWORD=$ios_test_access_fixture"
+  "SKYJO_APPLE_APPLICATION_IDENTIFIER=TESTSKYJ01.com.groundworkrevops.skyjo"
   "SKYJO_SESSION_SECRET=$ios_test_session_secret"
   "SKYJO_INVITE_SECRET=$ios_test_invite_secret"
   "SKYJO_ADMIN_INITIAL_PASSWORD="

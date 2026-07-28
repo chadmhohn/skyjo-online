@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { loadReleaseIdentity } from '../server-release.mjs';
+import { SYNTHETIC_APPLE_APPLICATION_IDENTIFIER } from '../server-room-invites.mjs';
 import {
   isForbiddenArchivePathSegment,
   validateArchiveListing
@@ -137,6 +138,8 @@ try {
     HOST: '127.0.0.1',
     PORT: String(port),
     SKYJO_ACCESS_PASSWORD: accessPassword,
+    SKYJO_APPLE_APPLICATION_IDENTIFIER: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+    SKYJO_CANARY_RELEASE_DIR: extractedDirectory,
     SKYJO_SESSION_SECRET: 'artifact-integration-session-secret-0123456789abcdef',
     SKYJO_INVITE_SECRET: 'artifact-integration-invite-secret-0123456789abcdef',
     SKYJO_SECURE_COOKIES: 'false',

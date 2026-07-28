@@ -7,11 +7,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
+import {
+  createAppleAppSiteAssociation,
+  SYNTHETIC_APPLE_APPLICATION_IDENTIFIER
+} from '../server-room-invites.mjs';
 import { runPublicReleaseSmoke } from './smoke-public-release.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(import.meta.dirname, '..');
 const fullSha = 'a'.repeat(40);
+const appleAssociationBody = JSON.stringify(createAppleAppSiteAssociation(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER));
 
 async function withPublicFixture({ legacy = false } = {}, callback) {
   const server = http.createServer((request, response) => {
@@ -19,6 +24,15 @@ async function withPublicFixture({ legacy = false } = {}, callback) {
     if (request.url === '/healthz') {
       response.writeHead(200, { ...noStore, 'content-type': 'text/plain; charset=utf-8' });
       response.end('ok');
+      return;
+    }
+    if (!legacy && request.url === '/.well-known/apple-app-site-association') {
+      response.writeHead(200, {
+        'cache-control': 'public, max-age=3600',
+        'content-length': Buffer.byteLength(appleAssociationBody),
+        'content-type': 'application/json'
+      });
+      response.end(request.method === 'HEAD' ? '' : appleAssociationBody);
       return;
     }
     if (request.url === '/manifest.webmanifest') {

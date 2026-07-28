@@ -55,6 +55,32 @@ function assertNoStore(response, label) {
   assert.match(response.headers.get('cache-control') || '', /(?:^|,)\s*no-store\s*(?:,|$)/i, `${label} must be no-store`);
 }
 
+function assertBoundedPublicCache(response, label) {
+  const match = (response.headers.get('cache-control') || '').match(/^public, max-age=(\d+)$/i);
+  assert.ok(match, `${label} must use an explicit public max-age`);
+  const maxAge = Number(match[1]);
+  assert.ok(Number.isSafeInteger(maxAge) && maxAge >= 60 && maxAge <= 86_400, `${label} max-age is not bounded`);
+}
+
+function assertAppleAssociationDocument(value) {
+  assert.ok(value && typeof value === 'object' && !Array.isArray(value), 'Apple association must be an object');
+  assert.deepEqual(Object.keys(value), ['applinks'], 'Apple association exposes unrelated services');
+  assert.deepEqual(Object.keys(value.applinks || {}), ['details'], 'Apple applinks shape changed');
+  assert.ok(Array.isArray(value.applinks.details) && value.applinks.details.length === 1, 'Apple association must have one detail');
+  const detail = value.applinks.details[0];
+  assert.deepEqual(Object.keys(detail || {}).sort(), ['appIDs', 'components'], 'Apple association detail fields changed');
+  assert.ok(Array.isArray(detail.appIDs) && detail.appIDs.length === 1, 'Apple association must have one application identifier');
+  assert.match(detail.appIDs[0], /^[A-Z0-9]{10}\.com\.groundworkrevops\.skyjo$/, 'Apple application identifier is malformed');
+  assert.deepEqual(detail.components, [
+    {
+      '/': '/invite/*',
+      '?': { open: 'browser' },
+      exclude: true
+    },
+    { '/': '/invite/*' }
+  ], 'Apple association paths or fallback exclusion changed');
+}
+
 async function fetchPublic(baseUrl, pathname) {
   return fetch(new URL(pathname, baseUrl), {
     redirect: 'manual',
@@ -85,6 +111,24 @@ async function runOnce(baseUrl, expectedReleaseSha) {
   assert.ok(Number.isFinite(Date.parse(version.buildTimestamp)), 'version build timestamp is invalid');
   assert.ok(Number.isInteger(version.protocolVersion) && version.protocolVersion > 0, 'version protocol is invalid');
   if (expectedReleaseSha) assert.equal(version.releaseSha, expectedReleaseSha, 'public edge serves the wrong release');
+
+  const associationResponse = await fetchPublic(baseUrl, '/.well-known/apple-app-site-association');
+  assertPublicResponse(associationResponse, 'Apple association', /^application\/json$/i);
+  assert.equal(associationResponse.headers.get('location'), null, 'Apple association must not redirect');
+  assertBoundedPublicCache(associationResponse, 'Apple association');
+  const associationLength = associationResponse.headers.get('content-length');
+  assertAppleAssociationDocument(await associationResponse.json());
+  const associationHead = await fetch(new URL('/.well-known/apple-app-site-association', baseUrl), {
+    method: 'HEAD',
+    redirect: 'manual',
+    signal: AbortSignal.timeout(7500),
+    headers: { 'user-agent': 'skyjo-release-smoke/1' }
+  });
+  assertPublicResponse(associationHead, 'Apple association HEAD', /^application\/json$/i);
+  assert.equal(associationHead.headers.get('location'), null, 'Apple association HEAD must not redirect');
+  assert.equal(associationHead.headers.get('content-length'), associationLength, 'Apple association GET/HEAD lengths differ');
+  assertBoundedPublicCache(associationHead, 'Apple association HEAD');
+  assert.equal(await associationHead.text(), '', 'Apple association HEAD returned a body');
 
   const manifestResponse = await fetchPublic(baseUrl, '/manifest.webmanifest');
   assertPublicResponse(manifestResponse, 'manifest', /^application\/manifest\+json\b/i);

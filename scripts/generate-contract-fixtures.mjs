@@ -32,6 +32,7 @@ const [
   serverProtocolModule,
   accountModule,
   readinessModule,
+  roomInviteModule,
   aiStrategyModule,
   aiProjectionModule,
   soloAiSetupModule
@@ -42,6 +43,7 @@ const [
   import('../server-dist/serverProtocolV2.js'),
   import('../server-account-store.mjs'),
   import('../server-readiness.mjs'),
+  import('../server-room-invites.mjs'),
   import('../server-dist/aiStrategy.js'),
   import('../server-dist/aiProjection.js'),
   import('../server-dist/soloAiSetup.js')
@@ -70,6 +72,7 @@ const { createSeededRandom } = runtimeModule;
 const { createProtocolV2MessageHandler } = serverProtocolModule;
 const { AccountStore, PublicApiError, publicApiErrorResponse } = accountModule;
 const { createReadinessResult, createVersionResult } = readinessModule;
+const { createAppleAppSiteAssociation, SYNTHETIC_APPLE_APPLICATION_IDENTIFIER } = roomInviteModule;
 const { chooseAiMove, soloAiStrategyVersion } = aiStrategyModule;
 const { projectAiKnowledge } = aiProjectionModule;
 const { createSoloGameSetup, resolveSoloGameSetup } = soloAiSetupModule;
@@ -1196,7 +1199,8 @@ async function createHttpFixtures(gameOverState) {
     'CURRENT_PASSWORD_MISMATCH', 'LAST_ADMIN', 'INVALID_PUSH_SUBSCRIPTION', 'MISSING_PUSH_KEYS',
     'INCOMPLETE_GAME', 'INVALID_ROOM_CODE', 'PASSWORDS_MUST_MATCH', 'MISSING_HUMAN_PLAYER',
     'ACCOUNT_SESSION_CHANGED', 'STATS_CLIENT_UPGRADE_REQUIRED', 'INVALID_COMPLETED_AT',
-    'REQUEST_TOO_LARGE', 'INVALID_JSON', 'EXPECTED_JSON_OBJECT', 'CODE_ALLOCATION_FAILED', 'INVITE_CODE_LIMIT'
+    'REQUEST_TOO_LARGE', 'INVALID_JSON', 'EXPECTED_JSON_OBJECT', 'CODE_ALLOCATION_FAILED', 'INVITE_CODE_LIMIT',
+    'INVITE_INVALID_OR_EXPIRED', 'INVITE_ROOM_UNAVAILABLE', 'INVITE_RATE_LIMITED'
   ];
   const propagatedErrors = publicErrorCodes.map((code) => {
     const response = publicApiErrorResponse(new PublicApiError(code));
@@ -1208,6 +1212,11 @@ async function createHttpFixtures(gameOverState) {
     ...propagatedErrors,
     { code: unknown.code, error: unknown.message }
   ].filter((value, index, all) => all.findIndex((candidate) => candidate.code === value.code) === index);
+  const nativeInviteRedemption = {
+    roomCode: 'ABCDE',
+    expiresAt: fixedEpoch + 60 * 60 * 1_000
+  };
+  const appleAppSiteAssociation = createAppleAppSiteAssociation(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER);
 
   const valid = [
     fixtureCase('access signed out', 'account-http.schema.json', { authenticated: false }),
@@ -1223,18 +1232,31 @@ async function createHttpFixtures(gameOverState) {
     fixtureCase('release unavailable', 'operational.schema.json', unavailable),
     fixtureCase('service ready', 'operational.schema.json', readiness),
     fixtureCase('service not ready', 'operational.schema.json', notReady),
+    fixtureCase('native invite redemption', 'invite-http.schema.json', nativeInviteRedemption),
+    fixtureCase('Apple app site association', 'invite-http.schema.json', appleAppSiteAssociation),
     ...errors.map((value) => fixtureCase(`API error ${value.code}`, 'api-error.schema.json', value))
   ];
 
   const accountInternal = { user: { ...user, internalField: 'not-public' } };
   const incompleteGame = clone(game);
   delete incompleteGame.finishedByAi;
+  const exposedNativeInviteIdentity = {
+    ...nativeInviteRedemption,
+    roomInstanceId: 'redacted-internal-identity'
+  };
+  const broadAppleAssociation = clone(appleAppSiteAssociation);
+  broadAppleAssociation.applinks.details[0].components[1]['/'] = '/*';
+  const inclusiveBrowserFallback = clone(appleAppSiteAssociation);
+  inclusiveBrowserFallback.applinks.details[0].components[0].exclude = false;
   const invalid = [
     fixtureCase('access flag has wrong type', 'account-http.schema.json', { authenticated: 'yes' }, { expectedLayer: 'schema' }),
     fixtureCase('account exposes internal field', 'account-http.schema.json', accountInternal, { expectedLayer: 'schema' }),
     fixtureCase('stats game omits AI attribution', 'stats-http.schema.json', { game: incompleteGame }, { expectedLayer: 'schema' }),
     fixtureCase('readiness schema is unsupported', 'operational.schema.json', { ...readiness, schemaVersion: 3 }, { expectedLayer: 'schema' }),
     fixtureCase('version timestamp is not canonical', 'operational.schema.json', { ...version, buildTimestamp: 'not-a-date' }, { expectedLayer: 'schema' }),
+    fixtureCase('native invite response exposes room identity', 'invite-http.schema.json', exposedNativeInviteIdentity, { expectedLayer: 'schema' }),
+    fixtureCase('Apple association includes a broad route', 'invite-http.schema.json', broadAppleAssociation, { expectedLayer: 'schema' }),
+    fixtureCase('Apple association does not exclude browser fallback', 'invite-http.schema.json', inclusiveBrowserFallback, { expectedLayer: 'schema' }),
     fixtureCase('API error omits code', 'api-error.schema.json', { error: 'Missing code.' }, { expectedLayer: 'schema' }),
     fixtureCase('API error uses unknown code', 'api-error.schema.json', { code: 'NOT_STABLE', error: 'Unknown.' }, { expectedLayer: 'schema' }),
     fixtureCase('non-JSON response body', 'api-error.schema.json', '<html>not JSON</html>', { expectedLayer: 'transport' })

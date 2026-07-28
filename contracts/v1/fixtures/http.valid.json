@@ -375,6 +375,41 @@
       }
     },
     {
+      "name": "native invite redemption",
+      "schema": "invite-http.schema.json",
+      "value": {
+        "expiresAt": 1785002400000,
+        "roomCode": "ABCDE"
+      }
+    },
+    {
+      "name": "Apple app site association",
+      "schema": "invite-http.schema.json",
+      "value": {
+        "applinks": {
+          "details": [
+            {
+              "appIDs": [
+                "TESTSKYJ01.com.groundworkrevops.skyjo"
+              ],
+              "components": [
+                {
+                  "/": "/invite/*",
+                  "?": {
+                    "open": "browser"
+                  },
+                  "exclude": true
+                },
+                {
+                  "/": "/invite/*"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
       "name": "API error ACCESS_REQUIRED",
       "schema": "api-error.schema.json",
       "value": {
@@ -676,6 +711,30 @@
       "value": {
         "code": "INVITE_CODE_LIMIT",
         "error": "Too many active invite codes. Try again later."
+      }
+    },
+    {
+      "name": "API error INVITE_INVALID_OR_EXPIRED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVITE_INVALID_OR_EXPIRED",
+        "error": "This invite is invalid or has expired."
+      }
+    },
+    {
+      "name": "API error INVITE_ROOM_UNAVAILABLE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVITE_ROOM_UNAVAILABLE",
+        "error": "That room is no longer available. Ask the host for a new invite."
+      }
+    },
+    {
+      "name": "API error INVITE_RATE_LIMITED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVITE_RATE_LIMITED",
+        "error": "Too many invite attempts. Try again later."
       }
     },
     {

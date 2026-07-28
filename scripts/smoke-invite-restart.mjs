@@ -7,6 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { SYNTHETIC_APPLE_APPLICATION_IDENTIFIER } from '../server-room-invites.mjs';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-invite-restart-'));
@@ -53,6 +54,7 @@ function startServer(port) {
     HOST: '127.0.0.1',
     PORT: String(port),
     SKYJO_ACCESS_PASSWORD: accessPassword,
+    SKYJO_APPLE_APPLICATION_IDENTIFIER: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
     SKYJO_ACCOUNT_COOKIE_NAME: 'skyjo_restart_account',
     SKYJO_ADMIN_INITIAL_PASSWORD: '',
     SKYJO_COOKIE_NAME: 'skyjo_restart_session',
@@ -198,6 +200,7 @@ try {
   });
   assert.equal(inviteResponse.status, 200);
   const invite = await inviteResponse.json();
+  const inviteToken = invite.path.slice('/invite/'.length);
   const landing = await fetch(`${baseUrl}${invite.path}`);
   assert.equal(landing.status, 200);
   const landingHtml = await landing.text();
@@ -222,6 +225,23 @@ try {
   assert.equal(longAfterRestart.status, 303, 'Room-bound long invite did not survive restart.');
   assert.equal(longAfterRestart.headers.get('location'), `/lobby?room=${roomCode}`);
   assert.ok(longAfterRestart.headers.get('set-cookie'));
+
+  const nativeAfterRestart = await fetch(`${baseUrl}/api/rooms/invite/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: inviteToken }),
+    redirect: 'manual'
+  });
+  assert.equal(nativeAfterRestart.status, 200, 'Native room invite did not survive restart.');
+  assert.equal(nativeAfterRestart.headers.get('location'), null, 'Native redemption must not redirect.');
+  assert.match(nativeAfterRestart.headers.get('cache-control') || '', /no-store/i);
+  assert.deepEqual(await nativeAfterRestart.json(), {
+    roomCode,
+    expiresAt: invite.expiresAt
+  });
+  const nativeCookies = nativeAfterRestart.headers.getSetCookie();
+  assert.equal(nativeCookies.length, 1, 'Native redemption grants only the outer session cookie.');
+  assert.match(nativeCookies[0], /^skyjo_restart_session=.+; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+$/);
 
   const redemptions = await Promise.all(Array.from({ length: 6 }, () => fetch(`${baseUrl}/invite-code`, {
     method: 'POST',
@@ -252,12 +272,14 @@ try {
   assert.equal(rows.length, 1);
   assert.equal(JSON.stringify(rows).includes(code), false, 'Raw invite code reached SQLite.');
   assert.equal(JSON.stringify(rows).includes(invite.path), false, 'Signed invite token reached SQLite.');
+  assert.equal(JSON.stringify(rows).includes(inviteToken), false, 'Signed invite token reached SQLite without its route prefix.');
   assert.equal(rows[0].room_code, roomCode);
   assert.equal(typeof rows[0].room_instance_id, 'string');
   assert.equal(typeof rows[0].redeemed_at, 'number');
   assert.equal(logs.includes(code), false, 'Raw invite code reached server logs.');
   assert.equal(logs.includes(invite.path), false, 'Signed invite token reached server logs.');
-  console.log('Invite restart smoke passed: same SQLite/rooms files, one atomic redemption, replay rejection, and no raw secret persistence.');
+  assert.equal(logs.includes(inviteToken), false, 'Signed invite token reached server logs without its route prefix.');
+  console.log('Invite restart smoke passed: browser/native restart survival, one atomic install-code redemption, replay rejection, and no raw secret persistence.');
 } catch (error) {
   if (logs) console.error(logs);
   throw error;

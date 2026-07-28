@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
+import { createAppleAppSiteAssociation } from '../server-room-invites.mjs';
 
 function cookieFromResponse(response, label) {
   const setCookie = response.headers.get('set-cookie');
@@ -12,6 +13,13 @@ function cookieFromResponse(response, label) {
 
 function assertNoStore(response, label) {
   assert.match(response.headers.get('cache-control') || '', /(?:^|,)\s*no-store(?:,|$)/i, `${label} must be no-store`);
+}
+
+function assertBoundedPublicCache(response, label) {
+  const match = (response.headers.get('cache-control') || '').match(/^public, max-age=(\d+)$/i);
+  assert.ok(match, `${label} must use an explicit public max-age`);
+  const maxAge = Number(match[1]);
+  assert.ok(Number.isSafeInteger(maxAge) && maxAge >= 60 && maxAge <= 86_400, `${label} max-age is not bounded`);
 }
 
 async function openAuthenticatedSocket(baseUrl, cookies, expectedProtocolVersion) {
@@ -62,18 +70,44 @@ export async function runDeployedSmoke({
   accessPassword,
   accountEmail,
   accountPassword,
+  expectedAppleApplicationIdentifier,
   expectedReleaseSha,
   expectedProtocolVersion = CURRENT_PROTOCOL_VERSION
 }) {
   assert.ok(baseUrl, 'A deployed base URL is required.');
   assert.ok(accessPassword, 'The shared access password is required.');
   assert.ok(accountEmail && accountPassword, 'A non-destructive smoke account is required.');
+  const expectedAppleAssociation = createAppleAppSiteAssociation(expectedAppleApplicationIdentifier);
   const parsedBaseUrl = new URL(baseUrl);
   const localHost = parsedBaseUrl.hostname === 'localhost' || parsedBaseUrl.hostname === '127.0.0.1' || parsedBaseUrl.hostname === '::1';
   assert.ok(parsedBaseUrl.protocol === 'https:' || (localHost && parsedBaseUrl.protocol === 'http:'), 'Deployed smoke requires HTTPS except on localhost.');
   if (!localHost) assert.match(expectedReleaseSha || '', /^[a-f0-9]{40}$/, 'A full expected release SHA is required remotely.');
   assert.ok(Number.isInteger(expectedProtocolVersion) && expectedProtocolVersion > 0, 'Expected protocol version must be a positive integer.');
   const root = parsedBaseUrl.href.replace(/\/+$/, '');
+
+  const associationResponse = await fetch(`${root}/.well-known/apple-app-site-association`, {
+    redirect: 'manual',
+    signal: AbortSignal.timeout(5000)
+  });
+  assert.equal(associationResponse.status, 200, 'Apple association must be public');
+  assert.equal(associationResponse.headers.get('location'), null, 'Apple association must be direct');
+  assert.equal(associationResponse.headers.get('set-cookie'), null, 'Apple association must not create a session');
+  assert.equal(associationResponse.headers.get('content-type'), 'application/json', 'Apple association content type changed');
+  assertBoundedPublicCache(associationResponse, 'Apple association');
+  const associationLength = associationResponse.headers.get('content-length');
+  assert.deepEqual(await associationResponse.json(), expectedAppleAssociation, 'Apple association content changed');
+  const associationHead = await fetch(`${root}/.well-known/apple-app-site-association`, {
+    method: 'HEAD',
+    redirect: 'manual',
+    signal: AbortSignal.timeout(5000)
+  });
+  assert.equal(associationHead.status, 200, 'Apple association HEAD failed');
+  assert.equal(associationHead.headers.get('location'), null, 'Apple association HEAD must be direct');
+  assert.equal(associationHead.headers.get('set-cookie'), null, 'Apple association HEAD must not create a session');
+  assert.equal(associationHead.headers.get('content-type'), 'application/json', 'Apple association HEAD content type changed');
+  assert.equal(associationHead.headers.get('content-length'), associationLength, 'Apple association GET/HEAD lengths differ');
+  assertBoundedPublicCache(associationHead, 'Apple association HEAD');
+  assert.equal(await associationHead.text(), '', 'Apple association HEAD returned a body');
 
   const healthResponse = await fetch(`${root}/healthz`, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
   assert.equal(healthResponse.status, 200, 'liveness must be public');
@@ -98,6 +132,22 @@ export async function runDeployedSmoke({
     schemaVersion: 2,
     protocolVersion: expectedProtocolVersion,
     checks: { database: 'ok', roomState: 'ok', lastPersist: 'ok' }
+  });
+
+  const invalidNativeInvite = await fetch(`${root}/api/rooms/invite/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: 'invalid.signature' }),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(5000)
+  });
+  assert.equal(invalidNativeInvite.status, 410, 'native invite redemption is not available before the access gate');
+  assert.equal(invalidNativeInvite.headers.get('location'), null, 'native invite failure must not redirect');
+  assert.equal(invalidNativeInvite.headers.get('set-cookie'), null, 'native invite failure must not grant access');
+  assertNoStore(invalidNativeInvite, 'native invite failure');
+  assert.deepEqual(await invalidNativeInvite.json(), {
+    code: 'INVITE_INVALID_OR_EXPIRED',
+    error: 'This invite is invalid or has expired.'
   });
 
   const siteLogin = await fetch(`${root}/login`, {

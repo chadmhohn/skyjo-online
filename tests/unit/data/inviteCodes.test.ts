@@ -6,7 +6,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import {
   createAccountStore,
-  PublicApiError
+  PublicApiError,
+  publicApiErrorResponse
 } from '../../../server-account-store.mjs';
 import {
   cleanInviteInstallCode,
@@ -15,9 +16,13 @@ import {
   hashInviteInstallCode
 } from '../../../server-invite-codes.mjs';
 import {
+  createAppleAppSiteAssociation,
   createRoomInviteToken,
   inviteMatchesRoom,
-  parseRoomInviteToken
+  isRoomInviteToken,
+  parseRoomInviteToken,
+  resolveAppleApplicationIdentifier,
+  SYNTHETIC_APPLE_APPLICATION_IDENTIFIER
 } from '../../../server-room-invites.mjs';
 
 const secret = 'test-invite-secret-at-least-sixteen-bytes';
@@ -351,5 +356,73 @@ describe('signed room invite tokens', () => {
     expect(parseRoomInviteToken(`${payload}.unsigned`, { secret, now: () => now })).toBeNull();
     now = 6_000;
     expect(parseRoomInviteToken(invite.token, { secret, now: () => now })).toBeNull();
+  });
+
+  it('shares one exact lexical bound between URL and JSON redemption', () => {
+    expect(isRoomInviteToken('payload.signature')).toBe(true);
+    expect(isRoomInviteToken('payload')).toBe(false);
+    expect(isRoomInviteToken('payload.signature.extra')).toBe(false);
+    expect(isRoomInviteToken('payload.bad+signature')).toBe(false);
+    expect(isRoomInviteToken(`a.${'b'.repeat(2046)}`)).toBe(true);
+    expect(isRoomInviteToken(`a.${'b'.repeat(2047)}`)).toBe(false);
+  });
+});
+
+describe('native invite public configuration', () => {
+  const productionIdentifier = 'A1B2C3D4E5.com.groundworkrevops.skyjo';
+
+  it('publishes one exact invite-only association with browser fallback excluded first', () => {
+    expect(createAppleAppSiteAssociation(productionIdentifier)).toEqual({
+      applinks: {
+        details: [{
+          appIDs: [productionIdentifier],
+          components: [
+            {
+              '/': '/invite/*',
+              '?': { open: 'browser' },
+              exclude: true
+            },
+            { '/': '/invite/*' }
+          ]
+        }]
+      }
+    });
+    expect(() => createAppleAppSiteAssociation('com.groundworkrevops.skyjo')).toThrow(/identifier/i);
+    expect(JSON.stringify(createAppleAppSiteAssociation(productionIdentifier))).not.toMatch(/webcredentials|"\/":"\/\*"/);
+  });
+
+  it('fails production-like configuration closed and confines the fixed synthetic ID to tests and canaries', () => {
+    expect(resolveAppleApplicationIdentifier({ value: productionIdentifier, nodeEnv: 'production' }))
+      .toBe(productionIdentifier);
+    expect(resolveAppleApplicationIdentifier({ nodeEnv: 'test' }))
+      .toBe(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER);
+    expect(resolveAppleApplicationIdentifier({ nodeEnv: 'production', canaryReleaseDirectory: '/isolated/canary' }))
+      .toBe(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER);
+    expect(() => resolveAppleApplicationIdentifier({ nodeEnv: 'production' })).toThrow(/required/i);
+    expect(() => resolveAppleApplicationIdentifier({ nodeEnv: 'staging' })).toThrow(/required/i);
+    expect(() => resolveAppleApplicationIdentifier({})).toThrow(/required/i);
+    expect(() => resolveAppleApplicationIdentifier({ value: 'bad', nodeEnv: 'test' })).toThrow(/invalid/i);
+    expect(() => resolveAppleApplicationIdentifier({
+      value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+      nodeEnv: 'production'
+    })).toThrow(/synthetic/i);
+  });
+
+  it('publishes stable sanitized native redemption error codes', () => {
+    expect(publicApiErrorResponse(new PublicApiError('INVITE_INVALID_OR_EXPIRED'))).toEqual({
+      status: 410,
+      code: 'INVITE_INVALID_OR_EXPIRED',
+      message: 'This invite is invalid or has expired.'
+    });
+    expect(publicApiErrorResponse(new PublicApiError('INVITE_ROOM_UNAVAILABLE'))).toEqual({
+      status: 410,
+      code: 'INVITE_ROOM_UNAVAILABLE',
+      message: 'That room is no longer available. Ask the host for a new invite.'
+    });
+    expect(publicApiErrorResponse(new PublicApiError('INVITE_RATE_LIMITED'))).toEqual({
+      status: 429,
+      code: 'INVITE_RATE_LIMITED',
+      message: 'Too many invite attempts. Try again later.'
+    });
   });
 });
