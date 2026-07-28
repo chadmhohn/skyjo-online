@@ -4,6 +4,10 @@ import SkyjoDomain
 enum PersistenceEnvelopeCodec {
   static let currentVersion = 1
   static let javascriptSafeIntegerMaximum: Int64 = 9_007_199_254_740_991
+  // SwiftData persists `Int` using the host integer width. Bound the durable counter to a
+  // portable signed 32-bit range and saturate legitimate retry updates at this value. Values
+  // outside the bound are treated as corrupt rows that require explicit recovery.
+  static let maximumOutboxAttempts = Int(Int32.max)
   // The contract permits 256 rounds, eight 128-character player identifiers, and 64-character
   // Unicode names repeated in every score entry. Two MiB retains that legal worst-case state;
   // the HTTP transport's separate 256 KiB request limit remains a networking concern.
@@ -99,6 +103,7 @@ struct StatsOutboxItem: Equatable, Sendable {
   let ownerID: UUID
   let gameID: UUID
   let envelopeData: Data
+  let setup: SoloGameSetup
   let request: StatsSubmissionRequest
   let attempts: Int
   let createdAtMilliseconds: Int64

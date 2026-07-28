@@ -224,6 +224,22 @@ public enum StatsDeliveryError: Error, Equatable, Sendable {
   case permanent(StatsFailureCategory)
 }
 
+/// An actor-scoped capability for the exact blocked FIFO head. Its token is intentionally not
+/// exposed as a string, identifier, or persistence detail; callers can only return the value to
+/// the store after confirming recovery with the user.
+public struct StatsOutboxRecoveryHandle: Equatable, Hashable, Sendable,
+  CustomStringConvertible, CustomDebugStringConvertible
+{
+  private let token: UUID
+
+  init(token: UUID) {
+    self.token = token
+  }
+
+  public var description: String { "StatsOutboxRecoveryHandle(redacted)" }
+  public var debugDescription: String { description }
+}
+
 public struct StatsOutboxStatus: Equatable, Sendable {
   public let queued: Int
   public let terminalFailures: Int
@@ -232,19 +248,24 @@ public struct StatsOutboxStatus: Equatable, Sendable {
   /// The canonical game identifier for the blocked FIFO head, when its safe metadata is readable.
   /// This intentionally exposes neither account metadata nor the persisted request body.
   public let blockedHeadGameID: UUID?
+  /// Opaque capability required to retry or discard the exact currently blocked FIFO head.
+  /// Unlike `blockedHeadGameID`, this remains available when persisted identifiers are corrupt.
+  public let blockedHeadRecoveryHandle: StatsOutboxRecoveryHandle?
 
   public init(
     queued: Int,
     terminalFailures: Int,
     corruptRecords: Int = 0,
     blockedByTerminalFailure: Bool,
-    blockedHeadGameID: UUID? = nil
+    blockedHeadGameID: UUID? = nil,
+    blockedHeadRecoveryHandle: StatsOutboxRecoveryHandle? = nil
   ) {
     self.queued = queued
     self.terminalFailures = terminalFailures
     self.corruptRecords = corruptRecords
     self.blockedByTerminalFailure = blockedByTerminalFailure
     self.blockedHeadGameID = blockedHeadGameID
+    self.blockedHeadRecoveryHandle = blockedHeadRecoveryHandle
   }
 
   static let empty = StatsOutboxStatus(
@@ -252,7 +273,8 @@ public struct StatsOutboxStatus: Equatable, Sendable {
     terminalFailures: 0,
     corruptRecords: 0,
     blockedByTerminalFailure: false,
-    blockedHeadGameID: nil
+    blockedHeadGameID: nil,
+    blockedHeadRecoveryHandle: nil
   )
 }
 

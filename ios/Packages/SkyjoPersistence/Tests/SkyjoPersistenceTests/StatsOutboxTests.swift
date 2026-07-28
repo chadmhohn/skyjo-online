@@ -72,16 +72,72 @@ struct StatsOutboxTests {
     #expect(item.request.expectedAccountUserId == accountID.uuidString.lowercased())
     #expect(item.request.completedAt == 20)
 
-    await expectStatsPersistenceError(.sessionConflict) {
-      try await store.completeSession(
+    try await store.completeSession(
+      owner: .account(accountID),
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      saveSequence: 1,
+      completedAtMilliseconds: 21
+    )
+    let unchanged = try #require(
+      try await store.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 21,
+        force: true,
+        limit: 1
+      ).first
+    )
+    #expect(unchanged.envelopeData == item.envelopeData)
+    #expect(unchanged.request.completedAt == 20)
+  }
+
+  @Test("Completion retry after a lost commit acknowledgement preserves the first request")
+  func completionAcknowledgementLossIsIdempotent() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let terminal = try PersistenceTestSupport.terminalState()
+    let gameID = PersistenceTestSupport.guestGameID
+    let accountID = PersistenceTestSupport.aliceID
+    let setup = try PersistenceTestSupport.setup(for: terminal, gameID: gameID)
+    let interrupted = SoloPersistenceStore(
+      modelContainer: container,
+      environment: SoloPersistenceEnvironment(
+        nowMilliseconds: { 20 },
+        faults: .failing(at: .afterCommitAcknowledgement)
+      )
+    )
+
+    await expectStatsPersistenceError(.writeInterrupted) {
+      try await interrupted.completeSession(
         owner: .account(accountID),
         gameID: gameID,
         state: terminal,
         setup: setup,
-        saveSequence: 1,
-        completedAtMilliseconds: 21
+        saveSequence: 1
       )
     }
+
+    let retry = SoloPersistenceStore(
+      modelContainer: container,
+      environment: SoloPersistenceEnvironment(nowMilliseconds: { 21 })
+    )
+    try await retry.completeSession(
+      owner: .account(accountID),
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      saveSequence: 1
+    )
+    #expect(try await retry.pendingOutboxCount(accountID: accountID) == 1)
+    let item = try #require(
+      try await retry.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 21,
+        force: true,
+        limit: 1
+      ).first
+    )
+    #expect(item.request.completedAt == 20)
   }
 
   @Test(
@@ -207,6 +263,53 @@ struct StatsOutboxTests {
     await coordinator.dispose()
   }
 
+  @Test("The portable retry-attempt ceiling saturates without overflow")
+  func retryAttemptCeilingSaturates() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    let terminal = try PersistenceTestSupport.terminalState()
+    let accountID = PersistenceTestSupport.aliceID
+    let gameID = PersistenceTestSupport.guestGameID
+    try await store.completeSession(
+      owner: .account(accountID),
+      gameID: gameID,
+      state: terminal,
+      setup: try PersistenceTestSupport.setup(for: terminal, gameID: gameID),
+      saveSequence: 0,
+      completedAtMilliseconds: 10
+    )
+
+    let context = ModelContext(container)
+    let row = try #require(context.fetch(FetchDescriptor<StatsOutboxRecord>()).first)
+    row.attempts = PersistenceEnvelopeCodec.maximumOutboxAttempts
+    try context.save()
+    let item = try #require(
+      try await store.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 20,
+        force: true,
+        limit: 1
+      ).first
+    )
+    #expect(item.attempts == PersistenceEnvelopeCodec.maximumOutboxAttempts)
+    #expect(
+      try await store.markOutboxFailed(
+        item,
+        category: .transport,
+        nowMilliseconds: 20
+      ) == 300_020
+    )
+    let saturated = try #require(
+      try await store.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 20,
+        force: true,
+        limit: 1
+      ).first
+    )
+    #expect(saturated.attempts == PersistenceEnvelopeCodec.maximumOutboxAttempts)
+  }
+
   @Test("Account generation abort retains the old row and delivers only the new owner")
   func accountSwitchAbortsInFlightDelivery() async throws {
     let (container, store) = try PersistenceTestSupport.store()
@@ -300,16 +403,13 @@ struct StatsOutboxTests {
       ).isEmpty
     )
     #expect(try await store.pendingOutboxCount(accountID: accountID) == 1)
-    #expect(
-      try await store.outboxStatus(accountID: accountID)
-        == StatsOutboxStatus(
-          queued: 1,
-          terminalFailures: 0,
-          corruptRecords: 1,
-          blockedByTerminalFailure: true,
-          blockedHeadGameID: gameID
-        )
-    )
+    let blockedStatus = try await store.outboxStatus(accountID: accountID)
+    #expect(blockedStatus.queued == 1)
+    #expect(blockedStatus.terminalFailures == 0)
+    #expect(blockedStatus.corruptRecords == 1)
+    #expect(blockedStatus.blockedByTerminalFailure)
+    #expect(blockedStatus.blockedHeadGameID == gameID)
+    let recoveryHandle = try #require(blockedStatus.blockedHeadRecoveryHandle)
     let coordinator = StatsOutboxCoordinator(store: store) { _ in
       Issue.record("A corrupt outbox body must not reach delivery")
     }
@@ -317,12 +417,14 @@ struct StatsOutboxTests {
     #expect(await coordinator.flush(force: true).attempted == 0)
     #expect(await coordinator.latestWarning?.kind == .statsNotSaved)
     do {
-      try await coordinator.discardBlockedHead(expectedGameID: PersistenceTestSupport.secondGameID)
-      Issue.record("A different game UUID must not discard the blocked head")
+      try await coordinator.discardBlockedHead(
+        expectedRecoveryHandle: StatsOutboxRecoveryHandle(token: UUID())
+      )
+      Issue.record("A different opaque capability must not discard the blocked head")
     } catch let error as SoloPersistenceError {
       #expect(error == .sessionConflict)
     }
-    try await coordinator.discardBlockedHead(expectedGameID: gameID)
+    try await coordinator.discardBlockedHead(expectedRecoveryHandle: recoveryHandle)
     #expect(await coordinator.latestWarning == nil)
     #expect(await coordinator.status() == .empty)
   }
@@ -372,15 +474,12 @@ struct StatsOutboxTests {
     let failed = await coordinator.flush(force: true)
     #expect(failed == StatsFlushResult(attempted: 1, delivered: 0, pending: 2, aborted: false))
     #expect(await coordinator.latestWarning?.kind == .statsNotSaved)
-    #expect(
-      await coordinator.status()
-        == StatsOutboxStatus(
-          queued: 2,
-          terminalFailures: 1,
-          blockedByTerminalFailure: true,
-          blockedHeadGameID: PersistenceTestSupport.guestGameID
-        )
-    )
+    let status = await coordinator.status()
+    #expect(status.queued == 2)
+    #expect(status.terminalFailures == 1)
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == PersistenceTestSupport.guestGameID)
+    let recoveryHandle = try #require(status.blockedHeadRecoveryHandle)
     let blocked = await coordinator.flush(force: true)
     #expect(blocked.attempted == 0)
     #expect(await probe.aliceCalls == 1)
@@ -390,13 +489,13 @@ struct StatsOutboxTests {
     await expectStatsPersistenceError(.sessionConflict) {
       try await store.retryTerminalOutboxHead(
         accountID: bob,
-        expectedGameID: PersistenceTestSupport.guestGameID,
+        expectedRecoveryHandle: recoveryHandle,
         nowMilliseconds: 101
       )
     }
     await probe.allowAliceSuccess()
     let recovered = await coordinator.retryTerminalHead(
-      expectedGameID: PersistenceTestSupport.guestGameID
+      expectedRecoveryHandle: recoveryHandle
     )
     #expect(recovered == StatsFlushResult(attempted: 2, delivered: 2, pending: 0, aborted: false))
     #expect(await coordinator.latestWarning == nil)
@@ -417,15 +516,10 @@ struct StatsOutboxTests {
     let container = try SkyjoPersistenceContainer.make(at: paths.store)
     let store = SoloPersistenceStore(modelContainer: container)
     let status = try await store.outboxStatus(accountID: PersistenceTestSupport.aliceID)
-    #expect(
-      status
-        == StatsOutboxStatus(
-          queued: 1,
-          terminalFailures: 1,
-          blockedByTerminalFailure: true,
-          blockedHeadGameID: PersistenceTestSupport.guestGameID
-        )
-    )
+    #expect(status.queued == 1)
+    #expect(status.terminalFailures == 1)
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == PersistenceTestSupport.guestGameID)
 
     let calls = DeliveryCollector()
     let coordinator = StatsOutboxCoordinator(store: store) { request in
@@ -435,16 +529,16 @@ struct StatsOutboxTests {
     #expect(await coordinator.flush(force: true).attempted == 0)
     #expect(await coordinator.latestWarning?.kind == .statsNotSaved)
     #expect(await calls.values.isEmpty)
-    let recovered = await coordinator.retryTerminalHead(expectedGameID: try #require(
-      status.blockedHeadGameID
-    ))
+    let recovered = await coordinator.retryTerminalHead(
+      expectedRecoveryHandle: try #require(status.blockedHeadRecoveryHandle)
+    )
     #expect(recovered.delivered == 1)
     #expect(recovered.pending == 0)
     #expect(await coordinator.latestWarning == nil)
     #expect(await coordinator.status() == .empty)
   }
 
-  @Test("A corrupt disk head exposes its safe UUID after relaunch for confirmed discard")
+  @Test("A corrupt disk head exposes an opaque handle after relaunch for confirmed discard")
   func corruptHeadRecoverySurvivesRelaunch() async throws {
     let paths = try PersistenceTestSupport.temporaryStoreURL()
     defer { try? FileManager.default.removeItem(at: paths.directory) }
@@ -460,10 +554,62 @@ struct StatsOutboxTests {
     #expect(status.queued == 1)
     #expect(status.corruptRecords == 1)
     #expect(status.blockedByTerminalFailure)
-    let blockedGameID = try #require(status.blockedHeadGameID)
-    #expect(blockedGameID == PersistenceTestSupport.guestGameID)
+    #expect(status.blockedHeadGameID == PersistenceTestSupport.guestGameID)
+    let recoveryHandle = try #require(status.blockedHeadRecoveryHandle)
 
-    try await coordinator.discardBlockedHead(expectedGameID: blockedGameID)
+    try await coordinator.discardBlockedHead(expectedRecoveryHandle: recoveryHandle)
+    #expect(await coordinator.status() == .empty)
+  }
+
+  @Test("Malformed disk identifiers expose an opaque handle and cannot poison FIFO")
+  func malformedIdentifierHeadIsRecoverable() async throws {
+    let paths = try PersistenceTestSupport.temporaryStoreURL()
+    defer { try? FileManager.default.removeItem(at: paths.directory) }
+    try await writePoisonedFifoStore(at: paths.store, poison: .malformedIdentifiers)
+
+    let container = try SkyjoPersistenceContainer.make(at: paths.store)
+    let store = SoloPersistenceStore(modelContainer: container)
+    let delivered = DeliveryCollector()
+    let coordinator = StatsOutboxCoordinator(store: store) { request in
+      await delivered.append(request.clientGameKey)
+    }
+    await coordinator.setConfirmedAccount(PersistenceTestSupport.aliceID)
+    let status = await coordinator.status()
+    #expect(status.queued == 2)
+    #expect(status.corruptRecords == 1)
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == nil)
+    let handle = try #require(status.blockedHeadRecoveryHandle)
+    #expect(await coordinator.flush(force: true).attempted == 0)
+
+    try await coordinator.discardBlockedHead(expectedRecoveryHandle: handle)
+    let drained = await coordinator.flush(force: true)
+    #expect(drained == StatsFlushResult(attempted: 1, delivered: 1, pending: 0, aborted: false))
+    #expect(
+      await delivered.values
+        == [PersistenceTestSupport.secondGameID.uuidString.lowercased()]
+    )
+  }
+
+  @Test("An Int.max disk attempt counter exposes an opaque handle and cannot poison FIFO")
+  func excessiveAttemptHeadIsRecoverable() async throws {
+    let paths = try PersistenceTestSupport.temporaryStoreURL()
+    defer { try? FileManager.default.removeItem(at: paths.directory) }
+    try await writePoisonedFifoStore(at: paths.store, poison: .excessiveAttempts)
+
+    let container = try SkyjoPersistenceContainer.make(at: paths.store)
+    let store = SoloPersistenceStore(modelContainer: container)
+    let coordinator = StatsOutboxCoordinator(store: store) { _ in }
+    await coordinator.setConfirmedAccount(PersistenceTestSupport.aliceID)
+    let status = await coordinator.status()
+    #expect(status.queued == 2)
+    #expect(status.corruptRecords == 1)
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == PersistenceTestSupport.guestGameID)
+    let handle = try #require(status.blockedHeadRecoveryHandle)
+
+    try await coordinator.discardBlockedHead(expectedRecoveryHandle: handle)
+    #expect(await coordinator.flush(force: true).delivered == 1)
     #expect(await coordinator.status() == .empty)
   }
 
@@ -484,8 +630,11 @@ struct StatsOutboxTests {
       Issue.record("The invalidated retry must not reach delivery")
     }
     await coordinator.setConfirmedAccount(PersistenceTestSupport.aliceID)
+    let recoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
     let recovery = Task {
-      await coordinator.retryTerminalHead(expectedGameID: PersistenceTestSupport.guestGameID)
+      await coordinator.retryTerminalHead(expectedRecoveryHandle: recoveryHandle)
     }
     await gate.waitUntilBlocked()
     await coordinator.setConfirmedAccount(PersistenceTestSupport.bobID)
@@ -495,15 +644,11 @@ struct StatsOutboxTests {
       await recovery.value
         == StatsFlushResult(attempted: 0, delivered: 0, pending: 0, aborted: true)
     )
-    #expect(
-      try await normalStore.outboxStatus(accountID: PersistenceTestSupport.aliceID)
-        == StatsOutboxStatus(
-          queued: 1,
-          terminalFailures: 1,
-          blockedByTerminalFailure: true,
-          blockedHeadGameID: PersistenceTestSupport.guestGameID
-        )
-    )
+    let aliceStatus = try await normalStore.outboxStatus(accountID: PersistenceTestSupport.aliceID)
+    #expect(aliceStatus.queued == 1)
+    #expect(aliceStatus.terminalFailures == 1)
+    #expect(aliceStatus.blockedByTerminalFailure)
+    #expect(aliceStatus.blockedHeadGameID == PersistenceTestSupport.guestGameID)
     #expect(try await normalStore.outboxStatus(accountID: PersistenceTestSupport.bobID) == .empty)
   }
 
@@ -522,10 +667,13 @@ struct StatsOutboxTests {
     )
     let coordinator = StatsOutboxCoordinator(store: gatedStore) { _ in }
     await coordinator.setConfirmedAccount(PersistenceTestSupport.aliceID)
+    let recoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
     let discard = Task { () -> SoloPersistenceError? in
       do {
         try await coordinator.discardBlockedHead(
-          expectedGameID: PersistenceTestSupport.guestGameID
+          expectedRecoveryHandle: recoveryHandle
         )
         return nil
       } catch let error as SoloPersistenceError {
@@ -539,15 +687,11 @@ struct StatsOutboxTests {
     await gate.release()
 
     #expect(await discard.value == .sessionConflict)
-    #expect(
-      try await normalStore.outboxStatus(accountID: PersistenceTestSupport.aliceID)
-        == StatsOutboxStatus(
-          queued: 1,
-          terminalFailures: 1,
-          blockedByTerminalFailure: true,
-          blockedHeadGameID: PersistenceTestSupport.guestGameID
-        )
-    )
+    let aliceStatus = try await normalStore.outboxStatus(accountID: PersistenceTestSupport.aliceID)
+    #expect(aliceStatus.queued == 1)
+    #expect(aliceStatus.terminalFailures == 1)
+    #expect(aliceStatus.blockedByTerminalFailure)
+    #expect(aliceStatus.blockedHeadGameID == PersistenceTestSupport.guestGameID)
   }
 
   @Test("Concurrent triggers share one flight and drain a queued trigger")
@@ -852,6 +996,75 @@ private func writeCorruptOutboxStore(at url: URL) throws {
       payloadVersion: 99,
       payload: Data("corrupt".utf8),
       attempts: 0,
+      createdAtMilliseconds: 10,
+      updatedAtMilliseconds: 10,
+      nextAttemptAtMilliseconds: 10
+    )
+  )
+  try context.save()
+}
+
+private enum PoisonedFifoHead {
+  case malformedIdentifiers
+  case excessiveAttempts
+}
+
+private func writePoisonedFifoStore(
+  at url: URL,
+  poison: PoisonedFifoHead
+) async throws {
+  let container = try SkyjoPersistenceContainer.make(at: url)
+  let store = SoloPersistenceStore(modelContainer: container)
+  let terminal = try PersistenceTestSupport.terminalState()
+  let accountID = PersistenceTestSupport.aliceID
+  let goodGameID = PersistenceTestSupport.secondGameID
+  try await store.completeSession(
+    owner: .account(accountID),
+    gameID: goodGameID,
+    state: terminal,
+    setup: try PersistenceTestSupport.setup(for: terminal, gameID: goodGameID),
+    saveSequence: 0,
+    completedAtMilliseconds: 20
+  )
+
+  let recordID: String
+  let gameID: String
+  let payloadVersion: Int
+  let payload: Data
+  let attempts: Int
+  switch poison {
+  case .malformedIdentifiers:
+    recordID = "malformed-record-id"
+    gameID = "malformed-game-id"
+    payloadVersion = 99
+    payload = Data("corrupt".utf8)
+    attempts = 0
+  case .excessiveAttempts:
+    let poisonGameID = PersistenceTestSupport.guestGameID
+    let envelope = StatsSubmissionEnvelopeV1(
+      accountID: accountID,
+      gameID: poisonGameID,
+      state: terminal,
+      setup: try PersistenceTestSupport.setup(for: terminal, gameID: poisonGameID),
+      completedAtMilliseconds: 10
+    )
+    recordID = UUID().uuidString.lowercased()
+    gameID = poisonGameID.uuidString.lowercased()
+    payloadVersion = PersistenceEnvelopeCodec.currentVersion
+    payload = try PersistenceEnvelopeCodec.encode(envelope)
+    attempts = Int.max
+  }
+
+  let context = ModelContext(container)
+  context.autosaveEnabled = false
+  context.insert(
+    StatsOutboxRecord(
+      recordID: recordID,
+      ownerKey: SoloOwnerPartition.account(accountID).storageKey,
+      gameID: gameID,
+      payloadVersion: payloadVersion,
+      payload: payload,
+      attempts: attempts,
       createdAtMilliseconds: 10,
       updatedAtMilliseconds: 10,
       nextAttemptAtMilliseconds: 10

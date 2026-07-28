@@ -120,7 +120,9 @@ public actor StatsOutboxCoordinator {
   }
 
   /// Reclassifies only the confirmed owner's exact terminal FIFO head, then retries its immutable body.
-  public func retryTerminalHead(expectedGameID: UUID) async -> StatsFlushResult {
+  public func retryTerminalHead(
+    expectedRecoveryHandle: StatsOutboxRecoveryHandle
+  ) async -> StatsFlushResult {
     guard let accountID = confirmedAccountID else { return .idle }
     let generation = accountGeneration
     let fence = accountFence
@@ -130,7 +132,7 @@ public actor StatsOutboxCoordinator {
     do {
       try await store.retryTerminalOutboxHead(
         accountID: accountID,
-        expectedGameID: expectedGameID,
+        expectedRecoveryHandle: expectedRecoveryHandle,
         nowMilliseconds: environment.nowMilliseconds(),
         accountFence: fence
       )
@@ -158,8 +160,10 @@ public actor StatsOutboxCoordinator {
     }
   }
 
-  /// Deletes a corrupt or terminal FIFO head only after the UI has confirmed the exact game UUID.
-  public func discardBlockedHead(expectedGameID: UUID) async throws {
+  /// Deletes a corrupt or terminal FIFO head only after the UI returns its opaque capability.
+  public func discardBlockedHead(
+    expectedRecoveryHandle: StatsOutboxRecoveryHandle
+  ) async throws {
     guard let accountID = confirmedAccountID else {
       throw SoloPersistenceError.sessionConflict
     }
@@ -171,7 +175,7 @@ public actor StatsOutboxCoordinator {
     do {
       try await store.discardBlockedOutboxHead(
         accountID: accountID,
-        expectedGameID: expectedGameID,
+        expectedRecoveryHandle: expectedRecoveryHandle,
         accountFence: fence
       )
     } catch {

@@ -7,6 +7,7 @@ public actor SoloPersistenceStore: ModelActor {
   public nonisolated let modelContainer: ModelContainer
 
   private let environment: SoloPersistenceEnvironment
+  private var recoveryHandles: [PersistentIdentifier: StatsOutboxRecoveryHandle] = [:]
 
   public init(
     modelContainer: ModelContainer,
@@ -242,21 +243,24 @@ public actor SoloPersistenceStore: ModelActor {
         }
 
         if case let .account(accountID) = owner {
-          let envelope = StatsSubmissionEnvelopeV1(
-            accountID: accountID,
-            gameID: gameID,
-            state: state,
-            setup: setup,
-            completedAtMilliseconds: completionTime
-          )
-          let payload = try PersistenceEnvelopeCodec.encode(envelope)
           let outbox = try outboxRecords(ownerKey: owner.storageKey).first { $0.gameID == gameKey }
           if let outbox {
             let existing = try decodeOutbox(outbox, expectedAccountID: accountID)
-            guard existing.envelopeData == payload else {
+            // A transaction may commit even when its acknowledgement is interrupted. A retry
+            // must preserve the first immutable request (including its original completedAt)
+            // while accepting the same logical completion with a newly sampled clock value.
+            guard existing.request.state == state, existing.setup == setup else {
               throw SoloPersistenceError.sessionConflict
             }
           } else {
+            let envelope = StatsSubmissionEnvelopeV1(
+              accountID: accountID,
+              gameID: gameID,
+              state: state,
+              setup: setup,
+              completedAtMilliseconds: completionTime
+            )
+            let payload = try PersistenceEnvelopeCodec.encode(envelope)
             let recordID = environment.makeUUID().uuidString.lowercased()
             modelContext.insert(
               StatsOutboxRecord(
@@ -370,12 +374,16 @@ public actor SoloPersistenceStore: ModelActor {
       let blockedHeadGameID = blocked
         ? records.first.flatMap { canonicalUUID($0.gameID) }
         : nil
+      let blockedHeadRecoveryHandle = blocked
+        ? records.first.map { recoveryHandle(for: $0) }
+        : nil
       return StatsOutboxStatus(
         queued: records.count,
         terminalFailures: terminalFailures,
         corruptRecords: corruptRecords,
         blockedByTerminalFailure: blocked,
-        blockedHeadGameID: blockedHeadGameID
+        blockedHeadGameID: blockedHeadGameID,
+        blockedHeadRecoveryHandle: blockedHeadRecoveryHandle
       )
     } catch {
       modelContext.rollback()
@@ -392,6 +400,7 @@ public actor SoloPersistenceStore: ModelActor {
       let deletion = {
         try self.modelContext.transaction {
           guard let record = try self.exactOutboxRecord(item) else { return }
+          self.recoveryHandles.removeValue(forKey: record.persistentModelID)
           self.modelContext.delete(record)
         }
       }
@@ -424,11 +433,14 @@ public actor SoloPersistenceStore: ModelActor {
         var nextAttempt: Int64?
         try self.modelContext.transaction {
           guard let record = try self.exactOutboxRecord(item) else { return }
-          let attempts = record.attempts.addingReportingOverflow(1)
-          guard !attempts.overflow else { throw SoloPersistenceError.incompatibleRecord }
-          let delay = Self.retryDelayMilliseconds(afterAttempts: attempts.partialValue)
+          guard (0...PersistenceEnvelopeCodec.maximumOutboxAttempts).contains(record.attempts)
+          else { throw SoloPersistenceError.incompatibleRecord }
+          let attempts = record.attempts == PersistenceEnvelopeCodec.maximumOutboxAttempts
+            ? record.attempts
+            : record.attempts + 1
+          let delay = Self.retryDelayMilliseconds(afterAttempts: attempts)
           let scheduled = nowMilliseconds.addingReportingOverflow(delay)
-          record.attempts = attempts.partialValue
+          record.attempts = attempts
           record.updatedAtMilliseconds = nowMilliseconds
           record.nextAttemptAtMilliseconds = scheduled.overflow
             ? PersistenceEnvelopeCodec.javascriptSafeIntegerMaximum
@@ -466,9 +478,11 @@ public actor SoloPersistenceStore: ModelActor {
       let update = {
         try self.modelContext.transaction {
           guard let record = try self.exactOutboxRecord(item) else { return }
-          let attempts = record.attempts.addingReportingOverflow(1)
-          guard !attempts.overflow else { throw SoloPersistenceError.incompatibleRecord }
-          record.attempts = attempts.partialValue
+          guard (0...PersistenceEnvelopeCodec.maximumOutboxAttempts).contains(record.attempts)
+          else { throw SoloPersistenceError.incompatibleRecord }
+          if record.attempts < PersistenceEnvelopeCodec.maximumOutboxAttempts {
+            record.attempts += 1
+          }
           record.updatedAtMilliseconds = nowMilliseconds
           record.lastFailureCode = category.rawValue
           record.terminalFailure = true
@@ -487,12 +501,12 @@ public actor SoloPersistenceStore: ModelActor {
 
   public func retryTerminalOutboxHead(
     accountID: UUID,
-    expectedGameID: UUID,
+    expectedRecoveryHandle: StatsOutboxRecoveryHandle,
     nowMilliseconds: Int64
   ) async throws {
     try await retryTerminalOutboxHead(
       accountID: accountID,
-      expectedGameID: expectedGameID,
+      expectedRecoveryHandle: expectedRecoveryHandle,
       nowMilliseconds: nowMilliseconds,
       accountFence: nil
     )
@@ -500,7 +514,7 @@ public actor SoloPersistenceStore: ModelActor {
 
   func retryTerminalOutboxHead(
     accountID: UUID,
-    expectedGameID: UUID,
+    expectedRecoveryHandle: StatsOutboxRecoveryHandle,
     nowMilliseconds: Int64,
     accountFence: StatsOutboxAccountFence?
   ) async throws {
@@ -510,14 +524,13 @@ public actor SoloPersistenceStore: ModelActor {
       throw SoloPersistenceError.storageUnavailable
     }
     let ownerKey = SoloOwnerPartition.account(accountID).storageKey
-    let expectedGameKey = expectedGameID.uuidString.lowercased()
     do {
       await environment.recoveryBarrier(.beforeOutboxRetryUpdate)
       try environment.faults.check(.beforeOutboxRetryUpdate)
       let update = {
         try self.modelContext.transaction {
           guard let head = try self.outboxRecords(ownerKey: ownerKey).first,
-                head.gameID == expectedGameKey,
+                self.recoveryHandle(for: head) == expectedRecoveryHandle,
                 try self.decodeOutbox(head, expectedAccountID: accountID).isTerminalFailure
           else {
             throw SoloPersistenceError.sessionConflict
@@ -541,29 +554,28 @@ public actor SoloPersistenceStore: ModelActor {
 
   public func discardBlockedOutboxHead(
     accountID: UUID,
-    expectedGameID: UUID
+    expectedRecoveryHandle: StatsOutboxRecoveryHandle
   ) async throws {
     try await discardBlockedOutboxHead(
       accountID: accountID,
-      expectedGameID: expectedGameID,
+      expectedRecoveryHandle: expectedRecoveryHandle,
       accountFence: nil
     )
   }
 
   func discardBlockedOutboxHead(
     accountID: UUID,
-    expectedGameID: UUID,
+    expectedRecoveryHandle: StatsOutboxRecoveryHandle,
     accountFence: StatsOutboxAccountFence?
   ) async throws {
     let ownerKey = SoloOwnerPartition.account(accountID).storageKey
-    let expectedGameKey = expectedGameID.uuidString.lowercased()
     do {
       await environment.recoveryBarrier(.beforeOutboxDelete)
       try environment.faults.check(.beforeOutboxDelete)
       let deletion = {
         try self.modelContext.transaction {
           guard let head = try self.outboxRecords(ownerKey: ownerKey).first,
-                head.gameID == expectedGameKey
+                self.recoveryHandle(for: head) == expectedRecoveryHandle
           else {
             throw SoloPersistenceError.sessionConflict
           }
@@ -571,6 +583,7 @@ public actor SoloPersistenceStore: ModelActor {
           guard decoded == nil || decoded?.isTerminalFailure == true else {
             throw SoloPersistenceError.sessionConflict
           }
+          self.recoveryHandles.removeValue(forKey: head.persistentModelID)
           self.modelContext.delete(head)
         }
       }
@@ -592,7 +605,12 @@ public actor SoloPersistenceStore: ModelActor {
   }
 
   private func canonicalUUID(_ value: String) -> UUID? {
-    guard let id = UUID(uuidString: value), value == id.uuidString.lowercased() else { return nil }
+    guard value.utf8.count == 36,
+          let id = UUID(uuidString: value),
+          value == id.uuidString.lowercased()
+    else {
+      return nil
+    }
     return id
   }
 
@@ -713,7 +731,7 @@ public actor SoloPersistenceStore: ModelActor {
           record.recordID == recordID.uuidString.lowercased(),
           let gameID = UUID(uuidString: record.gameID),
           record.gameID == gameID.uuidString.lowercased(),
-          record.attempts >= 0,
+          (0...PersistenceEnvelopeCodec.maximumOutboxAttempts).contains(record.attempts),
           record.createdAtMilliseconds > 0,
           record.createdAtMilliseconds <= PersistenceEnvelopeCodec.javascriptSafeIntegerMaximum,
           record.updatedAtMilliseconds > 0,
@@ -751,6 +769,7 @@ public actor SoloPersistenceStore: ModelActor {
       ownerID: expectedAccountID,
       gameID: gameID,
       envelopeData: record.payload,
+      setup: envelope.setup,
       request: envelope.request,
       attempts: record.attempts,
       createdAtMilliseconds: record.createdAtMilliseconds,
@@ -770,6 +789,14 @@ public actor SoloPersistenceStore: ModelActor {
       return nil
     }
     return record
+  }
+
+  private func recoveryHandle(for record: StatsOutboxRecord) -> StatsOutboxRecoveryHandle {
+    let identifier = record.persistentModelID
+    if let existing = recoveryHandles[identifier] { return existing }
+    let handle = StatsOutboxRecoveryHandle(token: UUID())
+    recoveryHandles[identifier] = handle
+    return handle
   }
 
   private func mapStorageError(_ error: Error) -> SoloPersistenceError {

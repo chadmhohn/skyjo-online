@@ -195,39 +195,44 @@ struct SoloSessionStoreTests {
     #expect(try await originalStore.loadSession(for: .guest).session?.gameID == replacementID)
   }
 
-  @Test("Corrupt newest records are removed while an older valid save is recovered")
+  @Test("V1 cleanup prefers an older valid save over a newer corrupt duplicate owner row")
   func corruptionRecovery() async throws {
-    let container = try SkyjoPersistenceContainer.makeInMemory()
-    let store = SoloPersistenceStore(modelContainer: container)
+    let paths = try PersistenceTestSupport.temporaryStoreURL()
+    defer { try? FileManager.default.removeItem(at: paths.directory) }
     let state = try PersistenceTestSupport.activeState()
     let gameID = PersistenceTestSupport.guestGameID
-    _ = try await store.startSession(
+    let snapshot = SoloSessionSnapshot(
       owner: .guest,
       gameID: gameID,
+      saveSequence: 7,
       state: state,
       setup: try PersistenceTestSupport.setup(for: state, gameID: gameID),
       savedAtMilliseconds: 10
     )
-
-    let context = ModelContext(container)
-    context.autosaveEnabled = false
-    context.insert(
-      SoloSessionRecord(
-        recordID: UUID().uuidString.lowercased(),
-        ownerKey: SoloOwnerPartition.guest.storageKey,
-        gameID: PersistenceTestSupport.secondGameID.uuidString.lowercased(),
-        payloadVersion: 99,
-        payload: Data("incompatible".utf8),
-        updatedAtMilliseconds: 20,
-        saveSequence: 0
-      )
+    try writeV1Store(
+      url: paths.store,
+      sessions: [
+        V1SessionFixture(snapshot: snapshot),
+        V1SessionFixture(
+          recordID: UUID().uuidString.lowercased(),
+          ownerKey: SoloOwnerPartition.guest.storageKey,
+          gameID: PersistenceTestSupport.secondGameID.uuidString.lowercased(),
+          payloadVersion: 99,
+          payload: Data("incompatible".utf8),
+          updatedAtMilliseconds: 20
+        ),
+      ],
+      outboxes: []
     )
-    try context.save()
 
+    let container = try SkyjoPersistenceContainer.make(at: paths.store)
+    let store = SoloPersistenceStore(modelContainer: container)
     let recovered = try await store.loadSession(for: .guest)
     #expect(recovered.session?.gameID == gameID)
-    #expect(recovered.warning?.kind == .recovered)
-    #expect(try await store.loadSession(for: .guest).warning == nil)
+    #expect(recovered.session?.saveSequence == 7)
+    #expect(recovered.warning == nil)
+    let context = ModelContext(container)
+    #expect(try context.fetchCount(FetchDescriptor<SoloSessionRecord>()) == 1)
   }
 
   @Test("Low-storage failures are classified and leave the saved turn unchanged")
@@ -270,7 +275,7 @@ struct SoloSessionStoreTests {
     #expect(restored?.saveSequence == 0)
   }
 
-  @Test("Real V1 session and outbox records migrate with V2 defaults and remain deliverable")
+  @Test("Real V1 session and outbox records migrate with restored sequence and remain deliverable")
   func realV1ToV2Migration() async throws {
     let paths = try PersistenceTestSupport.temporaryStoreURL()
     defer { try? FileManager.default.removeItem(at: paths.directory) }
@@ -280,7 +285,7 @@ struct SoloSessionStoreTests {
     let snapshot = SoloSessionSnapshot(
       owner: .guest,
       gameID: gameID,
-      saveSequence: 0,
+      saveSequence: 17,
       state: state,
       setup: setup,
       savedAtMilliseconds: 10
@@ -310,16 +315,15 @@ struct SoloSessionStoreTests {
 
     try writeV1Store(
       url: paths.store,
-      snapshot: snapshot,
-      payload: payload,
-      outbox: v1Outbox
+      sessions: [V1SessionFixture(snapshot: snapshot, payload: payload)],
+      outboxes: [v1Outbox]
     )
 
     let migratedContainer = try SkyjoPersistenceContainer.make(at: paths.store)
     let migratedStore = SoloPersistenceStore(modelContainer: migratedContainer)
     let restored = try await migratedStore.loadSession(for: .guest)
     #expect(restored.session?.gameID == gameID)
-    #expect(restored.session?.saveSequence == 0)
+    #expect(restored.session?.saveSequence == 17)
     let status = try await migratedStore.outboxStatus(accountID: PersistenceTestSupport.aliceID)
     #expect(
       status
@@ -389,6 +393,40 @@ struct SoloSessionStoreTests {
     let verificationContainer = try SkyjoPersistenceContainer.make(at: paths.store, allowsSave: false)
     let verificationStore = SoloPersistenceStore(modelContainer: verificationContainer)
     #expect(try await verificationStore.loadSession(for: .guest).session?.saveSequence == 0)
+  }
+
+  @Test("Owner uniqueness remains durable across independent disk contexts")
+  func ownerUniquenessAcrossContexts() async throws {
+    let paths = try PersistenceTestSupport.temporaryStoreURL()
+    defer { try? FileManager.default.removeItem(at: paths.directory) }
+    let state = try PersistenceTestSupport.activeState()
+    let firstID = PersistenceTestSupport.guestGameID
+    let firstContainer = try SkyjoPersistenceContainer.make(at: paths.store)
+    let firstStore = SoloPersistenceStore(modelContainer: firstContainer)
+    _ = try await firstStore.startSession(
+      owner: .guest,
+      gameID: firstID,
+      state: state,
+      setup: try PersistenceTestSupport.setup(for: state, gameID: firstID),
+      savedAtMilliseconds: 10
+    )
+
+    let secondContainer = try SkyjoPersistenceContainer.make(at: paths.store)
+    let secondStore = SoloPersistenceStore(modelContainer: secondContainer)
+    let secondID = PersistenceTestSupport.secondGameID
+    await expectPersistenceError(.sessionConflict) {
+      _ = try await secondStore.startSession(
+        owner: .guest,
+        gameID: secondID,
+        state: state,
+        setup: try PersistenceTestSupport.setup(for: state, gameID: secondID),
+        savedAtMilliseconds: 20
+      )
+    }
+
+    #expect(try await secondStore.loadSession(for: .guest).session?.gameID == firstID)
+    let verification = ModelContext(secondContainer)
+    #expect(try verification.fetchCount(FetchDescriptor<SoloSessionRecord>()) == 1)
   }
 
   @Test("Autosave coordinator coalesces turns and lifecycle flush surfaces warnings")
@@ -467,6 +505,63 @@ struct SoloSessionStoreTests {
     let data = try PersistenceEnvelopeCodec.encode(SoloSnapshotEnvelopeV1(snapshot: snapshot))
     #expect(data.count > 256 * 1_024)
     #expect(data.count < PersistenceEnvelopeCodec.maximumPayloadBytes)
+  }
+
+  @Test("Two MiB envelope limit counts four-byte UTF-8 scalars on disk")
+  func fourByteUTF8PayloadBoundary() async throws {
+    let emptyEnvelopeBytes = try JSONEncoder().encode(FourBytePayload(value: "")).count
+    let acceptedScalarCount =
+      (PersistenceEnvelopeCodec.maximumPayloadBytes - emptyEnvelopeBytes) / 4
+    let accepted = FourBytePayload(value: String(repeating: "😀", count: acceptedScalarCount))
+    let acceptedData = try PersistenceEnvelopeCodec.encode(accepted)
+    #expect(accepted.value.count < PersistenceEnvelopeCodec.maximumPayloadBytes)
+    #expect(acceptedData.count == PersistenceEnvelopeCodec.maximumPayloadBytes)
+    #expect(try PersistenceEnvelopeCodec.decode(FourBytePayload.self, from: acceptedData) == accepted)
+
+    let oversized = FourBytePayload(value: accepted.value + "😀")
+    let oversizedData = try JSONEncoder().encode(oversized)
+    #expect(oversized.value.count < PersistenceEnvelopeCodec.maximumPayloadBytes)
+    #expect(oversizedData.count > PersistenceEnvelopeCodec.maximumPayloadBytes)
+    do {
+      _ = try PersistenceEnvelopeCodec.encode(oversized)
+      Issue.record("Four-byte UTF-8 bytes beyond the cap must be rejected during encoding")
+    } catch let error as SoloPersistenceError {
+      #expect(error == .invalidSnapshot)
+    }
+    do {
+      _ = try PersistenceEnvelopeCodec.decode(FourBytePayload.self, from: oversizedData)
+      Issue.record("Four-byte UTF-8 bytes beyond the cap must be rejected during decoding")
+    } catch let error as SoloPersistenceError {
+      #expect(error == .incompatibleRecord)
+    }
+
+    let paths = try PersistenceTestSupport.temporaryStoreURL()
+    defer { try? FileManager.default.removeItem(at: paths.directory) }
+    do {
+      let container = try SkyjoPersistenceContainer.make(at: paths.store)
+      let context = ModelContext(container)
+      context.autosaveEnabled = false
+      context.insert(
+        SoloSessionRecord(
+          recordID: UUID().uuidString.lowercased(),
+          ownerKey: SoloOwnerPartition.guest.storageKey,
+          gameID: PersistenceTestSupport.guestGameID.uuidString.lowercased(),
+          payloadVersion: PersistenceEnvelopeCodec.currentVersion,
+          payload: oversizedData,
+          updatedAtMilliseconds: 10,
+          saveSequence: 0
+        )
+      )
+      try context.save()
+    }
+
+    let reopened = try SkyjoPersistenceContainer.make(at: paths.store)
+    let store = SoloPersistenceStore(modelContainer: reopened)
+    let result = try await store.loadSession(for: .guest)
+    #expect(result.session == nil)
+    #expect(result.warning == .discarded)
+    let verification = ModelContext(reopened)
+    #expect(try verification.fetchCount(FetchDescriptor<SoloSessionRecord>()) == 0)
   }
 
   @Test("Explicit start, replacement, and deletion conflicts preserve the active UUID")
@@ -656,9 +751,8 @@ private func expectPersistenceError(
 
 private func writeV1Store(
   url: URL,
-  snapshot: SoloSessionSnapshot,
-  payload: Data,
-  outbox: V1OutboxFixture
+  sessions: [V1SessionFixture],
+  outboxes: [V1OutboxFixture]
 ) throws {
   let schema = Schema(versionedSchema: SkyjoPersistenceSchemaV1.self)
   let configuration = ModelConfiguration(
@@ -671,30 +765,73 @@ private func writeV1Store(
   let container = try ModelContainer(for: schema, configurations: [configuration])
   let context = ModelContext(container)
   context.autosaveEnabled = false
-  context.insert(
-    SkyjoPersistenceSchemaV1.SoloSessionRecord(
-      recordID: UUID().uuidString.lowercased(),
-      ownerKey: snapshot.owner.storageKey,
-      gameID: snapshot.gameID.uuidString.lowercased(),
-      payloadVersion: PersistenceEnvelopeCodec.currentVersion,
-      payload: payload,
-      updatedAtMilliseconds: snapshot.savedAtMilliseconds
+  for session in sessions {
+    context.insert(
+      SkyjoPersistenceSchemaV1.SoloSessionRecord(
+        recordID: session.recordID,
+        ownerKey: session.ownerKey,
+        gameID: session.gameID,
+        payloadVersion: session.payloadVersion,
+        payload: session.payload,
+        updatedAtMilliseconds: session.updatedAtMilliseconds
+      )
     )
-  )
-  context.insert(
-    SkyjoPersistenceSchemaV1.StatsOutboxRecord(
-      recordID: outbox.recordID.uuidString.lowercased(),
-      ownerKey: SoloOwnerPartition.account(outbox.accountID).storageKey,
-      gameID: outbox.gameID.uuidString.lowercased(),
-      payloadVersion: PersistenceEnvelopeCodec.currentVersion,
-      payload: outbox.payload,
-      attempts: outbox.attempts,
-      createdAtMilliseconds: outbox.createdAtMilliseconds,
-      updatedAtMilliseconds: outbox.updatedAtMilliseconds,
-      nextAttemptAtMilliseconds: outbox.nextAttemptAtMilliseconds
+  }
+  for outbox in outboxes {
+    context.insert(
+      SkyjoPersistenceSchemaV1.StatsOutboxRecord(
+        recordID: outbox.recordID.uuidString.lowercased(),
+        ownerKey: SoloOwnerPartition.account(outbox.accountID).storageKey,
+        gameID: outbox.gameID.uuidString.lowercased(),
+        payloadVersion: PersistenceEnvelopeCodec.currentVersion,
+        payload: outbox.payload,
+        attempts: outbox.attempts,
+        createdAtMilliseconds: outbox.createdAtMilliseconds,
+        updatedAtMilliseconds: outbox.updatedAtMilliseconds,
+        nextAttemptAtMilliseconds: outbox.nextAttemptAtMilliseconds
+      )
     )
-  )
+  }
   try context.save()
+}
+
+private struct V1SessionFixture {
+  let recordID: String
+  let ownerKey: String
+  let gameID: String
+  let payloadVersion: Int
+  let payload: Data
+  let updatedAtMilliseconds: Int64
+
+  init(snapshot: SoloSessionSnapshot, payload: Data? = nil) throws {
+    recordID = UUID().uuidString.lowercased()
+    ownerKey = snapshot.owner.storageKey
+    gameID = snapshot.gameID.uuidString.lowercased()
+    payloadVersion = PersistenceEnvelopeCodec.currentVersion
+    self.payload = try payload
+      ?? PersistenceEnvelopeCodec.encode(SoloSnapshotEnvelopeV1(snapshot: snapshot))
+    updatedAtMilliseconds = snapshot.savedAtMilliseconds
+  }
+
+  init(
+    recordID: String,
+    ownerKey: String,
+    gameID: String,
+    payloadVersion: Int,
+    payload: Data,
+    updatedAtMilliseconds: Int64
+  ) {
+    self.recordID = recordID
+    self.ownerKey = ownerKey
+    self.gameID = gameID
+    self.payloadVersion = payloadVersion
+    self.payload = payload
+    self.updatedAtMilliseconds = updatedAtMilliseconds
+  }
+}
+
+private struct FourBytePayload: Codable, Equatable {
+  let value: String
 }
 
 private struct V1OutboxFixture {

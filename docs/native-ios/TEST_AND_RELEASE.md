@@ -41,8 +41,9 @@ npm run test:unit:contracts
 - Swift Testing parameterized tests for pure rules, AI, validation, and fixture parity.
 - Seeded RNG/clock/UUID; no time-, locale-, or device-dependent expected values.
 - Property/invariant tests for deck conservation, card visibility, legal phase transitions, revision monotonicity, scoring, and idempotency.
-- Persistence tests for atomic replacement, corruption, real V1-to-V2 session/outbox migration, quota/write failure, account partitioning, stale writes, and outbox retry/abort.
-- Permanent and corrupt FIFO heads remain durable blockers across relaunch; tests recover them only through the exposed safe game UUID plus exact confirmed-owner retry/discard, including account switches while recovery is suspended.
+- Persistence tests for atomic replacement, corruption, custom real V1-to-V2 session/outbox migration with nonzero autosaves and duplicate-owner cleanup, quota/write failure, durable account partitioning, stale writes, completion acknowledgement loss, and outbox retry/abort.
+- Permanent and corrupt FIFO heads remain durable blockers across relaunch; tests recover them only through an actor-scoped opaque head handle (with an optional safe game UUID for display), including malformed identifiers, excessive counters, and account switches while recovery is suspended.
+- Payload-boundary tests measure encoded UTF-8 bytes and include four-byte Unicode scalars whose character count is below 2 MiB while their encoded body exceeds it.
 - At least 90% line coverage for domain/network/persistence targets, with every security/rule branch represented by a named test.
 
 ### Networking And Server Compatibility

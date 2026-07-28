@@ -25,6 +25,10 @@ func persistenceValueTypes() async throws {
   #expect(SoloPersistenceError.storageUnavailable.warning.kind == .unavailable)
   #expect(SoloPersistenceError.writeInterrupted.warning.kind == .unavailable)
 
+  let recoveryHandle = StatsOutboxRecoveryHandle(token: accountID)
+  #expect(String(describing: recoveryHandle) == "StatsOutboxRecoveryHandle(redacted)")
+  #expect(String(reflecting: recoveryHandle) == "StatsOutboxRecoveryHandle(redacted)")
+
   let persistenceEnvironment = SoloPersistenceEnvironment()
   #expect(persistenceEnvironment.nowMilliseconds() > 0)
   let coordinatorEnvironment = StatsOutboxCoordinatorEnvironment()
