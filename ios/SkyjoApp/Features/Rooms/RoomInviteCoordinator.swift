@@ -34,7 +34,10 @@ final class RoomInviteCoordinator {
     do {
       link = try RoomInviteLink(url: url)
     } catch {
-      return false
+      guard Self.isSkyjoInviteRoute(url) else { return false }
+      requestID = nil
+      state = .failed(message: "This Skyjo invite link is invalid. Ask the host for a new link.")
+      return true
     }
 
     let nextRequestID = UUID()
@@ -83,5 +86,15 @@ final class RoomInviteCoordinator {
       return error.localizedDescription
     }
     return "Skyjo could not open this invite. Ask the host for a new link."
+  }
+
+  private static func isSkyjoInviteRoute(_ url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return false
+    }
+    return components.scheme?.lowercased() == "https"
+      && components.host?.lowercased() == RoomInviteLink.productionHost
+      && (components.percentEncodedPath == "/invite"
+        || components.percentEncodedPath.hasPrefix("/invite/"))
   }
 }

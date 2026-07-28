@@ -465,6 +465,14 @@ struct RoomInviteClientTests {
         playerID: String(repeating: "p", count: 129)
       )
     }
+    #expect(throws: (any Error).self) {
+      _ = try JSONDecoder().decode(
+        RoomSeatRecoveryRecord.self,
+        from: Data(
+          #"{"accountID":"30000000-0000-4000-8000-000000000003","roomCode":"abc12","playerID":"seat-a"}"#.utf8
+        )
+      )
+    }
 
     let store = VolatileRoomSeatRecoveryStore(record: record)
     #expect(await store.load(accountID: accountA) == record)

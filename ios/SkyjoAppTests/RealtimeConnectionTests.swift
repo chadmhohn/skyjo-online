@@ -197,9 +197,13 @@ struct RealtimeContractTests {
 
     let notice = RoomConnectionNotice.commandRejected(
       code: "illegal-move",
-      message: "private server detail"
+      message: "private server detail",
+      matchedAction: .replaceCard(2)
     )
     #expect(!String(reflecting: notice).contains("private server detail"))
+    #expect(!String(reflecting: RoomConnectionNotice.roomResetByHost(
+      roomCode: "ABCDE"
+    )).contains("ABCDE"))
   }
 }
 
@@ -217,7 +221,7 @@ struct RoomConnectionStateMachineTests {
       sleeper: sleeper,
       commandIDs: [commandID]
     )
-    defer { Task { await connection.dispose() } }
+    do {
 
     try await connection.connect(.create(displayName: "Host"))
     #expect(await eventually { await firstSocket.sentTexts().count == 1 })
@@ -256,6 +260,10 @@ struct RoomConnectionStateMachineTests {
     #expect(await eventually { !(await connection.status().hasPendingCommand) })
     #expect(await connection.status().revision == 8)
 
+    } catch {
+      await connection.dispose()
+      throw error
+    }
     await connection.dispose()
   }
 
@@ -399,8 +407,18 @@ struct RoomConnectionStateMachineTests {
     #expect(!storedText.contains("@"))
 
     let wrongAccount = UUID(uuidString: "50000000-0000-4000-8000-000000000005")!
+    #expect(throws: (any Error).self) {
+      _ = try JSONDecoder().decode(
+        RoomResetRecoveryRecord.self,
+        from: Data(
+          #"{"accountID":"30000000-0000-4000-8000-000000000003","roomCode":"abcde","playerID":"seat-1","commandID":"40000000-0000-4000-8000-000000000054","expectedRevision":7}"#.utf8
+        )
+      )
+    }
     #expect(try await storeA.load(accountID: wrongAccount) == nil)
     try await storeA.clear(accountID: wrongAccount, commandID: commandID)
+    #expect(try await storeA.load(accountID: UUID(uuidString: "30000000-0000-4000-8000-000000000003")!) != nil)
+    try await storeA.discard(accountID: wrongAccount)
     #expect(try await storeA.load(accountID: UUID(uuidString: "30000000-0000-4000-8000-000000000003")!) != nil)
 
     let storeB = FileRoomResetRecoveryStore(fileURL: fileURL)
@@ -469,6 +487,8 @@ struct RoomConnectionStateMachineTests {
 
     try Data("not-json".utf8).write(to: fileURL, options: [.atomic])
     await #expect(throws: (any Error).self) { try await storeB.load(accountID: wrongAccount) }
+    try await storeB.discard(accountID: accountID)
+    #expect(try await storeB.load(accountID: accountID) == nil)
     try Data(repeating: 0x61, count: FileRoomResetRecoveryStore.maximumRecordBytes + 1)
       .write(to: fileURL, options: [.atomic])
     await #expect(throws: (any Error).self) { try await storeB.load(accountID: wrongAccount) }
@@ -484,6 +504,34 @@ struct RoomConnectionStateMachineTests {
       expectedRevision: 7
     )
     await #expect(throws: (any Error).self) { try await writeFailureStore.save(validRecord) }
+  }
+
+  @Test("Ordinary disconnect is exact-fenced while explicit discard removes account recovery")
+  func disconnectDoesNotBroadlyDiscardAnotherGeneration() async throws {
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let commandID = UUID(uuidString: "40000000-0000-4000-8000-000000000075")!
+    let store = VolatileRoomResetRecoveryStore()
+    let newerRecord = try RoomResetRecoveryRecord(
+      accountID: accountID,
+      roomCode: "FGHIJ",
+      playerID: "seat-new",
+      commandID: commandID,
+      expectedRevision: 11
+    )
+    try await store.save(newerRecord)
+    let oldConnection = try makeTestConnection(
+      factory: FakeSocketFactory([]),
+      sleeper: ControlledSleeper(),
+      commandIDs: [],
+      resetRecoveryStore: store
+    )
+
+    try await oldConnection.disconnect()
+    #expect(await store.load(accountID: accountID) == newerRecord)
+
+    try await oldConnection.discardPersistedResetRecovery()
+    #expect(await store.load(accountID: accountID) == nil)
+    await oldConnection.dispose()
   }
 
   @Test("Persistence failures block reset wire and abandoned recoveries are retried exactly")
@@ -773,7 +821,7 @@ struct RoomConnectionStateMachineTests {
     #expect(await retrying.status().hasPendingCommand)
     #expect(await eventually { await notices.contains(.resetRecoveryPersistenceFailed) })
 
-    await retrying.disconnect()
+    try await retrying.disconnect()
     #expect(await retrying.status().phase == .idle)
     #expect(!(await retryStore.hasRecord()))
     #expect(!(await retrying.status().hasPendingCommand))
@@ -839,7 +887,11 @@ struct RoomConnectionStateMachineTests {
     #expect(await admission.status().revision == nil)
     #expect(await admission.recoveryAdmission() == nil)
     #expect(await eventually { await admissionStore.load(accountID: accountID) == nil })
-    #expect(!String(reflecting: RoomConnectionNotice.commandRejected(code: "stale-room", message: "Sensitive detail.")).contains("Sensitive detail"))
+    #expect(!String(reflecting: RoomConnectionNotice.admissionRejected(
+      code: "stale-room",
+      message: "Sensitive detail.",
+      usedSavedSeat: true
+    )).contains("Sensitive detail"))
     await admission.dispose()
   }
 
@@ -985,8 +1037,8 @@ struct RoomConnectionNodeIntegrationTests {
       confirmPassword: accountPassword
     )
     let connection = try await hostAPI.makeRoomConnection(confirmedAccount: account)
-    defer { Task { await connection.dispose() } }
-    try await connection.connect(.create(displayName: account.displayName))
+    do {
+      try await connection.connect(.create(displayName: account.displayName))
     #expect(await eventually(attempts: 5_000) { await connection.status().synchronized })
     let originalRoom = try #require(await connection.snapshot()).room.code
 
@@ -1038,6 +1090,10 @@ struct RoomConnectionNodeIntegrationTests {
       _ = try await staleClient.redeem(link)
     }
 
+    } catch {
+      await connection.dispose()
+      throw error
+    }
     await connection.dispose()
   }
 
@@ -1050,17 +1106,16 @@ struct RoomConnectionNodeIntegrationTests {
   )
   func eightMixedClientsConverge() async throws {
     let control = try MixedPWAControlClient.requiredFromEnvironment()
-    defer { Task { await control.dispose() } }
-    try await control.health()
-    try await control.reset()
-    try await control.provision(displayName: "PWA Host")
-    let roomCode = try await control.createRoom()
+    let cleanup = MixedNativeClientCleanup()
+    do {
+      try await control.health()
+      try await control.reset()
+      try await control.provision(displayName: "PWA Host")
+      let roomCode = try await control.createRoom()
 
     let rawBaseURL = try #require(ProcessInfo.processInfo.environment["SKYJO_IOS_TEST_SERVER_URL"])
     let baseURL = try #require(URL(string: rawBaseURL))
     let environment = SkyjoNetworkEnvironment(baseURL: baseURL)
-    let cleanup = MixedNativeClientCleanup()
-    defer { Task { await cleanup.dispose() } }
     var connections: [RoomConnection] = []
 
     for index in 1...7 {
@@ -1103,6 +1158,17 @@ struct RoomConnectionNodeIntegrationTests {
       return true
     })
 
+    for connection in roomConnections {
+      try await revealTwoOpeningCards(on: connection)
+    }
+    try await control.revealOpening(count: 2)
+    #expect(await eventually(attempts: 7_500) {
+      for connection in roomConnections {
+        guard await connection.snapshot()?.room.state?.phase == .chooseSource else { return false }
+      }
+      return true
+    })
+
     let nativeMarker = "eight-client native marker"
     _ = try await roomConnections[6].send(.sendChatMessage(nativeMarker))
     #expect(await eventually(attempts: 5_000) {
@@ -1124,6 +1190,11 @@ struct RoomConnectionNodeIntegrationTests {
       return true
     })
 
+    } catch {
+      await cleanup.dispose()
+      await control.dispose()
+      throw error
+    }
     await cleanup.dispose()
     await control.dispose()
   }
@@ -1137,7 +1208,8 @@ struct RoomConnectionNodeIntegrationTests {
   )
   func nativeCreateAndPWAJoin() async throws {
     let control = try MixedPWAControlClient.requiredFromEnvironment()
-    defer { Task { await control.dispose() } }
+    var connectionToDispose: RoomConnection?
+    do {
     #expect(await control.hasCredentiallessSessionConfiguration())
     try await control.health()
     try await control.reset()
@@ -1163,7 +1235,7 @@ struct RoomConnectionNodeIntegrationTests {
       confirmPassword: accountPassword
     )
     let connection = try await api.makeRoomConnection(confirmedAccount: account)
-    defer { Task { await connection.dispose() } }
+    connectionToDispose = connection
 
     try await connection.connect(.create(displayName: "Native Host"))
     #expect(await eventually(attempts: 5_000) { await connection.status().synchronized })
@@ -1236,7 +1308,12 @@ struct RoomConnectionNodeIntegrationTests {
     })
     try await control.waitChat(.maximumAstral)
 
-    await connection.dispose()
+    } catch {
+      await connectionToDispose?.dispose()
+      await control.dispose()
+      throw error
+    }
+    await connectionToDispose?.dispose()
     await control.dispose()
   }
 
@@ -1249,7 +1326,8 @@ struct RoomConnectionNodeIntegrationTests {
   )
   func pwaCreateAndNativeJoin() async throws {
     let control = try MixedPWAControlClient.requiredFromEnvironment()
-    defer { Task { await control.dispose() } }
+    var connectionToDispose: RoomConnection?
+    do {
     try await control.health()
     try await control.reset()
     try await control.provision(displayName: "PWA Host")
@@ -1275,7 +1353,7 @@ struct RoomConnectionNodeIntegrationTests {
       confirmPassword: accountPassword
     )
     let connection = try await api.makeRoomConnection(confirmedAccount: account)
-    defer { Task { await connection.dispose() } }
+    connectionToDispose = connection
     try await connection.connect(.join(code: roomCode, displayName: "Native Guest"))
     #expect(await eventually(attempts: 5_000) { await connection.status().synchronized })
     let joined = try #require(await connection.snapshot())
@@ -1333,6 +1411,11 @@ struct RoomConnectionNodeIntegrationTests {
       return status.synchronized && !status.hasPendingCommand
         && snapshot.room.status == .playing && snapshot.room.state != nil
     })
+    try await revealTwoOpeningCards(on: connection)
+    try await control.revealOpening(count: 2)
+    #expect(await eventually(attempts: 5_000) {
+      await connection.snapshot()?.room.state?.phase == .chooseSource
+    })
     try await control.closePage()
     #expect(await eventually(attempts: 5_000) {
       guard let snapshot = await connection.snapshot(),
@@ -1374,7 +1457,12 @@ struct RoomConnectionNodeIntegrationTests {
       host: false
     )
 
-    await connection.dispose()
+    } catch {
+      await connectionToDispose?.dispose()
+      await control.dispose()
+      throw error
+    }
+    await connectionToDispose?.dispose()
     await control.dispose()
   }
 }
@@ -1638,6 +1726,11 @@ private actor FailingResetRecoveryStore: RoomResetRecoveryStore {
     record = nil
   }
 
+  func discard(accountID: UUID) {
+    guard record?.accountID == accountID else { return }
+    record = nil
+  }
+
   func hasRecord() -> Bool { record != nil }
 }
 
@@ -1670,6 +1763,11 @@ private actor SuspendingSaveResetRecoveryStore: RoomResetRecoveryStore {
     record = nil
   }
 
+  func discard(accountID: UUID) {
+    guard record?.accountID == accountID else { return }
+    record = nil
+  }
+
   func hasRecord() -> Bool { record != nil }
 }
 
@@ -1690,6 +1788,11 @@ private actor SuspendingClearResetRecoveryStore: RoomResetRecoveryStore {
     guard record?.accountID == accountID, record?.commandID == commandID else { return }
     try await clearGate.wait()
     guard record?.accountID == accountID, record?.commandID == commandID else { return }
+    record = nil
+  }
+
+  func discard(accountID: UUID) {
+    guard record?.accountID == accountID else { return }
     record = nil
   }
 }
@@ -1789,6 +1892,26 @@ private func eventually(
     try? await Task<Never, Never>.sleep(for: .milliseconds(2))
   }
   return false
+}
+
+private func revealTwoOpeningCards(on connection: RoomConnection) async throws {
+  for expectedCount in 1...2 {
+    guard let snapshot = await connection.snapshot(),
+          let game = snapshot.room.state,
+          let player = game.players.first(where: { $0.id == snapshot.playerID }),
+          let index = player.grid.firstIndex(where: { !$0.faceUp && !$0.removed })
+    else { throw RealtimeTestError.invalidFixture }
+    _ = try await connection.send(.revealOpeningCard(index))
+    guard await eventually(attempts: 5_000, {
+      guard let next = await connection.snapshot(), let nextGame = next.room.state else {
+        return false
+      }
+      let status = await connection.status()
+      return status.synchronized
+        && !status.hasPendingCommand
+        && nextGame.openingRevealCounts[snapshot.playerID, default: 0] >= expectedCount
+    }) else { throw RealtimeTestError.invalidFixture }
+  }
 }
 
 private func realtimeCookieStorage(label: String) -> HTTPCookieStorage {

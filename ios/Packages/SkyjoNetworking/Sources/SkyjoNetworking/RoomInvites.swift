@@ -125,7 +125,9 @@ public struct NativeRoomInvite: Equatable, Sendable, CustomStringConvertible,
   public let url: URL
   public let expiresAt: Int64
 
-  fileprivate init(roomCode: String, url: URL, expiresAt: Int64) {
+  // Internal so the app's test target can construct sanitized transport results
+  // through `@testable import`; production callers receive values from the client.
+  init(roomCode: String, url: URL, expiresAt: Int64) {
     self.roomCode = roomCode
     self.url = url
     self.expiresAt = expiresAt

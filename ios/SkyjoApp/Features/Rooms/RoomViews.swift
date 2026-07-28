@@ -1,3 +1,4 @@
+import Accessibility
 import SkyjoDesignSystem
 import SkyjoDomain
 import SkyjoNetworking
@@ -5,32 +6,11 @@ import SwiftUI
 
 @MainActor
 struct RoomRootView: View {
-  @State private var model: RoomSessionModel
+  @Bindable var model: RoomSessionModel
   @Environment(\.scenePhase) private var scenePhase
 
   init(model: RoomSessionModel) {
-    _model = State(initialValue: model)
-  }
-
-  init(
-    account: AccountUser,
-    apiClient: SkyjoAPIClient,
-    inviteClient: RoomInviteClient,
-    invite: RedeemedRoomInvite? = nil,
-    seatStore: any RoomSeatRecoveryStore = FileRoomSeatRecoveryStore.applicationSupportStore()
-  ) {
-    _model = State(
-      initialValue: RoomSessionModel(
-        account: account,
-        environment: .live(
-          apiClient: apiClient,
-          inviteClient: inviteClient,
-          account: account,
-          seatStore: seatStore
-        ),
-        invite: invite
-      )
-    )
+    self.model = model
   }
 
   var body: some View {
@@ -53,7 +33,7 @@ struct RoomRootView: View {
           } label: {
             Label("Share room", systemImage: "square.and.arrow.up")
           }
-          .disabled(model.isCreatingInvite)
+          .disabled(!model.canCreateShareInvite)
           .accessibilityIdentifier("rooms.share")
 
           Button {
@@ -66,7 +46,6 @@ struct RoomRootView: View {
       }
     }
     .task { await model.start() }
-    .onDisappear { Task { await model.stop() } }
     .onChange(of: scenePhase, initial: true) { _, phase in
       model.setSceneActive(phase == .active)
     }
@@ -160,12 +139,14 @@ private struct RoomJoinView: View {
             Button("Retry Saved Seat") {
               Task { await model.retrySavedSeat() }
             }
+            .disabled(!model.canSubmitAdmission)
             .frame(minHeight: 44)
             .accessibilityIdentifier("rooms.retry-seat")
 
             Button("Forget Saved Seat", role: .destructive) {
               Task { await model.forgetSavedSeat() }
             }
+            .disabled(!model.canForgetSavedSeat)
             .frame(minHeight: 44)
             .accessibilityIdentifier("rooms.forget-seat")
           }
@@ -178,7 +159,7 @@ private struct RoomJoinView: View {
   }
 
   private var connectionRequestDisabled: Bool {
-    [.connecting, .reconnecting, .offline].contains(model.connectionStatus.phase)
+    !model.canSubmitAdmission
   }
 }
 
@@ -247,50 +228,15 @@ private struct RoomWaitingView: View {
 private struct RoomTableView: View {
   @Bindable var model: RoomSessionModel
   @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     GeometryReader { proxy in
-      let usesShortLandscapeLayout = proxy.size.height < 520
-      VStack(spacing: 8) {
-        RoomOpponentRail(
-          players: model.opponentGamePlayers,
-          activePlayerID: activePlayerID,
-          width: proxy.size.width,
-          usesShortLandscapeLayout: usesShortLandscapeLayout,
-          differentiateWithoutColor: differentiateWithoutColor
-        )
-        .frame(maxHeight: .infinity)
-
-        RoomTableBand(model: model)
-          .frame(maxWidth: 680)
-          .frame(
-            height: usesShortLandscapeLayout
-              ? 88
-              : min(max(proxy.size.height * 0.21, 112), 170)
-          )
-
-        if let player = model.localGamePlayer {
-          PublicRoomPlayerBoard(
-            player: player,
-            isLocal: true,
-            opponentIndex: nil,
-            isCompact: false,
-            isActive: model.isLocalTurn,
-            differentiateWithoutColor: differentiateWithoutColor,
-            actionForIndex: { index in Task { await model.selectLocalCard(at: index) } },
-            isEnabledAtIndex: model.isLocalCardEnabled
-          )
-          .frame(maxWidth: usesShortLandscapeLayout ? 280 : 560)
-          .frame(
-            maxHeight: usesShortLandscapeLayout
-              ? 182
-              : min(max(proxy.size.height * 0.39, 210), 360)
-          )
-        }
+      if dynamicTypeSize.isAccessibilitySize {
+        accessibleTable(width: proxy.size.width, height: proxy.size.height)
+      } else {
+        standardTable(width: proxy.size.width, height: proxy.size.height)
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .padding(.horizontal, 8)
-      .padding(.bottom, 6)
     }
     .background(Color(uiColor: .systemGroupedBackground))
     .overlay(alignment: .top) {
@@ -321,6 +267,78 @@ private struct RoomTableView: View {
     }
     return game.players[game.currentPlayerIndex].id
   }
+
+  private func standardTable(width: CGFloat, height: CGFloat) -> some View {
+    let usesShortLandscapeLayout = height < 520
+    return VStack(spacing: 8) {
+      opponentRail(width: width, usesShortLandscapeLayout: usesShortLandscapeLayout)
+        .frame(maxHeight: .infinity)
+
+      RoomTableBand(model: model)
+        .frame(maxWidth: 680)
+        .frame(
+          height: usesShortLandscapeLayout
+            ? 88
+            : min(max(height * 0.21, 112), 170)
+        )
+
+      localBoard
+        .frame(maxWidth: usesShortLandscapeLayout ? 280 : 560)
+        .frame(
+          maxHeight: usesShortLandscapeLayout
+            ? 182
+            : min(max(height * 0.39, 210), 360)
+        )
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .padding(.horizontal, 8)
+    .padding(.bottom, 6)
+  }
+
+  private func accessibleTable(width: CGFloat, height: CGFloat) -> some View {
+    ScrollView(.vertical) {
+      VStack(spacing: 14) {
+        opponentRail(width: width, usesShortLandscapeLayout: false)
+          .frame(height: min(max(height * 0.38, 220), 360))
+
+        RoomTableBand(model: model)
+          .frame(maxWidth: .infinity, minHeight: 150)
+
+        localBoard
+          .frame(maxWidth: min(max(width - 16, 280), 620))
+      }
+      .frame(maxWidth: .infinity)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 12)
+    }
+    .accessibilityIdentifier("rooms.table.accessible-layout")
+  }
+
+  private func opponentRail(width: CGFloat, usesShortLandscapeLayout: Bool) -> some View {
+    RoomOpponentRail(
+      players: model.opponentGamePlayers,
+      activePlayerID: activePlayerID,
+      width: width,
+      usesShortLandscapeLayout: usesShortLandscapeLayout,
+      differentiateWithoutColor: differentiateWithoutColor
+    )
+  }
+
+  @ViewBuilder
+  private var localBoard: some View {
+    if let player = model.localGamePlayer {
+      PublicRoomPlayerBoard(
+        player: player,
+        isLocal: true,
+        opponentIndex: nil,
+        isCompact: false,
+        isActive: model.isLocalTurn,
+        differentiateWithoutColor: differentiateWithoutColor,
+        actionForIndex: { index in Task { await model.selectLocalCard(at: index) } },
+        isEnabledAtIndex: model.isLocalCardEnabled
+      )
+    }
+  }
 }
 
 private struct RoomOpponentRail: View {
@@ -333,7 +351,7 @@ private struct RoomOpponentRail: View {
   var body: some View {
     ScrollView(.horizontal) {
       LazyHStack(alignment: .center, spacing: 8) {
-        ForEach(Array(players.enumerated()), id: \.offset) { index, player in
+        ForEach(Array(players.enumerated()), id: \.element.id) { index, player in
           PublicRoomPlayerBoard(
             player: player,
             isLocal: false,
@@ -358,7 +376,7 @@ private struct RoomOpponentRail: View {
 
   private var opponentWidth: CGFloat {
     if usesShortLandscapeLayout { return 124 }
-    width >= 700 ? 240 : max(158, min(230, width * 0.48))
+    return width >= 700 ? 240 : max(158, min(230, width * 0.48))
   }
 }
 
@@ -455,8 +473,22 @@ private struct PublicRoomPlayerBoard: View {
 @MainActor
 private struct RoomTableBand: View {
   @Bindable var model: RoomSessionModel
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
+    if dynamicTypeSize.isAccessibilitySize {
+      ScrollView(.horizontal) {
+        band
+          .frame(minWidth: 620, minHeight: 140)
+          .padding(.horizontal, 4)
+      }
+      .accessibilityLabel("Table actions")
+    } else {
+      band
+    }
+  }
+
+  private var band: some View {
     HStack(spacing: 7) {
       SkyjoActionSlot {
         Button {
@@ -625,19 +657,27 @@ private struct RoomConnectionBanner: View {
       .accessibilityAddTraits(.updatesFrequently)
       .accessibilityIdentifier("rooms.connection.\(model.connectionStatus.phase.rawValue)")
       .transition(.opacity)
+      .onAppear(perform: announceStatus)
+      .onChange(of: model.connectionStatus) {
+        announceStatus()
+      }
     }
+  }
+
+  private func announceStatus() {
+    AccessibilityNotification.Announcement("\(title). \(message)").post()
   }
 
   private var title: String {
     if model.connectionStatus.hasPendingCommand { return "Action pending" }
     switch model.connectionStatus.phase {
-    case .idle: "Not connected"
-    case .connecting: "Connecting"
-    case .connected: "Table synchronized"
-    case .reconnecting: "Reconnecting"
-    case .offline: "Offline"
-    case .error: "Connection error"
-    case .upgradeRequired: "Update required"
+    case .idle: return "Not connected"
+    case .connecting: return "Connecting"
+    case .connected: return "Table synchronized"
+    case .reconnecting: return "Reconnecting"
+    case .offline: return "Offline"
+    case .error: return "Connection error"
+    case .upgradeRequired: return "Update required"
     }
   }
 
@@ -651,7 +691,10 @@ private struct RoomConnectionBanner: View {
     case .connected: return "Room actions use the latest server revision."
     case .reconnecting:
       if let delay = model.connectionStatus.retryInMilliseconds {
-        return "The table is read-only. Retrying in \(Double(delay) / 1_000, format: .number.precision(.fractionLength(1))) seconds."
+        let seconds = (Double(delay) / 1_000).formatted(
+          .number.precision(.fractionLength(1))
+        )
+        return "The table is read-only. Retrying in \(seconds) seconds."
       }
       return "The table is read-only while Skyjo reconnects."
     case .offline: return "The last table remains visible and read-only until the network returns."
@@ -697,6 +740,9 @@ private struct RoomUserBanner: View {
         .accessibilityIdentifier("rooms.banner.dismiss")
     }
     .accessibilityIdentifier("rooms.banner")
+    .onAppear {
+      AccessibilityNotification.Announcement("\(banner.title). \(banner.message)").post()
+    }
   }
 }
 
@@ -798,6 +844,7 @@ private struct RoomChatButton: View {
 private struct RoomChatView: View {
   @Bindable var model: RoomSessionModel
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var draft = ""
 
   var body: some View {
@@ -851,7 +898,11 @@ private struct RoomChatView: View {
           .onChange(of: model.room?.chatMessages.count) {
             model.markChatRead()
             if let identifier = model.room?.chatMessages.last?.id {
-              withAnimation { proxy.scrollTo(identifier, anchor: .bottom) }
+              if reduceMotion {
+                proxy.scrollTo(identifier, anchor: .bottom)
+              } else {
+                withAnimation { proxy.scrollTo(identifier, anchor: .bottom) }
+              }
             }
           }
         }
@@ -861,8 +912,8 @@ private struct RoomChatView: View {
           TextField("Message players", text: $draft, axis: .vertical)
             .lineLimit(1...4)
             .onChange(of: draft) { _, value in
-              while draft.utf16.count > 280 { draft.removeLast() }
-              if value != draft { return }
+              let bounded = boundedChatDraft(value)
+              if bounded != value { draft = bounded }
             }
             .accessibilityIdentifier("rooms.chat.message")
           Button("Send") {
@@ -913,7 +964,7 @@ private struct RoomOptionsView: View {
               dismiss()
               Task { await model.createShareInvite() }
             }
-            .disabled(model.isCreatingInvite)
+            .disabled(!model.canCreateShareInvite)
           }
         }
 
@@ -941,10 +992,14 @@ private struct RoomOptionsView: View {
               dismiss()
               Task { await model.retrySavedSeat() }
             }
+            .disabled(!model.canSubmitAdmission)
+          }
+          if model.canForgetSavedSeat {
             Button("Forget Saved Seat", role: .destructive) {
               dismiss()
               Task { await model.forgetSavedSeat() }
             }
+            .disabled(!model.canForgetSavedSeat)
           }
         }
       }
@@ -1062,23 +1117,50 @@ private struct RoomInviteReviewView: View {
         Label("Skyjo room invite", systemImage: "person.3.fill")
           .font(.largeTitle.bold())
         if let invite = model.pendingInviteReview {
+          if let banner = model.banner {
+            RoomUserBanner(banner: banner, onDismiss: model.dismissBanner)
+          }
           Text("Room \(invite.roomCode)")
             .font(.title.monospaced().bold())
           Text("This link grants Skyjo access only. Your signed-in account and the room server still decide whether you may join or reclaim a seat.")
             .foregroundStyle(.secondary)
+          if let currentRoom = model.room, currentRoom.code != invite.roomCode {
+            Text(
+              currentRoom.status == .waiting
+                ? "Leave room \(currentRoom.code) first so its seat and host handoff are confirmed. This invite will stay ready while the server acknowledges the leave."
+                : "Switching disconnects you from the active game in room \(currentRoom.code). Your reserved seat may be controlled by AI while you are away."
+            )
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.orange)
+            .accessibilityIdentifier("rooms.invite.switch-warning")
+          }
           LabeledContent(
             "Expires",
             value: Date(timeIntervalSince1970: Double(invite.expiresAt) / 1_000).formatted()
           )
           Button {
-            dismiss()
-            Task { await model.acceptInviteAndJoin() }
+            if model.inviteRequiresLeavingCurrentRoom {
+              Task { await model.leaveRoom() }
+            } else {
+              Task { await model.acceptInviteAndJoin() }
+            }
           } label: {
-            Text("Join This Room")
+            Text(
+              model.inviteRequiresLeavingCurrentRoom
+                ? "Leave Current Room to Continue"
+                : model.room == nil ? "Join This Room" : "Switch to This Room"
+            )
               .frame(maxWidth: .infinity, minHeight: 44)
           }
           .buttonStyle(.borderedProminent)
-          .disabled(invite.isExpired(at: Int64(Date().timeIntervalSince1970 * 1_000)))
+          .disabled(
+            invite.isExpired(at: Int64(Date().timeIntervalSince1970 * 1_000))
+              || (
+                model.inviteRequiresLeavingCurrentRoom
+                  ? !model.canLeaveWaitingRoom
+                  : !model.canAcceptInvite
+              )
+          )
           .accessibilityIdentifier("rooms.invite.join")
         }
         Spacer()
@@ -1142,4 +1224,14 @@ private struct RoomShareView: View {
 
 private func spokenValue(_ value: Int) -> String {
   value < 0 ? "minus \(abs(value))" : value.formatted()
+}
+
+private func boundedChatDraft(_ value: String) -> String {
+  var utf16Count = 0
+  return String(value.prefix { character in
+    let nextCount = utf16Count + String(character).utf16.count
+    guard nextCount <= 280 else { return false }
+    utf16Count = nextCount
+    return true
+  })
 }

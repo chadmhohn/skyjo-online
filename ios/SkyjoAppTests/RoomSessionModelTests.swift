@@ -1,7 +1,7 @@
 import Foundation
-import SkyjoNetworking
 import Testing
 
+@testable import SkyjoNetworking
 @testable import SkyjoNative
 
 @Suite("Native multiplayer session model", .serialized)
@@ -35,6 +35,26 @@ struct RoomSessionModelTests {
     #expect(coordinator.state == .idle)
     #expect(!String(reflecting: review).contains("ABCDE"))
     #expect(!String(reflecting: coordinator.state).contains("signed_payload"))
+  }
+
+  @Test("Malformed in-scope universal links fail visibly without redeeming or retaining tokens")
+  func malformedUniversalLinkFailsVisibly() async throws {
+    let probe = InviteRedemptionProbe(
+      response: try RedeemedRoomInvite(roomCode: "ABCDE", expiresAt: 1_784_999_100_000)
+    )
+    let coordinator = RoomInviteCoordinator { link in await probe.redeem(link) }
+    let malformed = URL(
+      string: "https://skyjo.groundworkrevops.com/invite/private%2Ftoken?unexpected=1"
+    )!
+
+    #expect(await coordinator.accept(malformed))
+    #expect(
+      coordinator.state
+        == .failed(message: "This Skyjo invite link is invalid. Ask the host for a new link.")
+    )
+    #expect(await probe.count() == 0)
+    #expect(!String(reflecting: coordinator.state).contains("private"))
+    #expect(!String(reflecting: coordinator.state).contains("token"))
   }
 
   @Test("Universal-link coordinator converts stale-room detail to stable safe copy")
@@ -116,6 +136,73 @@ struct RoomSessionModelTests {
     let diagnostics = String(reflecting: model.pendingInviteReview)
     #expect(!diagnostics.contains("ABCDE"))
     #expect(!diagnostics.contains("FGHIJ"))
+  }
+
+  @Test("A live invite supersedes an automatic seat load that was already in flight")
+  func liveInviteWinsAutomaticRecoveryRace() async throws {
+    let connection = ModelRoomConnection()
+    let saved = try RoomSeatRecoveryRecord(
+      accountID: testAccount().id,
+      roomCode: "ABCDE",
+      playerID: "seat-old"
+    )
+    let seatStore = SuspendedSeatLoadStore(record: saved)
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let startTask = Task { await model.start() }
+    #expect(await modelEventually { await seatStore.loadIsSuspended() })
+
+    let invite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    model.applyInvite(invite)
+    await seatStore.resumeLoad()
+    await startTask.value
+
+    #expect(await connection.admissions().isEmpty)
+    #expect(model.pendingInviteReview == invite)
+    #expect(model.joinCode == "FGHIJ")
+    await model.acceptInviteAndJoin()
+    #expect(await connection.admissions() == [
+      .join(code: "FGHIJ", displayName: "Host", playerID: nil),
+    ])
+    await model.stop()
+  }
+
+  @Test("A live invite quarantines an explicit admission that was already in flight")
+  func liveInviteWinsExplicitAdmissionRace() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = RecordingSeatStore()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let oldRoom = try await authoritativeFixture(revision: 7, variant: .waiting)
+    let invite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+
+    await model.start()
+    await connection.suspendNextConnect()
+    let oldJoin = Task { await model.join(code: "ABCDE") }
+    #expect(await modelEventually { await connection.connectIsSuspended() })
+
+    model.applyInvite(invite)
+    await connection.resumeConnect()
+    #expect(await oldJoin.value == false)
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(oldRoom))
+    #expect(!(await modelEventually(attempts: 30) { model.room != nil }))
+    #expect(await seatStore.record() == nil)
+
+    #expect(model.pendingInviteReview == invite)
+    await model.acceptInviteAndJoin()
+
+    #expect(await connection.admissions() == [
+      .join(code: "ABCDE", displayName: "Host", playerID: nil),
+      .join(code: "FGHIJ", displayName: "Host", playerID: nil),
+    ])
+    #expect(model.pendingInviteReview == nil)
+    #expect(model.room == nil)
+    await model.stop()
   }
 
   @Test("Account switch stops the old socket and live links reach the current room model")
@@ -257,6 +344,31 @@ struct RoomSessionModelTests {
     await model.stop()
   }
 
+  @Test("An eight-player opening table exposes one local reveal intent and seven opponents")
+  func eightPlayerOpeningIntentIsAuthoritative() async throws {
+    let connection = ModelRoomConnection()
+    let model = makeModel(connection: connection)
+    let opening = try await authoritativeFixture(revision: 7, variant: .openingEightPlayer)
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(opening))
+    #expect(await modelEventually { model.game?.phase == .openingReveal })
+    #expect(model.opponentGamePlayers.count == 7)
+    #expect(model.isLocalCardEnabled(at: 0))
+    let originalGrid = model.localGamePlayer?.grid
+
+    await model.selectLocalCard(at: 0)
+    #expect(await connection.actions() == [.revealOpeningCard(0)])
+    #expect(model.localGamePlayer?.grid == originalGrid)
+
+    await connection.emit(.status(pendingStatus(revision: 7)))
+    #expect(await modelEventually { !model.isLocalCardEnabled(at: 1) })
+    await model.selectLocalCard(at: 1)
+    #expect(await connection.actions() == [.revealOpeningCard(0)])
+    await model.stop()
+  }
+
   @Test("Create, join, waiting-room, chat, reset, scoring, and takeover intents map exactly")
   func roomIntentsMapToServerCommands() async throws {
     let joinConnection = ModelRoomConnection()
@@ -346,6 +458,11 @@ struct RoomSessionModelTests {
     // A transient transport notice and another player's broadcast can both arrive
     // before RoomConnection replays and receives our room-left acknowledgement.
     await connection.emit(.notice(.transportInterrupted))
+    await connection.emit(.notice(.commandRejected(
+      code: "room-required",
+      message: "Untrusted detail",
+      matchedAction: .sendChatMessage("other command")
+    )))
     await connection.emit(.snapshot(waitingEight))
     #expect(await modelEventually { model.snapshot?.revision == 8 })
     await connection.emit(.status(idleStatus()))
@@ -374,6 +491,448 @@ struct RoomSessionModelTests {
     #expect(await modelEventually { model.banner?.title == "Room left; cleanup needed" })
     #expect(await seatStore.record() != nil)
     await model.stop()
+  }
+
+  @Test("Reviewed invites switch rooms without inheriting the old seat or accepting late snapshots")
+  func reviewedInviteSwitchesWithFreshAdmission() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = RecordingSeatStore()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let oldRoom = try await authoritativeFixture(revision: 7, variant: .playing)
+    let lateOldRoom = try await authoritativeFixture(revision: 8, variant: .playing)
+    let newRoom = try await authoritativeFixture(
+      revision: 9,
+      variant: .waiting,
+      roomCode: "FGHIJ"
+    )
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(oldRoom))
+    #expect(await modelEventually { await seatStore.record()?.roomCode == "ABCDE" })
+
+    let invite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    model.applyInvite(invite)
+    #expect(model.canAcceptInvite)
+    await model.acceptInviteAndJoin()
+
+    #expect(await connection.admissions() == [
+      .join(code: "FGHIJ", displayName: "Host", playerID: nil),
+    ])
+    #expect(model.pendingInviteReview == nil)
+    #expect(model.room == nil)
+    #expect(await seatStore.record() == nil)
+
+    await connection.emit(.snapshot(lateOldRoom))
+    #expect(!(await modelEventually(attempts: 30) { model.room != nil }))
+
+    await connection.emit(.status(connectedStatus(revision: 9)))
+    await connection.emit(.snapshot(newRoom))
+    #expect(await modelEventually { model.room?.code == "FGHIJ" })
+    #expect(await modelEventually { await seatStore.record()?.roomCode == "FGHIJ" })
+    await model.stop()
+  }
+
+  @Test("A same-room invite dismisses without disconnecting or sending another admission")
+  func sameRoomInviteIsANoop() async throws {
+    let connection = ModelRoomConnection()
+    let model = makeModel(connection: connection)
+    let waiting = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(waiting))
+    #expect(await modelEventually { model.room?.code == "ABCDE" })
+    model.applyInvite(try RedeemedRoomInvite(
+      roomCode: "ABCDE",
+      expiresAt: 1_784_999_100_000
+    ))
+
+    await model.acceptInviteAndJoin()
+
+    #expect(await connection.admissions().isEmpty)
+    #expect(model.room?.code == "ABCDE")
+    #expect(model.pendingInviteReview == nil)
+    #expect(model.banner?.title == "Already in this room")
+    await model.stop()
+  }
+
+  @Test("A retired-room terminal notice cannot erase a newer invite admission fence")
+  func retiredTerminalNoticeCannotEraseTargetAdmission() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = SuspendedSeatClearStore()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let oldRoom = try await authoritativeFixture(revision: 7, variant: .playing)
+    let targetRoom = try await authoritativeFixture(
+      revision: 8,
+      variant: .waiting,
+      roomCode: "FGHIJ"
+    )
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(oldRoom))
+    #expect(await modelEventually { await seatStore.record()?.roomCode == "ABCDE" })
+    model.applyInvite(try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    ))
+
+    await connection.suspendNextConnect()
+    let switchTask = Task { await model.acceptInviteAndJoin() }
+    #expect(await modelEventually { await seatStore.clearIsSuspended() })
+    await seatStore.resumeClear()
+    #expect(await modelEventually { await connection.connectIsSuspended() })
+
+    await connection.emit(.notice(.roomResetByHost(roomCode: "ABCDE")))
+    await connection.emit(.status(RoomConnectionStatus(
+      phase: .connecting,
+      retryInMilliseconds: nil,
+      synchronized: false,
+      hasPendingCommand: false,
+      revision: nil
+    )))
+    #expect(await modelEventually { model.connectionStatus.phase == .connecting })
+    await connection.resumeConnect()
+    await switchTask.value
+
+    await connection.emit(.status(connectedStatus(revision: 8)))
+    await connection.emit(.snapshot(targetRoom))
+    #expect(await modelEventually { model.room?.code == "FGHIJ" })
+    #expect(await modelEventually { await seatStore.record()?.roomCode == "FGHIJ" })
+    #expect(model.pendingInviteReview == nil)
+    await model.stop()
+  }
+
+  @Test("A different waiting-room invite requires an acknowledged leave before switching")
+  func waitingRoomInviteDoesNotOrphanCurrentSeat() async throws {
+    let connection = ModelRoomConnection()
+    let model = makeModel(connection: connection)
+    let waiting = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(waiting))
+    #expect(await modelEventually { model.room?.code == "ABCDE" })
+    let invite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    model.applyInvite(invite)
+
+    #expect(model.inviteRequiresLeavingCurrentRoom)
+    #expect(!model.canAcceptInvite)
+    await model.acceptInviteAndJoin()
+    #expect(await connection.admissions().isEmpty)
+    #expect(model.pendingInviteReview == invite)
+    #expect(model.room?.code == "ABCDE")
+    #expect(model.banner?.title == "Leave the waiting room first")
+
+    await model.leaveRoom()
+    #expect(await connection.actions() == [.leaveRoom])
+    await connection.emit(.status(idleStatus()))
+    #expect(await modelEventually { model.room == nil && model.pendingInviteReview == invite })
+    #expect(model.canAcceptInvite)
+    await model.acceptInviteAndJoin()
+    #expect(await connection.admissions() == [
+      .join(code: "FGHIJ", displayName: "Host", playerID: nil),
+    ])
+    await model.stop()
+  }
+
+  @Test("A failed target-seat save cannot silently restore the room that was replaced")
+  func failedSwitchPersistenceDoesNotRestoreOldRoom() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = RecordingSeatStore(failSaveRoomCode: "FGHIJ")
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let oldRoom = try await authoritativeFixture(revision: 7, variant: .playing)
+    let newRoom = try await authoritativeFixture(
+      revision: 8,
+      variant: .waiting,
+      roomCode: "FGHIJ"
+    )
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(oldRoom))
+    #expect(await modelEventually { await seatStore.record()?.roomCode == "ABCDE" })
+    model.applyInvite(try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    ))
+    await model.acceptInviteAndJoin()
+    #expect(await seatStore.record() == nil)
+
+    await connection.emit(.status(connectedStatus(revision: 8)))
+    await connection.emit(.snapshot(newRoom))
+    #expect(await modelEventually { model.banner?.title == "Seat recovery unavailable" })
+    #expect(model.room?.code == "FGHIJ")
+    #expect(await seatStore.record() == nil)
+    await model.stop()
+  }
+
+  @Test("A canceled failing room switch restores the newest authoritative current-room snapshot")
+  func canceledFailingSwitchRestoresBufferedCurrentRoom() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = SuspendedSeatClearStore(failClear: true)
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let roomSeven = try await authoritativeFixture(revision: 7, variant: .playing)
+    let roomEight = try await authoritativeFixture(revision: 8, variant: .playing)
+    let inviteB = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    let inviteC = try RedeemedRoomInvite(
+      roomCode: "KLMNO",
+      expiresAt: 1_784_999_200_000
+    )
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(roomSeven))
+    #expect(await modelEventually { await seatStore.record()?.roomCode == "ABCDE" })
+
+    model.applyInvite(inviteB)
+    let switchTask = Task { await model.acceptInviteAndJoin() }
+    #expect(await modelEventually { await seatStore.clearIsSuspended() })
+    await connection.emit(.status(connectedStatus(revision: 8)))
+    await connection.emit(.snapshot(roomEight))
+
+    model.applyInvite(inviteC)
+    model.dismissInviteReview()
+    await seatStore.resumeClear()
+    await switchTask.value
+
+    #expect(await modelEventually { model.snapshot?.revision == 8 })
+    #expect(model.room?.code == "ABCDE")
+    #expect(model.commandsEnabled)
+    #expect(await seatStore.record()?.roomCode == "ABCDE")
+    #expect(await connection.admissions().isEmpty)
+    await model.stop()
+  }
+
+  @Test("A failed room switch restores a snapshot broadcast while routing was quarantined")
+  func failedSwitchRestoresBufferedCurrentRoom() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = SuspendedSeatClearStore(failClear: true)
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let roomSeven = try await authoritativeFixture(revision: 7, variant: .playing)
+    let roomEight = try await authoritativeFixture(revision: 8, variant: .playing)
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(roomSeven))
+    #expect(await modelEventually { model.snapshot?.revision == 7 })
+    model.applyInvite(try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    ))
+
+    let switchTask = Task { await model.acceptInviteAndJoin() }
+    #expect(await modelEventually { await seatStore.clearIsSuspended() })
+    await connection.emit(.status(connectedStatus(revision: 8)))
+    await connection.emit(.snapshot(roomEight))
+    await seatStore.resumeClear()
+    await switchTask.value
+
+    #expect(await modelEventually { model.snapshot?.revision == 8 })
+    #expect(model.commandsEnabled)
+    #expect(model.banner?.title == "Saved room could not be replaced")
+    #expect(await connection.admissions().isEmpty)
+    await model.stop()
+  }
+
+  @Test("Forget drains an older seat save and quarantines buffered room snapshots")
+  func forgetWinsAgainstInFlightSnapshotPersistence() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = SuspendedSeatSaveStore()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let waitingSeven = try await authoritativeFixture(revision: 7, variant: .waiting)
+    let waitingEight = try await authoritativeFixture(revision: 8, variant: .waiting)
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(waitingSeven))
+    #expect(await modelEventually { await seatStore.saveEntered() })
+    await connection.suspendNextDisconnect()
+
+    let forgetTask = Task { await model.forgetSavedSeat() }
+    #expect(await modelEventually { await connection.disconnectIsSuspended() })
+    await connection.emit(.snapshot(waitingEight))
+    await connection.resumeDisconnect()
+    await seatStore.resumeSave()
+    await forgetTask.value
+
+    #expect(await modelEventually { await seatStore.record() == nil })
+    #expect(model.room == nil)
+    #expect(model.joinCode.isEmpty)
+    await model.stop()
+  }
+
+  @Test("A share response from a replaced room can never publish into the new room")
+  func staleShareResponseIsDiscarded() async throws {
+    let connection = ModelRoomConnection()
+    let inviteFactory = SuspendedInviteFactory()
+    let model = RoomSessionModel(
+      account: testAccount(),
+      environment: RoomSessionEnvironment(
+        makeConnection: { connection },
+        createInvite: { code in try await inviteFactory.create(roomCode: code) },
+        seatStore: RecordingSeatStore(),
+        nowMilliseconds: { 1_784_998_800_000 }
+      )
+    )
+    let roomA = try await authoritativeFixture(revision: 7, variant: .waiting)
+    let roomB = try await authoritativeFixture(
+      revision: 8,
+      variant: .waiting,
+      roomCode: "FGHIJ"
+    )
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(roomA))
+    #expect(await modelEventually { model.canCreateShareInvite })
+    let shareTask = Task { await model.createShareInvite() }
+    #expect(await modelEventually { await inviteFactory.isSuspended() })
+
+    await connection.emit(.status(connectedStatus(revision: 8)))
+    await connection.emit(.snapshot(roomB))
+    #expect(await modelEventually { model.room?.code == "FGHIJ" })
+    await inviteFactory.resume(with: NativeRoomInvite(
+      roomCode: "ABCDE",
+      url: URL(string: "https://skyjo.groundworkrevops.com/invite/redacted")!,
+      expiresAt: 1_784_999_100_000
+    ))
+    await shareTask.value
+
+    #expect(model.shareInvite == nil)
+    #expect(!model.isCreatingInvite)
+    await model.stop()
+  }
+
+  @Test("Terminal seat cleanup blocks a new admission until the clear finishes")
+  func terminalCleanupSerializesNextAdmission() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = SuspendedSeatClearStore()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let waiting = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(waiting))
+    #expect(await modelEventually { model.room != nil })
+    await connection.emit(.status(idleStatus()))
+    await connection.emit(.notice(.roomResetByHost(roomCode: "ABCDE")))
+    #expect(await modelEventually { model.isSeatCleanupPending })
+    #expect(await seatStore.clearIsSuspended())
+
+    model.joinCode = "FGHIJ"
+    await model.join()
+    #expect(await connection.admissions().isEmpty)
+
+    await seatStore.resumeClear()
+    #expect(await modelEventually { !model.isSeatCleanupPending })
+    await model.join()
+    #expect(await connection.admissions() == [
+      .join(code: "FGHIJ", displayName: "Host", playerID: nil),
+    ])
+    await model.stop()
+  }
+
+  @Test("Forget discards undecodable reset recovery and clears both routing stores")
+  func forgetEscapesFailedResetRecoveryLoad() async throws {
+    let connection = ModelRoomConnection()
+    await connection.failPersistedResetRecovery(.seatCleanupUnavailable)
+    let seatStore = RecordingSeatStore()
+    let account = testAccount()
+    try await seatStore.save(RoomSeatRecoveryRecord(
+      accountID: account.id,
+      roomCode: "ABCDE",
+      playerID: "seat-old"
+    ))
+    let model = makeModel(connection: connection, seatStore: seatStore)
+
+    await model.start()
+    #expect(model.banner?.title == "Room reset recovery unavailable")
+    await model.forgetSavedSeat()
+
+    #expect(await connection.disconnectCount() == 1)
+    #expect(await connection.discardCount() == 1)
+    #expect(await seatStore.record() == nil)
+    #expect(model.banner == nil)
+    await model.stop()
+  }
+
+  @Test("Forget attempts seat cleanup even when reset cleanup fails and remains retryable")
+  func forgetRetriesBothRecoveryStores() async throws {
+    let connection = ModelRoomConnection()
+    await connection.failDisconnect(.seatCleanupUnavailable)
+    await connection.failDiscard(.seatCleanupUnavailable)
+    let seatStore = RecordingSeatStore()
+    let account = testAccount()
+    try await seatStore.save(RoomSeatRecoveryRecord(
+      accountID: account.id,
+      roomCode: "ABCDE",
+      playerID: "seat-old"
+    ))
+    let model = makeModel(connection: connection, seatStore: seatStore)
+
+    await model.start()
+    await model.forgetSavedSeat()
+    #expect(await seatStore.record() == nil)
+    #expect(model.banner?.title == "Saved room cleanup needed")
+    #expect(model.canForgetSavedSeat)
+
+    await connection.failDisconnect(nil)
+    await connection.failDiscard(nil)
+    await model.forgetSavedSeat()
+    #expect(await connection.disconnectCount() == 2)
+    #expect(await connection.discardCount() == 2)
+    #expect(model.banner == nil)
+    await model.stop()
+  }
+
+  @Test("An A to B to A account race installs a fresh usable A room model")
+  func accountSwitchABARetiresTheStoppedModel() async {
+    let accountA = testAccount()
+    let accountB = testAccount(
+      id: UUID(uuidString: "30000000-0000-4000-8000-000000000004")!,
+      displayName: "Guest"
+    )
+    let firstAConnection = ModelRoomConnection()
+    let secondAConnection = ModelRoomConnection()
+    let bConnection = ModelRoomConnection()
+    let factory = HostRoomModelFactory(
+      connectionsByAccount: [
+        accountA.id: [firstAConnection, secondAConnection],
+        accountB.id: [bConnection],
+      ]
+    )
+    let host = RoomSessionHost(account: accountA) { factory.makeModel(for: $0) }
+    let stoppedModel = host.model
+
+    await stoppedModel.start()
+    await firstAConnection.suspendNextDispose()
+    let switchToB = Task { await host.synchronize(account: accountB) }
+    #expect(await modelEventually { await firstAConnection.disposeIsSuspended() })
+
+    await host.synchronize(account: accountA)
+    let freshModel = host.model
+    #expect(freshModel !== stoppedModel)
+    #expect(freshModel.account.id == accountA.id)
+    await freshModel.start()
+    await freshModel.createRoom()
+    #expect(await secondAConnection.admissions() == [.create(displayName: "Host")])
+
+    await firstAConnection.resumeDispose()
+    await switchToB.value
+    #expect(host.model === freshModel)
+    #expect(!(await secondAConnection.disposed()))
+    await host.stop()
   }
 
   private func makeModel(
@@ -418,6 +977,23 @@ private actor InviteRedemptionProbe {
   func count() -> Int { redemptionCount }
 }
 
+private actor SuspendedInviteFactory {
+  private var requestedRoomCode: String?
+  private var continuation: CheckedContinuation<NativeRoomInvite, Error>?
+
+  func create(roomCode: String) async throws -> NativeRoomInvite {
+    requestedRoomCode = roomCode
+    return try await withCheckedThrowingContinuation { continuation = $0 }
+  }
+
+  func isSuspended() -> Bool { requestedRoomCode != nil && continuation != nil }
+
+  func resume(with invite: NativeRoomInvite) {
+    continuation?.resume(returning: invite)
+    continuation = nil
+  }
+}
+
 private actor ModelRoomConnection: RoomSessionConnection {
   private let stream: AsyncStream<RoomConnectionEvent>
   private let continuation: AsyncStream<RoomConnectionEvent>.Continuation
@@ -425,6 +1001,17 @@ private actor ModelRoomConnection: RoomSessionConnection {
   private var receivedActions: [RoomCommandAction] = []
   private var receivedVisibilityUpdates: [Bool] = []
   private var isDisposed = false
+  private var persistedResetFailure: ModelTestError?
+  private var disconnectFailure: ModelTestError?
+  private var discardFailure: ModelTestError?
+  private var disconnectCalls = 0
+  private var discardCalls = 0
+  private var shouldSuspendNextConnect = false
+  private var shouldSuspendNextDisconnect = false
+  private var shouldSuspendNextDispose = false
+  private var suspendedConnectContinuation: CheckedContinuation<Void, Never>?
+  private var suspendedDisconnectContinuation: CheckedContinuation<Void, Never>?
+  private var suspendedDisposeContinuation: CheckedContinuation<Void, Never>?
   private var shouldSuspendNextVisibilityUpdate = false
   private var suspendedVisibilityContinuation: CheckedContinuation<Void, Never>?
 
@@ -435,10 +1022,16 @@ private actor ModelRoomConnection: RoomSessionConnection {
   }
 
   func events() -> AsyncStream<RoomConnectionEvent> { stream }
-  func recoverPersistedReset() -> Bool { false }
+  func recoverPersistedReset() throws -> Bool {
+    if let persistedResetFailure { throw persistedResetFailure }
+    return false
+  }
 
-  func connect(_ admission: RoomAdmission) {
+  func connect(_ admission: RoomAdmission) async {
     receivedAdmissions.append(admission)
+    guard shouldSuspendNextConnect else { return }
+    shouldSuspendNextConnect = false
+    await withCheckedContinuation { suspendedConnectContinuation = $0 }
   }
 
   func recover(_ admission: RoomAdmission) {
@@ -457,12 +1050,27 @@ private actor ModelRoomConnection: RoomSessionConnection {
     await withCheckedContinuation { suspendedVisibilityContinuation = $0 }
   }
 
-  func disconnect() {
+  func disconnect() async throws {
+    disconnectCalls += 1
     continuation.yield(.status(idleStatus()))
+    if shouldSuspendNextDisconnect {
+      shouldSuspendNextDisconnect = false
+      await withCheckedContinuation { suspendedDisconnectContinuation = $0 }
+    }
+    if let disconnectFailure { throw disconnectFailure }
   }
 
-  func dispose() {
+  func discardPersistedResetRecovery() throws {
+    discardCalls += 1
+    if let discardFailure { throw discardFailure }
+  }
+
+  func dispose() async {
     isDisposed = true
+    if shouldSuspendNextDispose {
+      shouldSuspendNextDispose = false
+      await withCheckedContinuation { suspendedDisposeContinuation = $0 }
+    }
     continuation.finish()
   }
 
@@ -474,6 +1082,33 @@ private actor ModelRoomConnection: RoomSessionConnection {
   func actions() -> [RoomCommandAction] { receivedActions }
   func visibilityUpdates() -> [Bool] { receivedVisibilityUpdates }
   func disposed() -> Bool { isDisposed }
+
+  func failPersistedResetRecovery(_ error: ModelTestError?) { persistedResetFailure = error }
+  func failDisconnect(_ error: ModelTestError?) { disconnectFailure = error }
+  func failDiscard(_ error: ModelTestError?) { discardFailure = error }
+  func disconnectCount() -> Int { disconnectCalls }
+  func discardCount() -> Int { discardCalls }
+
+  func suspendNextConnect() { shouldSuspendNextConnect = true }
+  func connectIsSuspended() -> Bool { suspendedConnectContinuation != nil }
+  func resumeConnect() {
+    suspendedConnectContinuation?.resume()
+    suspendedConnectContinuation = nil
+  }
+
+  func suspendNextDisconnect() { shouldSuspendNextDisconnect = true }
+  func disconnectIsSuspended() -> Bool { suspendedDisconnectContinuation != nil }
+  func resumeDisconnect() {
+    suspendedDisconnectContinuation?.resume()
+    suspendedDisconnectContinuation = nil
+  }
+
+  func suspendNextDispose() { shouldSuspendNextDispose = true }
+  func disposeIsSuspended() -> Bool { suspendedDisposeContinuation != nil }
+  func resumeDispose() {
+    suspendedDisposeContinuation?.resume()
+    suspendedDisposeContinuation = nil
+  }
 
   func suspendNextVisibilityUpdate() {
     shouldSuspendNextVisibilityUpdate = true
@@ -505,6 +1140,32 @@ private final class ModelConnectionProvider: @unchecked Sendable {
   }
 }
 
+@MainActor
+private final class HostRoomModelFactory: @unchecked Sendable {
+  private var connectionsByAccount: [UUID: [ModelRoomConnection]]
+
+  init(connectionsByAccount: [UUID: [ModelRoomConnection]]) {
+    self.connectionsByAccount = connectionsByAccount
+  }
+
+  func makeModel(for account: AccountUser) -> RoomSessionModel {
+    guard var connections = connectionsByAccount[account.id], !connections.isEmpty else {
+      preconditionFailure("Missing model connection fixture")
+    }
+    let connection = connections.removeFirst()
+    connectionsByAccount[account.id] = connections
+    return RoomSessionModel(
+      account: account,
+      environment: RoomSessionEnvironment(
+        makeConnection: { connection },
+        createInvite: { _ in throw ModelTestError.inviteUnavailable },
+        seatStore: RecordingSeatStore(),
+        nowMilliseconds: { 1_784_998_800_000 }
+      )
+    )
+  }
+}
+
 private actor SuspendedModelConnectionProvider {
   private var entered = false
   private var continuation: CheckedContinuation<ModelRoomConnection, Never>?
@@ -526,9 +1187,11 @@ private actor RecordingSeatStore: RoomSeatRecoveryStore {
   private var storedRecord: RoomSeatRecoveryRecord?
   private var clears = 0
   private let failClear: Bool
+  private let failSaveRoomCode: String?
 
-  init(failClear: Bool = false) {
+  init(failClear: Bool = false, failSaveRoomCode: String? = nil) {
     self.failClear = failClear
+    self.failSaveRoomCode = failSaveRoomCode
   }
 
   func load(accountID: UUID) -> RoomSeatRecoveryRecord? {
@@ -536,7 +1199,8 @@ private actor RecordingSeatStore: RoomSeatRecoveryStore {
     return storedRecord
   }
 
-  func save(_ record: RoomSeatRecoveryRecord) {
+  func save(_ record: RoomSeatRecoveryRecord) throws {
+    if record.roomCode == failSaveRoomCode { throw ModelTestError.seatCleanupUnavailable }
     storedRecord = record
   }
 
@@ -553,16 +1217,21 @@ private actor RecordingSeatStore: RoomSeatRecoveryStore {
 
 private actor SuspendedSeatSaveStore: RoomSeatRecoveryStore {
   private var entered = false
+  private var storedRecord: RoomSeatRecoveryRecord?
   private var saveContinuation: CheckedContinuation<Void, Error>?
 
   func load(accountID _: UUID) -> RoomSeatRecoveryRecord? { nil }
 
-  func save(_: RoomSeatRecoveryRecord) async throws {
+  func save(_ record: RoomSeatRecoveryRecord) async throws {
     entered = true
     try await withCheckedThrowingContinuation { saveContinuation = $0 }
+    storedRecord = record
   }
 
-  func clear(accountID _: UUID) {}
+  func clear(accountID: UUID) {
+    guard storedRecord?.accountID == accountID else { return }
+    storedRecord = nil
+  }
 
   func saveEntered() -> Bool { entered }
 
@@ -570,6 +1239,74 @@ private actor SuspendedSeatSaveStore: RoomSeatRecoveryStore {
     saveContinuation?.resume(throwing: ModelTestError.seatCleanupUnavailable)
     saveContinuation = nil
   }
+
+  func resumeSave() {
+    saveContinuation?.resume()
+    saveContinuation = nil
+  }
+
+  func record() -> RoomSeatRecoveryRecord? { storedRecord }
+}
+
+private actor SuspendedSeatLoadStore: RoomSeatRecoveryStore {
+  private var storedRecord: RoomSeatRecoveryRecord?
+  private var loadContinuation: CheckedContinuation<Void, Never>?
+
+  init(record: RoomSeatRecoveryRecord?) { storedRecord = record }
+
+  func load(accountID: UUID) async -> RoomSeatRecoveryRecord? {
+    await withCheckedContinuation { loadContinuation = $0 }
+    guard storedRecord?.accountID == accountID else { return nil }
+    return storedRecord
+  }
+
+  func save(_ record: RoomSeatRecoveryRecord) { storedRecord = record }
+
+  func clear(accountID: UUID) {
+    guard storedRecord?.accountID == accountID else { return }
+    storedRecord = nil
+  }
+
+  func loadIsSuspended() -> Bool { loadContinuation != nil }
+  func resumeLoad() {
+    loadContinuation?.resume()
+    loadContinuation = nil
+  }
+}
+
+private actor SuspendedSeatClearStore: RoomSeatRecoveryStore {
+  private var storedRecord: RoomSeatRecoveryRecord?
+  private let failClear: Bool
+  private var shouldSuspendNextClear = true
+  private var clearContinuation: CheckedContinuation<Void, Never>?
+
+  init(failClear: Bool = false) {
+    self.failClear = failClear
+  }
+
+  func load(accountID: UUID) -> RoomSeatRecoveryRecord? {
+    guard storedRecord?.accountID == accountID else { return nil }
+    return storedRecord
+  }
+
+  func save(_ record: RoomSeatRecoveryRecord) { storedRecord = record }
+
+  func clear(accountID: UUID) async throws {
+    if shouldSuspendNextClear {
+      shouldSuspendNextClear = false
+      await withCheckedContinuation { clearContinuation = $0 }
+    }
+    if failClear { throw ModelTestError.seatCleanupUnavailable }
+    guard storedRecord?.accountID == accountID else { return }
+    storedRecord = nil
+  }
+
+  func clearIsSuspended() -> Bool { clearContinuation != nil }
+  func resumeClear() {
+    clearContinuation?.resume()
+    clearContinuation = nil
+  }
+  func record() -> RoomSeatRecoveryRecord? { storedRecord }
 }
 
 private actor ModelSnapshotSocket: RoomWebSocket {
@@ -604,7 +1341,8 @@ private actor ModelSnapshotSocket: RoomWebSocket {
 
 private func authoritativeFixture(
   revision: Int64,
-  variant: ModelSnapshotVariant
+  variant: ModelSnapshotVariant,
+  roomCode: String = "ABCDE"
 ) async throws -> AuthoritativeRoomSnapshot {
   let socket = ModelSnapshotSocket()
   let environment = RoomConnectionEnvironment(
@@ -628,7 +1366,11 @@ private func authoritativeFixture(
     environment: environment
   )
   try await connection.connect(.create(displayName: "Host"))
-  await socket.deliver(.text(try modelSnapshotFixtureText(revision: revision, variant: variant)))
+  await socket.deliver(.text(try modelSnapshotFixtureText(
+    revision: revision,
+    variant: variant,
+    roomCode: roomCode
+  )))
   guard await modelEventually({ await connection.status().synchronized }),
         let snapshot = await connection.snapshot()
   else { throw ModelTestError.snapshotUnavailable }
@@ -638,7 +1380,8 @@ private func authoritativeFixture(
 
 private func modelSnapshotFixtureText(
   revision: Int64,
-  variant: ModelSnapshotVariant
+  variant: ModelSnapshotVariant,
+  roomCode: String
 ) throws -> String {
   let repositoryRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
@@ -649,14 +1392,23 @@ private func modelSnapshotFixtureText(
   let data = try Data(contentsOf: fixtureURL)
   guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
         let cases = root["cases"] as? [[String: Any]],
-        let fixture = cases.first(where: { $0["name"] as? String == "personalized snapshot" }),
+        let fixture = cases.first(where: {
+          $0["name"] as? String
+            == (variant.isEightPlayerOpening ? "bounded shared snapshot" : "personalized snapshot")
+        }),
         var frame = fixture["value"] as? [String: Any],
         var room = frame["room"] as? [String: Any]
   else { throw ModelTestError.invalidFixture }
 
   frame["revision"] = revision
+  if variant.isEightPlayerOpening {
+    frame["playerId"] = "10000000-0000-4000-8000-000000000001"
+  }
   room["revision"] = revision
+  room["code"] = roomCode
   switch variant {
+  case .openingEightPlayer:
+    break
   case .playing:
     break
   case .waiting:
@@ -695,10 +1447,16 @@ private func modelSnapshotFixtureText(
 }
 
 private enum ModelSnapshotVariant {
+  case openingEightPlayer
   case playing
   case waiting
   case scoring(allReady: Bool)
   case takeoverEligible
+
+  var isEightPlayerOpening: Bool {
+    if case .openingEightPlayer = self { return true }
+    return false
+  }
 }
 
 private func testAccount(

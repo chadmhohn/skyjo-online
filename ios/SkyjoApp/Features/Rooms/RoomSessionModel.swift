@@ -34,7 +34,8 @@ protocol RoomSessionConnection: Sendable {
   func recover(_ admission: RoomAdmission) async throws
   func send(_ action: RoomCommandAction) async throws -> UUID
   func setVisible(_ visible: Bool) async
-  func disconnect() async
+  func disconnect() async throws
+  func discardPersistedResetRecovery() async throws
   func dispose() async
 }
 
@@ -45,6 +46,18 @@ struct RoomSessionEnvironment: Sendable {
   let createInvite: @Sendable (String) async throws -> NativeRoomInvite
   let seatStore: any RoomSeatRecoveryStore
   let nowMilliseconds: @Sendable () -> Int64
+
+  init(
+    makeConnection: @escaping @Sendable () async throws -> any RoomSessionConnection,
+    createInvite: @escaping @Sendable (String) async throws -> NativeRoomInvite,
+    seatStore: any RoomSeatRecoveryStore,
+    nowMilliseconds: @escaping @Sendable () -> Int64
+  ) {
+    self.makeConnection = makeConnection
+    self.createInvite = createInvite
+    self.seatStore = SerializedRoomSeatRecoveryStore(base: seatStore)
+    self.nowMilliseconds = nowMilliseconds
+  }
 
   static func live(
     apiClient: SkyjoAPIClient,
@@ -65,6 +78,69 @@ struct RoomSessionEnvironment: Sendable {
   }
 }
 
+/// Serializes the async recovery-store protocol even when a test or future store
+/// suspends internally. Explicit forget/terminal cleanup therefore cannot race an
+/// older snapshot save and resurrect or erase routing state out of order.
+private actor SerializedRoomSeatRecoveryStore: RoomSeatRecoveryStore {
+  private let base: any RoomSeatRecoveryStore
+  private var isLocked = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  init(base: any RoomSeatRecoveryStore) {
+    self.base = base
+  }
+
+  func load(accountID: UUID) async throws -> RoomSeatRecoveryRecord? {
+    await acquire()
+    do {
+      let record = try await base.load(accountID: accountID)
+      release()
+      return record
+    } catch {
+      release()
+      throw error
+    }
+  }
+
+  func save(_ record: RoomSeatRecoveryRecord) async throws {
+    await acquire()
+    do {
+      try await base.save(record)
+      release()
+    } catch {
+      release()
+      throw error
+    }
+  }
+
+  func clear(accountID: UUID) async throws {
+    await acquire()
+    do {
+      try await base.clear(accountID: accountID)
+      release()
+    } catch {
+      release()
+      throw error
+    }
+  }
+
+  private func acquire() async {
+    if !isLocked {
+      isLocked = true
+      return
+    }
+    await withCheckedContinuation { waiters.append($0) }
+  }
+
+  private func release() {
+    guard !waiters.isEmpty else {
+      isLocked = false
+      return
+    }
+    waiters.removeFirst().resume()
+  }
+}
+
 /// Owns the account-scoped room model across navigation while fencing account switches.
 /// A new authenticated account never inherits the prior account's socket or saved seat.
 @MainActor
@@ -75,6 +151,7 @@ final class RoomSessionHost {
 
   private(set) var model: RoomSessionModel
   private var lifecycleGeneration: UInt64 = 0
+  private var transitionInProgress = false
 
   init(
     account: AccountUser,
@@ -104,13 +181,20 @@ final class RoomSessionHost {
   }
 
   func synchronize(account: AccountUser) async {
-    guard model.account != account else { return }
     lifecycleGeneration &+= 1
     let generation = lifecycleGeneration
+    // Advancing the generation before the equality fast path also cancels an
+    // in-flight A -> B switch when authentication has already returned to A.
+    guard model.account != account || transitionInProgress else { return }
     let previous = model
+    transitionInProgress = true
     await previous.stop()
     guard lifecycleGeneration == generation else { return }
-    model = makeModel(account)
+    let pendingInvite = previous.pendingInviteReview
+    let nextModel = makeModel(account)
+    if let pendingInvite { nextModel.applyInvite(pendingInvite) }
+    model = nextModel
+    transitionInProgress = false
   }
 
   func applyInvite(_ invite: RedeemedRoomInvite) {
@@ -119,7 +203,12 @@ final class RoomSessionHost {
 
   func stop() async {
     lifecycleGeneration &+= 1
+    let generation = lifecycleGeneration
+    transitionInProgress = true
     await model.stop()
+    if lifecycleGeneration == generation {
+      transitionInProgress = false
+    }
   }
 }
 
@@ -150,6 +239,9 @@ final class RoomSessionModel {
   private(set) var pendingInviteReview: RedeemedRoomInvite?
   private(set) var shareInvite: NativeRoomInvite?
   private(set) var isCreatingInvite = false
+  private(set) var isPreparingConnection = false
+  private(set) var isAdmissionOperationPending = false
+  private(set) var isSeatCleanupPending = false
 
   private let environment: RoomSessionEnvironment
   private var connection: (any RoomSessionConnection)?
@@ -162,6 +254,18 @@ final class RoomSessionModel {
   private var lastChatRoomCode: String?
   private var serverClockOffset: Int64 = 0
   private var pendingTerminalAction: RoomCommandAction?
+  private var shareRequestID: UUID?
+  private var recoveryGeneration: UInt64 = 0
+  private var activeAdmissionOperationID: UUID?
+  private var activeAdmissionRecoveryGeneration: UInt64?
+  private var resetRecoveryInitiated = false
+  private var resetRecoveryCleanupRequired = false
+  private var acceptsSeatPersistence = true
+  private var awaitsFreshAdmissionSnapshot = false
+  private var expectedFreshAdmissionRoomCode: String?
+  private var routingClearRoomCode: String?
+  private var bufferedSnapshotDuringRoutingClear: AuthoritativeRoomSnapshot?
+  private var seatCleanupID: UUID?
 
   init(
     account: AccountUser,
@@ -208,10 +312,50 @@ final class RoomSessionModel {
   }
 
   var commandsEnabled: Bool {
-    connectionStatus.phase == .connected
+    snapshot != nil
+      && localRoomPlayer != nil
+      && connectionStatus.phase == .connected
       && connectionStatus.synchronized
       && !connectionStatus.hasPendingCommand
+      && connectionStatus.revision == snapshot?.revision
       && localRoomPlayer?.controller != .ai
+  }
+
+  var canSubmitAdmission: Bool {
+    !isPreparingConnection
+      && !isAdmissionOperationPending
+      && !isSeatCleanupPending
+      && !resetRecoveryInitiated
+      && !connectionStatus.hasPendingCommand
+      && (connectionStatus.phase == .idle || connectionStatus.phase == .error)
+  }
+
+  var canAcceptInvite: Bool {
+    pendingInviteReview != nil
+      && !isPreparingConnection
+      && !isAdmissionOperationPending
+      && !isSeatCleanupPending
+      && !resetRecoveryInitiated
+      && !connectionStatus.hasPendingCommand
+      && pendingTerminalAction == nil
+      && connectionStatus.phase != .upgradeRequired
+      && !inviteRequiresLeavingCurrentRoom
+  }
+
+  var inviteRequiresLeavingCurrentRoom: Bool {
+    guard let invite = pendingInviteReview, let room else { return false }
+    return room.code != invite.roomCode && room.status == .waiting
+  }
+
+  var canForgetSavedSeat: Bool {
+    !isPreparingConnection
+      && !isAdmissionOperationPending
+      && !isSeatCleanupPending
+      && (
+        resetRecoveryCleanupRequired
+          || connectionStatus.phase == .idle
+          || connectionStatus.phase == .error
+      )
   }
 
   var interactionDisabledReason: String? {
@@ -280,6 +424,16 @@ final class RoomSessionModel {
     commandsEnabled && isLocalHost && isScoring && allPlayersReady
   }
 
+  var canCreateShareInvite: Bool {
+    room != nil
+      && localRoomPlayer != nil
+      && connectionStatus.phase == .connected
+      && connectionStatus.synchronized
+      && !connectionStatus.hasPendingCommand
+      && connectionStatus.revision == snapshot?.revision
+      && !isCreatingInvite
+  }
+
   var estimatedServerNow: Int64 {
     environment.nowMilliseconds() - serverClockOffset
   }
@@ -288,8 +442,22 @@ final class RoomSessionModel {
     guard !started else { return }
     lifecycleGeneration &+= 1
     let generation = lifecycleGeneration
+    let automaticRecoveryGeneration = recoveryGeneration
     connectionStatus = Self.idleConnectionStatus
+    resetRecoveryInitiated = false
+    resetRecoveryCleanupRequired = false
+    acceptsSeatPersistence = true
+    awaitsFreshAdmissionSnapshot = false
+    expectedFreshAdmissionRoomCode = nil
+    routingClearRoomCode = nil
+    bufferedSnapshotDuringRoutingClear = nil
+    isPreparingConnection = true
     started = true
+    defer {
+      if lifecycleGeneration == generation {
+        isPreparingConnection = false
+      }
+    }
     let nextConnection: any RoomSessionConnection
     do {
       nextConnection = try await environment.makeConnection()
@@ -326,11 +494,35 @@ final class RoomSessionModel {
     }
     do {
       if try await nextConnection.recoverPersistedReset() {
+        guard lifecycleGeneration == generation, started else { return }
+        resetRecoveryInitiated = true
         return
       }
+    } catch {
       guard lifecycleGeneration == generation, started else { return }
+      resetRecoveryCleanupRequired = true
+      banner = RoomBanner(
+        title: "Room reset recovery unavailable",
+        message: "Skyjo could not safely finish the pending room reset. Reopen multiplayer and try again.",
+        tone: .error
+      )
+      return
+    }
+
+    guard lifecycleGeneration == generation,
+          started,
+          recoveryGeneration == automaticRecoveryGeneration,
+          activeAdmissionOperationID == nil,
+          pendingInviteReview == nil
+    else { return }
+    do {
       if let saved = try await environment.seatStore.load(accountID: account.id) {
-        guard lifecycleGeneration == generation, started else { return }
+        guard lifecycleGeneration == generation,
+              started,
+              recoveryGeneration == automaticRecoveryGeneration,
+              activeAdmissionOperationID == nil,
+              pendingInviteReview == nil
+        else { return }
         joinCode = saved.roomCode
         try await nextConnection.recover(
           .join(
@@ -352,6 +544,19 @@ final class RoomSessionModel {
 
   func stop() async {
     lifecycleGeneration &+= 1
+    recoveryGeneration &+= 1
+    isPreparingConnection = false
+    isAdmissionOperationPending = false
+    activeAdmissionOperationID = nil
+    activeAdmissionRecoveryGeneration = nil
+    resetRecoveryInitiated = false
+    acceptsSeatPersistence = false
+    awaitsFreshAdmissionSnapshot = false
+    expectedFreshAdmissionRoomCode = nil
+    routingClearRoomCode = nil
+    bufferedSnapshotDuringRoutingClear = nil
+    isSeatCleanupPending = false
+    seatCleanupID = nil
     let retiredEventTask = eventTask
     retiredEventTask?.cancel()
     eventTask = nil
@@ -363,6 +568,7 @@ final class RoomSessionModel {
     started = false
     connectionStatus = Self.idleConnectionStatus
     pendingTerminalAction = nil
+    invalidateShareInvite()
     if let retiredConnection { await retiredConnection.dispose() }
     if let retiredEventTask { await retiredEventTask.value }
     if let retiredPresenceTask { await retiredPresenceTask.value }
@@ -381,6 +587,17 @@ final class RoomSessionModel {
         tone: .warning
       )
       return
+    }
+    recoveryGeneration &+= 1
+    // A universal link can arrive while a create/join call is awaiting socket
+    // admission. Invalidate that operation's first-snapshot fence so its late
+    // room cannot become visible or repopulate saved routing beneath the review.
+    // An already-authoritative current room is intentionally retained for the
+    // explicit same-room/leave-or-switch review below.
+    if snapshot == nil, awaitsFreshAdmissionSnapshot {
+      acceptsSeatPersistence = false
+      awaitsFreshAdmissionSnapshot = false
+      expectedFreshAdmissionRoomCode = nil
     }
     pendingInviteReview = invite
     joinCode = invite.roomCode
@@ -401,8 +618,31 @@ final class RoomSessionModel {
       )
       return
     }
-    pendingInviteReview = nil
-    await join(code: invite.roomCode)
+    if room?.code == invite.roomCode {
+      pendingInviteReview = nil
+      banner = RoomBanner(
+        title: "Already in this room",
+        message: "Your current multiplayer table already uses that invite.",
+        tone: .information
+      )
+      return
+    }
+    guard !inviteRequiresLeavingCurrentRoom else {
+      banner = RoomBanner(
+        title: "Leave the waiting room first",
+        message: "Cancel this review, leave the current waiting room, then accept the invite. Skyjo will keep the reviewed invite ready.",
+        tone: .warning
+      )
+      return
+    }
+    let connectionHasAdmission = connectionStatus.phase != .idle
+      && connectionStatus.phase != .error
+    if await join(
+      code: invite.roomCode,
+      replacingCurrentRoom: room != nil || connectionHasAdmission
+    ) {
+      pendingInviteReview = nil
+    }
   }
 
   func sanitizeJoinCode() {
@@ -410,46 +650,75 @@ final class RoomSessionModel {
   }
 
   func createRoom() async {
-    guard await prepareConnection() else { return }
-    replaceVisibleSession()
+    guard let operationID = beginAdmissionOperation() else { return }
+    defer { finishAdmissionOperation(operationID) }
+    guard await prepareConnection(), admissionOperationIsCurrent(operationID) else { return }
+    guard await clearRoutingForFreshAdmission(operationID) else { return }
+    replaceVisibleSession(awaitingRoomCode: nil)
     do {
-      try await connection?.connect(.create(displayName: account.displayName))
+      guard let connection else { return }
+      try await connection.connect(.create(displayName: account.displayName))
+      guard admissionOperationIsCurrent(operationID) else { return }
+      pendingInviteReview = nil
     } catch {
+      guard admissionOperationIsCurrent(operationID) else { return }
+      awaitsFreshAdmissionSnapshot = false
+      expectedFreshAdmissionRoomCode = nil
       showCommandError(error)
     }
   }
 
-  func join(code: String? = nil) async {
-    guard await prepareConnection() else { return }
+  @discardableResult
+  func join(code: String? = nil, replacingCurrentRoom: Bool = false) async -> Bool {
     let cleanedCode = Self.cleanRoomCode(code ?? joinCode)
+    joinCode = cleanedCode
     guard cleanedCode.count == 5 else {
       banner = RoomBanner(
         title: "Room code needed",
         message: "Enter the five-character room code.",
         tone: .warning
       )
-      return
+      return false
     }
-    joinCode = cleanedCode
+    guard let operationID = beginAdmissionOperation() else { return false }
+    defer { finishAdmissionOperation(operationID) }
+    guard await prepareConnection(allowReplacingCurrentRoom: replacingCurrentRoom),
+          admissionOperationIsCurrent(operationID)
+    else { return false }
+    guard await clearRoutingForFreshAdmission(operationID) else { return false }
     do {
-      let saved = try await environment.seatStore.load(accountID: account.id)
-      replaceVisibleSession()
-      try await connection?.connect(
+      replaceVisibleSession(awaitingRoomCode: cleanedCode)
+      guard let connection else { return false }
+      try await connection.connect(
         .join(
           code: cleanedCode,
           displayName: account.displayName,
-          playerID: saved?.roomCode == cleanedCode ? saved?.playerID : nil
+          playerID: nil
         )
       )
+      guard admissionOperationIsCurrent(operationID) else { return false }
+      pendingInviteReview = nil
+      return true
     } catch {
+      guard admissionOperationIsCurrent(operationID) else { return false }
+      awaitsFreshAdmissionSnapshot = false
+      expectedFreshAdmissionRoomCode = nil
       showCommandError(error)
+      return false
     }
   }
 
   func retrySavedSeat() async {
-    guard await prepareConnection() else { return }
+    guard let operationID = beginAdmissionOperation() else { return }
+    let operationRecoveryGeneration = recoveryGeneration
+    defer { finishAdmissionOperation(operationID) }
+    guard await prepareConnection(), admissionOperationIsCurrent(operationID) else { return }
+    acceptsSeatPersistence = true
+    awaitsFreshAdmissionSnapshot = false
+    expectedFreshAdmissionRoomCode = nil
     do {
       guard let saved = try await environment.seatStore.load(accountID: account.id) else {
+        guard admissionOperationIsCurrent(operationID) else { return }
         banner = RoomBanner(
           title: "No saved seat",
           message: "Create or join a room to continue.",
@@ -457,7 +726,12 @@ final class RoomSessionModel {
         )
         return
       }
-      try await connection?.recover(
+      guard admissionOperationIsCurrent(operationID),
+            recoveryGeneration == operationRecoveryGeneration,
+            pendingInviteReview == nil,
+            let connection
+      else { return }
+      try await connection.recover(
         .join(
           code: saved.roomCode,
           displayName: account.displayName,
@@ -465,22 +739,50 @@ final class RoomSessionModel {
         )
       )
     } catch {
+      guard admissionOperationIsCurrent(operationID) else { return }
       showCommandError(error)
     }
   }
 
   func forgetSavedSeat() async {
+    guard let operationID = beginAdmissionOperation() else { return }
+    defer { finishAdmissionOperation(operationID) }
+    acceptsSeatPersistence = false
     pendingTerminalAction = nil
-    await connection?.disconnect()
+    invalidateShareInvite()
+    isChatPresented = false
+    isRoomOptionsPresented = false
+    isScorePresented = false
+    clearVisibleRoom()
+    var resetRecoveryWasCleared = true
+    do {
+      try await connection?.disconnect()
+    } catch {
+      resetRecoveryWasCleared = false
+    }
+    if resetRecoveryCleanupRequired || !resetRecoveryWasCleared {
+      do {
+        try await connection?.discardPersistedResetRecovery()
+        resetRecoveryWasCleared = true
+        resetRecoveryCleanupRequired = false
+      } catch {
+        resetRecoveryWasCleared = false
+        resetRecoveryCleanupRequired = true
+      }
+    }
+    var savedSeatWasCleared = true
     do {
       try await environment.seatStore.clear(accountID: account.id)
-      snapshot = nil
-      joinCode = ""
-      banner = nil
     } catch {
+      savedSeatWasCleared = false
+    }
+    guard admissionOperationIsCurrent(operationID) else { return }
+    if resetRecoveryWasCleared, savedSeatWasCleared {
+      banner = nil
+    } else {
       banner = RoomBanner(
-        title: "Saved seat still on device",
-        message: "Skyjo disconnected, but could not clear its saved routing data. Try forgetting the seat again.",
+        title: "Saved room cleanup needed",
+        message: "Skyjo disconnected, but could not clear all saved routing data. Try forgetting the seat again.",
         tone: .error
       )
     }
@@ -497,15 +799,15 @@ final class RoomSessionModel {
   }
 
   func leaveRoom() async {
-    guard canLeaveWaitingRoom else { return }
+    guard canLeaveWaitingRoom, pendingTerminalAction == nil else { return }
     pendingTerminalAction = .leaveRoom
-    await send(.leaveRoom)
+    await send(.leaveRoom, ownsTerminalIntent: true)
   }
 
   func resetRoom() async {
-    guard commandsEnabled, isLocalHost else { return }
+    guard commandsEnabled, isLocalHost, pendingTerminalAction == nil else { return }
     pendingTerminalAction = .resetRoom
-    await send(.resetRoom)
+    await send(.resetRoom, ownsTerminalIntent: true)
   }
 
   func removePlayer(_ playerID: String) async {
@@ -555,7 +857,9 @@ final class RoomSessionModel {
     else { return }
     switch game.phase {
     case .openingReveal:
-      guard !local.grid[index].faceUp else { return }
+      guard game.openingRevealCounts[local.id, default: 0] < 2,
+            !local.grid[index].faceUp
+      else { return }
       await send(.revealOpeningCard(index))
     case .chooseReplacement:
       if game.selectedSource == .draw,
@@ -581,7 +885,8 @@ final class RoomSessionModel {
     else { return false }
     switch game.phase {
     case .openingReveal:
-      return !local.grid[index].faceUp
+      return game.openingRevealCounts[local.id, default: 0] < 2
+        && !local.grid[index].faceUp
     case .chooseReplacement:
       if game.selectedSource == .draw,
          game.drawnCard != nil,
@@ -605,34 +910,81 @@ final class RoomSessionModel {
   }
 
   func createShareInvite() async {
-    guard let room, !isCreatingInvite else { return }
+    guard let room, canCreateShareInvite else { return }
+    let expectedRoomCode = room.code
+    let requestID = UUID()
+    shareRequestID = requestID
     isCreatingInvite = true
-    defer { isCreatingInvite = false }
     do {
-      shareInvite = try await environment.createInvite(room.code)
+      let invite = try await environment.createInvite(expectedRoomCode)
+      guard shareRequestID == requestID,
+            self.room?.code == expectedRoomCode,
+            invite.roomCode == expectedRoomCode
+      else {
+        finishShareRequest(requestID)
+        return
+      }
+      shareInvite = invite
     } catch {
+      guard shareRequestID == requestID, self.room?.code == expectedRoomCode else { return }
       banner = RoomBanner(
         title: "Invite unavailable",
         message: Self.safeMessage(for: error),
         tone: .warning
       )
     }
+    finishShareRequest(requestID)
   }
 
   func clearShareInvite() {
-    shareInvite = nil
+    invalidateShareInvite()
   }
 
   func dismissBanner() {
     banner = nil
   }
 
-  private func prepareConnection() async -> Bool {
+  private func prepareConnection(allowReplacingCurrentRoom: Bool = false) async -> Bool {
     if !started { await start() }
-    guard connection != nil else {
+    guard !isPreparingConnection else {
+      banner = RoomBanner(
+        title: "Room connection is still preparing",
+        message: "Wait for saved-room recovery to finish, then try again.",
+        tone: .information
+      )
+      return false
+    }
+    guard !resetRecoveryInitiated else {
+      banner = RoomBanner(
+        title: "Room reset recovered",
+        message: "Review the recovered room before starting another admission.",
+        tone: .information
+      )
+      return false
+    }
+    guard !connectionStatus.hasPendingCommand, pendingTerminalAction == nil else {
+      banner = RoomBanner(
+        title: "Room cleanup is still pending",
+        message: "Retry Forget Saved Seat before creating or joining another room.",
+        tone: .warning
+      )
+      return false
+    }
+    guard connectionStatus.phase != .upgradeRequired else {
+      banner = RoomBanner(
+        title: "Update required",
+        message: "Update Skyjo before creating or joining a multiplayer room.",
+        tone: .error
+      )
+      return false
+    }
+    let phaseIsAvailable = allowReplacingCurrentRoom
+      || connectionStatus.phase == .idle
+      || connectionStatus.phase == .error
+    guard connection != nil, phaseIsAvailable else {
       banner = RoomBanner(
         title: "Room connection unavailable",
-        message: "Try again after the app reconnects.",
+        message: "Wait for the current room connection to settle, then try again.",
         tone: .error
       )
       return false
@@ -640,21 +992,132 @@ final class RoomSessionModel {
     return true
   }
 
-  private func replaceVisibleSession() {
+  private func replaceVisibleSession(awaitingRoomCode: String?) {
+    acceptsSeatPersistence = false
+    awaitsFreshAdmissionSnapshot = true
+    expectedFreshAdmissionRoomCode = awaitingRoomCode
     snapshot = nil
     pendingTerminalAction = nil
     banner = nil
-    shareInvite = nil
+    invalidateShareInvite()
     lastSeenChatMessageID = nil
     lastChatRoomCode = nil
   }
 
-  private func send(_ action: RoomCommandAction) async {
+  private func beginAdmissionOperation() -> UUID? {
+    guard activeAdmissionOperationID == nil,
+          !isAdmissionOperationPending,
+          !isPreparingConnection,
+          !isSeatCleanupPending
+    else { return nil }
+    recoveryGeneration &+= 1
+    let operationID = UUID()
+    activeAdmissionOperationID = operationID
+    activeAdmissionRecoveryGeneration = recoveryGeneration
+    isAdmissionOperationPending = true
+    return operationID
+  }
+
+  private func admissionOperationIsCurrent(_ operationID: UUID) -> Bool {
+    started
+      && activeAdmissionOperationID == operationID
+      && activeAdmissionRecoveryGeneration == recoveryGeneration
+  }
+
+  private func finishAdmissionOperation(_ operationID: UUID) {
+    guard activeAdmissionOperationID == operationID else { return }
+    activeAdmissionOperationID = nil
+    activeAdmissionRecoveryGeneration = nil
+    isAdmissionOperationPending = false
+  }
+
+  private func finishShareRequest(_ requestID: UUID) {
+    guard shareRequestID == requestID else { return }
+    shareRequestID = nil
+    isCreatingInvite = false
+  }
+
+  private func invalidateShareInvite() {
+    shareRequestID = nil
+    shareInvite = nil
+    isCreatingInvite = false
+  }
+
+  private func clearVisibleRoom() {
+    snapshot = nil
+    joinCode = ""
+    isChatPresented = false
+    isRoomOptionsPresented = false
+    isScorePresented = false
+    lastSeenChatMessageID = nil
+    lastChatRoomCode = nil
+    resetRecoveryInitiated = false
+    awaitsFreshAdmissionSnapshot = false
+    expectedFreshAdmissionRoomCode = nil
+    invalidateShareInvite()
+  }
+
+  private func clearRoutingForFreshAdmission(_ operationID: UUID) async -> Bool {
+    acceptsSeatPersistence = false
+    routingClearRoomCode = snapshot?.room.code
+    bufferedSnapshotDuringRoutingClear = nil
+    do {
+      try await environment.seatStore.clear(accountID: account.id)
+    } catch {
+      await restoreRoutingAfterCanceledClear()
+      guard admissionOperationIsCurrent(operationID) else { return false }
+      banner = RoomBanner(
+        title: "Saved room could not be replaced",
+        message: "Skyjo kept the current room because its saved routing data could not be cleared. Try again.",
+        tone: .error
+      )
+      return false
+    }
+    guard admissionOperationIsCurrent(operationID) else {
+      await restoreRoutingAfterCanceledClear()
+      return false
+    }
+    routingClearRoomCode = nil
+    bufferedSnapshotDuringRoutingClear = nil
+    return true
+  }
+
+  private func restoreRoutingAfterCanceledClear() async {
+    let bufferedSnapshot = bufferedSnapshotDuringRoutingClear
+    routingClearRoomCode = nil
+    bufferedSnapshotDuringRoutingClear = nil
+    guard started, snapshot != nil else {
+      acceptsSeatPersistence = false
+      return
+    }
+    acceptsSeatPersistence = true
+    if let bufferedSnapshot {
+      await consume(.snapshot(bufferedSnapshot), generation: lifecycleGeneration)
+    }
+  }
+
+  private func beginSeatCleanup() -> UUID {
+    acceptsSeatPersistence = false
+    let cleanupID = UUID()
+    seatCleanupID = cleanupID
+    isSeatCleanupPending = true
+    return cleanupID
+  }
+
+  private func finishSeatCleanup(_ cleanupID: UUID) {
+    guard seatCleanupID == cleanupID else { return }
+    seatCleanupID = nil
+    isSeatCleanupPending = false
+  }
+
+  private func send(_ action: RoomCommandAction, ownsTerminalIntent: Bool = false) async {
     guard let connection else { return }
     do {
       _ = try await connection.send(action)
     } catch {
-      pendingTerminalAction = nil
+      if ownsTerminalIntent, pendingTerminalAction == action {
+        pendingTerminalAction = nil
+      }
       showCommandError(error)
     }
   }
@@ -664,25 +1127,43 @@ final class RoomSessionModel {
     switch event {
     case .status(let status):
       connectionStatus = status
+      if resetRecoveryCleanupRequired, !status.hasPendingCommand, snapshot != nil {
+        resetRecoveryCleanupRequired = false
+      }
       if status.phase == .idle, pendingTerminalAction == .leaveRoom {
         pendingTerminalAction = nil
-        snapshot = nil
-        joinCode = ""
-        do {
-          try await environment.seatStore.clear(accountID: account.id)
-        } catch {
-          guard lifecycleGeneration == generation, started else { return }
-          banner = RoomBanner(
+        await clearSeatAfterTerminal(
+          generation: generation,
+          success: nil,
+          failure: RoomBanner(
             title: "Room left; cleanup needed",
             message: "The server removed the seat, but saved routing data could not be cleared. Use Forget Saved Seat to retry cleanup.",
             tone: .warning
           )
-        }
+        )
       }
     case .snapshot(let nextSnapshot):
+      if !acceptsSeatPersistence {
+        if let routingClearRoomCode,
+           snapshot?.room.code == routingClearRoomCode,
+           nextSnapshot.room.code == routingClearRoomCode,
+           nextSnapshot.revision >= (bufferedSnapshotDuringRoutingClear?.revision ?? snapshot?.revision ?? 0) {
+          bufferedSnapshotDuringRoutingClear = nextSnapshot
+        }
+        guard awaitsFreshAdmissionSnapshot,
+              expectedFreshAdmissionRoomCode.map({ $0 == nextSnapshot.room.code }) != false
+        else { return }
+        acceptsSeatPersistence = true
+        awaitsFreshAdmissionSnapshot = false
+        expectedFreshAdmissionRoomCode = nil
+      }
       let previousCode = lastChatRoomCode
+      if snapshot?.room.code != nextSnapshot.room.code {
+        invalidateShareInvite()
+      }
       banner = nil
       snapshot = nextSnapshot
+      resetRecoveryInitiated = false
       joinCode = nextSnapshot.room.code
       serverClockOffset = environment.nowMilliseconds() - nextSnapshot.room.serverNow
       if previousCode != nextSnapshot.room.code {
@@ -732,55 +1213,83 @@ final class RoomSessionModel {
         message: "The room changed before that action was accepted. Review the table and try again.",
         tone: .warning
       )
-    case .commandRejected(let code, _):
-      pendingTerminalAction = nil
+    case .commandRejected(let code, _, let matchedAction):
+      if matchedAction == pendingTerminalAction {
+        pendingTerminalAction = nil
+      }
       banner = RoomBanner(
         title: "Action not accepted",
         message: Self.safeCommandMessage(code: code),
         tone: .warning
       )
-    case .roomResetByHost:
+    case .admissionRejected(let code, _, let usedSavedSeat):
       pendingTerminalAction = nil
-      snapshot = nil
-      joinCode = ""
-      do {
-        try await environment.seatStore.clear(accountID: account.id)
-        guard lifecycleGeneration == generation, started else { return }
+      if !usedSavedSeat {
+        acceptsSeatPersistence = false
+        awaitsFreshAdmissionSnapshot = false
+        expectedFreshAdmissionRoomCode = nil
+      }
+      let shouldForgetRejectedSeat = usedSavedSeat
+        && ["room-not-found", "seat-forbidden", "stale-room", "stale-seat"].contains(code)
+      guard shouldForgetRejectedSeat else {
         banner = RoomBanner(
+          title: "Room admission not accepted",
+          message: Self.safeCommandMessage(code: code),
+          tone: .warning
+        )
+        return
+      }
+      await clearSeatAfterTerminal(
+        generation: generation,
+        success: RoomBanner(
+          title: "Saved seat unavailable",
+          message: "That saved room or seat ended. Create or join a room to continue.",
+          tone: .warning
+        ),
+        failure: RoomBanner(
+          title: "Saved seat cleanup needed",
+          message: "That saved room ended, but its routing data could not be cleared. Use Forget Saved Seat to retry cleanup.",
+          tone: .error
+        )
+      )
+    case .roomResetByHost(let roomCode):
+      guard !terminalNoticePredatesFreshAdmission(roomCode: roomCode) else { return }
+      pendingTerminalAction = nil
+      await clearSeatAfterTerminal(
+        generation: generation,
+        success: RoomBanner(
           title: "Room reset",
           message: "The host replaced this room. Ask for the new room code or invite.",
           tone: .information
-        )
-      } catch {
-        guard lifecycleGeneration == generation, started else { return }
-        banner = RoomBanner(
+        ),
+        failure: RoomBanner(
           title: "Room reset; cleanup needed",
           message: "The old room ended, but saved routing data could not be cleared. Use Forget Saved Seat to retry cleanup.",
           tone: .warning
         )
-      }
-    case .seatRemoved:
+      )
+    case .seatRemoved(let roomCode):
+      guard !terminalNoticePredatesFreshAdmission(roomCode: roomCode) else { return }
       pendingTerminalAction = nil
-      snapshot = nil
-      joinCode = ""
-      do {
-        try await environment.seatStore.clear(accountID: account.id)
-        guard lifecycleGeneration == generation, started else { return }
-        banner = RoomBanner(
+      await clearSeatAfterTerminal(
+        generation: generation,
+        success: RoomBanner(
           title: "Seat unavailable",
           message: "That saved seat is no longer available. Join the room again if it is still open.",
           tone: .warning
-        )
-      } catch {
-        guard lifecycleGeneration == generation, started else { return }
-        banner = RoomBanner(
+        ),
+        failure: RoomBanner(
           title: "Seat unavailable; cleanup needed",
           message: "The seat ended, but saved routing data could not be cleared. Use Forget Saved Seat to retry cleanup.",
           tone: .warning
         )
-      }
+      )
     case .upgradeRequired:
       pendingTerminalAction = nil
+      acceptsSeatPersistence = false
+      // RoomConnection quarantines its authoritative snapshot for this terminal
+      // admission. Mirror that fail-closed boundary in the presentation model.
+      clearVisibleRoom()
       banner = RoomBanner(
         title: "Update required",
         message: "Update Skyjo before continuing multiplayer.",
@@ -805,12 +1314,56 @@ final class RoomSessionModel {
         tone: .information
       )
     case .resetRecoveryPersistenceFailed:
-      banner = RoomBanner(
-        title: "Room reset paused",
-        message: "Recovery data could not be saved, so the room was not reset.",
-        tone: .error
-      )
+      if banner?.title == "Saved room cleanup needed" { return }
+      if connectionStatus.hasPendingCommand {
+        resetRecoveryCleanupRequired = true
+        banner = RoomBanner(
+          title: "Room reset cleanup needed",
+          message: "Saved reset recovery data could not be cleared. Use Forget Saved Seat before continuing multiplayer.",
+          tone: .error
+        )
+      } else {
+        banner = RoomBanner(
+          title: "Room reset paused",
+          message: "Recovery data could not be saved, so the room was not reset.",
+          tone: .error
+        )
+      }
     }
+  }
+
+  private func clearSeatAfterTerminal(
+    generation: UInt64,
+    success: RoomBanner?,
+    failure: RoomBanner
+  ) async {
+    let cleanupID = beginSeatCleanup()
+    clearVisibleRoom()
+    defer { finishSeatCleanup(cleanupID) }
+    do {
+      try await environment.seatStore.clear(accountID: account.id)
+      guard lifecycleGeneration == generation,
+            started,
+            seatCleanupID == cleanupID
+      else { return }
+      banner = success
+    } catch {
+      guard lifecycleGeneration == generation,
+            started,
+            seatCleanupID == cleanupID
+      else { return }
+      banner = failure
+    }
+  }
+
+  private func terminalNoticePredatesFreshAdmission(roomCode: String?) -> Bool {
+    guard awaitsFreshAdmissionSnapshot, let roomCode else { return false }
+    if let expectedFreshAdmissionRoomCode {
+      return roomCode != expectedFreshAdmissionRoomCode
+    }
+    // A create admission has no room code until its first snapshot. Any coded
+    // terminal notice crossing that fence necessarily belongs to the retired room.
+    return true
   }
 
   private func schedulePresenceFlushIfNeeded() {
@@ -866,22 +1419,47 @@ final class RoomSessionModel {
 
   private static func safeCommandMessage(code: String) -> String {
     switch code {
-    case "not-host": return "Only the room host can do that."
-    case "not-your-turn": return "The active player changed. Review the table and try again."
-    case "invalid-state": return "That action is no longer available in the current room state."
+    case "host-required", "not-host": return "Only the room host can do that."
+    case "illegal-move", "not-your-turn":
+      return "The active turn changed. Review the table and try again."
+    case "active-game-required", "invalid-phase", "invalid-state", "no-active-game",
+         "not-scoring", "waiting-room-required":
+      return "That action is no longer available in the current room state."
     case "room-full": return "This room already has eight players."
     case "game-started": return "This game has already started."
-    case "room-not-found", "stale-room": return "That room is no longer available."
+    case "room-not-found", "stale-room", "stale-seat":
+      return "That room or saved seat is no longer available."
     case "seat-forbidden": return "This account cannot reclaim that saved seat."
+    case "players-required": return "At least two connected human players are required."
+    case "players-not-ready": return "Every player must confirm they are ready first."
+    case "active-seat-reserved":
+      return "Active game seats remain reserved for reconnecting players."
+    case "host-transfer-unavailable":
+      return "The host can leave after another human player reconnects."
+    case "takeover-unavailable": return "That player's reconnect window is still active."
+    case "empty-chat": return "Enter a message before sending."
+    case "invalid-player": return "Choose a current non-host player."
+    case "room-code-unavailable": return "A new room code could not be created. Try again."
+    case "ai-controls-seat": return "AI is still completing an action for that seat."
+    case "player-away": return "Return to the active room before sending an action."
+    case "already-in-room", "room-required":
+      return "Reconnect to the active room and try again."
+    case "command-id-conflict":
+      return "The table could not safely replay that action. Review it and try again."
+    case "history-save-failed":
+      return "The completed game could not be saved. Try again before continuing."
+    case "revision-exhausted":
+      return "This room reached its revision limit. Reset it to continue."
+    case "unchanged-command": return "That setting is already current."
     default: return "The server did not accept that action. Review the table and try again."
     }
   }
 
   private static func cleanRoomCode(_ input: String) -> String {
-    let allowed = input.uppercased().unicodeScalars.filter {
-      $0.isASCII && ($0.properties.isUppercase || $0.properties.numericType != nil)
+    let allowed = input.unicodeScalars.filter {
+      $0.isASCII && ($0.properties.isAlphabetic || $0.properties.numericType != nil)
     }
-    return String(String.UnicodeScalarView(allowed.prefix(5)))
+    return String(String.UnicodeScalarView(allowed.prefix(5))).uppercased()
   }
 
   private static var idleConnectionStatus: RoomConnectionStatus {

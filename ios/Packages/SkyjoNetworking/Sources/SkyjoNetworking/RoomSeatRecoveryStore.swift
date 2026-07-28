@@ -20,8 +20,23 @@ public struct RoomSeatRecoveryRecord: Codable, Equatable, Sendable,
     self.playerID = playerID
   }
 
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      accountID: container.decode(UUID.self, forKey: .accountID),
+      roomCode: container.decode(String.self, forKey: .roomCode),
+      playerID: container.decode(String.self, forKey: .playerID)
+    )
+  }
+
   public var description: String { debugDescription }
   public var debugDescription: String { "RoomSeatRecoveryRecord(<redacted>)" }
+
+  private enum CodingKeys: String, CodingKey {
+    case accountID
+    case roomCode
+    case playerID
+  }
 }
 
 public protocol RoomSeatRecoveryStore: Sendable {
@@ -42,8 +57,12 @@ public actor VolatileRoomSeatRecoveryStore: RoomSeatRecoveryStore {
     return record
   }
 
-  public func save(_ record: RoomSeatRecoveryRecord) {
-    self.record = record
+  public func save(_ record: RoomSeatRecoveryRecord) throws {
+    self.record = try RoomSeatRecoveryRecord(
+      accountID: record.accountID,
+      roomCode: record.roomCode,
+      playerID: record.playerID
+    )
   }
 
   public func clear(accountID: UUID) {
@@ -88,9 +107,14 @@ public actor FileRoomSeatRecoveryStore: RoomSeatRecoveryStore {
     Self.fileSystemLock.lock()
     defer { Self.fileSystemLock.unlock() }
     try validateFileURL()
+    let validatedRecord = try RoomSeatRecoveryRecord(
+      accountID: record.accountID,
+      roomCode: record.roomCode,
+      playerID: record.playerID
+    )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let data = try encoder.encode(record)
+    let data = try encoder.encode(validatedRecord)
     guard data.count <= Self.maximumRecordBytes else {
       throw RoomConnectionContractError.invalidAdmission
     }
