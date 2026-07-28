@@ -208,7 +208,11 @@ try {
   assert.ok(code, 'Invite landing did not mint a short code.');
   assert.equal(landingHtml.includes(invite.path), false, 'Invite landing duplicated the signed token in response HTML.');
   const persistedRoomInstanceId = await waitForPersistedRoom(roomCode);
-  assert.match(persistedRoomInstanceId, /^[0-9a-f-]{36}$/);
+  assert.equal(
+    /^[0-9a-f-]{36}$/.test(persistedRoomInstanceId),
+    true,
+    'Persisted room instance has the expected UUID structure without logging its value.'
+  );
   await stopServer(child);
   child = null;
   if (socket.readyState !== WebSocket.CLOSED) {
@@ -218,12 +222,12 @@ try {
   child = startServer(port);
   await waitForReady(baseUrl, child);
   const longAfterRestart = await fetch(`${baseUrl}${invite.path}?open=browser`, { redirect: 'manual' });
-  if (longAfterRestart.status !== 303) {
-    console.error(await fs.readFile(roomsFile, 'utf8').catch(() => 'rooms file unavailable'));
-    console.error(await longAfterRestart.text());
-  }
   assert.equal(longAfterRestart.status, 303, 'Room-bound long invite did not survive restart.');
-  assert.equal(longAfterRestart.headers.get('location'), `/lobby?room=${roomCode}`);
+  assert.equal(
+    longAfterRestart.headers.get('location') === `/lobby?room=${roomCode}`,
+    true,
+    'Room-bound long invite redirects to its lobby without logging private room state.'
+  );
   assert.ok(longAfterRestart.headers.get('set-cookie'));
 
   const nativeAfterRestart = await fetch(`${baseUrl}/api/rooms/invite/redeem`, {
@@ -235,13 +239,24 @@ try {
   assert.equal(nativeAfterRestart.status, 200, 'Native room invite did not survive restart.');
   assert.equal(nativeAfterRestart.headers.get('location'), null, 'Native redemption must not redirect.');
   assert.match(nativeAfterRestart.headers.get('cache-control') || '', /no-store/i);
-  assert.deepEqual(await nativeAfterRestart.json(), {
-    roomCode,
-    expiresAt: invite.expiresAt
-  });
+  const nativePayload = await nativeAfterRestart.json();
+  assert.equal(
+    nativePayload !== null
+      && typeof nativePayload === 'object'
+      && !Array.isArray(nativePayload)
+      && Object.keys(nativePayload).sort().join(',') === 'expiresAt,roomCode'
+      && nativePayload.roomCode === roomCode
+      && nativePayload.expiresAt === invite.expiresAt,
+    true,
+    'Native redemption returns only the expected room and expiry fields.'
+  );
   const nativeCookies = nativeAfterRestart.headers.getSetCookie();
   assert.equal(nativeCookies.length, 1, 'Native redemption grants only the outer session cookie.');
-  assert.match(nativeCookies[0], /^skyjo_restart_session=.+; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+$/);
+  assert.equal(
+    /^skyjo_restart_session=.+; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+$/.test(nativeCookies[0] || ''),
+    true,
+    'Native redemption cookie has the expected secure structure without logging its value.'
+  );
 
   const redemptions = await Promise.all(Array.from({ length: 6 }, () => fetch(`${baseUrl}/invite-code`, {
     method: 'POST',
@@ -273,7 +288,7 @@ try {
   assert.equal(JSON.stringify(rows).includes(code), false, 'Raw invite code reached SQLite.');
   assert.equal(JSON.stringify(rows).includes(invite.path), false, 'Signed invite token reached SQLite.');
   assert.equal(JSON.stringify(rows).includes(inviteToken), false, 'Signed invite token reached SQLite without its route prefix.');
-  assert.equal(rows[0].room_code, roomCode);
+  assert.equal(rows[0].room_code === roomCode, true, 'Persisted invite remains bound to its private room.');
   assert.equal(typeof rows[0].room_instance_id, 'string');
   assert.equal(typeof rows[0].redeemed_at, 'number');
   assert.equal(logs.includes(code), false, 'Raw invite code reached server logs.');
@@ -281,7 +296,9 @@ try {
   assert.equal(logs.includes(inviteToken), false, 'Signed invite token reached server logs without its route prefix.');
   console.log('Invite restart smoke passed: browser/native restart survival, one atomic install-code redemption, replay rejection, and no raw secret persistence.');
 } catch (error) {
-  if (logs) console.error(logs);
+  if (logs) {
+    console.error('Invite restart server diagnostics were suppressed because they may contain private invite or session data.');
+  }
   throw error;
 } finally {
   await stopServer(child);

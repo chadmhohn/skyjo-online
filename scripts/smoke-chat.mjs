@@ -1087,7 +1087,12 @@ try {
   const hostInvite = await accountRequest(baseUrl, hostAccount.cookie, '/api/rooms/invite', { roomCode: parkingRoomCode });
   assert.equal(hostInvite.response.status, 200, 'room members can create invite links');
   assert.equal(hostInvite.payload.roomCode, parkingRoomCode);
-  assert.match(hostInvite.payload.path, /^\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.equal(
+    typeof hostInvite.payload.path === 'string'
+      && /^\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(hostInvite.payload.path),
+    true,
+    'invite creation returns a structurally valid signed path without logging it'
+  );
   const signedInviteToken = hostInvite.payload.path.slice('/invite/'.length);
   const [signedInvitePayload] = signedInviteToken.split('.');
   const decodedInvite = JSON.parse(Buffer.from(signedInvitePayload, 'base64url').toString('utf8'));
@@ -1114,15 +1119,25 @@ try {
   assert.equal(nativeInvite.response.status, 200, 'native invite redeems before the shared-password gate');
   assert.equal(nativeInvite.response.headers.get('location'), null, 'native invite success is direct');
   assert.match(nativeInvite.response.headers.get('cache-control') || '', /no-store/i);
-  assert.deepEqual(nativeInvite.payload, {
-    roomCode: parkingRoomCode,
-    expiresAt: hostInvite.payload.expiresAt
-  });
+  assert.equal(
+    nativeInvite.payload !== null
+      && typeof nativeInvite.payload === 'object'
+      && !Array.isArray(nativeInvite.payload)
+      && Object.keys(nativeInvite.payload).sort().join(',') === 'expiresAt,roomCode'
+      && nativeInvite.payload.roomCode === parkingRoomCode
+      && nativeInvite.payload.expiresAt === hostInvite.payload.expiresAt,
+    true,
+    'native invite response returns only the expected room and expiry fields'
+  );
   assert.equal(JSON.stringify(nativeInvite.payload).includes(signedInviteToken), false, 'native response does not reflect the token');
   assert.equal(JSON.stringify(nativeInvite.payload).includes(decodedInvite.roomInstanceId), false, 'native response does not expose the room instance');
   const nativeInviteCookies = nativeInvite.response.headers.getSetCookie();
   assert.equal(nativeInviteCookies.length, 1, 'native invite grants only one session layer');
-  assert.match(nativeInviteCookies[0], /^skyjo_smoke=.+; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+$/);
+  assert.equal(
+    /^skyjo_smoke=.+; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+$/.test(nativeInviteCookies[0] || ''),
+    true,
+    'native invite cookie has the expected secure structure without logging its value'
+  );
   assert.equal(nativeInviteCookies[0].includes('skyjo_account='), false, 'native invite never grants account authentication');
   const nativeInviteLobby = await fetch(`${baseUrl}/lobby?room=${parkingRoomCode}`, {
     headers: { Accept: 'text/html', Cookie: nativeInviteCookies[0].split(';', 1)[0] },

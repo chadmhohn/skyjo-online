@@ -7,7 +7,11 @@ function cookieFromResponse(response, label) {
   const setCookie = response.headers.get('set-cookie');
   assert.ok(setCookie, `${label} did not set a cookie`);
   const cookie = setCookie.split(';', 1)[0];
-  assert.match(cookie, /^[^=;,\s]+=[^;,]+$/, `${label} returned an invalid cookie`);
+  assert.equal(
+    /^[^=;,\s]+=[^;,]+$/.test(cookie),
+    true,
+    `${label} returned an invalid cookie without logging its value`
+  );
   return cookie;
 }
 
