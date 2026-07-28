@@ -959,6 +959,176 @@ struct RoomConnectionNodeIntegrationTests {
   private let accountPassword = "native-realtime-password-v1"
 
   @Test(
+    "Native invite redemption grants only outer access and rejects a reset room instance",
+    .enabled(
+      if: MixedPWAControlClient.networkingTestsEnabled,
+      "Requires scripts/ios-build-test.sh --networking-contracts."
+    )
+  )
+  func nativeInviteRedemptionAndStaleRoom() async throws {
+    let rawBaseURL = try #require(ProcessInfo.processInfo.environment["SKYJO_IOS_TEST_SERVER_URL"])
+    let baseURL = try #require(URL(string: rawBaseURL))
+    let environment = SkyjoNetworkEnvironment(baseURL: baseURL)
+
+    let hostCookies = realtimeCookieStorage(label: "invite-host")
+    let hostSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: hostCookies)
+    defer {
+      hostSession.invalidateAndCancel()
+      clearRealtimeCookies(hostCookies)
+    }
+    let hostAPI = SkyjoAPIClient(environment: environment, session: hostSession)
+    #expect(try await hostAPI.loginAccess(password: syntheticAccessPassword).authenticated)
+    let account = try await hostAPI.signup(
+      email: "ios-invite-host-\(UUID().uuidString.lowercased())@example.invalid",
+      displayName: "Invite Host",
+      password: accountPassword,
+      confirmPassword: accountPassword
+    )
+    let connection = try await hostAPI.makeRoomConnection(confirmedAccount: account)
+    defer { Task { await connection.dispose() } }
+    try await connection.connect(.create(displayName: account.displayName))
+    #expect(await eventually(attempts: 5_000) { await connection.status().synchronized })
+    let originalRoom = try #require(await connection.snapshot()).room.code
+
+    // Creation proves the account-authenticated endpoint sees the exact cookie jar
+    // already owned by SkyjoAPIClient and its realtime transport.
+    let inviteClient = RoomInviteClient(environment: environment, session: hostSession)
+    let invite = try await inviteClient.create(roomCode: originalRoom)
+    let token = invite.url.lastPathComponent
+    let productionURL = try #require(
+      URL(string: "https://\(RoomInviteLink.productionHost)/invite/\(token)")
+    )
+    let link = try RoomInviteLink(url: productionURL)
+
+    let guestCookies = realtimeCookieStorage(label: "invite-guest")
+    let guestSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: guestCookies)
+    defer {
+      guestSession.invalidateAndCancel()
+      clearRealtimeCookies(guestCookies)
+    }
+    let guestInviteClient = RoomInviteClient(environment: environment, session: guestSession)
+    let redeemed = try await guestInviteClient.redeem(link)
+    #expect(redeemed.roomCode == originalRoom)
+
+    let guestAPI = SkyjoAPIClient(environment: environment, session: guestSession)
+    #expect(try await guestAPI.accessStatus().authenticated)
+    #expect(try await guestAPI.currentAccount() == nil)
+
+    _ = try await connection.send(.resetRoom)
+    #expect(await eventually(attempts: 5_000) {
+      guard let snapshot = await connection.snapshot() else { return false }
+      let status = await connection.status()
+      return status.synchronized && !status.hasPendingCommand && snapshot.room.code != originalRoom
+    })
+
+    let staleCookies = realtimeCookieStorage(label: "invite-stale")
+    let staleSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: staleCookies)
+    defer {
+      staleSession.invalidateAndCancel()
+      clearRealtimeCookies(staleCookies)
+    }
+    let staleClient = RoomInviteClient(environment: environment, session: staleSession)
+    await #expect(
+      throws: SkyjoHTTPClientError.server(
+        statusCode: 410,
+        code: .inviteRoomUnavailable,
+        message: "That room is no longer available. Ask the host for a new invite."
+      )
+    ) {
+      _ = try await staleClient.redeem(link)
+    }
+
+    await connection.dispose()
+  }
+
+  @Test(
+    "One PWA and seven native clients converge on an eight-player table and compact chat",
+    .enabled(
+      if: MixedPWAControlClient.networkingTestsEnabled,
+      "Requires scripts/ios-build-test.sh --networking-contracts."
+    )
+  )
+  func eightMixedClientsConverge() async throws {
+    let control = try MixedPWAControlClient.requiredFromEnvironment()
+    defer { Task { await control.dispose() } }
+    try await control.health()
+    try await control.reset()
+    try await control.provision(displayName: "PWA Host")
+    let roomCode = try await control.createRoom()
+
+    let rawBaseURL = try #require(ProcessInfo.processInfo.environment["SKYJO_IOS_TEST_SERVER_URL"])
+    let baseURL = try #require(URL(string: rawBaseURL))
+    let environment = SkyjoNetworkEnvironment(baseURL: baseURL)
+    let cleanup = MixedNativeClientCleanup()
+    defer { Task { await cleanup.dispose() } }
+    var connections: [RoomConnection] = []
+
+    for index in 1...7 {
+      let cookies = realtimeCookieStorage(label: "eight-native-\(index)")
+      let session = SkyjoURLSessionFactory.makeDedicated(cookieStorage: cookies)
+      await cleanup.retain(session: session, cookies: cookies)
+      let api = SkyjoAPIClient(environment: environment, session: session)
+      #expect(try await api.loginAccess(password: syntheticAccessPassword).authenticated)
+      let displayName = "Native Guest \(index)"
+      let account = try await api.signup(
+        email: "ios-eight-\(index)-\(UUID().uuidString.lowercased())@example.invalid",
+        displayName: displayName,
+        password: accountPassword,
+        confirmPassword: accountPassword
+      )
+      let connection = try await api.makeRoomConnection(confirmedAccount: account)
+      await cleanup.retain(connection: connection)
+      connections.append(connection)
+      try await connection.connect(.join(code: roomCode, displayName: displayName))
+      #expect(await eventually(attempts: 5_000) { await connection.status().synchronized })
+    }
+    let roomConnections = connections
+
+    #expect(await eventually(attempts: 7_500) {
+      for connection in roomConnections {
+        guard await connection.snapshot()?.room.players.count == 8 else { return false }
+      }
+      return true
+    })
+    try await control.waitPlayer(displayName: "Native Guest 7", connected: true)
+
+    try await control.startGame()
+    #expect(await eventually(attempts: 7_500) {
+      for connection in roomConnections {
+        guard let snapshot = await connection.snapshot(),
+              snapshot.room.status == .playing,
+              snapshot.room.state?.players.count == 8
+        else { return false }
+      }
+      return true
+    })
+
+    let nativeMarker = "eight-client native marker"
+    _ = try await roomConnections[6].send(.sendChatMessage(nativeMarker))
+    #expect(await eventually(attempts: 5_000) {
+      for connection in roomConnections {
+        guard await connection.snapshot()?.room.chatMessages.contains(where: {
+          $0.text == nativeMarker
+        }) == true else { return false }
+      }
+      return true
+    })
+
+    try await control.sendChat(.fresh)
+    #expect(await eventually(attempts: 5_000) {
+      for connection in roomConnections {
+        guard await connection.snapshot()?.room.chatMessages.contains(where: {
+          $0.text == "mixed fresh marker"
+        }) == true else { return false }
+      }
+      return true
+    })
+
+    await cleanup.dispose()
+    await control.dispose()
+  }
+
+  @Test(
     "Native create and PWA join preserve presence, seat recovery, heartbeat, and UTF-16 bounds",
     .enabled(
       if: MixedPWAControlClient.networkingTestsEnabled,
@@ -1206,6 +1376,31 @@ struct RoomConnectionNodeIntegrationTests {
 
     await connection.dispose()
     await control.dispose()
+  }
+}
+
+private actor MixedNativeClientCleanup {
+  private var connections: [RoomConnection] = []
+  private var sessions: [(URLSession, HTTPCookieStorage)] = []
+
+  func retain(connection: RoomConnection) {
+    connections.append(connection)
+  }
+
+  func retain(session: URLSession, cookies: HTTPCookieStorage) {
+    sessions.append((session, cookies))
+  }
+
+  func dispose() async {
+    let retainedConnections = connections
+    let retainedSessions = sessions
+    connections = []
+    sessions = []
+    for connection in retainedConnections { await connection.dispose() }
+    for (session, cookies) in retainedSessions {
+      session.invalidateAndCancel()
+      clearRealtimeCookies(cookies)
+    }
   }
 }
 
