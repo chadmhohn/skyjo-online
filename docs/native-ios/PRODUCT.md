@@ -15,7 +15,7 @@ The native client is a companion to the PWA, not a replacement deployment. Playe
 | Solo setup | Continue an existing game or explicitly replace it; choose 1-7 bots and Easy, Medium, Hard, Ultra Hard, or deterministic Mixed | `src/App.tsx`, `src/SoloSetupFlow.tsx`, `src/SoloGamePrompt.tsx`, `src/soloAiSetup.ts` |
 | Solo play | Full rules, scoring, round continuity, bot identities/difficulties, offline play, atomic restore, and stats outbox | `src/game.ts`, `src/aiStrategy.ts`, `src/soloDurability.ts` |
 | Multiplayer | Create/join rooms, reconnect to the same seat, opening reveal, turns, ready flow, leave/remove, reset, AI takeover, and mixed web/native play | protocol-v2 files listed in `BACKEND_CONTRACTS.md` |
-| Invites | Share one HTTPS invite URL; open the installed app through a universal link or fall back to the existing web landing | `server-room-invites.mjs`, planned native invite redemption |
+| Invites | Share one HTTPS invite URL; open the installed app through a universal link or fall back to the existing web landing | `server-room-invites.mjs`, `server.mjs`, `contracts/v1/schemas/invite-http.schema.json`; #188 owns the native consumer |
 | Room chat | Compact unread affordance and native sheet/popover; never displace the core board | `RoomChat` behavior in `src/App.tsx` and protocol command `send-chat-message` |
 | Stats | Summary, recent games, individual game detail, and co-player history for signed-in users | `src/account.tsx` and account API |
 | Notifications | Native turn alerts through APNs, with permission and per-device controls | planned APNs server support; existing VAPID web push is not reusable |

@@ -162,9 +162,9 @@ IOS-2 adds two native-enabling capabilities to the repository:
 
 These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. IOS-5 consumes them with the typed native HTTP/session client and accessible access/account/home/stats shell described above. Its local simulator/server evidence proves source compatibility, not production promotion or native distribution. Remaining additive backend work is:
 
-1. A JSON invite redemption contract for universal-link handoff.
-2. `apple-app-site-association` hosting and Associated Domains.
-3. A two-release APNs storage sequence: #203 first freezes and validates an optional exact `apns_devices` physical table while retaining public schema 2; after that release is promoted and becomes the verified `previous` rollback anchor, #204 may create/use the same descriptor for authenticated registration and provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
+1. A two-release APNs storage sequence: #203 first freezes and validates an optional exact `apns_devices` physical table while retaining public schema 2; after that release is promoted and becomes the verified `previous` rollback anchor, #204 may create/use the same descriptor for authenticated registration/unregistration and provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
+
+Issue #202 implements the two former invite items in repository source: an invite-only, no-redirect AASA document with a configured full Apple application identifier, plus pre-gate JSON redemption that validates the existing signed token/current room instance and grants only the existing outer-access cookie. The route and fixtures deliberately do not implement Swift URL routing, room UI, Associated Domains entitlement/signing, production promotion, Apple CDN verification, or physical-device behavior; #188 owns that native consumer and those later gates.
 
 All additions must leave the current PWA and web-push paths working. Deploy server support before a native build depends on it. Once the optional APNs table exists, never roll production back past the promoted envelope release; do not roll production back to a server that lacks a contract already required by a distributed native build.
 

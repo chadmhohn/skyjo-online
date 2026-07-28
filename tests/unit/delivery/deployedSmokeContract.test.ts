@@ -5,9 +5,11 @@ const root = path.resolve(import.meta.dirname, '..', '..', '..');
 
 describe('deployed smoke protocol contract', () => {
   it('defaults both entrypoint and library to the current protocol instead of retired v1', async () => {
-    const [entrypoint, library] = await Promise.all([
+    const [entrypoint, library, inviteRestartSmoke, chatSmoke] = await Promise.all([
       fs.readFile(path.join(root, 'scripts', 'smoke-deployed.mjs'), 'utf8'),
-      fs.readFile(path.join(root, 'scripts', 'deployed-smoke-lib.mjs'), 'utf8')
+      fs.readFile(path.join(root, 'scripts', 'deployed-smoke-lib.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'smoke-invite-restart.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'smoke-chat.mjs'), 'utf8')
     ]);
     expect(entrypoint).toContain("import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs'");
     expect(entrypoint).toMatch(/configuredProtocolVersion === undefined\s*\? CURRENT_PROTOCOL_VERSION/);
@@ -15,5 +17,20 @@ describe('deployed smoke protocol contract', () => {
     expect(library).toContain("import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs'");
     expect(library).toMatch(/expectedProtocolVersion = CURRENT_PROTOCOL_VERSION/);
     expect(library).not.toMatch(/expectedProtocolVersion = 1/);
+    expect(entrypoint).toContain('resolveAppleApplicationIdentifier');
+    expect(entrypoint).toContain('expectedAppleApplicationIdentifier:');
+    expect(library).toContain('/.well-known/apple-app-site-association');
+    expect(library).toContain('/api/rooms/invite/redeem');
+    expect(library).toContain('INVITE_INVALID_OR_EXPIRED');
+    expect(library).toMatch(/method: 'HEAD'/);
+    expect(library).toMatch(/\.test\(cookie\)/);
+    expect(library).not.toMatch(/assert\.match\(cookie/);
+    expect(inviteRestartSmoke).not.toContain('console.error(logs)');
+    expect(inviteRestartSmoke).not.toMatch(/assert\.match\(persistedRoomInstanceId/);
+    expect(chatSmoke).not.toContain("console.error(serverLogs.join(''))");
+    expect(chatSmoke).not.toMatch(/assert\.deepEqual\((?:expired|stale)NativeInvite\.payload/);
+    const publicSmoke = await fs.readFile(path.join(root, 'scripts', 'smoke-public-release.mjs'), 'utf8');
+    expect(publicSmoke).toContain('allowPreNativeInviteRollback');
+    expect(publicSmoke).toContain('pre-native-invite rollback must retain the shared access gate');
   });
 });

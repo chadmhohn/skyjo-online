@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAccountStore } from '../server-account-store.mjs';
 import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
+import { SYNTHETIC_APPLE_APPLICATION_IDENTIFIER } from '../server-room-invites.mjs';
 import { runDeployedSmoke } from './deployed-smoke-lib.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -53,6 +54,7 @@ async function startServer(dataDir) {
       HOST: '127.0.0.1',
       PORT: String(port),
       SKYJO_ACCESS_PASSWORD: accessPassword,
+      SKYJO_APPLE_APPLICATION_IDENTIFIER: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
       SKYJO_ADMIN_EMAIL: adminEmail,
       SKYJO_ADMIN_INITIAL_PASSWORD: adminPassword,
       SKYJO_DATABASE_RETRY_MS: '100',
@@ -106,6 +108,7 @@ try {
     accessPassword,
     accountEmail: adminEmail,
     accountPassword: adminPassword,
+    expectedAppleApplicationIdentifier: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
     expectedProtocolVersion: CURRENT_PROTOCOL_VERSION
   });
   const roomsAfterSocket = await fs.readFile(path.join(healthyDir, 'rooms.json'), 'utf8');
@@ -133,6 +136,7 @@ try {
     accessPassword,
     accountEmail: adminEmail,
     accountPassword: adminPassword,
+    expectedAppleApplicationIdentifier: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
     expectedProtocolVersion: CURRENT_PROTOCOL_VERSION
   });
 

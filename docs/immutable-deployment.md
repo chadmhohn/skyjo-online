@@ -146,7 +146,9 @@ SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL=release-smoke@example.com
 SKYJO_DEPLOY_SMOKE_ACCOUNT_PASSWORD=replace-with-a-long-dedicated-password
 ```
 
-The controller reads these values locally only for the post-activation production HTTP and WebSocket check. They are not copied into GitHub and are never accepted as SSH arguments. The canary uses copied state plus random synthetic credentials, forces `127.0.0.1:4181`, has no production environment access, and disables push credentials so verification cannot notify real users.
+Before promoting a release that contains the native invite handoff, also set `SKYJO_APPLE_APPLICATION_IDENTIFIER` to Apple's confirmed full application identifier: the ten-character App ID prefix, a period, and `com.groundworkrevops.skyjo`. Do not assume the prefix is the Team ID. Production-style startup fails closed when this value is missing, malformed, still the `XXXXXXXXXX` placeholder, or equal to the repository's fixed synthetic test identifier. This identifier is public configuration, but it must still be reviewed against the selected Apple Developer App ID before rollout.
+
+The controller reads the smoke credentials locally only for the post-activation production HTTP and WebSocket check. They are not copied into GitHub and are never accepted as SSH arguments. The canary uses copied state plus random synthetic credentials, forces `127.0.0.1:4181`, has no production environment access, and disables push credentials so verification cannot notify real users. The server derives the fixed synthetic Apple application identifier only when the canary release directory matches the controller's exact isolated path contract and the running artifact resides in that same directory.
 
 ## Main-branch canary
 
@@ -185,7 +187,8 @@ CI independently verifies the tag syntax and ancestry. A separately signed produ
 6. Applies the already-proven additive migration against live state.
 7. Atomically sets `previous` to the old healthy release and `current` to the new SHA, then starts the hardened non-root service.
 8. Requires local readiness, exact release SHA, login/account identity, and authenticated WebSocket smoke.
-9. Lets CI verify public health, readiness, version SHA, login HTML, and the PWA manifest through Cloudflare.
+9. Requires the exact public Apple association document and the pre-gate native redemption contract to pass without creating an account session or changing room state.
+10. Lets CI verify public health, readiness, version SHA, login HTML, the PWA manifest, and the Apple association document through Cloudflare.
 
 Failure before step 7 leaves production untouched. Failure during or after local activation switches `current` back to `previous`, restarts it, and verifies it. A public-edge failure requests the same metadata-bound code rollback. The rollback command is rejected unless the current release, failed SHA, artifact digest, tag, run ID, and controller metadata all match.
 
@@ -234,9 +237,14 @@ systemctl status skyjo-online.service --no-pager
 curl -fsS http://127.0.0.1:4180/healthz
 curl -fsS http://127.0.0.1:4180/readyz
 curl -fsS http://127.0.0.1:4180/version
+curl -fsS http://127.0.0.1:4180/.well-known/apple-app-site-association
 node scripts/smoke-public-release.mjs \
   --base-url https://skyjo.groundworkrevops.com \
   --release-sha "$(git rev-parse HEAD)"
 ```
+
+The automated smoke uses only an invalid native redemption request and therefore never exposes an invite token. For the release that first enables Universal Links, separately create a disposable empty room and validate one real invite on a trusted operator terminal: send the token only in the JSON body over HTTPS, suppress response/request logging, require the exact `{roomCode,expiresAt}` response and one outer-access cookie, then confirm the room membership and seat are unchanged. Discard the terminal evidence rather than storing the token. Physical-device Universal Link validation remains the signing/device gate in native issue #188.
+
+If rollback becomes necessary after this endpoint is public, perform the normal code-only rollback. Do not restore room or account state. The rollback edge proof keeps exact readiness/version validation and uses `--allow-pre-native-invite-rollback` only to accept the prior release's cookie-free redirect of the absent association path into the shared login gate; a 200 association response is still validated exactly. Apple and intermediaries may retain the association document for its bounded cache lifetime, so the prior release must continue to serve `/invite/*` safely as browser content; do not revoke or rotate invite signing material merely to roll back this code.
 
 Do not repair a deployment by editing `current`, copying files into a live release, running `npm install` on the VPS, widening sudo, disabling host-key checking, moving/recreating a tag, or restoring a database automatically. Preserve the failed run directory and CI evidence. Use an ordinary Actions rerun to reconcile interrupted work under the same run ID; if that durable operation is terminal failed, use `gh workflow run ci.yml --ref <existing-vX.Y.Z-tag>` to create a new authorized run ID against the unchanged tag and SHA.

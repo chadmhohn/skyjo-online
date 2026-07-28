@@ -61,9 +61,12 @@ import {
   hashInviteInstallCode
 } from './server-invite-codes.mjs';
 import {
+  createAppleAppSiteAssociation,
   createRoomInviteToken as createSignedRoomInviteToken,
   inviteMatchesRoom,
-  parseRoomInviteToken
+  isRoomInviteToken,
+  parseRoomInviteToken,
+  resolveAppleApplicationIdentifier
 } from './server-room-invites.mjs';
 import { createPersistenceHealthTracker } from './server-persistence-health.mjs';
 import {
@@ -121,6 +124,7 @@ const lifecyclePolicy = Object.freeze({
 const lifecycleTickMs = positiveDurationFromEnvironment('SKYJO_LIFECYCLE_TICK_MS', 250);
 const aiActionDelayMs = positiveDurationFromEnvironment('SKYJO_AI_ACTION_DELAY_MS', 650, true);
 const inviteRedemptionRateLimiter = createInviteRedemptionRateLimiter();
+const nativeInviteRedemptionRateLimiter = createInviteRedemptionRateLimiter();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
 let shuttingDown = false;
@@ -128,6 +132,7 @@ let accountStore = null;
 let nextDatabaseRetryAt = 0;
 let databaseFailureLogged = false;
 let releaseIdentity = null;
+let appleAppSiteAssociation = null;
 
 function positiveDurationFromEnvironment(name, fallback, allowZero = false) {
   const raw = process.env[name];
@@ -166,6 +171,20 @@ if (
 ) {
   console.error('Skyjo authentication secrets are missing or invalid.');
   console.error('Set the access, session, and invite secrets before running npm start.');
+  process.exit(1);
+}
+
+try {
+  const appleApplicationIdentifier = resolveAppleApplicationIdentifier({
+    value: process.env.SKYJO_APPLE_APPLICATION_IDENTIFIER,
+    nodeEnv: process.env.NODE_ENV,
+    canaryReleaseDirectory: process.env.SKYJO_CANARY_RELEASE_DIR,
+    runtimeDirectory: import.meta.dirname
+  });
+  appleAppSiteAssociation = JSON.stringify(createAppleAppSiteAssociation(appleApplicationIdentifier));
+} catch {
+  console.error('Apple application identifier configuration is missing or invalid.');
+  console.error('Set SKYJO_APPLE_APPLICATION_IDENTIFIER to the complete application identifier before production startup.');
   process.exit(1);
 }
 
@@ -1114,7 +1133,7 @@ function roomInviteTokenFromUrl(url) {
     ? url.pathname.slice('/invite/'.length)
     : url.searchParams.get('invite');
   if (token === null) return null;
-  return token.length <= 2048 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token) ? token : '';
+  return isRoomInviteToken(token) ? token : '';
 }
 
 function roomForInvite(invite) {
@@ -1511,7 +1530,7 @@ function sendInviteUnavailable(res, message) {
   send(res, 410, renderInviteUnavailable(message, nonce), htmlSecurityHeaders(nonce));
 }
 
-function inviteRedemptionClientKey(req) {
+function trustedClientIp(req) {
   const remoteAddress = typeof req.socket.remoteAddress === 'string' && isIP(req.socket.remoteAddress)
     ? req.socket.remoteAddress
     : 'unknown';
@@ -1520,6 +1539,10 @@ function inviteRedemptionClientKey(req) {
     ? req.headers['cf-connecting-ip'].trim()
     : '';
   return isIP(forwarded) ? forwarded : remoteAddress;
+}
+
+function inviteRedemptionClientKey(req, namespace) {
+  return `${namespace}:${trustedClientIp(req)}`;
 }
 
 function formatInviteCodeMinutes(expiresAt) {
@@ -1954,6 +1977,69 @@ function validAccessSessionBody(body) {
   return passwordLength >= 1 && passwordLength <= maxAccessPasswordLength;
 }
 
+function handleAppleAppSiteAssociation(req, res, url) {
+  if (url.pathname !== '/.well-known/apple-app-site-association') return false;
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    send(res, 405, 'Method not allowed.', {
+      Allow: 'GET, HEAD',
+      'Content-Type': 'text/plain; charset=utf-8'
+    });
+    return true;
+  }
+  send(res, 200, req.method === 'HEAD' ? '' : appleAppSiteAssociation, {
+    'Cache-Control': 'public, max-age=3600',
+    'Content-Length': String(Buffer.byteLength(appleAppSiteAssociation)),
+    'Content-Type': 'application/json'
+  });
+  return true;
+}
+
+function validNativeInviteRedemptionBody(body) {
+  return Object.keys(body).length === 1 &&
+    Object.hasOwn(body, 'token') &&
+    typeof body.token === 'string';
+}
+
+async function handleNativeInviteRedemption(req, res, url) {
+  if (url.pathname !== '/api/rooms/invite/redeem') return false;
+  if (req.method !== 'POST') {
+    sendApiError(res, 405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', { Allow: 'POST' });
+    return true;
+  }
+
+  try {
+    if (!requestUsesJson(req)) throw new PublicApiError('UNSUPPORTED_MEDIA_TYPE');
+    const rate = nativeInviteRedemptionRateLimiter.consume(
+      inviteRedemptionClientKey(req, 'native-token')
+    );
+    if (!rate.allowed) {
+      const publicError = publicApiErrorResponse(new PublicApiError('INVITE_RATE_LIMITED'));
+      sendApiError(res, publicError.status, publicError.code, publicError.message, {
+        'Retry-After': String(rate.retryAfterSeconds)
+      });
+      return true;
+    }
+    if (url.search) throw new PublicApiError('INVALID_REQUEST');
+    const body = await readJsonBody(req);
+    if (!validNativeInviteRedemptionBody(body)) throw new PublicApiError('INVALID_REQUEST');
+    if (!isRoomInviteToken(body.token)) throw new PublicApiError('INVITE_INVALID_OR_EXPIRED');
+    const invite = parseRoomInviteToken(body.token, { secret: inviteSecret });
+    if (!invite) throw new PublicApiError('INVITE_INVALID_OR_EXPIRED');
+    if (!roomForInvite(invite)) throw new PublicApiError('INVITE_ROOM_UNAVAILABLE');
+    sendJsonResponse(res, 200, {
+      roomCode: invite.room,
+      expiresAt: invite.expiresAt
+    }, {
+      'Set-Cookie': cookieHeader(createSessionCookie(), Math.floor(sessionTtlMs / 1000))
+    });
+  } catch (error) {
+    const publicError = publicApiErrorResponse(error);
+    if (publicError.status === 500) console.error('Native invite redemption failed.');
+    sendApiError(res, publicError.status, publicError.code, publicError.message);
+  }
+  return true;
+}
+
 async function handleAccessSessionRequest(req, res, url) {
   if (url.pathname !== '/api/access/session') return false;
 
@@ -2063,7 +2149,7 @@ function renderLogin(error = false, next = '/', inviteCodeError = false, inviteR
 }
 
 async function handleInviteCodeRedeem(req, res) {
-  const rate = inviteRedemptionRateLimiter.consume(inviteRedemptionClientKey(req));
+  const rate = inviteRedemptionRateLimiter.consume(inviteRedemptionClientKey(req, 'install-code'));
   if (!rate.allowed) {
     const nonce = htmlNonce();
     send(res, 429, renderLogin(false, '/', false, true, nonce), {
@@ -2223,6 +2309,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (handleAppleAppSiteAssociation(req, res, url)) return;
+
     const testNetworkFault = testPwaNetworkFaultsEnabled &&
       parseCookies(req.headers.cookie).get('skyjo_pwa_test_network_fault') === 'drop';
     if (
@@ -2273,6 +2361,8 @@ const server = http.createServer(async (req, res) => {
       await handleTestPwaActivationBarrierRequest(req, res, url);
       return;
     }
+
+    if (await handleNativeInviteRedemption(req, res, url)) return;
 
     if (await handleAccessSessionRequest(req, res, url)) return;
 

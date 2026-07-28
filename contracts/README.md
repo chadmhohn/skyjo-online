@@ -6,6 +6,7 @@
 
 - `game-state.schema.json` describes complete authoritative game state. It is never safe to send this shape to an untrusted client.
 - `public-room-snapshot.schema.json` describes the redacted room snapshot. Face-down values are `null`, the draw pile is a count, the discard pile exposes only its top card, and a blind-drawn card is visible only to its current drawer.
+- `invite-http.schema.json` describes the authenticated reusable-invite producer, pre-gate native redemption request/response, and exact invite-only Apple App Site Association document. The configured application identifier is public configuration; signed invite tokens and room-instance UUIDs remain outside canonical fixtures and retained evidence.
 - Protocol-v2 frames are exact. A removed, renamed, or retyped field or a changed action meaning requires an appropriate protocol or envelope version change.
 - HTTP clients must ignore additive response fields. Canonical producer fixtures remain exact so accidental output and privacy leaks are detected.
 - Optional WebSocket fields are omitted rather than encoded as `null`.
@@ -17,7 +18,7 @@ JSON Schema enforces portable shape and bounds. Executable validators remain co-
 
 ## Fixtures
 
-Fixtures are synthetic and contain no credentials, cookies, tokens, production room data, or unredacted private wire captures.
+Fixtures are synthetic and contain no credentials, cookies, signed invite tokens, production room data, room-instance UUIDs from a live system, or unredacted private wire captures. The invite corpus therefore records the sanitized redemption response, exact synthetic AASA document, stable errors, and privacy-invalid response shapes without serializing a redemption token.
 
 ```sh
 npm run contracts:fixtures:check

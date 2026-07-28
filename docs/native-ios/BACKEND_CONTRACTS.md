@@ -138,19 +138,50 @@ Operational DTOs inspect schema/protocol axes before version-specific status, ch
 
 ## Invite Contract
 
-Current signed invites are reusable HTTPS paths returned by:
+Reusable signed HTTPS invites are returned by:
 
 - `POST /api/rooms/invite` body `{ roomCode }` -> `{ roomCode, path, expiresAt }`.
 
-The caller must be an account member of the room. `path` is currently `/invite/<signed-token>`. The web landing can mint short, one-use install codes and can grant the outer access cookie, but it is HTML/browser-oriented.
+The caller must be an account member of the room. `path` is `/invite/<signed-token>`. The existing web landing still mints short, one-use install codes. An explicit `?open=browser` redemption still grants the outer-access cookie and redirects to the lobby. Neither path grants an account session, room membership, or a player seat.
 
-Native implementation adds:
+Issue #202 adds the backend-only native handoff in repository source. This is not evidence that production has been promoted or that Apple has accepted the Associated Domains configuration.
 
-- Associated Domain `applinks:skyjo.groundworkrevops.com`.
-- `/.well-known/apple-app-site-association` with only the intended invite paths.
-- A JSON invite inspection/redemption endpoint that accepts the opaque signed token, validates expiry and current room instance, grants only the same outer access currently granted by web invites, and returns a sanitized room code/expiry.
+### Apple App Site Association
 
-The app treats the token as ephemeral, never logs it, validates the URL host/path, and shows a join review screen. Invite possession never replaces account authentication or room membership rules.
+- `GET` and `HEAD /.well-known/apple-app-site-association` are handled before the shared-password gate and return direct HTTP 200 responses with `Content-Type: application/json`, `Cache-Control: public, max-age=3600`, no redirect, and no cookie.
+- The exact document has one `applinks.details` item and one full Apple application identifier. Its first component excludes `/invite/*` when query item `open` equals `browser`; its second component includes only `/invite/*`. It contains no `webcredentials`, unrelated service, broad route, or wildcard domain.
+- `SKYJO_APPLE_APPLICATION_IDENTIFIER` supplies the complete application-identifier prefix plus `com.groundworkrevops.skyjo`. The prefix is not inferred from the Team ID. Production-like startup rejects a missing, malformed, placeholder, or fixed synthetic identifier.
+- Development, tests, and the isolated deployment canary use only `TESTSKYJ01.com.groundworkrevops.skyjo`. The canary exception requires the deployment controller's exact `/var/tmp/skyjo-deploy/<validated-run-id>/release` path shape in `SKYJO_CANARY_RELEASE_DIR` and requires the running server module to reside in that same directory; an arbitrary or spoofed value cannot authorize the synthetic identifier for the production service.
+
+### Native JSON Redemption
+
+`POST /api/rooms/invite/redeem` is also handled before the shared-password and account gates. It requires `Content-Type: application/json` and the exact request:
+
+```json
+{ "token": "<opaque-signed-token>" }
+```
+
+The token is accepted only in the body; query parameters are rejected. It must match the established signed-token alphabet/shape within 2,048 characters. The server validates its HMAC, version, expiry, room code, v4 room-instance UUID, and the currently live room instance. Success is a direct HTTP 200 with `Cache-Control: no-store`, exactly one existing outer-access cookie, and the exact sanitized body:
+
+```json
+{ "roomCode": "ABCDE", "expiresAt": 1780000000000 }
+```
+
+Redemption does not read or create an account session, install-code row, room membership, player seat, room revision, database record, or persistence update. The token and room-instance UUID are never returned, persisted, or logged. The native token route uses the trusted client-IP selection in its own `native-token` limiter namespace and a limiter instance separate from install-code redemption. Other methods return `METHOD_NOT_ALLOWED` with `Allow: POST`.
+
+Stable native-redemption failures are:
+
+| Code | HTTP | Meaning |
+| --- | ---: | --- |
+| `INVITE_INVALID_OR_EXPIRED` | 410 | Malformed structure/signature, unsupported token, or expired token; one generic public message |
+| `INVITE_ROOM_UNAVAILABLE` | 410 | The signed token is valid but its exact room instance was deleted or replaced |
+| `INVITE_RATE_LIMITED` | 429 | Trusted client-IP attempt bound reached; includes `Retry-After` |
+
+Existing `INVALID_REQUEST`, `UNSUPPORTED_MEDIA_TYPE`, `METHOD_NOT_ALLOWED`, `REQUEST_TOO_LARGE`, `INVALID_JSON`, and `EXPECTED_JSON_OBJECT` errors cover request-contract failures. No failure sets a cookie or redirects.
+
+The app-side consumer remains owned by #188. It must validate the HTTPS host and `/invite/` path, keep the token ephemeral, redeem it before account/room admission, and present a join review rather than mutating membership from the universal link. Invite possession never replaces account authentication or room membership rules.
+
+This additive backend does not change the invite producer, browser landing, install-code concurrency/persistence, cookie format, shared-password/account/WebSocket gates, PWA service worker, database schema, room-persistence schema, protocol 2, snapshot envelope 2, presence 1, or contract-bundle version 1. Promote it before distributing a dependent native build. A code-only rollback needs no state restore and remains PWA-safe, but it removes AASA/redemption support; cached Apple association state is a compatibility consideration, not a reason to restore data.
 
 ## WebSocket Admission Frames
 

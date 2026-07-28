@@ -1,5 +1,7 @@
 import { runDeployedSmoke } from './deployed-smoke-lib.mjs';
 import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
+import { resolveAppleApplicationIdentifier } from '../server-room-invites.mjs';
+import { fileURLToPath } from 'node:url';
 
 const configuredProtocolVersion = process.env.SKYJO_EXPECTED_PROTOCOL_VERSION;
 
@@ -8,6 +10,12 @@ const result = await runDeployedSmoke({
   accessPassword: process.env.SKYJO_SMOKE_ACCESS_PASSWORD || process.env.SKYJO_ACCESS_PASSWORD,
   accountEmail: process.env.SKYJO_SMOKE_ACCOUNT_EMAIL || process.env.SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL,
   accountPassword: process.env.SKYJO_SMOKE_ACCOUNT_PASSWORD || process.env.SKYJO_DEPLOY_SMOKE_ACCOUNT_PASSWORD,
+  expectedAppleApplicationIdentifier: resolveAppleApplicationIdentifier({
+    value: process.env.SKYJO_APPLE_APPLICATION_IDENTIFIER,
+    nodeEnv: process.env.NODE_ENV,
+    canaryReleaseDirectory: process.env.SKYJO_CANARY_RELEASE_DIR,
+    runtimeDirectory: fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '')
+  }),
   expectedReleaseSha: process.env.SKYJO_EXPECTED_RELEASE_SHA || process.env.SKYJO_SMOKE_RELEASE_SHA || undefined,
   expectedProtocolVersion: configuredProtocolVersion === undefined
     ? CURRENT_PROTOCOL_VERSION

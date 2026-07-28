@@ -137,6 +137,7 @@ try {
     HOST: '127.0.0.1',
     PORT: String(port),
     SKYJO_ACCESS_PASSWORD: accessPassword,
+    SKYJO_APPLE_APPLICATION_IDENTIFIER: 'FAKEAPPID1.com.groundworkrevops.skyjo',
     SKYJO_SESSION_SECRET: 'artifact-integration-session-secret-0123456789abcdef',
     SKYJO_INVITE_SECRET: 'artifact-integration-invite-secret-0123456789abcdef',
     SKYJO_SECURE_COOKIES: 'false',

@@ -36,6 +36,27 @@
     "sharedSnapshotEnvelopeVersion": 2,
     "soloAiStrategyVersion": 1,
     "webSocketPath": "/rooms",
+    "appleAppSiteAssociationPath": "/.well-known/apple-app-site-association",
+    "appleAppSiteAssociationMethods": [
+      "GET",
+      "HEAD"
+    ],
+    "appleApplicationIdentifierEnvironment": "SKYJO_APPLE_APPLICATION_IDENTIFIER",
+    "nativeInviteRedemptionPath": "/api/rooms/invite/redeem",
+    "nativeInviteRedemptionMethod": "POST",
+    "nativeInviteRedemptionRequestFields": [
+      "token"
+    ],
+    "nativeInviteRedemptionSuccessFields": [
+      "roomCode",
+      "expiresAt"
+    ],
+    "maximumInviteTokenCharacters": 2048,
+    "nativeInviteRedemptionErrorCodes": [
+      "INVITE_INVALID_OR_EXPIRED",
+      "INVITE_ROOM_UNAVAILABLE",
+      "INVITE_RATE_LIMITED"
+    ],
     "accessSessionPath": "/api/access/session",
     "accessSessionMethods": [
       "GET",
@@ -137,6 +158,15 @@
       "ios/SkyjoAppTests/AccessSessionClientTests.swift",
       "scripts/ios-build-test.sh"
     ],
+    "nativeInviteHandoff": [
+      "server-room-invites.mjs",
+      "server.mjs",
+      "contracts/v1/schemas/invite-http.schema.json",
+      "scripts/smoke-chat.mjs",
+      "scripts/smoke-invite-restart.mjs",
+      "scripts/deployed-smoke-lib.mjs",
+      "scripts/smoke-public-release.mjs"
+    ],
     "nativeRealtimeClient": [
       "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RealtimeContracts.swift",
       "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RoomConnection.swift",
@@ -208,15 +238,19 @@
     "pre-gate GET/POST/DELETE JSON outer-access session API using the established signed cookie",
     "stable JSON API error envelope with code and legacy-compatible error fields",
     "contracts/v1 machine-readable schemas and deterministic sanitized fixtures",
+    "public exact-shape apple-app-site-association limited to /invite/* with open=browser excluded",
+    "pre-gate native invite-token redemption that grants only the outer access cookie",
     "native URLSession access-client tests against an isolated real local Node server",
     "strict actor-owned native protocol-v2 room client with account-fenced durable reset recovery",
     "real Swift and Playwright Chromium mixed-client networking contract gate pinned to cached PWA v0.3.2 compatibility",
     "schema-2 validation and byte-preserving backup/restore support for the exact optional APNs storage envelope; production rollback-floor verification remains pending"
   ],
   "plannedServerAdditions": [
-    "native invite redemption and apple-app-site-association",
     "authenticated APNs device registration and delivery after the envelope release is promoted and becomes the verified previous rollback anchor",
     "account deletion before public App Store submission"
+  ],
+  "nonSecretProductionConfiguration": [
+    "SKYJO_APPLE_APPLICATION_IDENTIFIER"
   ],
   "secretNamesOnly": [
     "Apple Developer Team ID",

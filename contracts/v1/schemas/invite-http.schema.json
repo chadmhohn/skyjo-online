@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/invite-http.schema.json",
+  "title": "Skyjo room invite HTTP and Apple association DTOs",
+  "oneOf": [
+    { "$ref": "#/$defs/createRequest" },
+    { "$ref": "#/$defs/createResponse" },
+    { "$ref": "#/$defs/redemptionRequest" },
+    { "$ref": "#/$defs/redemptionResponse" },
+    { "$ref": "#/$defs/appleAppSiteAssociation" }
+  ],
+  "$defs": {
+    "roomCode": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]{5}$"
+    },
+    "signedToken": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+    },
+    "createRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roomCode"],
+      "properties": {
+        "roomCode": { "$ref": "#/$defs/roomCode" }
+      }
+    },
+    "createResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roomCode", "path", "expiresAt"],
+      "properties": {
+        "roomCode": { "$ref": "#/$defs/roomCode" },
+        "path": {
+          "type": "string",
+          "maxLength": 2056,
+          "pattern": "^/invite/[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+        },
+        "expiresAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" }
+      }
+    },
+    "redemptionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token"],
+      "properties": {
+        "token": { "$ref": "#/$defs/signedToken" }
+      }
+    },
+    "redemptionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roomCode", "expiresAt"],
+      "properties": {
+        "roomCode": { "$ref": "#/$defs/roomCode" },
+        "expiresAt": { "$ref": "common.schema.json#/$defs/epochMilliseconds" }
+      }
+    },
+    "appleApplicationIdentifier": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]{10}\\.com\\.groundworkrevops\\.skyjo$"
+    },
+    "browserFallbackComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["/", "?", "exclude"],
+      "properties": {
+        "/": { "const": "/invite/*" },
+        "?": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["open"],
+          "properties": { "open": { "const": "browser" } }
+        },
+        "exclude": { "const": true }
+      }
+    },
+    "nativeInviteComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["/"],
+      "properties": { "/": { "const": "/invite/*" } }
+    },
+    "appleAppSiteAssociation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applinks"],
+      "properties": {
+        "applinks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["details"],
+          "properties": {
+            "details": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "prefixItems": [{
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["appIDs", "components"],
+                "properties": {
+                  "appIDs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1,
+                    "prefixItems": [{ "$ref": "#/$defs/appleApplicationIdentifier" }],
+                    "items": false
+                  },
+                  "components": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "prefixItems": [
+                      { "$ref": "#/$defs/browserFallbackComponent" },
+                      { "$ref": "#/$defs/nativeInviteComponent" }
+                    ],
+                    "items": false
+                  }
+                }
+              }],
+              "items": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

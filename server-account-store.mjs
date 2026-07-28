@@ -37,7 +37,10 @@ const publicApiErrors = new Map([
   ['INVALID_JSON', Object.freeze({ status: 400, message: 'Request body must be valid JSON.' })],
   ['EXPECTED_JSON_OBJECT', Object.freeze({ status: 400, message: 'Expected a JSON object.' })],
   ['CODE_ALLOCATION_FAILED', Object.freeze({ status: 503, message: 'A secure code could not be created. Try again.' })],
-  ['INVITE_CODE_LIMIT', Object.freeze({ status: 429, message: 'Too many active invite codes. Try again later.' })]
+  ['INVITE_CODE_LIMIT', Object.freeze({ status: 429, message: 'Too many active invite codes. Try again later.' })],
+  ['INVITE_INVALID_OR_EXPIRED', Object.freeze({ status: 410, message: 'This invite is invalid or has expired.' })],
+  ['INVITE_ROOM_UNAVAILABLE', Object.freeze({ status: 410, message: 'That room is no longer available. Ask the host for a new invite.' })],
+  ['INVITE_RATE_LIMITED', Object.freeze({ status: 429, message: 'Too many invite attempts. Try again later.' })]
 ]);
 const unknownApiError = Object.freeze({ status: 500, code: 'REQUEST_FAILED', message: 'Request failed.' });
 

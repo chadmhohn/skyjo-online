@@ -8,10 +8,15 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import {
+  createRoomInviteToken,
+  SYNTHETIC_APPLE_APPLICATION_IDENTIFIER
+} from '../server-room-invites.mjs';
 
 const MULTIPLAYER_PROTOCOL_VERSION = 2;
 const socketStates = new WeakMap();
 const privacyEvidence = { snapshots: 0, drawerBlindFrames: 0, nonDrawerBlindFrames: 0 };
+const inviteSecret = 'chat-smoke-invite-secret';
 let commandSequence = 0;
 
 async function getOpenPort() {
@@ -90,6 +95,7 @@ async function assertOversizedAccessPasswordRejected(repoRoot) {
       cwd: repoRoot,
       env: {
         ...process.env,
+        NODE_ENV: 'test',
         HOST: '127.0.0.1',
         PORT: '0',
         SKYJO_ACCESS_PASSWORD: oversizedPassword,
@@ -130,6 +136,81 @@ async function assertOversizedAccessPasswordRejected(repoRoot) {
   }
 }
 
+async function assertProductionAppleIdentifierRequired(repoRoot) {
+  const rejectedConfigurations = [
+    { label: 'missing' },
+    { label: 'malformed', value: 'not-an-application-identifier' },
+    { label: 'placeholder', value: 'XXXXXXXXXX.com.groundworkrevops.skyjo' },
+    { label: 'synthetic', value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER },
+    {
+      label: 'synthetic with an arbitrary canary directory',
+      value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+      canaryReleaseDirectory: '/tmp/not-a-controller-canary/release'
+    },
+    {
+      label: 'synthetic with a spoofed controller-shaped canary directory',
+      value: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+      canaryReleaseDirectory: '/var/tmp/skyjo-deploy/30352572840-1-canary/release'
+    }
+  ];
+
+  for (const configuration of rejectedConfigurations) {
+    const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-apple-id-required-'));
+    let child;
+    try {
+      const environment = {
+        ...process.env,
+        NODE_ENV: 'production',
+        HOST: '127.0.0.1',
+        PORT: '0',
+        SKYJO_ACCESS_PASSWORD: 'apple-identifier-startup-password',
+        SKYJO_DB_FILE: path.join(temporaryDirectory, 'skyjo.sqlite'),
+        SKYJO_INVITE_SECRET: 'apple-identifier-startup-invite-secret',
+        SKYJO_ROOMS_FILE: path.join(temporaryDirectory, 'rooms.json'),
+        SKYJO_SESSION_SECRET: 'apple-identifier-startup-session-secret',
+        SKYJO_VAPID_PRIVATE_KEY: '',
+        SKYJO_VAPID_PUBLIC_KEY: ''
+      };
+      delete environment.SKYJO_APPLE_APPLICATION_IDENTIFIER;
+      delete environment.SKYJO_CANARY_RELEASE_DIR;
+      if (configuration.value) environment.SKYJO_APPLE_APPLICATION_IDENTIFIER = configuration.value;
+      if (configuration.canaryReleaseDirectory) {
+        environment.SKYJO_CANARY_RELEASE_DIR = configuration.canaryReleaseDirectory;
+      }
+      child = spawn(process.execPath, ['server.mjs'], {
+        cwd: repoRoot,
+        env: environment,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      let output = '';
+      child.stdout.on('data', (data) => { output += String(data); });
+      child.stderr.on('data', (data) => { output += String(data); });
+      const exitCode = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`${configuration.label} Apple application identifier startup check timed out`));
+        }, 5_000);
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        child.once('exit', (code) => {
+          clearTimeout(timeout);
+          resolve(code);
+        });
+      });
+      assert.equal(exitCode, 1, `production rejects ${configuration.label} Apple application identifier configuration`);
+      assert.match(output, /Apple application identifier configuration is missing or invalid/i);
+      if (configuration.value) {
+        assert.equal(output.includes(configuration.value), false, 'startup failure does not print the rejected identifier');
+      }
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  }
+}
+
 async function login(url, password, next = '/') {
   const response = await fetch(`${url}/login`, {
     method: 'POST',
@@ -161,6 +242,19 @@ async function accessSessionRequest(url, { method = 'GET', body, cookie, content
   if (cookie) headers.Cookie = cookie;
   if (contentType) headers['Content-Type'] = contentType;
   const response = await fetch(`${url}/api/access/session`, {
+    method,
+    headers,
+    ...(body === undefined ? {} : { body }),
+    redirect: 'manual'
+  });
+  const payload = await response.json();
+  return { response, payload };
+}
+
+async function nativeInviteRequest(url, { method = 'POST', body, contentType = 'application/json', search = '' } = {}) {
+  const headers = {};
+  if (contentType) headers['Content-Type'] = contentType;
+  const response = await fetch(`${url}/api/rooms/invite/redeem${search}`, {
     method,
     headers,
     ...(body === undefined ? {} : { body }),
@@ -549,10 +643,12 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const password = 'test-password';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 await assertOversizedAccessPasswordRejected(repoRoot);
+await assertProductionAppleIdentifierRequired(repoRoot);
 const server = spawn(process.execPath, ['server.mjs'], {
   cwd: repoRoot,
   env: {
     ...process.env,
+    NODE_ENV: 'test',
     HOST: '127.0.0.1',
     PORT: String(port),
     SKYJO_ACCESS_PASSWORD: password,
@@ -561,7 +657,8 @@ const server = spawn(process.execPath, ['server.mjs'], {
     SKYJO_DB_FILE: dbFile,
     SKYJO_ROOMS_FILE: roomsFile,
     SKYJO_SECURE_COOKIES: 'false',
-    SKYJO_INVITE_SECRET: 'chat-smoke-invite-secret',
+    SKYJO_APPLE_APPLICATION_IDENTIFIER: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+    SKYJO_INVITE_SECRET: inviteSecret,
     SKYJO_INVITE_TTL_HOURS: '168',
     SKYJO_SESSION_SECRET: 'chat-smoke-secret'
   },
@@ -583,6 +680,88 @@ let reconnectSocket;
 
 try {
   await waitForHealth(baseUrl);
+  const appleAssociationResponse = await fetch(`${baseUrl}/.well-known/apple-app-site-association`, {
+    redirect: 'manual'
+  });
+  assert.equal(appleAssociationResponse.status, 200, 'Apple association is public before the access gate');
+  assert.equal(appleAssociationResponse.headers.get('location'), null, 'Apple association is direct');
+  assert.equal(appleAssociationResponse.headers.get('set-cookie'), null, 'Apple association never creates a session');
+  assert.equal(appleAssociationResponse.headers.get('content-type'), 'application/json');
+  assert.match(appleAssociationResponse.headers.get('cache-control') || '', /^public, max-age=\d+$/);
+  const appleAssociationLength = appleAssociationResponse.headers.get('content-length');
+  const appleAssociation = await appleAssociationResponse.json();
+  assert.deepEqual(appleAssociation, {
+    applinks: {
+      details: [{
+        appIDs: [SYNTHETIC_APPLE_APPLICATION_IDENTIFIER],
+        components: [
+          {
+            '/': '/invite/*',
+            '?': { open: 'browser' },
+            exclude: true
+          },
+          { '/': '/invite/*' }
+        ]
+      }]
+    }
+  });
+  assert.equal(JSON.stringify(appleAssociation).includes('webcredentials'), false);
+  const appleAssociationHead = await fetch(`${baseUrl}/.well-known/apple-app-site-association`, {
+    method: 'HEAD',
+    redirect: 'manual'
+  });
+  assert.equal(appleAssociationHead.status, 200, 'Apple association supports HEAD');
+  assert.equal(appleAssociationHead.headers.get('content-length'), appleAssociationLength);
+  assert.equal(appleAssociationHead.headers.get('content-type'), 'application/json');
+  assert.equal(appleAssociationHead.headers.get('set-cookie'), null);
+  assert.equal(await appleAssociationHead.text(), '', 'HEAD omits the Apple association body');
+  const appleAssociationMethod = await fetch(`${baseUrl}/.well-known/apple-app-site-association`, {
+    method: 'POST',
+    redirect: 'manual'
+  });
+  assert.equal(appleAssociationMethod.status, 405);
+  assert.equal(appleAssociationMethod.headers.get('allow'), 'GET, HEAD');
+  assert.equal(appleAssociationMethod.headers.get('set-cookie'), null);
+
+  const nativeInviteMethod = await nativeInviteRequest(baseUrl, { method: 'GET' });
+  assert.equal(nativeInviteMethod.response.status, 405, 'native invite redemption accepts only POST');
+  assert.equal(nativeInviteMethod.response.headers.get('allow'), 'POST');
+  assert.deepEqual(nativeInviteMethod.payload, { code: 'METHOD_NOT_ALLOWED', error: 'Method not allowed.' });
+  const nativeInviteFailures = [
+    await nativeInviteRequest(baseUrl, {
+      body: JSON.stringify({ token: 'payload.signature' }),
+      contentType: 'text/plain'
+    }),
+    await nativeInviteRequest(baseUrl, { body: '{"token":' }),
+    await nativeInviteRequest(baseUrl, { body: '[]' }),
+    await nativeInviteRequest(baseUrl, { body: JSON.stringify({ token: 'payload.signature', extra: true }) }),
+    await nativeInviteRequest(baseUrl, {
+      body: JSON.stringify({ token: 'payload.signature' }),
+      search: '?token=payload.signature'
+    }),
+    await nativeInviteRequest(baseUrl, { body: JSON.stringify({ token: 'not-a-signed-token' }) }),
+    await nativeInviteRequest(baseUrl, { body: JSON.stringify({ token: `a.${'b'.repeat(2047)}` }) }),
+    await nativeInviteRequest(baseUrl, { body: JSON.stringify({ token: `a.${'b'.repeat(256 * 1024)}` }) })
+  ];
+  assert.deepEqual(
+    nativeInviteFailures.map(({ response, payload }) => [response.status, payload.code]),
+    [
+      [415, 'UNSUPPORTED_MEDIA_TYPE'],
+      [400, 'INVALID_JSON'],
+      [400, 'EXPECTED_JSON_OBJECT'],
+      [400, 'INVALID_REQUEST'],
+      [400, 'INVALID_REQUEST'],
+      [410, 'INVITE_INVALID_OR_EXPIRED'],
+      [410, 'INVITE_INVALID_OR_EXPIRED'],
+      [413, 'REQUEST_TOO_LARGE']
+    ]
+  );
+  for (const { response, payload } of nativeInviteFailures) {
+    assert.equal(response.headers.get('set-cookie'), null, 'native invite failure never grants access');
+    assert.equal(response.headers.get('location'), null, 'native invite failure never redirects');
+    assert.match(response.headers.get('cache-control') || '', /no-store/i);
+    assert.deepEqual(Object.keys(payload).sort(), ['code', 'error']);
+  }
   const publicLoginPage = await fetch(`${baseUrl}/login`);
   assert.equal(publicLoginPage.status, 200);
   assert.match(publicLoginPage.headers.get('cache-control') || '', /no-store/i);
@@ -908,7 +1087,69 @@ try {
   const hostInvite = await accountRequest(baseUrl, hostAccount.cookie, '/api/rooms/invite', { roomCode: parkingRoomCode });
   assert.equal(hostInvite.response.status, 200, 'room members can create invite links');
   assert.equal(hostInvite.payload.roomCode, parkingRoomCode);
-  assert.match(hostInvite.payload.path, /^\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.equal(
+    typeof hostInvite.payload.path === 'string'
+      && /^\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(hostInvite.payload.path),
+    true,
+    'invite creation returns a structurally valid signed path without logging it'
+  );
+  const signedInviteToken = hostInvite.payload.path.slice('/invite/'.length);
+  const [signedInvitePayload] = signedInviteToken.split('.');
+  const decodedInvite = JSON.parse(Buffer.from(signedInvitePayload, 'base64url').toString('utf8'));
+  const expiredInvite = createRoomInviteToken({
+    roomCode: parkingRoomCode,
+    roomInstanceId: decodedInvite.roomInstanceId,
+    secret: inviteSecret,
+    ttlMs: 1,
+    now: () => Date.now() - 2,
+    randomBytes: () => Buffer.alloc(16, 9)
+  });
+  const expiredNativeInvite = await nativeInviteRequest(baseUrl, {
+    body: JSON.stringify({ token: expiredInvite.token })
+  });
+  assert.equal(expiredNativeInvite.response.status, 410, 'expired native invite fails closed');
+  assert.equal(
+    expiredNativeInvite.payload !== null
+      && typeof expiredNativeInvite.payload === 'object'
+      && !Array.isArray(expiredNativeInvite.payload)
+      && Object.keys(expiredNativeInvite.payload).sort().join(',') === 'code,error'
+      && expiredNativeInvite.payload.code === 'INVITE_INVALID_OR_EXPIRED'
+      && expiredNativeInvite.payload.error === 'This invite is invalid or has expired.',
+    true,
+    'expired native invite returns only the generic failure contract'
+  );
+  assert.equal(expiredNativeInvite.response.headers.get('set-cookie'), null);
+  const nativeInvite = await nativeInviteRequest(baseUrl, {
+    body: JSON.stringify({ token: signedInviteToken })
+  });
+  assert.equal(nativeInvite.response.status, 200, 'native invite redeems before the shared-password gate');
+  assert.equal(nativeInvite.response.headers.get('location'), null, 'native invite success is direct');
+  assert.match(nativeInvite.response.headers.get('cache-control') || '', /no-store/i);
+  assert.equal(
+    nativeInvite.payload !== null
+      && typeof nativeInvite.payload === 'object'
+      && !Array.isArray(nativeInvite.payload)
+      && Object.keys(nativeInvite.payload).sort().join(',') === 'expiresAt,roomCode'
+      && nativeInvite.payload.roomCode === parkingRoomCode
+      && nativeInvite.payload.expiresAt === hostInvite.payload.expiresAt,
+    true,
+    'native invite response returns only the expected room and expiry fields'
+  );
+  assert.equal(JSON.stringify(nativeInvite.payload).includes(signedInviteToken), false, 'native response does not reflect the token');
+  assert.equal(JSON.stringify(nativeInvite.payload).includes(decodedInvite.roomInstanceId), false, 'native response does not expose the room instance');
+  const nativeInviteCookies = nativeInvite.response.headers.getSetCookie();
+  assert.equal(nativeInviteCookies.length, 1, 'native invite grants only one session layer');
+  assert.equal(
+    /^skyjo_smoke=.+; Path=\/; HttpOnly; SameSite=Lax; Max-Age=\d+$/.test(nativeInviteCookies[0] || ''),
+    true,
+    'native invite cookie has the expected secure structure without logging its value'
+  );
+  assert.equal(nativeInviteCookies[0].includes('skyjo_account='), false, 'native invite never grants account authentication');
+  const nativeInviteLobby = await fetch(`${baseUrl}/lobby?room=${parkingRoomCode}`, {
+    headers: { Accept: 'text/html', Cookie: nativeInviteCookies[0].split(';', 1)[0] },
+    redirect: 'manual'
+  });
+  assert.equal(nativeInviteLobby.status, 200, 'native invite cookie grants only outer lobby access');
   const inviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(inviteLanding.status, 200, 'valid room invite opens the install/browser choice page');
   assert.match(inviteLanding.headers.get('cache-control') || '', /no-store/i);
@@ -1031,6 +1272,21 @@ try {
   assert.equal(resetNewHostRoom.room.status, 'waiting');
   assert.equal(resetNewHostRoom.room.players.length, 1, 'fresh reset room starts with the host only');
   assert.match(resetGuestNotice.message, /new room link/i);
+  const staleNativeInvite = await nativeInviteRequest(baseUrl, {
+    body: JSON.stringify({ token: resetRoomInvite.payload.path.slice('/invite/'.length) })
+  });
+  assert.equal(staleNativeInvite.response.status, 410, 'native invite detects a replaced room instance');
+  assert.equal(
+    staleNativeInvite.payload !== null
+      && typeof staleNativeInvite.payload === 'object'
+      && !Array.isArray(staleNativeInvite.payload)
+      && Object.keys(staleNativeInvite.payload).sort().join(',') === 'code,error'
+      && staleNativeInvite.payload.code === 'INVITE_ROOM_UNAVAILABLE'
+      && staleNativeInvite.payload.error === 'That room is no longer available. Ask the host for a new invite.',
+    true,
+    'stale native invite returns only the generic unavailable-room contract'
+  );
+  assert.equal(staleNativeInvite.response.headers.get('set-cookie'), null);
   const staleLongInvite = await fetch(`${baseUrl}${resetRoomInvite.payload.path}?open=browser`, { redirect: 'manual' });
   assert.equal(staleLongInvite.status, 410, 'long invite is stale after the room instance is replaced');
   assert.equal(staleLongInvite.headers.get('set-cookie'), null, 'stale long invite cannot grant access');
@@ -1048,6 +1304,24 @@ try {
   });
   assert.equal(staleShortInviteReplay.status, 303, 'consumed stale code becomes the generic invalid response');
   assert.equal(staleShortInviteReplay.headers.get('location'), '/login?inviteError=1');
+  const boundedNativeInviteAttempts = await Promise.all(Array.from({ length: 2 }, () => nativeInviteRequest(baseUrl, {
+    body: JSON.stringify({ token: 'payload.signature' })
+  })));
+  for (const attempt of boundedNativeInviteAttempts) {
+    assert.equal(attempt.response.status, 410, 'native invite attempts remain generic before the bound');
+    assert.equal(attempt.payload.code, 'INVITE_INVALID_OR_EXPIRED');
+    assert.equal(attempt.response.headers.get('set-cookie'), null);
+  }
+  const rateLimitedNativeInvite = await nativeInviteRequest(baseUrl, {
+    body: JSON.stringify({ token: 'payload.signature' })
+  });
+  assert.equal(rateLimitedNativeInvite.response.status, 429, 'native invite attempts are rate limited by trusted client IP');
+  assert.deepEqual(rateLimitedNativeInvite.payload, {
+    code: 'INVITE_RATE_LIMITED',
+    error: 'Too many invite attempts. Try again later.'
+  });
+  assert.match(rateLimitedNativeInvite.response.headers.get('retry-after') || '', /^\d+$/);
+  assert.equal(rateLimitedNativeInvite.response.headers.get('set-cookie'), null);
   resetShareGuestSocket = await openSocket(baseUrl, guestAccount.cookie, 'reset share guest');
   const resetShareGuestJoined = await sendAdmission(
     resetShareGuestSocket,
@@ -1205,8 +1479,20 @@ try {
   assert.equal(hostStats.self.multiplayerGames >= 1, true, 'host multiplayer stats are saved');
   assert.equal(hostStats.coPlayers.some((player) => player.userId === guestAccount.user.id), true, 'co-player stats are visible');
 
+  const retainedServerLogs = serverLogs.join('');
+  const retainedState = `${await fs.readFile(roomsFile, 'utf8')}\n${await fs.readFile(dbFile)}`;
+  for (const privateValue of [
+    signedInviteToken,
+    expiredInvite.token,
+    resetRoomInvite.payload.path.slice('/invite/'.length),
+    inviteSecret
+  ]) {
+    assert.equal(retainedServerLogs.includes(privateValue), false, 'invite secrets and tokens stay out of server logs');
+    assert.equal(retainedState.includes(privateValue), false, 'invite secrets and tokens stay out of persistent state');
+  }
+
   console.log(
-    'chat smoke passed: login redirect, admin-created accounts, self-admin protection, account-gated rooms, signed invite landing/install codes, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
+    'chat smoke passed: public AASA, native and browser invite redemption, login redirect, account-gated rooms, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
   );
 } finally {
   reconnectSocket?.close();
@@ -1222,6 +1508,6 @@ try {
   await serverClose;
   await fs.rm(tempDir, { recursive: true, force: true });
   if (server.exitCode && server.exitCode !== 0) {
-    console.error(serverLogs.join(''));
+    console.error('Chat smoke server diagnostics were suppressed because they may contain private invite or session data.');
   }
 }
