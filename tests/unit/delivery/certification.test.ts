@@ -969,9 +969,11 @@ describe('v0.3.3 workflow governance', () => {
     expect(JSON.parse(packageLock).version).toBe('0.3.3');
     expect(JSON.parse(packageLock).packages[''].version).toBe('0.3.3');
     expect(changelog).toMatch(/^## 0\.3\.3 - 2026-07-29$/m);
+    expect(changelog).toContain('source-only native solo launcher and game table');
     expect(ci).toContain('Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility');
     expect(certificationAddendum).toContain('not byte-equivalent to `v0.3.2`');
     expect(certificationAddendum).toContain('immutable cached-PWA v0.3.2 validator pin');
+    expect(certificationAddendum).toContain('four-role UI/accessibility matrix');
     expect(certificationAddendum).toContain('explicit approval in the current conversation naming both exact tag `v0.3.3` and exact `CERT_SHA`');
     expect(certificationAddendum).toContain('`previous` resolves to the exact immutable `v0.3.3` tag');
     expect(certificationAddendum).toContain('keep issue #203 open and #204 blocked');
@@ -983,6 +985,7 @@ describe('v0.3.3 workflow governance', () => {
     expect(certificationAddendum).not.toContain('physical `PASS V0.3 IOS`');
     expect(securityAddendum).toContain('Production dependencies remain unchanged');
     expect(securityAddendum).toContain('does not create or use `apns_devices`');
+    expect(securityAddendum).toContain('bound to the current authorized account');
     expect(securityAddendum).toContain('general autonomy is insufficient');
     expect(securityAddendum).toContain('CodeQL does not trigger for tag refs');
   });

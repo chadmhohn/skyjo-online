@@ -3,7 +3,8 @@
 ## 0.3.3 - 2026-07-29
 
 - Added the versioned `contracts/v1` schemas and deterministic fixtures plus additive, stable JSON access-session, account, stats, and invite error contracts used by the native client.
-- Hardened protocol-v2 realtime parsing, legacy UTF-16 normalization, mixed native/PWA compatibility, and native account/solo persistence foundations without changing public database schema 2, multiplayer protocol 2, or the cached-PWA v0.3.2 compatibility pin.
+- Hardened protocol-v2 realtime parsing, legacy UTF-16 normalization, and mixed native/PWA compatibility without changing public database schema 2, multiplayer protocol 2, or the cached-PWA v0.3.2 compatibility pin.
+- Added the source-only native solo launcher and game table with explicit replacement, 1-7-bot fixed/Mixed setup, account-partitioned restore and stats recovery, accessible phone/iPad layouts, persisted feedback settings, and provenance-checked audio. Shared Swift/TypeScript opening guidance is now viewer-neutral without changing its schema or protocol.
 - Added a direct public Apple association document and rate-limited, pre-access-gate native invite redemption while preserving signed browser invites, install codes, account login, and room-membership enforcement.
 - Froze and validated the optional APNs device-storage rollback envelope without creating or using its table. This candidate is only the first release in the required two-promotion rollback-anchor sequence; merge or tag preparation alone does not complete that production gate.
 
