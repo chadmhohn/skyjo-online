@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  APNS_ROLLBACK_ENVELOPE_SOURCE_SHA,
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
   CERTIFICATION_RELEASE_DATE,
@@ -300,7 +301,7 @@ describe('recovery RPO measurement', () => {
   });
 });
 
-describe('v0.3.2 certification evidence', () => {
+describe('v0.3.3 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     const commandId = '00000000-0000-4000-8000-000000000001';
     const sentCommand = (action: GameCommand, expectedRevision: number, nextCommandId = commandId) => ({
@@ -701,7 +702,7 @@ describe('v0.3.2 certification evidence', () => {
   });
 });
 
-describe('v0.3.2 workflow governance', () => {
+describe('v0.3.3 workflow governance', () => {
   it('selects a compact standard phone independently from the large-phone entry', () => {
     type SimulatorMatrixEntry = {
       role: 'standard-phone' | 'large-phone' | 'ipad';
@@ -764,8 +765,8 @@ describe('v0.3.2 workflow governance', () => {
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
       fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.2-certification.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.2-security.md'), 'utf8')
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.3-certification.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.3-security.md'), 'utf8')
     ]);
     expect(REQUIRED_CHECKS).toContain('CI / Load & Recovery');
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'CI / Load & Recovery')).toHaveLength(1);
@@ -862,9 +863,13 @@ describe('v0.3.2 workflow governance', () => {
     expect(verifier).toMatch(/assertRssStageEvidenceMatchesCertification\(evidence, rssEvidence\)/);
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
-    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-27');
+    expect(verifier).toMatch(/merge-base',\s*'--is-ancestor',\s*APNS_ROLLBACK_ENVELOPE_SOURCE_SHA/);
+    expect(verifier).toContain("packageLock.packages?.['']?.version");
+    expect(CERTIFICATION_RELEASE_VERSION).toBe('0.3.3');
+    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-29');
+    expect(APNS_ROLLBACK_ENVELOPE_SOURCE_SHA).toBe('f842937e7515e4f5d854644e5f7929bde5da5312');
     const packageJson = JSON.parse(packageDocument);
-    expect(packageJson.version).toBe('0.3.2');
+    expect(packageJson.version).toBe('0.3.3');
     expect(packageJson.scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
     expect(packageJson.scripts['test:e2e:certification']).toContain('--retries=0');
     expect(packageJson.scripts['smoke:apns-rollback']).toBe(
@@ -875,13 +880,18 @@ describe('v0.3.2 workflow governance', () => {
     expect(apnsRollbackSmoke).toContain('logs.includes(sensitiveCanary)');
     expect(apnsRollbackSmoke).toContain('diagnostics withheld');
     expect(apnsRollbackSmoke).not.toMatch(/console\.(?:error|log)\(logs\)/);
-    expect(JSON.parse(packageLock).version).toBe('0.3.2');
-    expect(changelog).toMatch(/^## 0\.3\.2 - 2026-07-27$/m);
-    expect(certificationAddendum).toContain('physical `PASS V0.3 IOS`');
-    expect(certificationAddendum).toContain('complete automated CI and CodeQL matrix');
-    expect(certificationAddendum).toContain('byte-equivalence proof');
-    expect(certificationAddendum).toContain('`v0.3.0` and `v0.3.1` remain immutable and unpublished');
-    expect(securityAddendum).toContain('Browser resource type is deliberately not an authorization boundary');
-    expect(securityAddendum).toContain('`/cdn-cgi/rum?`');
+    expect(JSON.parse(packageLock).version).toBe('0.3.3');
+    expect(JSON.parse(packageLock).packages[''].version).toBe('0.3.3');
+    expect(changelog).toMatch(/^## 0\.3\.3 - 2026-07-29$/m);
+    expect(ci).toContain('Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility');
+    expect(certificationAddendum).toContain('not byte-equivalent to `v0.3.2`');
+    expect(certificationAddendum).toContain('immutable cached-PWA v0.3.2 validator pin');
+    expect(certificationAddendum).toContain('explicit approval in the current conversation naming both exact tag `v0.3.3` and exact `CERT_SHA`');
+    expect(certificationAddendum).toContain('`previous` resolves to the exact immutable `v0.3.3` tag');
+    expect(certificationAddendum).toContain('keep issue #203 open and #204 blocked');
+    expect(certificationAddendum).not.toContain('physical `PASS V0.3 IOS`');
+    expect(securityAddendum).toContain('Production dependencies remain unchanged');
+    expect(securityAddendum).toContain('does not create or use `apns_devices`');
+    expect(securityAddendum).toContain('general autonomy is insufficient');
   });
 });

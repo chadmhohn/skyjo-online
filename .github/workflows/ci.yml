@@ -609,7 +609,7 @@ jobs:
         run: |
           npm run benchmark:ai:verify -- \
             --source-sha "${{ needs.quality.outputs.source-sha }}" \
-            --release-version 0.3.2 \
+            --release-version 0.3.3 \
             --strategy-version 1
 
       - name: Install pinned Chromium and k6

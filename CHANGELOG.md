@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3 - 2026-07-29
+
+- Added the versioned `contracts/v1` schemas and deterministic fixtures plus additive, stable JSON access-session, account, stats, and invite error contracts used by the native client.
+- Hardened protocol-v2 realtime parsing, legacy UTF-16 normalization, mixed native/PWA compatibility, and native account/solo persistence foundations without changing public database schema 2, multiplayer protocol 2, or the cached-PWA v0.3.2 compatibility pin.
+- Added a direct public Apple association document and rate-limited, pre-access-gate native invite redemption while preserving signed browser invites, install codes, account login, and room-membership enforcement.
+- Froze and validated the optional APNs device-storage rollback envelope without creating or using its table. This candidate is only the first release in the required two-promotion rollback-anchor sequence; merge or tag preparation alone does not complete that production gate.
+
 ## 0.3.2 - 2026-07-27
 
 - Accepted Cloudflare Web Analytics' exact live same-origin empty-query beacon forms, `POST /cdn-cgi/rum?` and `POST /cdn-cgi/rum/?`, alongside the two delimiter-free forms.
