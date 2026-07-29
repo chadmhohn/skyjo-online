@@ -202,6 +202,7 @@ struct RoomRootView: View {
 private struct RoomJoinView: View {
   @Bindable var model: RoomSessionModel
   @State private var confirmsForgetSavedSeat = false
+  @FocusState private var isJoinCodeFocused: Bool
 
   var body: some View {
     ScrollView {
@@ -219,6 +220,36 @@ private struct RoomJoinView: View {
           RoomUserBanner(banner: banner, onDismiss: model.dismissBanner)
         }
 
+        if (model.connectionStatus.phase == .error || model.connectionStatus.phase == .idle),
+           model.shouldShowRetrySavedSeat || model.shouldShowForgetSavedSeat {
+          HStack(spacing: 12) {
+            if model.shouldShowRetrySavedSeat {
+              Button {
+                Task { await model.retrySavedSeat() }
+              } label: {
+                Text("Retry Saved Seat")
+                  .frame(maxWidth: .infinity, minHeight: 44)
+              }
+              .buttonStyle(.bordered)
+              .disabled(!model.canRetrySavedSeat)
+              .accessibilityIdentifier("rooms.retry-seat")
+            }
+
+            if model.shouldShowForgetSavedSeat {
+              Button(role: .destructive) {
+                confirmsForgetSavedSeat = true
+              } label: {
+                Text("Forget Saved Seat")
+                  .frame(maxWidth: .infinity, minHeight: 44)
+              }
+              .buttonStyle(.bordered)
+              .disabled(!model.canForgetSavedSeat)
+              .accessibilityIdentifier("rooms.forget-seat")
+              .accessibilityHint("Requires confirmation before removing saved routing data")
+            }
+          }
+        }
+
         GroupBox("Signed-in player") {
           Label(model.account.displayName, systemImage: "person.crop.circle.fill")
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -232,7 +263,19 @@ private struct RoomJoinView: View {
               .autocorrectionDisabled()
               .textContentType(.oneTimeCode)
               .font(.title2.monospaced().bold())
-              .onChange(of: model.joinCode) { model.sanitizeJoinCode() }
+              .focused($isJoinCodeFocused)
+              .submitLabel(.join)
+              .onSubmit {
+                guard model.joinCode.count == 5, !connectionRequestDisabled else { return }
+                isJoinCodeFocused = false
+                Task { await model.join() }
+              }
+              .onChange(of: model.joinCode) {
+                model.sanitizeJoinCode()
+                if model.joinCode.count == 5 {
+                  isJoinCodeFocused = false
+                }
+              }
               .accessibilityIdentifier("rooms.join-code")
             Button {
               Task { await model.join() }
@@ -256,29 +299,6 @@ private struct RoomJoinView: View {
         .disabled(connectionRequestDisabled)
         .accessibilityIdentifier("rooms.create")
 
-        if (model.connectionStatus.phase == .error || model.connectionStatus.phase == .idle),
-           model.shouldShowRetrySavedSeat || model.shouldShowForgetSavedSeat {
-          HStack(spacing: 12) {
-            if model.shouldShowRetrySavedSeat {
-              Button("Retry Saved Seat") {
-                Task { await model.retrySavedSeat() }
-              }
-              .disabled(!model.canRetrySavedSeat)
-              .frame(minHeight: 44)
-              .accessibilityIdentifier("rooms.retry-seat")
-            }
-
-            if model.shouldShowForgetSavedSeat {
-              Button("Forget Saved Seat", role: .destructive) {
-                confirmsForgetSavedSeat = true
-              }
-              .disabled(!model.canForgetSavedSeat)
-              .frame(minHeight: 44)
-              .accessibilityIdentifier("rooms.forget-seat")
-              .accessibilityHint("Requires confirmation before removing saved routing data")
-            }
-          }
-        }
       }
       .frame(maxWidth: 620, alignment: .leading)
       .padding()
