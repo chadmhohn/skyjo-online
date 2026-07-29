@@ -856,6 +856,7 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertEqual(draw.label, "Draw blind")
     XCTAssertTrue(discard.label.hasPrefix("Discard pile, top card"))
     XCTAssertEqual(guidance.label, "Reveal two of your face-down cards.")
+    XCTAssertEqual(guidance.value as? String, "Visible guidance: Reveal 2 cards")
     XCTAssertEqual(localHeader.label, "You")
     XCTAssertFalse(firstOpponentHeader.label.isEmpty)
     XCTAssertTrue((localHeader.value as? String)?.contains("points") == true)
@@ -891,14 +892,42 @@ final class SkyjoAppUITests: XCTestCase {
     assertElement(discardText, isContainedIn: discard, tolerance: 2)
     assertElement(revealedValue, isContainedIn: firstCard, tolerance: 2)
     attachScreenshot(app, name: "ios7-solo-phone-table")
-    // Xcode 26 can emit an element-less textClipped finding after this exact
-    // 390x844 fixture returns from Settings and repositions the nested opponent
-    // scroller. The assertions above and screenshot prove the principal rendered
-    // copy and containment. Attributed clipped-text findings remain failures.
-    try performSoloAccessibilityAudit(
-      on: app,
-      allowUnattributedTextClipping: true
+    try performSoloAccessibilityAudit(on: app)
+  }
+
+  @MainActor
+  func testSoloSingleOpponentFitsLargePhoneAndRendersHighValueCard() throws {
+    let app = launchSoloFixture("solo-table-one-bot")
+    XCTAssertGreaterThanOrEqual(app.frame.width, 400)
+
+    let opponentScroll = element(in: app, identifier: "solo.opponents.scroll")
+    let opponentBoard = element(in: app, identifier: "solo.board.opponent.ai-1")
+    XCTAssertTrue(opponentScroll.waitForExistence(timeout: 8))
+    XCTAssertTrue(opponentBoard.exists)
+    assertElement(opponentBoard, isContainedIn: opponentScroll, tolerance: 2)
+    XCTAssertLessThanOrEqual(opponentBoard.frame.width, 222)
+    XCTAssertFalse(element(in: app, identifier: "solo.board.opponent.ai-2").exists)
+
+    let highValueCard = element(
+      in: app,
+      identifier: "solo.card.opponent.ai-1.r1.c1"
     )
+    let highValueText = highValueCard.staticTexts["12"]
+    XCTAssertTrue(highValueCard.exists)
+    XCTAssertTrue(highValueText.exists)
+    assertElement(highValueCard, isContainedIn: opponentBoard, tolerance: 2)
+    assertElement(highValueText, isContainedIn: highValueCard, tolerance: 2)
+
+    let actionBand = element(in: app, identifier: "solo.action-band")
+    let guidance = element(in: app, identifier: "solo.action.guidance")
+    XCTAssertTrue(actionBand.exists)
+    XCTAssertTrue(guidance.exists)
+    assertElement(guidance, isContainedIn: actionBand, tolerance: 2)
+    XCTAssertEqual(guidance.label, "Reveal two of your face-down cards.")
+    XCTAssertEqual(guidance.value as? String, "Visible guidance: Reveal 2 cards")
+
+    attachScreenshot(app, name: "ios7-solo-single-opponent-large-phone")
+    try performSoloAccessibilityAudit(on: app)
   }
 
   @MainActor
@@ -1507,7 +1536,7 @@ final class SkyjoAppUITests: XCTestCase {
     attachScreenshot(adaptationApp, name: "ios7-solo-accessibility-adaptations")
     try performSoloAccessibilityAudit(
       on: adaptationApp,
-      allowUnattributedTextClipping: true
+      expectedUnattributedTextClippingCount: 1
     )
     adaptationApp.terminate()
 
@@ -2387,7 +2416,7 @@ final class SkyjoAppUITests: XCTestCase {
   @MainActor
   private func performAccessibilityAudit(
     on app: XCUIApplication,
-    allowUnattributedTextClipping: Bool = false
+    expectedUnattributedTextClippingCount: Int = 0
   ) throws {
     // XCTest currently reports system-dimmed inactive SwiftUI controls as
     // contrast failures even though inactive controls are exempt. Their
@@ -2401,15 +2430,17 @@ final class SkyjoAppUITests: XCTestCase {
         .contrast.union(.dynamicType).union(.hitRegion).union(.textClipped)
       )
     )
+    var unattributedTextClippingCount = 0
     try app.performAccessibilityAudit(for: .textClipped) { issue in
       guard let element = issue.element else {
-        if allowUnattributedTextClipping {
-          // Focused callers directly prove their rendered copy and geometry
-          // before accepting Xcode 26's element-less artifact. Every attributed
-          // finding continues through the strict failure branch below.
-          return true
+        unattributedTextClippingCount += 1
+        // Exact Xcode 26 callers may expect one element-less framework artifact
+        // after directly proving their principal copy and geometry.
+        // The post-audit exact count prevents additional regressions from being
+        // absorbed; every attributed finding remains fatal below.
+        if expectedUnattributedTextClippingCount == 0 {
+          XCTFail("Unexpected unattributed clipped-text finding")
         }
-        XCTFail("Unexpected unattributed clipped-text finding")
         return true
       }
       XCTFail(
@@ -2417,6 +2448,11 @@ final class SkyjoAppUITests: XCTestCase {
       )
       return true
     }
+    XCTAssertEqual(
+      unattributedTextClippingCount,
+      expectedUnattributedTextClippingCount,
+      "The element-less clipped-text artifact count changed"
+    )
     try app.performAccessibilityAudit(for: .hitRegion) { issue in
       // Xcode 26 can retain the menu backing the intentionally hidden drawn-card
       // slot while it sweeps the hierarchy. That stale node (plus an
@@ -2432,11 +2468,11 @@ final class SkyjoAppUITests: XCTestCase {
   private func performSoloAccessibilityAudit(
     on app: XCUIApplication,
     enforceDynamicType: Bool = true,
-    allowUnattributedTextClipping: Bool = false
+    expectedUnattributedTextClippingCount: Int = 0
   ) throws {
     try performAccessibilityAudit(
       on: app,
-      allowUnattributedTextClipping: allowUnattributedTextClipping
+      expectedUnattributedTextClippingCount: expectedUnattributedTextClippingCount
     )
     try performFocusedSoloAccessibilityAudits(
       on: app,
@@ -2480,12 +2516,13 @@ final class SkyjoAppUITests: XCTestCase {
       // Xcode 26 walks the nested opponent scroller and can then audit a text
       // child from the next header even when its parent is entirely outside the
       // viewport. Scope this allowance to that exact offscreen parent/child
-      // relationship; every fully visible opponent header remains enforced.
+      // relationship; every visible or partially visible opponent header
+      // remains enforced.
       let isOffscreenOpponentHeaderChild = opponentScroll.exists
         && opponentHeaders.contains { header in
           header.exists
             && header.frame.intersects(element.frame)
-            && !opponentScroll.frame.contains(header.frame)
+            && !opponentScroll.frame.intersects(header.frame)
         }
       if !isDisabledControl && !isObscuredByTabBar && !isOffscreenOpponentHeaderChild {
         let localBoard = self.element(in: app, identifier: "solo.board.local.human")

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const audioDirectory = path.join(repoRoot, 'public', 'audio');
+const nativeResourcesDirectory = path.join(repoRoot, 'ios', 'SkyjoApp', 'Resources');
 const nativeAudioDirectory = path.join(repoRoot, 'ios', 'SkyjoApp', 'Resources', 'Audio');
 
 export const acceptedFlipSha256 = 'dc9c08e4b172d404ce2f1ba8380d552fdd1d302419e2872f067f0d761147df90';
@@ -21,6 +22,60 @@ export const requiredCueFiles = [
   'card-pickup.mp3',
   'card-place.mp3'
 ];
+const requiredNativeAudioResources = requiredCueFiles.map((file) => `Audio/${file}`);
+// Include every common Core Audio / AVFoundation extension plus media
+// containers that can carry an audio stream. A future video resource therefore
+// also needs an explicit gate update instead of silently becoming background
+// audio through AVPlayer.
+const nativeAudioExtensions = new Set([
+  '.3g2',
+  '.3gp',
+  '.aa',
+  '.aac',
+  '.aax',
+  '.ac3',
+  '.adts',
+  '.aif',
+  '.aifc',
+  '.aiff',
+  '.alac',
+  '.amr',
+  '.ape',
+  '.au',
+  '.caf',
+  '.dss',
+  '.flac',
+  '.gsm',
+  '.m4a',
+  '.m4b',
+  '.m4p',
+  '.m4r',
+  '.mid',
+  '.midi',
+  '.mka',
+  '.mkv',
+  '.mov',
+  '.mp2',
+  '.mp3',
+  '.mp4',
+  '.mpa',
+  '.mpeg',
+  '.mpg',
+  '.oga',
+  '.ogg',
+  '.opus',
+  '.ra',
+  '.ram',
+  '.raw',
+  '.snd',
+  '.tta',
+  '.voc',
+  '.wav',
+  '.wave',
+  '.webm',
+  '.wma',
+  '.wv'
+]);
 
 const legacyAmbienceFile = 'table-ambience.mp3';
 const maxTransferredBytes = 80 * 1024;
@@ -36,6 +91,42 @@ const maximumTailRms = 10 ** (-36 / 20);
 const maximumFinalSample = 10 ** (-40 / 20);
 const appleAfconvertPath = '/usr/bin/afconvert';
 const appleAfinfoPath = '/usr/bin/afinfo';
+
+function portableRelativePath(value) {
+  return value.split(path.sep).join('/');
+}
+
+function isAudioResource(value) {
+  return nativeAudioExtensions.has(path.extname(value).toLowerCase());
+}
+
+export function unexpectedNativeAudioResources(resourceFiles) {
+  return resourceFiles
+    .map((file) => portableRelativePath(file))
+    .filter(isAudioResource)
+    .filter((file) => !requiredNativeAudioResources.includes(file))
+    .sort();
+}
+
+async function listRelativeResourceFiles(root, directory = root) {
+  const files = [];
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const absolutePath = path.join(directory, entry.name);
+    const relativePath = portableRelativePath(path.relative(root, absolutePath));
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Native resources must not contain symbolic links: ${relativePath}.`);
+    }
+    if (entry.isDirectory()) {
+      files.push(...await listRelativeResourceFiles(root, absolutePath));
+    } else if (entry.isFile()) {
+      files.push(relativePath);
+    } else {
+      throw new Error(`Native resources contain an unsupported entry: ${relativePath}.`);
+    }
+  }
+  return files.sort();
+}
 
 function mediaToolStatus(command, args) {
   const result = spawnSync(command, args, {
@@ -347,25 +438,24 @@ export async function auditAudioAssets() {
   const probeAudio = mediaBackend === 'ffmpeg' ? probeAudioWithFfmpeg : probeAudioWithApple;
   const decodeMonoPcm = mediaBackend === 'ffmpeg' ? decodeMonoPcmWithFfmpeg : decodeMonoPcmWithApple;
   const directoryEntries = await fs.readdir(audioDirectory, { withFileTypes: true });
-  const nativeDirectoryEntries = await fs.readdir(nativeAudioDirectory, { withFileTypes: true });
+  const nativeResourceFiles = await listRelativeResourceFiles(nativeResourcesDirectory);
   const cueFiles = directoryEntries
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.mp3'))
     .map((entry) => entry.name)
     .sort();
   const failures = [];
-  const nativeCueFiles = nativeDirectoryEntries
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.mp3'))
-    .map((entry) => entry.name)
-    .sort();
+  const nativeAudioResources = nativeResourceFiles.filter(isAudioResource);
 
   if (cueFiles.includes(legacyAmbienceFile)) {
     failures.push(`${legacyAmbienceFile} must be removed; continuous ambience is outside issue #159.`);
   }
   for (const required of requiredCueFiles) {
     if (!cueFiles.includes(required)) failures.push(`Missing required cue ${required}.`);
-    if (!nativeCueFiles.includes(required)) failures.push(`Missing required native cue ${required}.`);
+    if (!nativeAudioResources.includes(`Audio/${required}`)) {
+      failures.push(`Missing required native cue ${required}.`);
+    }
   }
-  for (const unexpected of nativeCueFiles.filter((file) => !requiredCueFiles.includes(file))) {
+  for (const unexpected of unexpectedNativeAudioResources(nativeResourceFiles)) {
     failures.push(`Unexpected native cue ${unexpected}; document and gate new audio before bundling it.`);
   }
 

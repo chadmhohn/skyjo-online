@@ -1002,6 +1002,47 @@ struct SoloFeatureModelTests {
     #expect(try await harness.store.outboxStatus(accountID: accountID).queued == 0)
   }
 
+  @Test("Leaving during terminal commit cannot strand a completed game on the launcher")
+  func leavingDuringCompletionCannotStrandLauncher() async throws {
+    let gate = CompletionCommitGate()
+    let harness = try SoloHarness(completionCommitBarrier: { await gate.wait() })
+    defer {
+      Task { await gate.release() }
+      harness.dispose()
+    }
+
+    await harness.model.switchOwner(.guest, confirmedAccountID: nil)
+    await harness.model.reviewNewGame()
+    let gameID = try #require(harness.model.gameID)
+    let terminal = try makeTerminalState(from: #require(harness.model.game))
+    let completion = Task { @MainActor in
+      await harness.model.acceptForTesting(terminal)
+    }
+    let commitDidStart = await gate.waitUntilEntered()
+    #expect(commitDidStart)
+    guard commitDidStart else {
+      completion.cancel()
+      await gate.release()
+      return
+    }
+
+    #expect(harness.model.isWorking)
+    #expect(harness.model.screen == .table)
+    harness.model.leaveTable()
+    #expect(harness.model.screen == .table)
+    #expect(harness.model.isScoreSummaryPresented)
+
+    await gate.release()
+    await completion.value
+
+    #expect(harness.model.completionCommitted)
+    #expect(!harness.model.isWorking)
+    #expect(harness.model.screen == .table)
+    #expect(harness.model.gameID == gameID)
+    #expect(harness.model.game == terminal)
+    #expect(try await harness.store.loadSession(for: .guest).session == nil)
+  }
+
   @Test("An owner round-trip during terminal commit preserves the accepted result")
   func ownerRoundTripDuringCompletionPreservesTerminalResult() async throws {
     let gate = CompletionCommitGate()

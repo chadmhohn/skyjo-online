@@ -569,6 +569,13 @@ private struct SoloGameView: View {
   private func standardTable(size: CGSize, wide: Bool) -> some View {
     let isShortPortrait = size.width < size.height && size.height < 720
     let usesSingleOpponentPage = !wide && size.width < 400
+    let opponentCount = model.game?.players.lazy.filter { $0.kind == .ai }.count ?? 0
+    // A single board would otherwise consume the full Pro Max viewport width,
+    // becoming taller than the fixed opponent region while that region scrolls
+    // horizontally only. Keep a lone compact board fully revealable.
+    let opponentBoardMaxWidth: CGFloat? = usesSingleOpponentPage
+      ? 185
+      : (opponentCount == 1 && !wide ? 220 : nil)
     let bandHeight = isShortPortrait ? 76 : min(max(size.height * 0.18, 120), 150)
     // At the 550-point debug floor, 270 points of width gives every local card
     // its 44-point minimum while reducing the board's intrinsic height enough
@@ -586,11 +593,11 @@ private struct SoloGameView: View {
       opponentRegion(
         wide: wide,
         boardsPerViewport: usesSingleOpponentPage ? 1 : 2,
-        boardMaxWidth: usesSingleOpponentPage ? 185 : nil,
+        boardMaxWidth: opponentBoardMaxWidth,
         allowsVerticalScrolling: isShortPortrait
       )
         .frame(maxHeight: .infinity)
-      actionBand(wide: wide)
+      actionBand(wide: wide, compactGuidance: isShortPortrait)
         .frame(height: bandHeight)
         .accessibilityIdentifier("solo.action-band")
         .accessibilitySortPriority(4)
@@ -793,6 +800,7 @@ private struct SoloGameView: View {
           .contentShape(Rectangle())
       }
       .accessibilityLabel("Exit")
+      .disabled(model.isWorking)
       .accessibilityIdentifier("solo.table.exit")
     }
     .frame(minHeight: 44)

@@ -331,6 +331,7 @@ standard_tests=(
 )
 large_tests=(
   testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards
+  testSoloSingleOpponentFitsLargePhoneAndRendersHighValueCard
   testSoloAccessibilityXXXLRemainsOperable
 )
 ipad_portrait_tests=(
@@ -344,7 +345,7 @@ ipad_landscape_tests=(
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
 )
 [[ "${#standard_tests[@]}" -eq 18 && \
-   "${#large_tests[@]}" -eq 2 && \
+   "${#large_tests[@]}" -eq 3 && \
    "${#ipad_portrait_tests[@]}" -eq 5 && \
    "${#ipad_landscape_tests[@]}" -eq 1 ]] || {
   printf 'ERROR: The expected accessibility matrix inventory changed.\n' >&2
@@ -430,7 +431,7 @@ run_matrix_entry() {
 }
 
 run_matrix_entry standard-phone "$standard_udid" 18 "${standard_tests[@]}"
-run_matrix_entry large-phone "$large_udid" 2 "${large_tests[@]}"
+run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
 run_matrix_entry ipad-portrait "$ipad_udid" 5 "${ipad_portrait_tests[@]}"
 run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
 

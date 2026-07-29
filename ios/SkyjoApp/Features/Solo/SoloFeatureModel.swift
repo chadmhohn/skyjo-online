@@ -453,6 +453,11 @@ final class SoloFeatureModel {
   }
 
   func leaveTable() {
+    // Terminal completion owns the durable session until its transaction
+    // resolves. Ignoring navigation cleanup during that narrow window prevents
+    // a successful commit from returning to a launcher whose session was just
+    // retired and therefore cannot be continued.
+    guard !isWorking else { return }
     pauseAI()
     isSettingsPresented = false
     isScoreSummaryPresented = false
@@ -1731,11 +1736,21 @@ final class SoloFeatureModel {
     statsAuthorizationGeneration &+= 1
     aiTask?.cancel()
     aiTask = nil
+    let fixtureOpponentCount = value == "solo-table-one-bot" ? 1 : 3
     var random = SeededRandom(seed: 18_700)
     let fixtureGameID = UUID(uuidString: "70000000-0000-4000-8000-000000000187")!
-    let state = GameEngine.startFreshGame(aiOpponentCount: 3, random: &random)
+    var state = GameEngine.startFreshGame(
+      aiOpponentCount: fixtureOpponentCount,
+      random: &random
+    )
+    if value == "solo-table-one-bot",
+       let aiIndex = state.players.firstIndex(where: { $0.kind == .ai })
+    {
+      state.players[aiIndex].grid[0].value = 12
+      state.players[aiIndex].grid[0].faceUp = true
+    }
     let fixtureSetup = try! SoloAISetup.resolve(
-      SoloGameSetup(aiOpponentCount: 3, difficulty: .mixed),
+      SoloGameSetup(aiOpponentCount: fixtureOpponentCount, difficulty: .mixed),
       state: state,
       gameId: fixtureGameID.uuidString.lowercased()
     )
@@ -1785,7 +1800,7 @@ final class SoloFeatureModel {
         kind: .terminal
       ) else { return false }
       screen = .setup
-    case "solo-table":
+    case "solo-table", "solo-table-one-bot":
       screen = .table
     case "solo-turn":
       var turnState = GameEngine.revealOpeningCard(state, at: 0)

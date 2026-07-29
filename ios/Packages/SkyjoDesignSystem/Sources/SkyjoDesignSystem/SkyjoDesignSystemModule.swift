@@ -111,7 +111,10 @@ public struct SkyjoCardView: View {
       Text(value.formatted())
         .font(.caption2.monospacedDigit().weight(.black))
         .fixedSize(horizontal: true, vertical: true)
-        .foregroundStyle(foregroundColor(for: value))
+        // The tinted card surface already communicates the value band. Keep
+        // every numeral adaptive-primary so 9–12 retain text contrast in both
+        // color schemes and Increase Contrast.
+        .foregroundStyle(Color.primary)
         .accessibilityHidden(true)
     case .removed:
       Image(systemName: "rectangle.dashed")
@@ -138,10 +141,6 @@ public struct SkyjoCardView: View {
 
   private var borderStyle: Color {
     isEnabled ? .accentColor : .secondary
-  }
-
-  private func foregroundColor(for value: Int) -> Color {
-    value >= 9 ? .red : .primary
   }
 
   private var usesDenseAccessibilityGlyphs: Bool {

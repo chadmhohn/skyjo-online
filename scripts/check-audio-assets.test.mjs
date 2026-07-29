@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { extractWavePcm, parseAppleAudioInfo } from './check-audio-assets.mjs';
+import {
+  extractWavePcm,
+  parseAppleAudioInfo,
+  unexpectedNativeAudioResources
+} from './check-audio-assets.mjs';
 
 const validAppleAudioInfo = `<?xml version="1.0" encoding="UTF8"?>
 <audio_info xmlns="http://apple.com/core_audio/audio_info">
@@ -97,4 +101,34 @@ test('extractWavePcm rejects mismatched formats and truncated data chunks', () =
   assert.notEqual(dataOffset, -1);
   truncatedData.writeUInt32LE(1_000, dataOffset + 4);
   assert.throws(() => extractWavePcm(truncatedData, 44_100), /chunk exceeds the file bounds/);
+});
+
+test('native audio inventory rejects alternate bundled formats outside the exact cue allowlist', () => {
+  assert.deepEqual(
+    unexpectedNativeAudioResources([
+      'Audio/card-flip.mp3',
+      'Audio/card-pickup.mp3',
+      'Audio/card-place.mp3',
+      'Audio/table-ambience.m4a',
+      'Audio/ringtone.m4r',
+      'Effects/bonus.WAV',
+      'Effects/voice.aifc',
+      'Music/radio.adts',
+      'Music/theme.mp4',
+      'Music/trailer.3gp',
+      'Music/theme.caf',
+      'Assets.xcassets/Contents.json',
+      'Audio/README.md'
+    ]),
+    [
+      'Audio/ringtone.m4r',
+      'Audio/table-ambience.m4a',
+      'Effects/bonus.WAV',
+      'Effects/voice.aifc',
+      'Music/radio.adts',
+      'Music/theme.caf',
+      'Music/theme.mp4',
+      'Music/trailer.3gp'
+    ]
+  );
 });
