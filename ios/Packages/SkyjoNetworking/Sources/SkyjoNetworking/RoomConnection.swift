@@ -199,7 +199,7 @@ public actor RoomConnection {
   private var online = true
   private var pendingCommand: PendingCommand?
   private var preparingResetCommandID: UUID?
-  private var pendingRecoveryClearCommandID: UUID?
+  private var pendingRecoveryClearCommandIDs: Set<UUID> = []
   private var phase: RoomConnectionPhase = .idle
   private var presenceSendSerial: UInt64 = 0
   private var receiveTask: Task<Void, Never>?
@@ -250,7 +250,7 @@ public actor RoomConnection {
       hasPendingCommand: pendingCommand != nil
         || commandPreparationInProgress
         || disconnectCleanupInProgress
-        || pendingRecoveryClearCommandID != nil,
+        || !pendingRecoveryClearCommandIDs.isEmpty,
       revision: lastAcceptedRevision
     )
   }
@@ -270,11 +270,9 @@ public actor RoomConnection {
       throw RoomConnectionError.commandUnavailable
     }
     let operationEpoch = lifecycleEpoch
-    if let pendingRecoveryClearCommandID {
-      let cleared = await clearPersistedRecovery(commandID: pendingRecoveryClearCommandID)
-      guard lifecycleEpoch == operationEpoch, !disposed else { return false }
-      guard cleared else { throw RoomConnectionError.resetRecoveryPersistenceFailed }
-    }
+    let cleared = await drainPersistedRecoveryClears()
+    guard lifecycleEpoch == operationEpoch, !disposed else { return false }
+    guard cleared else { throw RoomConnectionError.resetRecoveryPersistenceFailed }
     let record: RoomResetRecoveryRecord?
     do {
       record = try await environment.resetRecoveryStore.load(accountID: confirmedAccount.accountID)
@@ -340,13 +338,11 @@ public actor RoomConnection {
     attempt = 0
     lastAcceptedRevision = nil
     latestAuthoritativeSnapshot = nil
-    if let abandonedRecoveryCommandID {
-      let cleared = await clearPersistedRecovery(commandID: abandonedRecoveryCommandID)
-      if !cleared {
-        guard lifecycleEpoch == operationEpoch else { return }
-        transition(to: .error)
-        throw RoomConnectionError.resetRecoveryPersistenceFailed
-      }
+    let cleared = await drainPersistedRecoveryClears()
+    if !cleared {
+      guard lifecycleEpoch == operationEpoch else { return }
+      transition(to: .error)
+      throw RoomConnectionError.resetRecoveryPersistenceFailed
     }
     guard lifecycleEpoch == operationEpoch, !disposed, admission == nextAdmission else { return }
     if online {
@@ -390,13 +386,11 @@ public actor RoomConnection {
     admission = savedAdmission
     admissionWasAttempted = false
     attempt = 0
-    if let abandonedRecoveryCommandID {
-      let cleared = await clearPersistedRecovery(commandID: abandonedRecoveryCommandID)
-      if !cleared {
-        guard lifecycleEpoch == operationEpoch else { return }
-        transition(to: .error)
-        throw RoomConnectionError.resetRecoveryPersistenceFailed
-      }
+    let cleared = await drainPersistedRecoveryClears()
+    if !cleared {
+      guard lifecycleEpoch == operationEpoch else { return }
+      transition(to: .error)
+      throw RoomConnectionError.resetRecoveryPersistenceFailed
     }
     guard lifecycleEpoch == operationEpoch, !disposed, admission == savedAdmission else { return }
     if online {
@@ -427,11 +421,8 @@ public actor RoomConnection {
       publishStatus()
     }
 
-    if let recoveryCommandID = pendingRecoveryClearCommandID {
-      let cleared = await clearPersistedRecovery(commandID: recoveryCommandID)
-      guard cleared else {
-        throw RoomConnectionError.resetRecoveryPersistenceFailed
-      }
+    guard await drainPersistedRecoveryClears() else {
+      throw RoomConnectionError.resetRecoveryPersistenceFailed
     }
     try Task.checkCancellation()
     guard lifecycleEpoch == operationEpoch,
@@ -596,10 +587,8 @@ public actor RoomConnection {
     attempt = 0
     retireCurrentSocket(code: 1_000, reason: "Room session ended")
     if !disposed { transition(to: .idle) }
-    if let abandonedRecoveryCommandID {
-      guard await clearPersistedRecovery(commandID: abandonedRecoveryCommandID) else {
-        throw RoomConnectionError.resetRecoveryPersistenceFailed
-      }
+    guard await drainPersistedRecoveryClears() else {
+      throw RoomConnectionError.resetRecoveryPersistenceFailed
     }
   }
 
@@ -621,7 +610,7 @@ public actor RoomConnection {
     }
     do {
       try await environment.resetRecoveryStore.discard(accountID: confirmedAccount.accountID)
-      pendingRecoveryClearCommandID = nil
+      pendingRecoveryClearCommandIDs.removeAll()
     } catch {
       publish(.notice(.resetRecoveryPersistenceFailed))
       throw RoomConnectionError.resetRecoveryPersistenceFailed
@@ -780,9 +769,7 @@ public actor RoomConnection {
       retireCurrentSocket(code: 1_002, reason: "Protocol upgrade required")
       transition(to: .upgradeRequired)
       publish(.notice(.upgradeRequired))
-      if let recoveryCommandID {
-        await clearPersistedRecovery(commandID: recoveryCommandID)
-      }
+      await drainPersistedRecoveryClears()
     }
   }
 
@@ -892,7 +879,7 @@ public actor RoomConnection {
     if let recoveryCommandIDToClear {
       await clearPersistedRecovery(commandID: recoveryCommandIDToClear)
     } else {
-      await retryPersistedRecoveryClearIfNeeded()
+      await drainPersistedRecoveryClears()
     }
   }
 
@@ -938,9 +925,7 @@ public actor RoomConnection {
       retireCurrentSocket(code: 1_000, reason: "Room reset by host")
       transition(to: .idle)
       publish(.notice(.roomResetByHost(roomCode: retiredRoomCode)))
-      if let recoveryCommandID {
-        await clearPersistedRecovery(commandID: recoveryCommandID)
-      }
+      await drainPersistedRecoveryClears()
       return
     }
 
@@ -958,9 +943,7 @@ public actor RoomConnection {
       retireCurrentSocket(code: 1_000, reason: "Room seat removed")
       transition(to: .idle)
       publish(.notice(.seatRemoved(roomCode: retiredRoomCode)))
-      if let recoveryCommandID {
-        await clearPersistedRecovery(commandID: recoveryCommandID)
-      }
+      await drainPersistedRecoveryClears()
       return
     }
 
@@ -1013,9 +996,7 @@ public actor RoomConnection {
         matchedAction: matchedPendingAction
       )))
     }
-    if let recoveryCommandIDToClear {
-      await clearPersistedRecovery(commandID: recoveryCommandIDToClear)
-    }
+    await drainPersistedRecoveryClears()
   }
 
   private func isValidResetTransition(
@@ -1121,7 +1102,7 @@ public actor RoomConnection {
     if case .join(_, _, _, let recovery?) = admission {
       return recovery.commandID
     }
-    return pendingRecoveryClearCommandID
+    return nil
   }
 
   private func clearPendingCommand() {
@@ -1143,8 +1124,7 @@ public actor RoomConnection {
         accountID: confirmedAccount.accountID,
         commandID: commandID
       )
-      if pendingRecoveryClearCommandID == commandID {
-        pendingRecoveryClearCommandID = nil
+      if pendingRecoveryClearCommandIDs.remove(commandID) != nil {
         publishStatus()
       }
       return true
@@ -1155,16 +1135,22 @@ public actor RoomConnection {
   }
 
   private func trackPersistedRecoveryClear(commandID: UUID) {
-    guard pendingRecoveryClearCommandID != commandID else { return }
+    guard pendingRecoveryClearCommandIDs.insert(commandID).inserted else { return }
     // Retain the exact durable identity before its admission/command source is
     // removed, a no-pending status is published, or actor reentrancy begins.
-    pendingRecoveryClearCommandID = commandID
     publishStatus()
   }
 
-  private func retryPersistedRecoveryClearIfNeeded() async {
-    guard let commandID = pendingRecoveryClearCommandID else { return }
-    await clearPersistedRecovery(commandID: commandID)
+  @discardableResult
+  private func drainPersistedRecoveryClears() async -> Bool {
+    var attemptedCommandIDs: Set<UUID> = []
+    while let commandID = pendingRecoveryClearCommandIDs.first(where: {
+      !attemptedCommandIDs.contains($0)
+    }) {
+      attemptedCommandIDs.insert(commandID)
+      _ = await clearPersistedRecovery(commandID: commandID)
+    }
+    return pendingRecoveryClearCommandIDs.isEmpty
   }
 
   private func armSynchronizationTimeout(socketGeneration: UInt64) {

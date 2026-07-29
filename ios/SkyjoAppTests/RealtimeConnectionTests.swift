@@ -509,6 +509,76 @@ struct RoomConnectionStateMachineTests {
     await connection.dispose()
   }
 
+  @Test("A stale reset clear retains a newer failed cleanup identity")
+  func staleResetClearRetainsNewerFailedCleanup() async throws {
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let oldCommandID = UUID(uuidString: "40000000-0000-4000-8000-000000000080")!
+    let newCommandID = UUID(uuidString: "40000000-0000-4000-8000-000000000081")!
+    let store = OverlappingClearResetRecoveryStore(failingCommandID: newCommandID)
+    try await store.seed(RoomResetRecoveryRecord(
+      accountID: accountID,
+      roomCode: "ABCDE",
+      playerID: "10000000-0000-4000-8000-000000000001",
+      commandID: oldCommandID,
+      expectedRevision: 7
+    ))
+    let oldPresenceGate = SuspendingSendGate()
+    let oldSocket = FakeRoomWebSocket(sendGates: [2: oldPresenceGate])
+    let newSocket = FakeRoomWebSocket()
+    let sleeper = ControlledSleeper()
+    let connection = try makeTestConnection(
+      factory: FakeSocketFactory([oldSocket, newSocket]),
+      sleeper: sleeper,
+      commandIDs: [newCommandID],
+      resetRecoveryStore: store
+    )
+    let notices = RoomConnectionNoticeRecorder()
+    let observation = Task {
+      for await event in await connection.events() {
+        await notices.record(event)
+      }
+    }
+
+    #expect(try await connection.recoverPersistedReset())
+    #expect(await eventually { await sleeper.hasPending(milliseconds: 500) })
+    #expect(await sleeper.release(milliseconds: 500))
+    #expect(await eventually { await oldSocket.sentTexts().count == 1 })
+    await oldSocket.deliver(.text(try resyncText(
+      commandID: oldCommandID,
+      revision: 8,
+      reason: .roomReset,
+      roomCode: "FGHIJ"
+    )))
+    #expect(await eventually { await oldPresenceGate.hasEntered() })
+
+    try await connection.connect(.create(displayName: "Host"))
+    #expect(await eventually { await newSocket.sentTexts().count == 1 })
+    await newSocket.deliver(.text(try personalizedSnapshotText(revision: 7)))
+    #expect(await eventually { await connection.status().synchronized })
+    _ = try await connection.send(.resetRoom)
+    #expect(await store.load(accountID: accountID)?.commandID == newCommandID)
+
+    await newSocket.deliver(.text(
+      #"{"message":"Upgrade now.","protocolVersion":2,"type":"upgrade-required"}"#
+    ))
+    #expect(await eventually { await store.newerClearGate.hasEntered() })
+    #expect(await connection.status().phase == .upgradeRequired)
+
+    await oldPresenceGate.succeed()
+    #expect(await eventually { await store.clearAttemptCount(commandID: oldCommandID) >= 2 })
+    await store.newerClearGate.succeed()
+    #expect(await eventually { await store.hasFailedNewerClear() })
+    #expect(await eventually { await notices.contains(.resetRecoveryPersistenceFailed) })
+
+    #expect(await store.load(accountID: accountID)?.commandID == newCommandID)
+    #expect(await connection.status().hasPendingCommand)
+    try await connection.disconnect()
+    #expect(await store.load(accountID: accountID) == nil)
+    #expect(!(await connection.status().hasPendingCommand))
+    observation.cancel()
+    await connection.dispose()
+  }
+
   @Test("Reset recovery stores refuse foreign-account replacement without data loss")
   func resetRecoveryStoresRetainForeignAccountRecord() async throws {
     let ownerID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
@@ -1974,6 +2044,48 @@ private actor SuspendingClearResetRecoveryStore: RoomResetRecoveryStore {
     guard record?.accountID == accountID else { return }
     record = nil
   }
+}
+
+private actor OverlappingClearResetRecoveryStore: RoomResetRecoveryStore {
+  private var record: RoomResetRecoveryRecord?
+  private let failingCommandID: UUID
+  private var clearAttempts: [UUID: Int] = [:]
+  private var failedNewerClear = false
+  let newerClearGate = SuspendingSendGate()
+
+  init(failingCommandID: UUID) {
+    self.failingCommandID = failingCommandID
+  }
+
+  func seed(_ record: RoomResetRecoveryRecord) { self.record = record }
+
+  func load(accountID: UUID) -> RoomResetRecoveryRecord? {
+    guard record?.accountID == accountID else { return nil }
+    return record
+  }
+
+  func save(_ record: RoomResetRecoveryRecord) { self.record = record }
+
+  func clear(accountID: UUID, commandID: UUID) async throws {
+    clearAttempts[commandID, default: 0] += 1
+    let attempt = clearAttempts[commandID, default: 0]
+    guard record?.accountID == accountID, record?.commandID == commandID else { return }
+    if commandID == failingCommandID, attempt == 1 {
+      try await newerClearGate.wait()
+      failedNewerClear = true
+      throw RealtimeTestError.transportEnded
+    }
+    guard record?.accountID == accountID, record?.commandID == commandID else { return }
+    record = nil
+  }
+
+  func discard(accountID: UUID) {
+    guard record?.accountID == accountID else { return }
+    record = nil
+  }
+
+  func clearAttemptCount(commandID: UUID) -> Int { clearAttempts[commandID, default: 0] }
+  func hasFailedNewerClear() -> Bool { failedNewerClear }
 }
 
 private actor RoomConnectionNoticeRecorder {
