@@ -317,6 +317,85 @@ struct RoomSessionModelTests {
     await model.stop()
   }
 
+  @Test("A live invite quarantines an automatically recovered seat before its first snapshot")
+  func liveInviteQuarantinesAutomaticRecoveryBeforeFirstSnapshot() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = RecordingSeatStore()
+    let account = testAccount()
+    try await seatStore.save(RoomSeatRecoveryRecord(
+      accountID: account.id,
+      roomCode: "ABCDE",
+      playerID: "seat-old"
+    ))
+    let seededSaveCount = await seatStore.saveCount()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let recoveredRoom = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    await model.start()
+    #expect(await connection.admissions() == [
+      .join(code: "ABCDE", displayName: "Host", playerID: "seat-old"),
+    ])
+
+    let invite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    model.applyInvite(invite)
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(recoveredRoom))
+
+    #expect(!(await modelEventually(attempts: 30) { model.room != nil }))
+    #expect(model.pendingInviteReview == invite)
+    #expect(model.joinCode == "FGHIJ")
+    #expect(await seatStore.saveCount() == seededSaveCount)
+    #expect(await seatStore.record()?.roomCode == "ABCDE")
+
+    await model.dismissInviteReview()
+    #expect(await modelEventually { model.room?.code == "ABCDE" })
+    #expect(await seatStore.saveCount() == seededSaveCount + 1)
+    await model.stop()
+  }
+
+  @Test("A live invite quarantines a manually recovered seat before its first snapshot")
+  func liveInviteQuarantinesManualRecoveryBeforeFirstSnapshot() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = RecordingSeatStore()
+    let account = testAccount()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let recoveredRoom = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    await model.start()
+    try await seatStore.save(RoomSeatRecoveryRecord(
+      accountID: account.id,
+      roomCode: "ABCDE",
+      playerID: "seat-old"
+    ))
+    let seededSaveCount = await seatStore.saveCount()
+    await model.retrySavedSeat()
+    #expect(await connection.admissions() == [
+      .join(code: "ABCDE", displayName: "Host", playerID: "seat-old"),
+    ])
+
+    let invite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    model.applyInvite(invite)
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(recoveredRoom))
+
+    #expect(!(await modelEventually(attempts: 30) { model.room != nil }))
+    #expect(model.pendingInviteReview == invite)
+    #expect(model.joinCode == "FGHIJ")
+    #expect(await seatStore.saveCount() == seededSaveCount)
+    #expect(await seatStore.record()?.roomCode == "ABCDE")
+
+    await model.dismissInviteReview()
+    #expect(await modelEventually { model.room?.code == "ABCDE" })
+    #expect(await seatStore.saveCount() == seededSaveCount + 1)
+    await model.stop()
+  }
+
   @Test("A live invite quarantines an explicit admission that was already in flight")
   func liveInviteWinsExplicitAdmissionRace() async throws {
     let connection = ModelRoomConnection()
@@ -386,6 +465,57 @@ struct RoomSessionModelTests {
     #expect(await connection.disconnectCount() == 0)
     await model.startGame()
     #expect(await connection.actions() == [.startGame])
+    await model.stop()
+  }
+
+  @Test("Canceling an invite falls back to the connection's authoritative snapshot")
+  func cancelInviteUsesConnectionSnapshotFallback() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = RecordingSeatStore()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let admittedRoom = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    await model.start()
+    #expect(await model.join(code: "ABCDE"))
+    let invite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    model.applyInvite(invite)
+    await connection.installAuthoritativeSnapshotWithoutEmitting(admittedRoom)
+
+    await model.dismissInviteReview()
+
+    #expect(await connection.authoritativeSnapshotReadCount() == 1)
+    #expect(model.snapshot?.revision == 7)
+    #expect(model.room?.code == "ABCDE")
+    #expect(await seatStore.record()?.roomCode == "ABCDE")
+    #expect(await connection.disconnectCount() == 0)
+    await model.stop()
+  }
+
+  @Test("Canceling an invite without a snapshot disconnects and preserves cleanup failure")
+  func cancelInviteWithoutSnapshotHandlesDisconnectFailure() async throws {
+    let connection = ModelRoomConnection()
+    await connection.failDisconnect(.seatCleanupUnavailable)
+    let model = makeModel(connection: connection)
+
+    await model.start()
+    #expect(await model.join(code: "ABCDE"))
+    model.applyInvite(try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    ))
+
+    await model.dismissInviteReview()
+
+    #expect(await connection.authoritativeSnapshotReadCount() == 1)
+    #expect(await connection.disconnectCount() == 1)
+    #expect(model.pendingInviteReview == nil)
+    #expect(model.room == nil)
+    #expect(model.banner?.title == "Saved room cleanup needed")
+    #expect(!model.canSubmitAdmission)
+    #expect(model.canForgetSavedSeat)
     await model.stop()
   }
 
@@ -1172,6 +1302,104 @@ struct RoomSessionModelTests {
     await model.stop()
   }
 
+  @Test("A live reset-recovery failure invalidates an admission before its first snapshot")
+  func liveResetRecoveryFailureInvalidatesInFlightAdmission() async throws {
+    let connection = ModelRoomConnection()
+    let seatStore = RecordingSeatStore()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+    let lateRoom = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    await model.start()
+    await connection.suspendNextConnect()
+    let joinTask = Task { await model.join(code: "ABCDE") }
+    #expect(await modelEventually { await connection.connectIsSuspended() })
+
+    await connection.emit(.notice(.resetRecoveryPersistenceFailed))
+    #expect(await modelEventually { model.banner?.title == "Room reset cleanup needed" })
+    #expect(!model.canSubmitAdmission)
+    #expect(model.canForgetSavedSeat)
+
+    await connection.resumeConnect()
+    #expect(!(await joinTask.value))
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(lateRoom))
+    #expect(!(await modelEventually(attempts: 30) { model.room != nil }))
+    #expect(await seatStore.record() == nil)
+    await model.stop()
+  }
+
+  @Test("A reset-recovery notice consumed during Forget cannot invalidate verified cleanup")
+  func resetRecoveryFailureDuringForgetPreservesCleanupOwnership() async {
+    let connection = ModelRoomConnection()
+    await connection.failDisconnect(.seatCleanupUnavailable)
+    await connection.suspendNextDiscard()
+    let model = makeModel(connection: connection)
+
+    await model.start()
+    let forgetTask = Task { await model.forgetSavedSeat() }
+    #expect(await modelEventually { await connection.discardIsSuspended() })
+
+    await connection.emit(.notice(.resetRecoveryPersistenceFailed))
+    await connection.emit(.status(RoomConnectionStatus(
+      phase: .connecting,
+      retryInMilliseconds: nil,
+      synchronized: false,
+      hasPendingCommand: false,
+      revision: nil
+    )))
+    #expect(await modelEventually { model.connectionStatus.phase == .connecting })
+    #expect(model.isAdmissionOperationPending)
+    #expect(model.banner == nil)
+
+    await connection.resumeDiscard()
+    await forgetTask.value
+    #expect(!model.isAdmissionOperationPending)
+    #expect(model.banner == nil)
+    await connection.emit(.status(idleStatus()))
+    #expect(await modelEventually { model.connectionStatus.phase == .idle })
+    #expect(model.canSubmitAdmission)
+    await model.stop()
+  }
+
+  @Test("Verified reset cleanup ignores its delayed failure notice and re-arms for a new reset")
+  func verifiedResetCleanupFencesDelayedFailureNotice() async throws {
+    let connection = ModelRoomConnection()
+    await connection.failDisconnectWithDelayedResetRecoveryNotice()
+    let model = makeModel(connection: connection)
+    let waiting = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    await model.start()
+    await model.forgetSavedSeat()
+    #expect(await connection.disconnectCount() == 1)
+    #expect(await connection.discardCount() == 1)
+    #expect(model.banner == nil)
+
+    await connection.releaseDelayedEvents()
+    await connection.emit(.status(RoomConnectionStatus(
+      phase: .connecting,
+      retryInMilliseconds: nil,
+      synchronized: false,
+      hasPendingCommand: false,
+      revision: nil
+    )))
+    #expect(await modelEventually { model.connectionStatus.phase == .connecting })
+    #expect(model.banner == nil)
+    await connection.emit(.status(idleStatus()))
+    #expect(await modelEventually { model.connectionStatus.phase == .idle })
+    #expect(model.canSubmitAdmission)
+
+    #expect(await model.join(code: "ABCDE"))
+    await connection.emit(.status(connectedStatus(revision: 7)))
+    await connection.emit(.snapshot(waiting))
+    #expect(await modelEventually { model.commandsEnabled })
+    await model.resetRoom()
+    #expect(await connection.actions() == [.resetRoom])
+    await connection.emit(.notice(.resetRecoveryPersistenceFailed))
+    #expect(await modelEventually { model.banner?.title == "Room reset cleanup needed" })
+    #expect(!model.commandsEnabled)
+    await model.stop()
+  }
+
   @Test("Unresolved reset recovery gates every room mutation until explicit Forget succeeds")
   func unresolvedResetRecoveryGatesRoomMutations() async throws {
     let connection = ModelRoomConnection()
@@ -1439,17 +1667,22 @@ private actor ModelRoomConnection: RoomSessionConnection {
   private var receivedActions: [RoomCommandAction] = []
   private var receivedVisibilityUpdates: [Bool] = []
   private var latestAuthoritativeSnapshot: AuthoritativeRoomSnapshot?
+  private var authoritativeSnapshotReads = 0
+  private var delayedEvents: [RoomConnectionEvent] = []
   private var isDisposed = false
   private var persistedResetFailure: ModelTestError?
   private var disconnectFailure: ModelTestError?
   private var discardFailure: ModelTestError?
   private var disconnectCalls = 0
   private var discardCalls = 0
+  private var delaysResetRecoveryFailureOnDisconnect = false
   private var shouldSuspendNextConnect = false
   private var shouldSuspendNextDisconnect = false
+  private var shouldSuspendNextDiscard = false
   private var shouldSuspendNextDispose = false
   private var suspendedConnectContinuation: CheckedContinuation<Void, Never>?
   private var suspendedDisconnectContinuation: CheckedContinuation<Void, Never>?
+  private var suspendedDiscardContinuation: CheckedContinuation<Void, Never>?
   private var suspendedDisposeContinuation: CheckedContinuation<Void, Never>?
   private var shouldSuspendNextVisibilityUpdate = false
   private var suspendedVisibilityContinuation: CheckedContinuation<Void, Never>?
@@ -1462,7 +1695,8 @@ private actor ModelRoomConnection: RoomSessionConnection {
 
   func events() -> AsyncStream<RoomConnectionEvent> { stream }
   func currentAuthoritativeSnapshot() -> AuthoritativeRoomSnapshot? {
-    latestAuthoritativeSnapshot
+    authoritativeSnapshotReads += 1
+    return latestAuthoritativeSnapshot
   }
   func recoverPersistedReset() throws -> Bool {
     if let persistedResetFailure { throw persistedResetFailure }
@@ -1497,6 +1731,10 @@ private actor ModelRoomConnection: RoomSessionConnection {
     disconnectCalls += 1
     latestAuthoritativeSnapshot = nil
     continuation.yield(.status(idleStatus()))
+    if delaysResetRecoveryFailureOnDisconnect {
+      delaysResetRecoveryFailureOnDisconnect = false
+      delayedEvents.append(.notice(.resetRecoveryPersistenceFailed))
+    }
     if shouldSuspendNextDisconnect {
       shouldSuspendNextDisconnect = false
       await withCheckedContinuation { suspendedDisconnectContinuation = $0 }
@@ -1504,8 +1742,12 @@ private actor ModelRoomConnection: RoomSessionConnection {
     if let disconnectFailure { throw disconnectFailure }
   }
 
-  func discardPersistedResetRecovery() throws {
+  func discardPersistedResetRecovery() async throws {
     discardCalls += 1
+    if shouldSuspendNextDiscard {
+      shouldSuspendNextDiscard = false
+      await withCheckedContinuation { suspendedDiscardContinuation = $0 }
+    }
     if let discardFailure { throw discardFailure }
   }
 
@@ -1525,6 +1767,15 @@ private actor ModelRoomConnection: RoomSessionConnection {
     continuation.yield(event)
   }
 
+  func installAuthoritativeSnapshotWithoutEmitting(_ snapshot: AuthoritativeRoomSnapshot) {
+    latestAuthoritativeSnapshot = snapshot
+  }
+
+  func releaseDelayedEvents() {
+    for event in delayedEvents { continuation.yield(event) }
+    delayedEvents = []
+  }
+
   func admissions() -> [RoomAdmission] { receivedAdmissions }
   func actions() -> [RoomCommandAction] { receivedActions }
   func visibilityUpdates() -> [Bool] { receivedVisibilityUpdates }
@@ -1532,7 +1783,12 @@ private actor ModelRoomConnection: RoomSessionConnection {
 
   func failPersistedResetRecovery(_ error: ModelTestError?) { persistedResetFailure = error }
   func failDisconnect(_ error: ModelTestError?) { disconnectFailure = error }
+  func failDisconnectWithDelayedResetRecoveryNotice() {
+    disconnectFailure = .seatCleanupUnavailable
+    delaysResetRecoveryFailureOnDisconnect = true
+  }
   func failDiscard(_ error: ModelTestError?) { discardFailure = error }
+  func authoritativeSnapshotReadCount() -> Int { authoritativeSnapshotReads }
   func disconnectCount() -> Int { disconnectCalls }
   func discardCount() -> Int { discardCalls }
 
@@ -1548,6 +1804,13 @@ private actor ModelRoomConnection: RoomSessionConnection {
   func resumeDisconnect() {
     suspendedDisconnectContinuation?.resume()
     suspendedDisconnectContinuation = nil
+  }
+
+  func suspendNextDiscard() { shouldSuspendNextDiscard = true }
+  func discardIsSuspended() -> Bool { suspendedDiscardContinuation != nil }
+  func resumeDiscard() {
+    suspendedDiscardContinuation?.resume()
+    suspendedDiscardContinuation = nil
   }
 
   func suspendNextDispose() { shouldSuspendNextDispose = true }
@@ -1632,6 +1895,7 @@ private actor SuspendedModelConnectionProvider {
 
 private actor RecordingSeatStore: RoomSeatRecoveryStore {
   private var storedRecord: RoomSeatRecoveryRecord?
+  private var saves = 0
   private var clears = 0
   private let failClear: Bool
   private let failSaveRoomCode: String?
@@ -1648,6 +1912,7 @@ private actor RecordingSeatStore: RoomSeatRecoveryStore {
 
   func save(_ record: RoomSeatRecoveryRecord) throws {
     if record.roomCode == failSaveRoomCode { throw ModelTestError.seatCleanupUnavailable }
+    saves += 1
     storedRecord = record
   }
 
@@ -1659,6 +1924,7 @@ private actor RecordingSeatStore: RoomSeatRecoveryStore {
   }
 
   func record() -> RoomSeatRecoveryRecord? { storedRecord }
+  func saveCount() -> Int { saves }
   func clearCount() -> Int { clears }
 }
 

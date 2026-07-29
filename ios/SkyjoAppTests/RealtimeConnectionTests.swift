@@ -2,6 +2,8 @@ import Foundation
 import SkyjoNetworking
 import Testing
 
+@testable import SkyjoNative
+
 @Suite("Protocol-v2 realtime contracts", .serialized)
 struct RealtimeContractTests {
   @Test("Every canonical client frame is accepted and every invalid frame fails closed")
@@ -209,6 +211,26 @@ struct RealtimeContractTests {
 
 @Suite("Protocol-v2 room connection state machine", .serialized)
 struct RoomConnectionStateMachineTests {
+  @Test("RoomSessionConnection exposes the real connection's authoritative snapshot")
+  func roomSessionConnectionSnapshotAdapter() async throws {
+    let socket = FakeRoomWebSocket()
+    let connection = try makeTestConnection(
+      factory: FakeSocketFactory([socket]),
+      sleeper: ControlledSleeper(),
+      commandIDs: [UUID(uuidString: "40000000-0000-4000-8000-000000000040")!]
+    )
+    let adapter: any RoomSessionConnection = connection
+
+    #expect(await adapter.currentAuthoritativeSnapshot() == nil)
+    try await adapter.connect(.create(displayName: "Host"))
+    await socket.deliver(.text(try personalizedSnapshotText(revision: 7)))
+    #expect(await eventually { await adapter.currentAuthoritativeSnapshot()?.revision == 7 })
+
+    let snapshot = await adapter.currentAuthoritativeSnapshot()
+    #expect(snapshot?.room.code == "ABCDE")
+    await adapter.dispose()
+  }
+
   @Test("Admission, authoritative snapshots, presence, one-command gating, replay, and convergence")
   func replayAndConvergence() async throws {
     let firstSocket = FakeRoomWebSocket()
