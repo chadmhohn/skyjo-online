@@ -398,6 +398,159 @@ struct RoomConnectionStateMachineTests {
     await connection.dispose()
   }
 
+  @Test("Recovered reset identity stays pending across suspended presence and disconnect")
+  func recoveredResetTracksClearBeforePresenceAwait() async throws {
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let commandID = UUID(uuidString: "40000000-0000-4000-8000-000000000076")!
+    let store = VolatileRoomResetRecoveryStore()
+    let record = try RoomResetRecoveryRecord(
+      accountID: accountID,
+      roomCode: "ABCDE",
+      playerID: "10000000-0000-4000-8000-000000000001",
+      commandID: commandID,
+      expectedRevision: 7
+    )
+    try await store.save(record)
+    let presenceGate = SuspendingSendGate()
+    let socket = FakeRoomWebSocket(sendGates: [2: presenceGate])
+    let sleeper = ControlledSleeper()
+    let connection = try makeTestConnection(
+      factory: FakeSocketFactory([socket]),
+      sleeper: sleeper,
+      commandIDs: [],
+      resetRecoveryStore: store
+    )
+    let statuses = RoomConnectionStatusRecorder()
+    let observation = Task {
+      for await event in await connection.events() {
+        await statuses.record(event)
+      }
+    }
+
+    #expect(try await connection.recoverPersistedReset())
+    #expect(await eventually { await sleeper.hasPending(milliseconds: 500) })
+    #expect(await sleeper.release(milliseconds: 500))
+    #expect(await eventually { await socket.sentTexts().count == 1 })
+    await socket.deliver(.text(try resyncText(
+      commandID: commandID,
+      revision: 8,
+      reason: .roomReset,
+      roomCode: "FGHIJ"
+    )))
+
+    #expect(await eventually { await presenceGate.hasEntered() })
+    #expect(await connection.snapshot()?.room.code == "FGHIJ")
+    #expect(await connection.status().phase == .connected)
+    #expect(await connection.status().hasPendingCommand)
+    #expect(await eventually {
+      await statuses.contains(phase: .connected, hasPendingCommand: true)
+    })
+    #expect(!(await statuses.contains(phase: .connected, hasPendingCommand: false)))
+    #expect(await store.load(accountID: accountID) == record)
+
+    try await connection.disconnect()
+    #expect(await connection.status().phase == .idle)
+    #expect(await store.load(accountID: accountID) == nil)
+    await presenceGate.succeed()
+    #expect(await eventually { !(await connection.status().hasPendingCommand) })
+    observation.cancel()
+    await connection.dispose()
+  }
+
+  @Test("A suspended exact clear retains a newer recovery generation")
+  func suspendedClearRetainsNewerRecoveryRecord() async throws {
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let oldCommandID = UUID(uuidString: "40000000-0000-4000-8000-000000000077")!
+    let newCommandID = UUID(uuidString: "40000000-0000-4000-8000-000000000078")!
+    let store = SuspendingClearResetRecoveryStore()
+    try await store.seed(RoomResetRecoveryRecord(
+      accountID: accountID,
+      roomCode: "ABCDE",
+      playerID: "10000000-0000-4000-8000-000000000001",
+      commandID: oldCommandID,
+      expectedRevision: 7
+    ))
+    let newerRecord = try RoomResetRecoveryRecord(
+      accountID: accountID,
+      roomCode: "KLMNO",
+      playerID: "seat-new",
+      commandID: newCommandID,
+      expectedRevision: 12
+    )
+    let socket = FakeRoomWebSocket()
+    let sleeper = ControlledSleeper()
+    let connection = try makeTestConnection(
+      factory: FakeSocketFactory([socket]),
+      sleeper: sleeper,
+      commandIDs: [],
+      resetRecoveryStore: store
+    )
+
+    #expect(try await connection.recoverPersistedReset())
+    #expect(await eventually { await sleeper.hasPending(milliseconds: 500) })
+    #expect(await sleeper.release(milliseconds: 500))
+    #expect(await eventually { await socket.sentTexts().count == 1 })
+    await socket.deliver(.text(try resyncText(
+      commandID: oldCommandID,
+      revision: 8,
+      reason: .roomReset,
+      roomCode: "FGHIJ"
+    )))
+
+    #expect(await eventually { await store.clearGate.hasEntered() })
+    #expect(await connection.status().hasPendingCommand)
+    await store.save(newerRecord)
+    await store.clearGate.succeed()
+    #expect(await eventually { !(await connection.status().hasPendingCommand) })
+    #expect(await store.load(accountID: accountID) == newerRecord)
+
+    try await connection.disconnect()
+    #expect(await store.load(accountID: accountID) == newerRecord)
+    await connection.dispose()
+  }
+
+  @Test("Reset recovery stores refuse foreign-account replacement without data loss")
+  func resetRecoveryStoresRetainForeignAccountRecord() async throws {
+    let ownerID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let foreignID = UUID(uuidString: "50000000-0000-4000-8000-000000000005")!
+    let ownerRecord = try RoomResetRecoveryRecord(
+      accountID: ownerID,
+      roomCode: "ABCDE",
+      playerID: "seat-owner",
+      commandID: UUID(uuidString: "40000000-0000-4000-8000-000000000079")!,
+      expectedRevision: 7
+    )
+    let foreignRecord = try RoomResetRecoveryRecord(
+      accountID: foreignID,
+      roomCode: "FGHIJ",
+      playerID: "seat-foreign",
+      commandID: UUID(uuidString: "60000000-0000-4000-8000-000000000006")!,
+      expectedRevision: 9
+    )
+
+    let volatile = VolatileRoomResetRecoveryStore()
+    try await volatile.save(ownerRecord)
+    await #expect(throws: RoomResetRecoveryStoreError.foreignAccountRecoveryExists) {
+      try await volatile.save(foreignRecord)
+    }
+    #expect(await volatile.load(accountID: ownerID) == ownerRecord)
+    #expect(await volatile.load(accountID: foreignID) == nil)
+
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: "skyjo-reset-foreign-\(UUID().uuidString)", directoryHint: .isDirectory)
+    let fileURL = directory.appending(path: "recovery.json", directoryHint: .notDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = FileRoomResetRecoveryStore(fileURL: fileURL)
+    try await file.save(ownerRecord)
+    let ownerBytes = try Data(contentsOf: fileURL)
+    await #expect(throws: RoomResetRecoveryStoreError.foreignAccountRecoveryExists) {
+      try await file.save(foreignRecord)
+    }
+    #expect(try Data(contentsOf: fileURL) == ownerBytes)
+    #expect(try await file.load(accountID: ownerID) == ownerRecord)
+    #expect(try await file.load(accountID: foreignID) == nil)
+  }
+
   @Test("Reset recovery survives actor recreation, is account fenced, and clears after reset resync")
   func durableResetRecoveryAcrossActors() async throws {
     let directory = FileManager.default.temporaryDirectory
@@ -1833,6 +1986,24 @@ private actor RoomConnectionNoticeRecorder {
 
   func contains(_ notice: RoomConnectionNotice) -> Bool {
     notices.contains(notice)
+  }
+}
+
+private actor RoomConnectionStatusRecorder {
+  private var statuses: [RoomConnectionStatus] = []
+
+  func record(_ event: RoomConnectionEvent) {
+    guard case .status(let status) = event else { return }
+    statuses.append(status)
+  }
+
+  func contains(
+    phase: RoomConnectionPhase,
+    hasPendingCommand: Bool
+  ) -> Bool {
+    statuses.contains {
+      $0.phase == phase && $0.hasPendingCommand == hasPendingCommand
+    }
   }
 }
 

@@ -328,6 +328,9 @@ public actor RoomConnection {
     lifecycleEpoch &+= 1
     let operationEpoch = lifecycleEpoch
     let abandonedRecoveryCommandID = activeResetRecoveryCommandID()
+    if let abandonedRecoveryCommandID {
+      trackPersistedRecoveryClear(commandID: abandonedRecoveryCommandID)
+    }
     startConnectivityObservationIfNeeded()
     retireCurrentSocket(code: 1_000, reason: "Room session replaced")
     cancelReconnect()
@@ -373,6 +376,9 @@ public actor RoomConnection {
     let abandonedRecoveryCommandID = activeRecoveryCommandID != savedRecoveryCommandID
       ? activeRecoveryCommandID
       : nil
+    if let abandonedRecoveryCommandID {
+      trackPersistedRecoveryClear(commandID: abandonedRecoveryCommandID)
+    }
     startConnectivityObservationIfNeeded()
     if admission != savedAdmission {
       retireCurrentSocket(code: 1_000, reason: "Room recovery replaced")
@@ -572,6 +578,9 @@ public actor RoomConnection {
     }
     lifecycleEpoch &+= 1
     let abandonedRecoveryCommandID = activeResetRecoveryCommandID()
+    if let abandonedRecoveryCommandID {
+      trackPersistedRecoveryClear(commandID: abandonedRecoveryCommandID)
+    }
     disconnectCleanupInProgress = true
     publishStatus()
     defer {
@@ -761,6 +770,9 @@ public actor RoomConnection {
     case .upgradeRequired:
       lifecycleEpoch &+= 1
       let recoveryCommandID = activeResetRecoveryCommandID()
+      if let recoveryCommandID {
+        trackPersistedRecoveryClear(commandID: recoveryCommandID)
+      }
       clearPendingCommand()
       admission = nil
       quarantineAuthoritativeState()
@@ -796,6 +808,17 @@ public actor RoomConnection {
       establishedPlayerID: establishedPlayerID
     )
     let acceptedResetCommandID = resetTransition ? resync?.commandID : nil
+    let rejectedResetCommandID: UUID?
+    if let resync,
+       let pendingCommand,
+       resync.commandID == pendingCommand.commandID,
+       !resetTransition,
+       pendingCommand.action == .resetRoom {
+      rejectedResetCommandID = pendingCommand.commandID
+    } else {
+      rejectedResetCommandID = nil
+    }
+    let recoveryCommandIDToClear = acceptedResetCommandID ?? rejectedResetCommandID
     if case .join(let expectedCode, _, _, _) = admission,
        !resetTransition,
        room.code != expectedCode {
@@ -815,6 +838,10 @@ public actor RoomConnection {
     }
     if resync == nil, let lastAcceptedRevision, revision < lastAcceptedRevision {
       throw RoomConnectionContractError.invalidFrame
+    }
+
+    if let recoveryCommandIDToClear {
+      trackPersistedRecoveryClear(commandID: recoveryCommandIDToClear)
     }
 
     if resetTransition, let pendingCommand, pendingCommand.action == .resetRoom {
@@ -849,14 +876,10 @@ public actor RoomConnection {
     transition(to: .connected)
     publish(.snapshot(authoritative))
 
-    var recoveryCommandIDToClear = acceptedResetCommandID
     if let resync,
        let pendingCommand,
        resync.commandID == pendingCommand.commandID,
        !resetTransition {
-      recoveryCommandIDToClear = pendingCommand.action == .resetRoom
-        ? pendingCommand.commandID
-        : nil
       restoreAdmissionAfterRejectedReset(pendingCommand)
       clearPendingCommand()
       publish(.notice(.commandResynchronized(reason: resync.reason)))
@@ -905,6 +928,9 @@ public actor RoomConnection {
       lifecycleEpoch &+= 1
       let retiredRoomCode = terminalRoomCode()
       let recoveryCommandID = activeResetRecoveryCommandID()
+      if let recoveryCommandID {
+        trackPersistedRecoveryClear(commandID: recoveryCommandID)
+      }
       clearPendingCommand()
       admission = nil
       quarantineAuthoritativeState()
@@ -922,6 +948,9 @@ public actor RoomConnection {
       lifecycleEpoch &+= 1
       let retiredRoomCode = terminalRoomCode()
       let recoveryCommandID = activeResetRecoveryCommandID()
+      if let recoveryCommandID {
+        trackPersistedRecoveryClear(commandID: recoveryCommandID)
+      }
       clearPendingCommand()
       admission = nil
       quarantineAuthoritativeState()
@@ -935,6 +964,7 @@ public actor RoomConnection {
       return
     }
 
+    let admissionRejected = synchronizedGeneration != socketGeneration
     var recoveryCommandIDToClear: UUID?
     var matchedPendingAction: RoomCommandAction?
     if let pendingCommand, frame.commandID == pendingCommand.commandID {
@@ -942,11 +972,20 @@ public actor RoomConnection {
       recoveryCommandIDToClear = pendingCommand.action == .resetRoom
         ? pendingCommand.commandID
         : nil
+    }
+    if admissionRejected,
+       ["stale-room", "seat-forbidden", "room-not-found", "game-started"].contains(frame.code),
+       let commandID = activeResetRecoveryCommandID() {
+      recoveryCommandIDToClear = commandID
+    }
+    if let recoveryCommandIDToClear {
+      trackPersistedRecoveryClear(commandID: recoveryCommandIDToClear)
+    }
+    if let pendingCommand, frame.commandID == pendingCommand.commandID {
       restoreAdmissionAfterRejectedReset(pendingCommand)
       clearPendingCommand()
     }
 
-    let admissionRejected = synchronizedGeneration != socketGeneration
     let usedSavedSeat: Bool
     if case .join(_, _, let playerID, _) = admission {
       usedSavedSeat = playerID != nil
@@ -955,10 +994,6 @@ public actor RoomConnection {
     }
     if admissionRejected {
       lifecycleEpoch &+= 1
-      if ["stale-room", "seat-forbidden", "room-not-found", "game-started"].contains(frame.code),
-         let commandID = activeResetRecoveryCommandID() {
-        recoveryCommandIDToClear = commandID
-      }
       clearPendingCommand()
       admission = nil
       quarantineAuthoritativeState()
@@ -1102,9 +1137,7 @@ public actor RoomConnection {
 
   @discardableResult
   private func clearPersistedRecovery(commandID: UUID) async -> Bool {
-    let beganTrackingClear = pendingRecoveryClearCommandID != commandID
-    pendingRecoveryClearCommandID = commandID
-    if beganTrackingClear { publishStatus() }
+    trackPersistedRecoveryClear(commandID: commandID)
     do {
       try await environment.resetRecoveryStore.clear(
         accountID: confirmedAccount.accountID,
@@ -1119,6 +1152,14 @@ public actor RoomConnection {
       publish(.notice(.resetRecoveryPersistenceFailed))
       return false
     }
+  }
+
+  private func trackPersistedRecoveryClear(commandID: UUID) {
+    guard pendingRecoveryClearCommandID != commandID else { return }
+    // Retain the exact durable identity before its admission/command source is
+    // removed, a no-pending status is published, or actor reentrancy begins.
+    pendingRecoveryClearCommandID = commandID
+    publishStatus()
   }
 
   private func retryPersistedRecoveryClearIfNeeded() async {

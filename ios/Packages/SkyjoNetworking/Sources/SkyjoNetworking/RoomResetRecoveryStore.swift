@@ -88,6 +88,11 @@ public protocol RoomResetRecoveryStore: Sendable {
   func discard(accountID: UUID) async throws
 }
 
+/// Fail-closed store conflicts that preserve an unresolved recovery record.
+public enum RoomResetRecoveryStoreError: Error, Equatable, Sendable {
+  case foreignAccountRecoveryExists
+}
+
 public actor VolatileRoomResetRecoveryStore: RoomResetRecoveryStore {
   private var record: RoomResetRecoveryRecord?
 
@@ -99,13 +104,19 @@ public actor VolatileRoomResetRecoveryStore: RoomResetRecoveryStore {
   }
 
   public func save(_ record: RoomResetRecoveryRecord) throws {
-    self.record = try RoomResetRecoveryRecord(
+    let validatedRecord = try RoomResetRecoveryRecord(
       accountID: record.accountID,
       roomCode: record.roomCode,
       playerID: record.playerID,
       commandID: record.commandID,
       expectedRevision: record.expectedRevision
     )
+    // A shared app-level store must not let one signed-in account erase the
+    // only recovery path owned by another account.
+    if let existing = self.record, existing.accountID != validatedRecord.accountID {
+      throw RoomResetRecoveryStoreError.foreignAccountRecoveryExists
+    }
+    self.record = validatedRecord
   }
 
   public func clear(accountID: UUID, commandID: UUID) {
@@ -162,6 +173,12 @@ public actor FileRoomResetRecoveryStore: RoomResetRecoveryStore {
       commandID: record.commandID,
       expectedRevision: record.expectedRevision
     )
+    // Read and compare under the cross-actor file lock so a foreign record is
+    // retained byte-for-byte instead of being replaced between load and write.
+    if let existing = try loadStoredRecord(),
+       existing.accountID != validatedRecord.accountID {
+      throw RoomResetRecoveryStoreError.foreignAccountRecoveryExists
+    }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     let data = try encoder.encode(validatedRecord)
