@@ -410,13 +410,16 @@ struct StatsOutboxTests {
     #expect(blockedStatus.blockedByTerminalFailure)
     #expect(blockedStatus.blockedHeadGameID == gameID)
     #expect(blockedStatus.blockedHeadKind == .corrupt)
-    let recoveryHandle = try #require(blockedStatus.blockedHeadRecoveryHandle)
+    _ = try #require(blockedStatus.blockedHeadRecoveryHandle)
     let coordinator = StatsOutboxCoordinator(store: store) { _ in
       Issue.record("A corrupt outbox body must not reach delivery")
     }
     await coordinator.setConfirmedAccount(accountID)
     #expect(await coordinator.flush(force: true).attempted == 0)
     #expect(await coordinator.latestWarning?.kind == .statsNotSaved)
+    let recoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
     do {
       try await coordinator.discardBlockedHead(
         expectedRecoveryHandle: StatsOutboxRecoveryHandle(token: UUID())
@@ -628,8 +631,9 @@ struct StatsOutboxTests {
     #expect(await coordinator.flush(force: true).attempted == 0)
     #expect(await coordinator.latestWarning?.kind == .statsNotSaved)
     #expect(await calls.values.isEmpty)
+    let confirmedStatus = await coordinator.status()
     let recovered = await coordinator.retryTerminalHead(
-      expectedRecoveryHandle: try #require(status.blockedHeadRecoveryHandle)
+      expectedRecoveryHandle: try #require(confirmedStatus.blockedHeadRecoveryHandle)
     )
     #expect(recovered.delivered == 1)
     #expect(recovered.pending == 0)
@@ -791,6 +795,79 @@ struct StatsOutboxTests {
     #expect(aliceStatus.terminalFailures == 1)
     #expect(aliceStatus.blockedByTerminalFailure)
     #expect(aliceStatus.blockedHeadGameID == PersistenceTestSupport.guestGameID)
+  }
+
+  @Test("A queued recovery capability cannot cross same-account reauthorization")
+  func queuedRecoveryCannotCrossSameAccountReauthorization() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    try await makeTerminalHead(in: store)
+
+    let gate = AsyncCoordinatorRecoveryGate()
+    let coordinator = StatsOutboxCoordinator(
+      store: store,
+      environment: StatsOutboxCoordinatorEnvironment(
+        recoveryBarrier: { checkpoint in await gate.pause(at: checkpoint) }
+      )
+    ) { _ in }
+    let accountID = PersistenceTestSupport.aliceID
+    await coordinator.setConfirmedAccount(accountID)
+    let staleHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    let discard = Task { () -> SoloPersistenceError? in
+      do {
+        try await coordinator.discardBlockedHead(expectedRecoveryHandle: staleHandle)
+        return nil
+      } catch let error as SoloPersistenceError {
+        return error
+      } catch {
+        return .storageUnavailable
+      }
+    }
+
+    await gate.waitUntilBlocked()
+    await coordinator.setConfirmedAccount(nil)
+    await coordinator.setConfirmedAccount(accountID)
+    let currentHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    #expect(currentHandle != staleHandle)
+    await gate.release()
+
+    #expect(await discard.value == .sessionConflict)
+    let blockedStatus = try await store.outboxStatus(accountID: accountID)
+    #expect(blockedStatus.queued == 1)
+    #expect(blockedStatus.terminalFailures == 1)
+    #expect(blockedStatus.blockedByTerminalFailure)
+
+    try await coordinator.discardBlockedHead(expectedRecoveryHandle: currentHandle)
+    #expect(try await store.outboxStatus(accountID: accountID) == .empty)
+  }
+
+  @Test("Recovery capabilities cannot cross coordinator instances")
+  func recoveryCapabilitiesAreCoordinatorScoped() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    try await makeTerminalHead(in: store)
+    let first = StatsOutboxCoordinator(store: store) { _ in }
+    let second = StatsOutboxCoordinator(store: store) { _ in }
+    let accountID = PersistenceTestSupport.aliceID
+    await first.setConfirmedAccount(accountID)
+    await second.setConfirmedAccount(accountID)
+    let firstHandle = try #require(
+      await first.status().blockedHeadRecoveryHandle
+    )
+
+    await expectStatsPersistenceError(.sessionConflict) {
+      try await second.discardBlockedHead(expectedRecoveryHandle: firstHandle)
+    }
+    let secondHandle = try #require(
+      await second.status().blockedHeadRecoveryHandle
+    )
+    #expect(secondHandle != firstHandle)
+    try await second.discardBlockedHead(expectedRecoveryHandle: secondHandle)
+    #expect(try await store.outboxStatus(accountID: accountID) == .empty)
   }
 
   @Test("Concurrent triggers share one flight and drain a queued trigger")
@@ -1010,6 +1087,32 @@ private actor AsyncPersistenceGate {
 
   func pause(at candidate: PersistenceCheckpoint) async {
     guard candidate == checkpoint else { return }
+    isBlocked = true
+    for waiter in blockedWaiters { waiter.resume() }
+    blockedWaiters.removeAll()
+    await withCheckedContinuation { releaseWaiter = $0 }
+  }
+
+  func waitUntilBlocked() async {
+    if isBlocked { return }
+    await withCheckedContinuation { blockedWaiters.append($0) }
+  }
+
+  func release() {
+    releaseWaiter?.resume()
+    releaseWaiter = nil
+  }
+}
+
+private actor AsyncCoordinatorRecoveryGate {
+  private var shouldBlock = true
+  private var isBlocked = false
+  private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+  func pause(at checkpoint: StatsOutboxCoordinatorCheckpoint) async {
+    guard checkpoint == .beforeRecoveryAuthorization, shouldBlock else { return }
+    shouldBlock = false
     isBlocked = true
     for waiter in blockedWaiters { waiter.resume() }
     blockedWaiters.removeAll()

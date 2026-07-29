@@ -884,7 +884,6 @@ final class AppModel {
   }
 
   func synchronizeLocalSolo(_ solo: SoloFeatureModel) async {
-    sessionInvalidation?.setConfirmedAccount(confirmedStatsAccountID)
     switch rootState {
     case .guest, .authenticated, .offlineReady:
       await solo.switchOwner(

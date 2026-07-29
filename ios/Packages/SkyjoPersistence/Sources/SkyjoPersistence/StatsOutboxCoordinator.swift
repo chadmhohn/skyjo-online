@@ -2,9 +2,14 @@ import Foundation
 
 public typealias StatsOutboxDelivery = @Sendable (StatsSubmissionRequest) async throws -> Void
 
+enum StatsOutboxCoordinatorCheckpoint: Equatable, Sendable {
+  case beforeRecoveryAuthorization
+}
+
 public struct StatsOutboxCoordinatorEnvironment: Sendable {
   public var nowMilliseconds: @Sendable () -> Int64
   public var sleep: @Sendable (Duration) async throws -> Void
+  let recoveryBarrier: @Sendable (StatsOutboxCoordinatorCheckpoint) async -> Void
 
   public init(
     nowMilliseconds: @escaping @Sendable () -> Int64 = {
@@ -16,6 +21,21 @@ public struct StatsOutboxCoordinatorEnvironment: Sendable {
   ) {
     self.nowMilliseconds = nowMilliseconds
     self.sleep = sleep
+    recoveryBarrier = { _ in }
+  }
+
+  init(
+    nowMilliseconds: @escaping @Sendable () -> Int64 = {
+      Int64(Date().timeIntervalSince1970 * 1_000)
+    },
+    sleep: @escaping @Sendable (Duration) async throws -> Void = {
+      try await Task<Never, Never>.sleep(for: $0)
+    },
+    recoveryBarrier: @escaping @Sendable (StatsOutboxCoordinatorCheckpoint) async -> Void
+  ) {
+    self.nowMilliseconds = nowMilliseconds
+    self.sleep = sleep
+    self.recoveryBarrier = recoveryBarrier
   }
 }
 
@@ -24,10 +44,13 @@ public actor StatsOutboxCoordinator {
   private let store: SoloPersistenceStore
   private let deliver: StatsOutboxDelivery
   private let environment: StatsOutboxCoordinatorEnvironment
+  private let authorizationController: StatsOutboxAuthorizationController
+  private let managesAuthorization: Bool
+  private let authorizationScope = UUID()
 
   private var confirmedAccountID: UUID?
   private var accountGeneration: UInt64 = 0
-  private var accountFence = StatsOutboxAccountFence()
+  private var accountFence: StatsOutboxAccountFence?
   private var nextRunID: UInt64 = 0
   private var activeRunID: UInt64?
   private var activeTask: Task<StatsFlushResult, Never>?
@@ -40,19 +63,38 @@ public actor StatsOutboxCoordinator {
   public init(
     store: SoloPersistenceStore,
     environment: StatsOutboxCoordinatorEnvironment = StatsOutboxCoordinatorEnvironment(),
+    authorizationController: StatsOutboxAuthorizationController? = nil,
     deliver: @escaping StatsOutboxDelivery
   ) {
     self.store = store
     self.environment = environment
+    self.authorizationController = authorizationController ?? StatsOutboxAuthorizationController()
+    managesAuthorization = authorizationController == nil
     self.deliver = deliver
   }
 
   /// Only a currently confirmed account authorizes delivery. Offline owner hints never call this.
   public func setConfirmedAccount(_ accountID: UUID?) {
-    guard confirmedAccountID != accountID else { return }
-    accountFence.invalidate()
-    accountFence = StatsOutboxAccountFence()
-    confirmedAccountID = accountID
+    if managesAuthorization {
+      authorizationController.setConfirmedAccount(accountID)
+    }
+    let lease = authorizationController.currentLease()
+    let effectiveAccountID = lease?.accountID
+    if confirmedAccountID == effectiveAccountID {
+      if effectiveAccountID == nil { return }
+      if accountFence?.isCurrent() == true { return }
+    }
+    accountFence?.invalidate()
+    if let lease {
+      accountFence = StatsOutboxAccountFence(
+        authorizationController: authorizationController,
+        authorizationLease: lease
+      )
+      confirmedAccountID = lease.accountID
+    } else {
+      accountFence = nil
+      confirmedAccountID = nil
+    }
     accountGeneration &+= 1
     activeTask?.cancel()
     activeTask = nil
@@ -88,8 +130,8 @@ public actor StatsOutboxCoordinator {
   }
 
   public func dispose() {
-    accountFence.invalidate()
-    accountFence = StatsOutboxAccountFence()
+    accountFence?.invalidate()
+    accountFence = nil
     confirmedAccountID = nil
     accountGeneration &+= 1
     activeTask?.cancel()
@@ -108,7 +150,11 @@ public actor StatsOutboxCoordinator {
       let status = try await store.outboxStatus(accountID: accountID)
       guard isCurrent(accountID: accountID, generation: generation) else { return .empty }
       latestWarning = status.blockedByTerminalFailure ? .statsNotSaved : nil
-      return status
+      return status.authorizingRecoveryHandle(
+        scope: authorizationScope,
+        accountID: accountID,
+        generation: generation
+      )
     } catch let error as SoloPersistenceError {
       guard isCurrent(accountID: accountID, generation: generation) else { return .empty }
       latestWarning = error.warning
@@ -124,10 +170,14 @@ public actor StatsOutboxCoordinator {
   public func retryTerminalHead(
     expectedRecoveryHandle: StatsOutboxRecoveryHandle
   ) async -> StatsFlushResult {
-    guard let accountID = confirmedAccountID else { return .idle }
+    await environment.recoveryBarrier(.beforeRecoveryAuthorization)
+    guard let accountID = confirmedAccountID, let fence = accountFence else { return .idle }
     let generation = accountGeneration
-    let fence = accountFence
-    guard isCurrent(accountID: accountID, generation: generation) else {
+    guard expectedRecoveryHandle.authorizes(
+      scope: authorizationScope,
+      accountID: accountID,
+      generation: generation
+    ), isCurrent(accountID: accountID, generation: generation) else {
       return sanitizedAbortedResult
     }
     do {
@@ -165,12 +215,16 @@ public actor StatsOutboxCoordinator {
   public func discardBlockedHead(
     expectedRecoveryHandle: StatsOutboxRecoveryHandle
   ) async throws {
-    guard let accountID = confirmedAccountID else {
+    await environment.recoveryBarrier(.beforeRecoveryAuthorization)
+    guard let accountID = confirmedAccountID, let fence = accountFence else {
       throw SoloPersistenceError.sessionConflict
     }
     let generation = accountGeneration
-    let fence = accountFence
-    guard isCurrent(accountID: accountID, generation: generation) else {
+    guard expectedRecoveryHandle.authorizes(
+      scope: authorizationScope,
+      accountID: accountID,
+      generation: generation
+    ), isCurrent(accountID: accountID, generation: generation) else {
       throw SoloPersistenceError.sessionConflict
     }
     do {
@@ -192,11 +246,10 @@ public actor StatsOutboxCoordinator {
   }
 
   private func startRun(force: Bool) async -> StatsFlushResult {
-    guard let accountID = confirmedAccountID else { return .idle }
+    guard let accountID = confirmedAccountID, let fence = accountFence else { return .idle }
     nextRunID &+= 1
     let runID = nextRunID
     let generation = accountGeneration
-    let fence = accountFence
     let task = Task { [weak self] in
       guard let self else { return StatsFlushResult.idle }
       return await self.runFlush(
@@ -437,7 +490,9 @@ public actor StatsOutboxCoordinator {
   }
 
   private func isCurrent(accountID: UUID, generation: UInt64) -> Bool {
-    confirmedAccountID == accountID && accountGeneration == generation
+    confirmedAccountID == accountID
+      && accountGeneration == generation
+      && accountFence?.isCurrent() == true
   }
 
   private func scheduleRetry(

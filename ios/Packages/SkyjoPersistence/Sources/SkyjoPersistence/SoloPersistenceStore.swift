@@ -509,7 +509,7 @@ public actor SoloPersistenceStore: ModelActor {
     }
   }
 
-  public func retryTerminalOutboxHead(
+  func retryTerminalOutboxHead(
     accountID: UUID,
     expectedRecoveryHandle: StatsOutboxRecoveryHandle,
     nowMilliseconds: Int64
@@ -540,7 +540,7 @@ public actor SoloPersistenceStore: ModelActor {
       let update = {
         try self.modelContext.transaction {
           guard let head = try self.outboxRecords(ownerKey: ownerKey).first,
-                self.recoveryHandle(for: head) == expectedRecoveryHandle,
+                self.recoveryHandle(for: head).matchesStoredToken(expectedRecoveryHandle),
                 try self.decodeOutbox(head, expectedAccountID: accountID).isTerminalFailure
           else {
             throw SoloPersistenceError.sessionConflict
@@ -562,7 +562,7 @@ public actor SoloPersistenceStore: ModelActor {
     }
   }
 
-  public func discardBlockedOutboxHead(
+  func discardBlockedOutboxHead(
     accountID: UUID,
     expectedRecoveryHandle: StatsOutboxRecoveryHandle
   ) async throws {
@@ -585,7 +585,7 @@ public actor SoloPersistenceStore: ModelActor {
       let deletion = {
         try self.modelContext.transaction {
           guard let head = try self.outboxRecords(ownerKey: ownerKey).first,
-                self.recoveryHandle(for: head) == expectedRecoveryHandle
+                self.recoveryHandle(for: head).matchesStoredToken(expectedRecoveryHandle)
           else {
             throw SoloPersistenceError.sessionConflict
           }

@@ -1,5 +1,7 @@
 import Foundation
+import SkyjoDomain
 import SkyjoNetworking
+import SkyjoPersistence
 import Testing
 
 @testable import SkyjoNative
@@ -239,6 +241,168 @@ struct AppModelTests {
 
     #expect(accessModel.rootState == .accessRequired)
     #expect(accessModel.user == nil)
+  }
+
+  @Test("Logout synchronously fences a suspended destructive stats recovery")
+  func logoutFencesSuspendedStatsDiscard() async throws {
+    let authorization = StatsOutboxAuthorizationController()
+    let relay = SessionInvalidationRelay(statsOutboxAuthorization: authorization)
+    let model = AppModel(
+      service: MockSkyjoService(scenario: .normal),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      sessionInvalidation: relay
+    )
+    await model.bootstrap()
+    let accountID = try #require(model.user?.id)
+
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let normalStore = SoloPersistenceStore(modelContainer: container)
+    let gameID = UUID(uuidString: "40000000-0000-4000-8000-000000000091")!
+    let terminal = try makeStatsDeliveryTerminalState()
+    let setup = try SoloAISetup.resolve(
+      SoloGameSetup(aiOpponentCount: 1, difficulty: .hard),
+      state: terminal,
+      gameId: gameID.uuidString.lowercased()
+    )
+    try await normalStore.prepareBlockedOutboxForUITesting(
+      accountID: accountID,
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      kind: .terminal,
+      completedAtMilliseconds: 100
+    )
+
+    let gate = AppModelPersistenceGate(checkpoint: .beforeOutboxDelete)
+    let gatedStore = SoloPersistenceStore(
+      modelContainer: container,
+      environment: SoloPersistenceEnvironment(
+        recoveryBarrier: { checkpoint in await gate.pause(at: checkpoint) }
+      )
+    )
+    let coordinator = StatsOutboxCoordinator(
+      store: gatedStore,
+      authorizationController: authorization
+    ) { _ in }
+    await coordinator.setConfirmedAccount(accountID)
+    let recoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    let discard = Task { () -> SoloPersistenceError? in
+      do {
+        try await coordinator.discardBlockedHead(
+          expectedRecoveryHandle: recoveryHandle
+        )
+        return nil
+      } catch let error as SoloPersistenceError {
+        return error
+      } catch {
+        return .storageUnavailable
+      }
+    }
+
+    await gate.waitUntilBlocked()
+    await model.logoutAccount()
+    #expect(model.rootState == .guest)
+    #expect(model.user == nil)
+    await gate.release()
+
+    #expect(await discard.value == .sessionConflict)
+    let status = try await normalStore.outboxStatus(accountID: accountID)
+    #expect(status.queued == 1)
+    #expect(status.terminalFailures == 1)
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == gameID)
+  }
+
+  @Test("A delivery-side session invalidation fences a suspended stats retry")
+  func deliveryInvalidationFencesSuspendedStatsRetry() async throws {
+    let authorization = StatsOutboxAuthorizationController()
+    let relay = SessionInvalidationRelay(statsOutboxAuthorization: authorization)
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    relay.setConfirmedAccount(accountID)
+    let relayFence = try #require(relay.authorizationFence(for: accountID))
+
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let normalStore = SoloPersistenceStore(modelContainer: container)
+    let gameID = UUID(uuidString: "40000000-0000-4000-8000-000000000092")!
+    let terminal = try makeStatsDeliveryTerminalState()
+    let setup = try SoloAISetup.resolve(
+      SoloGameSetup(aiOpponentCount: 1, difficulty: .hard),
+      state: terminal,
+      gameId: gameID.uuidString.lowercased()
+    )
+    try await normalStore.prepareBlockedOutboxForUITesting(
+      accountID: accountID,
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      kind: .terminal,
+      completedAtMilliseconds: 100
+    )
+
+    let gate = AppModelPersistenceGate(checkpoint: .beforeOutboxRetryUpdate)
+    let delivery = AppModelStatsDeliveryProbe()
+    let gatedStore = SoloPersistenceStore(
+      modelContainer: container,
+      environment: SoloPersistenceEnvironment(
+        recoveryBarrier: { checkpoint in await gate.pause(at: checkpoint) }
+      )
+    )
+    let coordinator = StatsOutboxCoordinator(
+      store: gatedStore,
+      authorizationController: authorization
+    ) { request in
+      await delivery.deliver(request)
+    }
+    await coordinator.setConfirmedAccount(accountID)
+    let recoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    let retry = Task {
+      await coordinator.retryTerminalHead(expectedRecoveryHandle: recoveryHandle)
+    }
+
+    await gate.waitUntilBlocked()
+    relay.invalidate(.accountSessionChanged, ifCurrent: relayFence)
+    relay.setConfirmedAccount(accountID)
+    let replacementRelayFence = try #require(relay.authorizationFence(for: accountID))
+    #expect(replacementRelayFence != relayFence)
+    await coordinator.setConfirmedAccount(accountID)
+    await gate.release()
+
+    #expect(
+      await retry.value
+        == StatsFlushResult(attempted: 0, delivered: 0, pending: 0, aborted: true)
+    )
+    #expect(await delivery.calls == 0)
+    let status = try await normalStore.outboxStatus(accountID: accountID)
+    #expect(status.queued == 1)
+    #expect(status.terminalFailures == 1)
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == gameID)
+
+    // A delayed pre-login hint cannot clear the authoritative replacement lease.
+    await coordinator.setConfirmedAccount(nil)
+    relay.invalidate(.accessRequired, ifCurrent: relayFence)
+    #expect(relay.authorizationFence(for: accountID) == replacementRelayFence)
+    #expect(relay.pendingInvalidation == nil)
+
+    do {
+      try await coordinator.discardBlockedHead(expectedRecoveryHandle: recoveryHandle)
+      Issue.record("A recovery capability from the prior login must not be reusable")
+    } catch let error as SoloPersistenceError {
+      #expect(error == .sessionConflict)
+    }
+    let currentRecoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    #expect(currentRecoveryHandle != recoveryHandle)
+    try await coordinator.discardBlockedHead(expectedRecoveryHandle: currentRecoveryHandle)
+    let recoveredStatus = try await normalStore.outboxStatus(accountID: accountID)
+    #expect(recoveredStatus.queued == 0)
+    #expect(recoveredStatus.terminalFailures == 0)
+    #expect(!recoveredStatus.blockedByTerminalFailure)
   }
 
   @Test("Every account-ended path retires the stale offline solo owner hint")
@@ -618,6 +782,44 @@ struct AppModelTests {
       service: MockSkyjoService(scenario: scenario),
       baseURL: URL(string: "https://skyjo.example.invalid")!
     )
+  }
+}
+
+private actor AppModelPersistenceGate {
+  private let checkpoint: PersistenceCheckpoint
+  private var isBlocked = false
+  private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+  init(checkpoint: PersistenceCheckpoint) {
+    self.checkpoint = checkpoint
+  }
+
+  func pause(at candidate: PersistenceCheckpoint) async {
+    guard candidate == checkpoint else { return }
+    isBlocked = true
+    for waiter in blockedWaiters { waiter.resume() }
+    blockedWaiters.removeAll()
+    await withCheckedContinuation { releaseWaiter = $0 }
+  }
+
+  func waitUntilBlocked() async {
+    if isBlocked { return }
+    await withCheckedContinuation { blockedWaiters.append($0) }
+  }
+
+  func release() {
+    releaseWaiter?.resume()
+    releaseWaiter = nil
+  }
+}
+
+private actor AppModelStatsDeliveryProbe {
+  private(set) var calls = 0
+
+  func deliver(_ request: StatsSubmissionRequest) {
+    _ = request
+    calls += 1
   }
 }
 

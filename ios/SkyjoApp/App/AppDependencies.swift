@@ -26,9 +26,15 @@ final class SessionInvalidationRelay {
   private(set) var pendingInvalidation: Invalidation?
   private var confirmedAccountID: UUID?
   private var authorizationGeneration: UInt64 = 0
+  private let statsOutboxAuthorization: StatsOutboxAuthorizationController?
+
+  init(statsOutboxAuthorization: StatsOutboxAuthorizationController? = nil) {
+    self.statsOutboxAuthorization = statsOutboxAuthorization
+  }
 
   func setConfirmedAccount(_ accountID: UUID?) {
     guard confirmedAccountID != accountID else { return }
+    statsOutboxAuthorization?.setConfirmedAccount(accountID)
     confirmedAccountID = accountID
     authorizationGeneration &+= 1
     pendingInvalidation = nil
@@ -41,6 +47,7 @@ final class SessionInvalidationRelay {
 
   func invalidate(_ reason: Reason, ifCurrent fence: AuthorizationFence) {
     guard authorizationFence(for: fence.accountID) == fence else { return }
+    statsOutboxAuthorization?.setConfirmedAccount(nil)
     confirmedAccountID = nil
     authorizationGeneration &+= 1
     pendingInvalidation = Invalidation(reason: reason, authorizationFence: fence)
@@ -191,7 +198,10 @@ final class AppDependencies {
 
   init(configuration: AppConfiguration, defaults: UserDefaults = .standard) throws {
     preferences = SoloPreferencesStore(defaults: defaults)
-    sessionInvalidation = SessionInvalidationRelay()
+    let statsOutboxAuthorization = StatsOutboxAuthorizationController()
+    sessionInvalidation = SessionInvalidationRelay(
+      statsOutboxAuthorization: statsOutboxAuthorization
+    )
     let networkEnvironment = SkyjoNetworkEnvironment(baseURL: configuration.apiBaseURL)
     apiClient = SkyjoAPIClient(
       environment: networkEnvironment,
@@ -261,8 +271,18 @@ final class AppDependencies {
         await MainActor.run { relay.invalidate(reason, ifCurrent: fence) }
       }
     )
-    statsOutbox = StatsOutboxCoordinator(store: persistenceStore) { request in
-      try await deliveryAdapter.deliver(request)
+    if usesSoloUITestFixture {
+      statsOutbox = StatsOutboxCoordinator(
+        store: persistenceStore,
+        authorizationController: statsOutboxAuthorization
+      ) { _ in }
+    } else {
+      statsOutbox = StatsOutboxCoordinator(
+        store: persistenceStore,
+        authorizationController: statsOutboxAuthorization
+      ) { request in
+        try await deliveryAdapter.deliver(request)
+      }
     }
     feedback = GameFeedbackController(preferences: preferences)
     solo = SoloFeatureModel(

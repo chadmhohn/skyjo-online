@@ -2060,7 +2060,7 @@ private func accountUserJSON(displayName: String = "Fixture User") -> String {
   """
 }
 
-private func makeStatsDeliveryTerminalState() throws -> GameState {
+func makeStatsDeliveryTerminalState() throws -> GameState {
   var random = SeededRandom(seed: 18_702)
   var state = GameEngine.startFreshGame(aiOpponentCount: 1, random: &random)
   for _ in 0..<20 {

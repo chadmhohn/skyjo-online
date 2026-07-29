@@ -699,27 +699,6 @@ final class SoloFeatureModel {
     let expectedGeneration = generation
     let expectedAuthorizationGeneration = statsAuthorizationGeneration
     let expectedOwner = owner
-#if DEBUG
-    if usesUITestState, let accountID = expectedOwner.accountID {
-      // The UI fixture owns a genuine terminal row in the in-memory store. A dedicated
-      // successful coordinator exercises the same opaque-handle retry and delivery path
-      // without depending on a simulator's network or account cookies.
-      let fixtureCoordinator = StatsOutboxCoordinator(store: store) { _ in }
-      await fixtureCoordinator.setConfirmedAccount(accountID)
-      _ = await fixtureCoordinator.retryTerminalHead(expectedRecoveryHandle: handle)
-      await fixtureCoordinator.dispose()
-      guard generation == expectedGeneration,
-            statsAuthorizationGeneration == expectedAuthorizationGeneration,
-            owner == expectedOwner,
-            statsDeliveryIsConfirmed
-      else { return }
-      await refreshOutboxStatus()
-      if outboxStatus.blockedHeadKind == nil, outboxWarning == nil {
-        outboxRecoveryMessage = "The oldest result was retried and delivered."
-      }
-      return
-    }
-#endif
     _ = await statsOutbox.retryTerminalHead(expectedRecoveryHandle: handle)
     guard generation == expectedGeneration,
           statsAuthorizationGeneration == expectedAuthorizationGeneration,
