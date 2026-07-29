@@ -229,6 +229,10 @@ final class RoomSessionHost {
     }
   }
 
+  var hasPendingInviteForPresentation: Bool {
+    queuedInvite != nil || model.pendingInviteReview != nil
+  }
+
   /// Removes the latest sanitized review from a host that is about to retire.
   /// An invite queued during a profile-driven model transition is newer than a
   /// review still held by the old model.

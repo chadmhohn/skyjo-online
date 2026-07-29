@@ -148,6 +148,20 @@ final class RoomAppCoordinator {
     return message
   }
 
+  /// True only while a successfully redeemed invite still owns navigation.
+  /// An authenticated host consumes the handoff review immediately, so that
+  /// path is represented by the room model's sanitized pending review instead.
+  var hasAcceptedInviteForPresentation: Bool {
+    switch handoffState {
+    case .review:
+      return true
+    case .idle:
+      return isRoomPresented && sessionHost?.hasPendingInviteForPresentation == true
+    case .redeeming, .failed:
+      return false
+    }
+  }
+
   /// Returns false for URLs outside the committed Skyjo universal-link contract.
   @discardableResult
   func accept(_ url: URL) async -> Bool {

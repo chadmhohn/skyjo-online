@@ -731,6 +731,13 @@ final class AppModel {
     default:
       return false
     }
+    if hasConfirmedAccountSession {
+      if arguments.contains("--ui-start-tab=stats") {
+        selectedTab = .stats
+      } else if arguments.contains("--ui-start-tab=account") {
+        selectedTab = .account
+      }
+    }
     return true
   }
 #endif
@@ -881,6 +888,11 @@ final class AppModel {
 
   var confirmedStatsAccountID: UUID? {
     hasConfirmedAccountSession ? user?.id : nil
+  }
+
+  func presentAcceptedRoomInvite(_ hasAcceptedInvite: Bool) {
+    guard hasAcceptedInvite, hasConfirmedAccountSession else { return }
+    selectedTab = .home
   }
 
   func synchronizeLocalSolo(_ solo: SoloFeatureModel) async {

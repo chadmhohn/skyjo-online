@@ -78,6 +78,66 @@ struct RoomSessionModelTests {
     #expect(!String(reflecting: coordinator.state).contains("untrusted"))
   }
 
+  @Test("Authenticated invite presentation survives immediate review consumption")
+  func authenticatedInvitePresentationSurvivesReviewConsumption() async throws {
+    let account = testAccount()
+    let connection = ModelRoomConnection()
+    let factory = HostRoomModelFactory(connectionsByAccount: [account.id: [connection]])
+    let invite = try RedeemedRoomInvite(
+      roomCode: "ABCDE",
+      expiresAt: 1_784_999_100_000
+    )
+    let coordinator = RoomAppCoordinator(
+      inviteHandoff: RoomInviteCoordinator { _ in invite }
+    ) { account in
+      RoomSessionHost(account: account) { factory.makeModel(for: $0) }
+    }
+    await coordinator.synchronize(account: account)
+
+    let link = URL(
+      string: "https://skyjo.groundworkrevops.com/invite/signed_payload.signature"
+    )!
+    #expect(await coordinator.accept(link))
+    #expect(coordinator.handoffState == .idle)
+    #expect(coordinator.isRoomPresented)
+    #expect(coordinator.sessionHost?.model.pendingInviteReview == invite)
+    #expect(coordinator.hasAcceptedInviteForPresentation)
+
+    await coordinator.sessionHost?.model.dismissInviteReview()
+    #expect(!coordinator.hasAcceptedInviteForPresentation)
+    await coordinator.synchronize(account: nil)
+  }
+
+  @Test("Room confirmations identify their exact loss and compact cards keep 44-point targets")
+  func roomConfirmationAndGeometryContracts() {
+    let expectedMinimum =
+      RoomLayoutMetrics.minimumCardTarget * 4
+        + RoomLayoutMetrics.compactGridSpacing * 3
+        + RoomLayoutMetrics.compactBoardPadding * 2
+    #expect(RoomLayoutMetrics.compactOpponentBoardWidth == expectedMinimum)
+    #expect(
+      RoomLayoutMetrics.opponentBoardWidth(
+        availableWidth: 640,
+        usesShortLandscapeLayout: true
+      ) == 187
+    )
+    #expect(
+      RoomLayoutMetrics.opponentBoardWidth(
+        availableWidth: 820,
+        usesShortLandscapeLayout: false
+      ) == 240
+    )
+
+    let removal = RoomPlayerRemovalConfirmation(
+      playerID: "20000000-0000-4000-8000-000000000002",
+      playerName: "Guest"
+    )
+    #expect(removal.title == "Remove Guest?")
+    #expect(removal.message.contains("waiting-room seat will be removed"))
+    #expect(RoomConfirmationCopy.forgetSavedSeatMessage.contains("removed from this device"))
+    #expect(RoomConfirmationCopy.forgetSavedSeatMessage.contains("other players are not changed"))
+  }
+
   @Test("Account replacement retires the old host while the latest live invite waits safely")
   func appInviteRoutingIsGenerationAndAccountFenced() async throws {
     let accountA = testAccount()
@@ -210,6 +270,7 @@ struct RoomSessionModelTests {
     #expect(await latestAcceptance.value)
     #expect(coordinator.handoffState == .idle)
     #expect(transitioningHost.model.pendingInviteReview == nil)
+    #expect(coordinator.hasAcceptedInviteForPresentation)
 
     await coordinator.synchronize(account: accountB)
     let replacementHost = try #require(coordinator.sessionHost)

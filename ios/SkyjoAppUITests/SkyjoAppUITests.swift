@@ -193,8 +193,55 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(app.textFields["rooms.join-code"].exists)
     XCTAssertTrue(app.buttons["rooms.create"].exists)
     XCTAssertEqual(app.webViews.count, 0)
+
+    let forgetSavedSeat = app.buttons["rooms.forget-seat"]
+    XCTAssertTrue(forgetSavedSeat.waitForExistence(timeout: 5))
+    XCTAssertTrue(forgetSavedSeat.isHittable)
+    forgetSavedSeat.tap()
+    let confirmation = app.alerts["Forget saved seat?"]
+    XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+    XCTAssertTrue(confirmation.buttons["Forget Saved Seat"].exists)
+    XCTAssertTrue(confirmation.buttons["Cancel"].exists)
+    XCTAssertTrue(
+      confirmation.staticTexts.matching(
+        NSPredicate(
+          format: "label == %@",
+          "Saved room and reset recovery routing for this account will be removed from this device. The server room and other players are not changed."
+        )
+      ).firstMatch.exists
+    )
+    confirmation.buttons["Cancel"].tap()
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 5))
+
     attachScreenshot(app, name: "ios8-room-join-portrait")
     try performAccessibilityAudit(on: app)
+  }
+
+  @MainActor
+  func testAuthenticatedInviteFromStatsAndAccountSelectsHomeAfterReviewIsConsumed() throws {
+    for (sourceArgument, sourceLabel) in [
+      ("--ui-start-tab=stats", "Stats"),
+      ("--ui-start-tab=account", "Account"),
+    ] {
+      let app = XCUIApplication()
+      app.launchArguments = [
+        "--ui-state=authenticated-admin",
+        sourceArgument,
+        "--ui-open-room-invite",
+      ]
+      app.launch()
+
+      let review = element(in: app, identifier: "rooms.invite.review")
+      XCTAssertTrue(
+        review.waitForExistence(timeout: 8),
+        "An invite accepted from \(sourceLabel) must expose its Home-owned review."
+      )
+      XCTAssertTrue(app.staticTexts["Room ABCDE"].exists)
+      XCTAssertTrue(app.tabBars.buttons["Home"].isSelected)
+      XCTAssertFalse(app.tabBars.buttons[sourceLabel].isSelected)
+      XCTAssertEqual(app.webViews.count, 0)
+      app.terminate()
+    }
   }
 
   @MainActor

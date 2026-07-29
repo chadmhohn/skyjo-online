@@ -58,24 +58,31 @@ struct BootstrapHomeView: View {
     .onOpenURL { url in
       guard let model, let dependencies else { return }
       Task {
-        guard await dependencies.rooms.accept(url) else { return }
-        guard case .review = dependencies.rooms.handoffState else { return }
-
-        // Successful redemption may install the outer-access cookie. Keep only
-        // sanitized room/expiry review state while bootstrap advances through
-        // the access and account gates.
-        if !model.hasConfirmedAccountSession {
-          await model.bootstrap()
-        }
-        await dependencies.rooms.synchronize(
-          account: model.hasConfirmedAccountSession ? model.user : nil
-        )
-        if model.hasConfirmedAccountSession {
-          model.selectedTab = .home
-        }
+        await routeRoomInviteURL(url, model: model, rooms: dependencies.rooms)
       }
     }
   }
+}
+
+@MainActor
+private func routeRoomInviteURL(
+  _ url: URL,
+  model: AppModel,
+  rooms: RoomAppCoordinator
+) async {
+  guard await rooms.accept(url), rooms.hasAcceptedInviteForPresentation else { return }
+
+  // Successful redemption may install the outer-access cookie. Keep only
+  // sanitized room/expiry review state while bootstrap advances through the
+  // access and account gates. An already-authenticated host has consumed the
+  // handoff review into its room model by this point.
+  if !model.hasConfirmedAccountSession {
+    await model.bootstrap()
+  }
+  await rooms.synchronize(
+    account: model.hasConfirmedAccountSession ? model.user : nil
+  )
+  model.presentAcceptedRoomInvite(rooms.hasAcceptedInviteForPresentation)
 }
 
 @MainActor
@@ -209,9 +216,20 @@ private struct NativeRootView: View {
     }
     .task {
 #if DEBUG
-      if model.applyUITestState(arguments: ProcessInfo.processInfo.arguments) {
+      let arguments = ProcessInfo.processInfo.arguments
+      if model.applyUITestState(arguments: arguments) {
         await model.synchronizeLocalSolo(dependencies.solo)
         _ = await dependencies.solo.applyUITestState(arguments: ProcessInfo.processInfo.arguments)
+        if arguments.contains("--ui-open-room-invite") {
+          await rooms.synchronize(account: model.user)
+          await routeRoomInviteURL(
+            URL(
+              string: "https://skyjo.groundworkrevops.com/invite/signed_payload.signature"
+            )!,
+            model: model,
+            rooms: rooms
+          )
+        }
         return
       }
 #endif

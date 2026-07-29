@@ -4,6 +4,41 @@ import SkyjoDomain
 import SkyjoNetworking
 import SwiftUI
 
+enum RoomLayoutMetrics {
+  static let minimumCardTarget: CGFloat = 44
+  static let compactGridSpacing: CGFloat = 1
+  static let compactBoardPadding: CGFloat = 4
+  static let compactOpponentBoardWidth =
+    minimumCardTarget * CGFloat(SkyjoRules.columns)
+      + compactGridSpacing * CGFloat(SkyjoRules.columns - 1)
+      + compactBoardPadding * 2
+
+  static func opponentBoardWidth(
+    availableWidth: CGFloat,
+    usesShortLandscapeLayout: Bool
+  ) -> CGFloat {
+    if usesShortLandscapeLayout { return compactOpponentBoardWidth }
+    return availableWidth >= 700 ? 240 : max(158, min(230, availableWidth * 0.48))
+  }
+}
+
+enum RoomConfirmationCopy {
+  static let forgetSavedSeatTitle = "Forget saved seat?"
+  static let forgetSavedSeatMessage =
+    "Saved room and reset recovery routing for this account will be removed from this device. The server room and other players are not changed."
+}
+
+struct RoomPlayerRemovalConfirmation: Equatable, Identifiable {
+  let playerID: String
+  let playerName: String
+
+  var id: String { playerID }
+  var title: String { "Remove \(playerName)?" }
+  var message: String {
+    "\(playerName)'s waiting-room seat will be removed. They can join again while the room is waiting."
+  }
+}
+
 @MainActor
 struct RoomRootView: View {
   @Bindable var model: RoomSessionModel
@@ -80,6 +115,7 @@ struct RoomRootView: View {
 @MainActor
 private struct RoomJoinView: View {
   @Bindable var model: RoomSessionModel
+  @State private var confirmsForgetSavedSeat = false
 
   var body: some View {
     ScrollView {
@@ -144,11 +180,12 @@ private struct RoomJoinView: View {
             .accessibilityIdentifier("rooms.retry-seat")
 
             Button("Forget Saved Seat", role: .destructive) {
-              Task { await model.forgetSavedSeat() }
+              confirmsForgetSavedSeat = true
             }
             .disabled(!model.canForgetSavedSeat)
             .frame(minHeight: 44)
             .accessibilityIdentifier("rooms.forget-seat")
+            .accessibilityHint("Requires confirmation before removing saved routing data")
           }
         }
       }
@@ -156,6 +193,14 @@ private struct RoomJoinView: View {
       .padding()
     }
     .accessibilityIdentifier("rooms.join-screen")
+    .alert(RoomConfirmationCopy.forgetSavedSeatTitle, isPresented: $confirmsForgetSavedSeat) {
+      Button("Forget Saved Seat", role: .destructive) {
+        Task { await model.forgetSavedSeat() }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(RoomConfirmationCopy.forgetSavedSeatMessage)
+    }
   }
 
   private var connectionRequestDisabled: Bool {
@@ -375,8 +420,10 @@ private struct RoomOpponentRail: View {
   }
 
   private var opponentWidth: CGFloat {
-    if usesShortLandscapeLayout { return 124 }
-    return width >= 700 ? 240 : max(158, min(230, width * 0.48))
+    RoomLayoutMetrics.opponentBoardWidth(
+      availableWidth: width,
+      usesShortLandscapeLayout: usesShortLandscapeLayout
+    )
   }
 }
 
@@ -750,6 +797,7 @@ private struct RoomUserBanner: View {
 private struct RoomRoster: View {
   @Bindable var model: RoomSessionModel
   let showsManagement: Bool
+  @State private var removalConfirmation: RoomPlayerRemovalConfirmation?
 
   var body: some View {
     GroupBox("Players") {
@@ -773,10 +821,16 @@ private struct RoomRoster: View {
               }
               if showsManagement, model.isLocalHost, player.id != model.playerID {
                 if model.room?.status == .waiting {
-                  Button("Remove") { Task { await model.removePlayer(player.id) } }
-                    .disabled(!model.commandsEnabled)
-                    .frame(minHeight: 44)
-                    .accessibilityLabel("Remove \(player.name) from room")
+                  Button("Remove", role: .destructive) {
+                    removalConfirmation = RoomPlayerRemovalConfirmation(
+                      playerID: player.id,
+                      playerName: player.name
+                    )
+                  }
+                  .disabled(!model.commandsEnabled)
+                  .frame(minHeight: 44)
+                  .accessibilityLabel("Remove \(player.name) from room")
+                  .accessibilityHint("Requires confirmation before removing this seat")
                 } else if model.canTakeOver(player) {
                   Button("Hand to AI") { Task { await model.takeOverWithAI(player.id) } }
                     .frame(minHeight: 44)
@@ -791,6 +845,16 @@ private struct RoomRoster: View {
       }
     }
     .accessibilityIdentifier("rooms.roster")
+    .alert(item: $removalConfirmation) { confirmation in
+      Alert(
+        title: Text(confirmation.title),
+        message: Text(confirmation.message),
+        primaryButton: .destructive(Text("Remove Player")) {
+          Task { await model.removePlayer(confirmation.playerID) }
+        },
+        secondaryButton: .cancel()
+      )
+    }
   }
 
   private func status(for player: PublicRoomPlayerSnapshot) -> String {
@@ -945,6 +1009,7 @@ private struct RoomOptionsView: View {
   enum Confirmation: String, Identifiable {
     case leave
     case reset
+    case forgetSavedSeat
 
     var id: Self { self }
   }
@@ -996,10 +1061,10 @@ private struct RoomOptionsView: View {
           }
           if model.canForgetSavedSeat {
             Button("Forget Saved Seat", role: .destructive) {
-              dismiss()
-              Task { await model.forgetSavedSeat() }
+              confirmation = .forgetSavedSeat
             }
             .disabled(!model.canForgetSavedSeat)
+            .accessibilityHint("Requires confirmation before removing saved routing data")
           }
         }
       }
@@ -1028,6 +1093,16 @@ private struct RoomOptionsView: View {
             primaryButton: .destructive(Text("Reset Room")) {
               dismiss()
               Task { await model.resetRoom() }
+            },
+            secondaryButton: .cancel()
+          )
+        case .forgetSavedSeat:
+          Alert(
+            title: Text(RoomConfirmationCopy.forgetSavedSeatTitle),
+            message: Text(RoomConfirmationCopy.forgetSavedSeatMessage),
+            primaryButton: .destructive(Text("Forget Saved Seat")) {
+              dismiss()
+              Task { await model.forgetSavedSeat() }
             },
             secondaryButton: .cancel()
           )

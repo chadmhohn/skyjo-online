@@ -26,6 +26,27 @@ struct AppModelTests {
     #expect(authenticatedModel.statsState == .empty)
   }
 
+  @Test("Accepted room invites move authenticated Stats and Account tabs to Home")
+  func acceptedInviteSelectsVisibleRoomDestination() async {
+    let authenticatedModel = makeModel(scenario: .normal)
+    await authenticatedModel.bootstrap()
+
+    for sourceTab in [AppTab.stats, .account] {
+      authenticatedModel.selectedTab = sourceTab
+      authenticatedModel.presentAcceptedRoomInvite(false)
+      #expect(authenticatedModel.selectedTab == sourceTab)
+
+      authenticatedModel.presentAcceptedRoomInvite(true)
+      #expect(authenticatedModel.selectedTab == .home)
+    }
+
+    let guestModel = makeModel(scenario: .accountRequired)
+    await guestModel.bootstrap()
+    guestModel.selectedTab = .account
+    guestModel.presentAcceptedRoomInvite(true)
+    #expect(guestModel.selectedTab == .account)
+  }
+
   @Test("Loaded stats navigate through game and player detail and retry after offline")
   func loadedStatsAndOfflineRetry() async throws {
     let loadedModel = makeModel(scenario: .loadedStats)

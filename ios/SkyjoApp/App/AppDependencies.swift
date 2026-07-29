@@ -216,7 +216,35 @@ final class AppDependencies {
       persistentCookieStorage: cookieStorage
     )
     self.inviteClient = inviteClient
+#if DEBUG
+    if ProcessInfo.processInfo.arguments.contains("--ui-open-room-invite") {
+      rooms = RoomAppCoordinator(
+        inviteHandoff: RoomInviteCoordinator { _ in
+          try RedeemedRoomInvite(
+            roomCode: "ABCDE",
+            expiresAt: 2_000_000_000_000
+          )
+        },
+        makeSessionHost: { account in
+          RoomSessionHost(account: account) { nextAccount in
+            RoomSessionModel(
+              account: nextAccount,
+              environment: RoomSessionEnvironment(
+                makeConnection: { throw RoomUITestFixtureError.connectionUnavailable },
+                createInvite: { _ in throw RoomUITestFixtureError.connectionUnavailable },
+                seatStore: VolatileRoomSeatRecoveryStore(),
+                nowMilliseconds: { 1_900_000_000_000 }
+              )
+            )
+          }
+        }
+      )
+    } else {
+      rooms = RoomAppCoordinator(apiClient: apiClient, inviteClient: inviteClient)
+    }
+#else
     rooms = RoomAppCoordinator(apiClient: apiClient, inviteClient: inviteClient)
+#endif
 
     let container: ModelContainer
     var initialWarning: SoloPersistenceWarning?
@@ -305,3 +333,9 @@ final class AppDependencies {
     )
   }
 }
+
+#if DEBUG
+private enum RoomUITestFixtureError: Error {
+  case connectionUnavailable
+}
+#endif
