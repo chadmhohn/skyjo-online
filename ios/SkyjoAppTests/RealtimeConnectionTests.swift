@@ -1218,6 +1218,73 @@ struct RoomConnectionStateMachineTests {
     await terminal.dispose()
   }
 
+  @Test("A fresh create interrupted offline before its first snapshot requires explicit retry")
+  func freshCreateOfflineBeforeSnapshotFailsClosed() async throws {
+    let firstSocket = FakeRoomWebSocket()
+    let retrySocket = FakeRoomWebSocket()
+    let connection = try makeTestConnection(
+      factory: FakeSocketFactory([firstSocket, retrySocket]),
+      sleeper: ControlledSleeper(),
+      commandIDs: []
+    )
+    let notices = RoomConnectionNoticeRecorder()
+    let observation = Task {
+      for await event in await connection.events() { await notices.record(event) }
+    }
+
+    try await connection.connect(.create(displayName: "Host"))
+    #expect(await eventually { await firstSocket.sentTexts().count == 1 })
+    await connection.setNetworkAvailable(false)
+    #expect(await connection.status().phase == .offline)
+
+    await connection.setNetworkAvailable(true)
+    #expect(await connection.status().phase == .error)
+    #expect(await retrySocket.sentTexts().isEmpty)
+    #expect(await eventually { await notices.contains(.freshAdmissionInterrupted) })
+
+    try await connection.connect(.create(displayName: "Host"))
+    #expect(await eventually { await retrySocket.sentTexts().count == 1 })
+    #expect((await retrySocket.sentTexts()).first?.contains(#""type":"create-room""#) == true)
+    observation.cancel()
+    await connection.dispose()
+  }
+
+  @Test("A fresh join interrupted offline before its first snapshot requires explicit retry")
+  func freshJoinOfflineBeforeSnapshotFailsClosed() async throws {
+    let firstSocket = FakeRoomWebSocket()
+    let retrySocket = FakeRoomWebSocket()
+    let connection = try makeTestConnection(
+      factory: FakeSocketFactory([firstSocket, retrySocket]),
+      sleeper: ControlledSleeper(),
+      commandIDs: []
+    )
+    let notices = RoomConnectionNoticeRecorder()
+    let observation = Task {
+      for await event in await connection.events() { await notices.record(event) }
+    }
+    let admission = RoomAdmission.join(
+      code: "ABCDE",
+      displayName: "Host",
+      playerID: nil
+    )
+
+    try await connection.connect(admission)
+    #expect(await eventually { await firstSocket.sentTexts().count == 1 })
+    await connection.setNetworkAvailable(false)
+    #expect(await connection.status().phase == .offline)
+
+    await connection.setNetworkAvailable(true)
+    #expect(await connection.status().phase == .error)
+    #expect(await retrySocket.sentTexts().isEmpty)
+    #expect(await eventually { await notices.contains(.freshAdmissionInterrupted) })
+
+    try await connection.connect(admission)
+    #expect(await eventually { await retrySocket.sentTexts().count == 1 })
+    #expect((await retrySocket.sentTexts()).first?.contains(#""type":"join-room""#) == true)
+    observation.cancel()
+    await connection.dispose()
+  }
+
   @Test("Visibility is explicit and the public event stream stays bounded for slow consumers")
   func presenceAndBoundedEvents() async throws {
     let socket = FakeRoomWebSocket()

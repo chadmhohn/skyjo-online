@@ -315,6 +315,8 @@ final class RoomSessionModel {
   private var resetRecoveryCleanupRequired = false
   private var resetRecoveryCleanupVerified = false
   private var isResetRecoveryCleanupInProgress = false
+  @ObservationIgnored
+  private var resetRecoveryCleanupWaiters: [CheckedContinuation<Void, Never>] = []
   private var acceptsSeatPersistence = true
   private var awaitsFreshAdmissionSnapshot = false
   private var expectedFreshAdmissionRoomCode: String?
@@ -644,13 +646,10 @@ final class RoomSessionModel {
   func stop() async {
     lifecycleGeneration &+= 1
     recoveryGeneration &+= 1
+    started = false
     isPreparingConnection = false
-    isAdmissionOperationPending = false
-    activeAdmissionOperationID = nil
-    activeAdmissionRecoveryGeneration = nil
     resetRecoveryInitiated = false
     resetRecoveryCleanupVerified = false
-    isResetRecoveryCleanupInProgress = false
     acceptsSeatPersistence = false
     awaitsFreshAdmissionSnapshot = false
     expectedFreshAdmissionRoomCode = nil
@@ -668,11 +667,14 @@ final class RoomSessionModel {
     presenceTask = nil
     let retiredConnection = connection
     connection = nil
-    started = false
     connectionStatus = Self.idleConnectionStatus
     pendingTerminalAction = nil
     invalidateShareInvite()
     if let retiredConnection { await retiredConnection.dispose() }
+    await waitForResetRecoveryCleanup()
+    isAdmissionOperationPending = false
+    activeAdmissionOperationID = nil
+    activeAdmissionRecoveryGeneration = nil
     if let retiredEventTask { await retiredEventTask.value }
     if let retiredPresenceTask { await retiredPresenceTask.value }
   }
@@ -926,7 +928,7 @@ final class RoomSessionModel {
     guard let operationID = beginAdmissionOperation() else { return }
     isResetRecoveryCleanupInProgress = true
     defer {
-      isResetRecoveryCleanupInProgress = false
+      finishResetRecoveryCleanup()
       finishAdmissionOperation(operationID)
     }
     acceptsSeatPersistence = false
@@ -947,10 +949,13 @@ final class RoomSessionModel {
     } else if resetRecoveryCleanupRequired {
       resetRecoveryWasCleared = false
     }
+    guard admissionOperationIsCurrent(operationID) else { return }
     if resetRecoveryCleanupRequired || !resetRecoveryWasCleared {
       if let cleanupConnection {
+        guard admissionOperationIsCurrent(operationID) else { return }
         do {
           try await cleanupConnection.discardPersistedResetRecovery()
+          guard admissionOperationIsCurrent(operationID) else { return }
           resetRecoveryWasCleared = true
           resetRecoveryCleanupRequired = false
           // RoomConnection can enqueue the failure that made disconnect throw
@@ -958,6 +963,7 @@ final class RoomSessionModel {
           // the resolution boundary for those already-produced notices.
           resetRecoveryCleanupVerified = true
         } catch {
+          guard admissionOperationIsCurrent(operationID) else { return }
           resetRecoveryWasCleared = false
           resetRecoveryCleanupRequired = true
           resetRecoveryCleanupVerified = false
@@ -967,10 +973,14 @@ final class RoomSessionModel {
         resetRecoveryCleanupRequired = true
       }
     }
-    var savedSeatWasCleared = true
+    guard admissionOperationIsCurrent(operationID) else { return }
+    let savedSeatWasCleared: Bool
     do {
       try await environment.seatStore.clear(accountID: account.id)
+      guard admissionOperationIsCurrent(operationID) else { return }
+      savedSeatWasCleared = true
     } catch {
+      guard admissionOperationIsCurrent(operationID) else { return }
       savedSeatWasCleared = false
     }
     guard admissionOperationIsCurrent(operationID) else { return }
@@ -1238,6 +1248,18 @@ final class RoomSessionModel {
     activeAdmissionOperationID = nil
     activeAdmissionRecoveryGeneration = nil
     isAdmissionOperationPending = false
+  }
+
+  private func waitForResetRecoveryCleanup() async {
+    guard isResetRecoveryCleanupInProgress else { return }
+    await withCheckedContinuation { resetRecoveryCleanupWaiters.append($0) }
+  }
+
+  private func finishResetRecoveryCleanup() {
+    isResetRecoveryCleanupInProgress = false
+    let waiters = resetRecoveryCleanupWaiters
+    resetRecoveryCleanupWaiters.removeAll()
+    for waiter in waiters { waiter.resume() }
   }
 
   private func finishShareRequest(_ requestID: UUID) {
@@ -1570,6 +1592,15 @@ final class RoomSessionModel {
       banner = RoomBanner(
         title: "Room sync timed out",
         message: "Check the connection and retry your saved seat.",
+        tone: .warning
+      )
+    case .freshAdmissionInterrupted:
+      acceptsSeatPersistence = false
+      awaitsFreshAdmissionSnapshot = false
+      expectedFreshAdmissionRoomCode = nil
+      banner = RoomBanner(
+        title: "Room not confirmed",
+        message: "The network changed before Skyjo confirmed that room. Create or join again.",
         tone: .warning
       )
     case .transportInterrupted:

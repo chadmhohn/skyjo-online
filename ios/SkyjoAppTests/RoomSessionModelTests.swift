@@ -926,6 +926,11 @@ struct RoomSessionModelTests {
     #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
 
     startedAt = clock.now
+    await connection.emit(.notice(.freshAdmissionInterrupted))
+    #expect(await modelEventually(attempts: 200) { model.banner?.title == "Room not confirmed" })
+    #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
+
+    startedAt = clock.now
     await connection.emit(.notice(.commandResynchronized(reason: .staleRevision)))
     #expect(await modelEventually(attempts: 200) { model.banner?.title == "Table resynchronized" })
     #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
@@ -1394,6 +1399,70 @@ struct RoomSessionModelTests {
     #expect(model.room == nil)
     #expect(model.joinCode.isEmpty)
     await model.stop()
+  }
+
+  @Test("Retirement drains a suspended Forget before newer same-account recovery can be deleted")
+  func retiredForgetCannotDeleteNewerSameAccountRecovery() async throws {
+    let account = testAccount()
+    let resetStore = VolatileRoomResetRecoveryStore()
+    let connection = ModelRoomConnection(
+      resetRecoveryStore: resetStore,
+      resetRecoveryAccountID: account.id
+    )
+    await connection.failPersistedResetRecovery(.seatCleanupUnavailable)
+    await connection.suspendNextDisconnect()
+    let seatStore = RecordingSeatStore()
+    let model = makeModel(connection: connection, seatStore: seatStore)
+
+    await model.start()
+    #expect(model.banner?.title == "Room reset recovery unavailable")
+    let forgetTask = Task { await model.forgetSavedSeat() }
+    #expect(await modelEventually { await connection.disconnectIsSuspended() })
+
+    let stopCompletion = ModelCompletionProbe()
+    let stopTask = Task {
+      await model.stop()
+      await stopCompletion.markComplete()
+    }
+    #expect(await modelEventually { await connection.disposed() })
+    #expect(!(await stopCompletion.isComplete()))
+
+    let newerSeat = try RoomSeatRecoveryRecord(
+      accountID: account.id,
+      roomCode: "FGHIJ",
+      playerID: "10000000-0000-4000-8000-000000000001"
+    )
+    let newerReset = try RoomResetRecoveryRecord(
+      accountID: account.id,
+      roomCode: "FGHIJ",
+      playerID: "10000000-0000-4000-8000-000000000001",
+      commandID: UUID(uuidString: "40000000-0000-4000-8000-000000000099")!,
+      expectedRevision: 12
+    )
+    try await seatStore.save(newerSeat)
+    try await resetStore.save(newerReset)
+
+    await connection.resumeDisconnect()
+    await forgetTask.value
+    await stopTask.value
+
+    #expect(await stopCompletion.isComplete())
+    #expect(await connection.discardCount() == 0)
+    #expect(await seatStore.clearCount() == 0)
+    #expect(await seatStore.record() == newerSeat)
+    #expect(await resetStore.load(accountID: account.id) == newerReset)
+
+    let replacementConnection = ModelRoomConnection()
+    let replacement = makeModel(connection: replacementConnection, seatStore: seatStore)
+    await replacement.start()
+    #expect(await replacementConnection.admissions() == [
+      .join(
+        code: newerSeat.roomCode,
+        displayName: account.displayName,
+        playerID: newerSeat.playerID
+      ),
+    ])
+    await replacement.stop()
   }
 
   @Test("A share response from a replaced room can never publish into the new room")
@@ -1888,9 +1957,18 @@ private actor RecordingInviteFactory {
   func requestedRoomCodes() -> [String] { roomCodes }
 }
 
+private actor ModelCompletionProbe {
+  private var complete = false
+
+  func markComplete() { complete = true }
+  func isComplete() -> Bool { complete }
+}
+
 private actor ModelRoomConnection: RoomSessionConnection {
   private let stream: AsyncStream<RoomConnectionEvent>
   private let continuation: AsyncStream<RoomConnectionEvent>.Continuation
+  private let resetRecoveryStore: (any RoomResetRecoveryStore)?
+  private let resetRecoveryAccountID: UUID?
   private var receivedAdmissions: [RoomAdmission] = []
   private var receivedActions: [RoomCommandAction] = []
   private var receivedVisibilityUpdates: [Bool] = []
@@ -1916,10 +1994,15 @@ private actor ModelRoomConnection: RoomSessionConnection {
   private var shouldSuspendNextVisibilityUpdate = false
   private var suspendedVisibilityContinuation: CheckedContinuation<Void, Never>?
 
-  init() {
+  init(
+    resetRecoveryStore: (any RoomResetRecoveryStore)? = nil,
+    resetRecoveryAccountID: UUID? = nil
+  ) {
     let channel = AsyncStream<RoomConnectionEvent>.makeStream(bufferingPolicy: .unbounded)
     stream = channel.stream
     continuation = channel.continuation
+    self.resetRecoveryStore = resetRecoveryStore
+    self.resetRecoveryAccountID = resetRecoveryAccountID
   }
 
   func events() -> AsyncStream<RoomConnectionEvent> { stream }
@@ -1983,6 +2066,9 @@ private actor ModelRoomConnection: RoomSessionConnection {
       await withCheckedContinuation { suspendedDiscardContinuation = $0 }
     }
     if let discardFailure { throw discardFailure }
+    if let resetRecoveryStore, let resetRecoveryAccountID {
+      try await resetRecoveryStore.discard(accountID: resetRecoveryAccountID)
+    }
   }
 
   func dispose() async {

@@ -50,6 +50,7 @@ public enum RoomConnectionNotice: Equatable, Sendable, CustomStringConvertible,
   case invalidServerResponse
   case synchronizationTimedOut
   case transportInterrupted
+  case freshAdmissionInterrupted
   case commandRejected(code: String, message: String, matchedAction: RoomCommandAction?)
   case admissionRejected(code: String, message: String, usedSavedSeat: Bool)
   case commandResynchronized(reason: RoomResyncReason)
@@ -64,6 +65,7 @@ public enum RoomConnectionNotice: Equatable, Sendable, CustomStringConvertible,
     case .invalidServerResponse: return "RoomConnectionNotice.invalidServerResponse"
     case .synchronizationTimedOut: return "RoomConnectionNotice.synchronizationTimedOut"
     case .transportInterrupted: return "RoomConnectionNotice.transportInterrupted"
+    case .freshAdmissionInterrupted: return "RoomConnectionNotice.freshAdmissionInterrupted"
     case .commandRejected(let code, _, let matchedAction):
       return "RoomConnectionNotice.commandRejected(code: \(code), message: <redacted>, matchedPendingAction: \(matchedAction != nil))"
     case .admissionRejected(let code, _, let usedSavedSeat):
@@ -558,6 +560,15 @@ public actor RoomConnection {
       scheduleReconnect()
     } else if admission != nil, !admissionWasAttempted {
       await openSocket(recovering: false)
+    } else if admission != nil {
+      // A create or first-time join may already have reached the server, but there
+      // is no server-issued seat identity until the first personalized snapshot.
+      // Never replay that ambiguous admission after an offline transition.
+      admission = nil
+      admissionWasAttempted = false
+      quarantineAuthoritativeState()
+      transition(to: .error)
+      publish(.notice(.freshAdmissionInterrupted))
     } else if admission == nil {
       transition(to: .idle)
     }
