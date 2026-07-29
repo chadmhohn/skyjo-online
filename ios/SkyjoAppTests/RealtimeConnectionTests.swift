@@ -1023,12 +1023,14 @@ struct RoomConnectionNodeIntegrationTests {
     let environment = SkyjoNetworkEnvironment(baseURL: baseURL)
 
     let hostCookies = realtimeCookieStorage(label: "invite-host")
-    let hostSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: hostCookies)
+    let hostAPISession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: hostCookies)
+    let hostInviteSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: hostCookies)
     defer {
-      hostSession.invalidateAndCancel()
+      hostAPISession.invalidateAndCancel()
+      hostInviteSession.invalidateAndCancel()
       clearRealtimeCookies(hostCookies)
     }
-    let hostAPI = SkyjoAPIClient(environment: environment, session: hostSession)
+    let hostAPI = SkyjoAPIClient(environment: environment, session: hostAPISession)
     #expect(try await hostAPI.loginAccess(password: syntheticAccessPassword).authenticated)
     let account = try await hostAPI.signup(
       email: "ios-invite-host-\(UUID().uuidString.lowercased())@example.invalid",
@@ -1044,7 +1046,7 @@ struct RoomConnectionNodeIntegrationTests {
 
     // Creation proves the account-authenticated endpoint sees the exact cookie jar
     // already owned by SkyjoAPIClient and its realtime transport.
-    let inviteClient = RoomInviteClient(environment: environment, session: hostSession)
+    let inviteClient = RoomInviteClient(environment: environment, session: hostInviteSession)
     let invite = try await inviteClient.create(roomCode: originalRoom)
     let token = invite.url.lastPathComponent
     let productionURL = try #require(
@@ -1053,16 +1055,18 @@ struct RoomConnectionNodeIntegrationTests {
     let link = try RoomInviteLink(url: productionURL)
 
     let guestCookies = realtimeCookieStorage(label: "invite-guest")
-    let guestSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: guestCookies)
+    let guestInviteSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: guestCookies)
+    let guestAPISession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: guestCookies)
     defer {
-      guestSession.invalidateAndCancel()
+      guestInviteSession.invalidateAndCancel()
+      guestAPISession.invalidateAndCancel()
       clearRealtimeCookies(guestCookies)
     }
-    let guestInviteClient = RoomInviteClient(environment: environment, session: guestSession)
+    let guestInviteClient = RoomInviteClient(environment: environment, session: guestInviteSession)
     let redeemed = try await guestInviteClient.redeem(link)
     #expect(redeemed.roomCode == originalRoom)
 
-    let guestAPI = SkyjoAPIClient(environment: environment, session: guestSession)
+    let guestAPI = SkyjoAPIClient(environment: environment, session: guestAPISession)
     #expect(try await guestAPI.accessStatus().authenticated)
     #expect(try await guestAPI.currentAccount() == nil)
 

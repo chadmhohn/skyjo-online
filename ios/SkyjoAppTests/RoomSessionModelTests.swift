@@ -365,10 +365,23 @@ struct RoomSessionModelTests {
     #expect(host.model.account.id == firstAccount.id)
     #expect(firstModel.connectionStatus == idleStatus())
 
+    let firstInvite = try RedeemedRoomInvite(
+      roomCode: "ABCDE",
+      expiresAt: 1_784_999_000_000
+    )
+    let latestInvite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    host.applyInvite(firstInvite)
+    host.applyInvite(latestInvite)
+    #expect(firstModel.pendingInviteReview == nil)
+
     await delayedStore.resumeSaveWithFailure()
     await switchTask.value
 
     #expect(host.model.account.id == secondAccount.id)
+    #expect(host.model.pendingInviteReview == latestInvite)
     #expect(firstModel.connectionStatus == idleStatus())
     #expect(firstModel.banner == nil)
     await host.stop()
