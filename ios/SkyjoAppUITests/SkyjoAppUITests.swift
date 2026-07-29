@@ -304,13 +304,7 @@ final class SkyjoAppUITests: XCTestCase {
     defer { app.terminate() }
 
     let table = element(in: app, identifier: "rooms.table")
-    let opponents = element(in: app, identifier: "rooms.opponents")
-    let localBoard = element(in: app, identifier: "rooms.board.local")
-    let tableBand = element(in: app, identifier: "rooms.table-band")
     XCTAssertTrue(table.waitForExistence(timeout: 8))
-    XCTAssertTrue(opponents.waitForExistence(timeout: 5))
-    XCTAssertTrue(localBoard.waitForExistence(timeout: 5))
-    XCTAssertTrue(tableBand.waitForExistence(timeout: 5))
     XCTAssertEqual(app.webViews.count, 0)
 
     let hiddenOpponentCard = element(
@@ -328,11 +322,19 @@ final class SkyjoAppUITests: XCTestCase {
 
     let deck = app.buttons["rooms.action.deck"]
     let discard = app.buttons["rooms.action.discard"]
+    let localCard = element(in: app, identifier: "rooms.card.local.r1.c1")
+    let window = app.windows.firstMatch
+    XCTAssertTrue(localCard.waitForExistence(timeout: 5))
+    XCTAssertGreaterThanOrEqual(localCard.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(localCard.frame.height, 44)
+    assertElement(localCard, isContainedIn: table, tolerance: 2)
+    assertElement(localCard, isContainedIn: window, tolerance: 2)
     for action in [deck, discard] {
       XCTAssertTrue(action.exists)
       XCTAssertGreaterThanOrEqual(action.frame.width, 44)
       XCTAssertGreaterThanOrEqual(action.frame.height, 44)
-      assertElement(action, isContainedIn: tableBand, tolerance: 2)
+      assertElement(action, isContainedIn: table, tolerance: 2)
+      assertElement(action, isContainedIn: window, tolerance: 2)
     }
 
     let chat = app.buttons["rooms.chat.open"]
@@ -341,8 +343,8 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertGreaterThanOrEqual(chat.frame.width, 44)
     XCTAssertGreaterThanOrEqual(chat.frame.height, 44)
     let originalTableFrame = table.frame
-    let originalBandFrame = tableBand.frame
-    let originalLocalBoardFrame = localBoard.frame
+    let originalDeckFrame = deck.frame
+    let originalLocalCardFrame = localCard.frame
 
     chat.tap()
     let chatSheet = element(in: app, identifier: "rooms.chat.sheet")
@@ -355,9 +357,9 @@ final class SkyjoAppUITests: XCTestCase {
 
     XCTAssertTrue(table.waitForExistence(timeout: 5))
     assertFrame(table.frame, equals: originalTableFrame, accuracy: 2)
-    assertFrame(tableBand.frame, equals: originalBandFrame, accuracy: 2)
-    assertFrame(localBoard.frame, equals: originalLocalBoardFrame, accuracy: 2)
-    assertElement(table, isContainedIn: app.windows.firstMatch, tolerance: 2)
+    assertFrame(deck.frame, equals: originalDeckFrame, accuracy: 2)
+    assertFrame(localCard.frame, equals: originalLocalCardFrame, accuracy: 2)
+    assertElement(table, isContainedIn: window, tolerance: 2)
     attachScreenshot(app, name: "ios8-room-active-eight-player-portrait")
   }
 
@@ -374,11 +376,7 @@ final class SkyjoAppUITests: XCTestCase {
     let layout = element(in: app, identifier: "rooms.table.layout.short-landscape")
     XCTAssertTrue(layout.waitForExistence(timeout: 5))
 
-    let opponents = element(in: app, identifier: "rooms.opponents")
     let opponentBoard = element(in: app, identifier: "rooms.board.opponent.0")
-    let localBoard = element(in: app, identifier: "rooms.board.local")
-    let tableBand = element(in: app, identifier: "rooms.table-band")
-    XCTAssertTrue(opponents.waitForExistence(timeout: 5))
     XCTAssertTrue(opponentBoard.waitForExistence(timeout: 5))
     XCTAssertGreaterThanOrEqual(opponentBoard.frame.width, 187)
 
@@ -397,10 +395,12 @@ final class SkyjoAppUITests: XCTestCase {
       NSPredicate(format: "identifier BEGINSWITH %@", "rooms.card.local.")
     ).allElementsBoundByIndex
     XCTAssertEqual(localCards.count, 12)
+    let window = app.windows.firstMatch
     for card in localCards {
       XCTAssertGreaterThanOrEqual(card.frame.width, 44)
       XCTAssertGreaterThanOrEqual(card.frame.height + 0.5, 44)
-      assertElement(card, isContainedIn: localBoard, tolerance: 2)
+      assertElement(card, isContainedIn: table, tolerance: 2)
+      assertElement(card, isContainedIn: window, tolerance: 2)
     }
 
     for action in [
@@ -410,15 +410,12 @@ final class SkyjoAppUITests: XCTestCase {
       XCTAssertTrue(action.exists)
       XCTAssertGreaterThanOrEqual(action.frame.width, 44)
       XCTAssertGreaterThanOrEqual(action.frame.height, 44)
-      assertElement(action, isContainedIn: tableBand, tolerance: 2)
+      assertElement(action, isContainedIn: table, tolerance: 2)
+      assertElement(action, isContainedIn: window, tolerance: 2)
     }
 
-    let window = app.windows.firstMatch
-    for region in [opponents, tableBand, localBoard] {
-      XCTAssertTrue(region.exists)
-      assertElement(region, isContainedIn: layout, tolerance: 2)
-      assertElement(region, isContainedIn: window, tolerance: 2)
-    }
+    assertElement(opponentBoard, isContainedIn: table, tolerance: 2)
+    assertElement(opponentBoard, isContainedIn: window, tolerance: 2)
     attachScreenScreenshot(name: "ios8-room-active-eight-player-short-landscape")
   }
 
@@ -514,17 +511,26 @@ final class SkyjoAppUITests: XCTestCase {
     defer { app.terminate() }
 
     let table = element(in: app, identifier: "rooms.table")
-    let layout = element(in: app, identifier: "rooms.table.accessible-layout")
     XCTAssertTrue(table.waitForExistence(timeout: 8))
-    XCTAssertTrue(layout.waitForExistence(timeout: 5))
-    assertElement(layout, isContainedIn: table, tolerance: 2)
-    assertElement(table, isContainedIn: app.windows.firstMatch, tolerance: 2)
+    let window = app.windows.firstMatch
+    assertElement(table, isContainedIn: window, tolerance: 2)
 
     let hiddenCard = element(in: app, identifier: "rooms.card.opponent.0.r1.c3")
     XCTAssertTrue(hiddenCard.waitForExistence(timeout: 5))
     XCTAssertEqual(hiddenCard.label, "Guest 2's card, row 1, column 3, face down")
     XCTAssertGreaterThanOrEqual(hiddenCard.frame.width, 44)
     XCTAssertGreaterThanOrEqual(hiddenCard.frame.height, 44)
+
+    let localCard = element(in: app, identifier: "rooms.card.local.r1.c1")
+    for _ in 0..<6 where !localCard.isHittable {
+      table.swipeUp(velocity: .slow)
+    }
+    XCTAssertTrue(localCard.waitForExistence(timeout: 5))
+    XCTAssertTrue(localCard.isHittable)
+    XCTAssertGreaterThanOrEqual(localCard.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(localCard.frame.height, 44)
+    assertElement(localCard, isContainedIn: table, tolerance: 2)
+    assertElement(localCard, isContainedIn: window, tolerance: 2)
 
     let chat = app.buttons["rooms.chat.open"]
     XCTAssertTrue(chat.exists)

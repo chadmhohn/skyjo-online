@@ -890,6 +890,49 @@ struct RoomSessionModelTests {
     await model.stop()
   }
 
+  @Test("Connection, pending, offline, and resync UI state surfaces within 500 milliseconds")
+  func realtimeStatusLatencyIsBounded() async {
+    let connection = ModelRoomConnection()
+    let model = makeModel(connection: connection)
+    let clock = ContinuousClock()
+
+    await model.start()
+
+    var startedAt = clock.now
+    await connection.emit(.status(RoomConnectionStatus(
+      phase: .connecting,
+      retryInMilliseconds: nil,
+      synchronized: false,
+      hasPendingCommand: false,
+      revision: nil
+    )))
+    #expect(await modelEventually(attempts: 200) { model.connectionStatus.phase == .connecting })
+    #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
+
+    startedAt = clock.now
+    await connection.emit(.status(pendingStatus(revision: 7)))
+    #expect(await modelEventually(attempts: 200) { model.connectionStatus.hasPendingCommand })
+    #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
+
+    startedAt = clock.now
+    await connection.emit(.status(RoomConnectionStatus(
+      phase: .offline,
+      retryInMilliseconds: nil,
+      synchronized: false,
+      hasPendingCommand: false,
+      revision: 7
+    )))
+    #expect(await modelEventually(attempts: 200) { model.connectionStatus.phase == .offline })
+    #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
+
+    startedAt = clock.now
+    await connection.emit(.notice(.commandResynchronized(reason: .staleRevision)))
+    #expect(await modelEventually(attempts: 200) { model.banner?.title == "Table resynchronized" })
+    #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
+
+    await model.stop()
+  }
+
   @Test("An eight-player opening table exposes one local reveal intent and seven opponents")
   func eightPlayerOpeningIntentIsAuthoritative() async throws {
     let connection = ModelRoomConnection()

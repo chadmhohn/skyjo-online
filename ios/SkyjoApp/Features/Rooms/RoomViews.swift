@@ -423,10 +423,10 @@ private struct RoomTableView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .padding(.horizontal, 8)
     .padding(.bottom, 6)
+    .accessibilityIdentifier("rooms.table.layout.standard")
     .overlay(alignment: .topTrailing) {
       chatButton(topPadding: 72)
     }
-    .accessibilityIdentifier("rooms.table.layout.standard")
   }
 
   private func shortLandscapeTable(width: CGFloat, height: CGFloat) -> some View {
@@ -456,10 +456,10 @@ private struct RoomTableView: View {
     .padding(.top, RoomLayoutMetrics.shortLandscapeOverlayClearance)
     .padding(.bottom, RoomLayoutMetrics.shortLandscapeBottomPadding)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    .accessibilityIdentifier("rooms.table.layout.short-landscape")
     .overlay(alignment: .topTrailing) {
       chatButton(topPadding: 8)
     }
-    .accessibilityIdentifier("rooms.table.layout.short-landscape")
   }
 
   private func accessibleTable(width: CGFloat, height: CGFloat) -> some View {
@@ -478,11 +478,11 @@ private struct RoomTableView: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 12)
     }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("rooms.table.accessible-layout")
     .overlay(alignment: .topTrailing) {
       chatButton(topPadding: 72)
     }
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("rooms.table.accessible-layout")
   }
 
   private func chatButton(topPadding: CGFloat) -> some View {
@@ -1044,7 +1044,7 @@ private struct RoomChatButton: View {
     .clipShape(Circle())
     .shadow(radius: 4)
     .accessibilityLabel(
-      model.unreadChatCount > 0 ? "Chat, (model.unreadChatCount) unread" : "Chat"
+      model.unreadChatCount > 0 ? "Chat, \(model.unreadChatCount) unread" : "Chat"
     )
     .accessibilityIdentifier("rooms.chat.open")
   }
