@@ -169,6 +169,52 @@ struct RoomSessionModelTests {
     #expect(RoomConfirmationCopy.forgetSavedSeatMessage.contains("other players are not changed"))
   }
 
+  @Test("Connection announcements ignore authoritative revisions")
+  func connectionAnnouncementIdentityIsSemantic() {
+    let connectedRevisionSeven = RoomConnectionStatus(
+      phase: .connected,
+      retryInMilliseconds: nil,
+      synchronized: true,
+      hasPendingCommand: false,
+      revision: 7
+    )
+    let connectedRevisionEight = RoomConnectionStatus(
+      phase: .connected,
+      retryInMilliseconds: nil,
+      synchronized: true,
+      hasPendingCommand: false,
+      revision: 8
+    )
+    #expect(
+      RoomConnectionAnnouncementState(connectedRevisionSeven)
+        == RoomConnectionAnnouncementState(connectedRevisionEight)
+    )
+
+    let pending = RoomConnectionStatus(
+      phase: .connected,
+      retryInMilliseconds: nil,
+      synchronized: true,
+      hasPendingCommand: true,
+      revision: 8
+    )
+    #expect(
+      RoomConnectionAnnouncementState(connectedRevisionEight)
+        != RoomConnectionAnnouncementState(pending)
+    )
+
+    let reconnecting = RoomConnectionStatus(
+      phase: .reconnecting,
+      retryInMilliseconds: 500,
+      synchronized: false,
+      hasPendingCommand: false,
+      revision: 8
+    )
+    #expect(
+      RoomConnectionAnnouncementState(connectedRevisionEight)
+        != RoomConnectionAnnouncementState(reconnecting)
+    )
+  }
+
   @Test("App scene presence follows a retained room after its destination is popped")
   func appScenePresenceOutlivesRoomDestination() async throws {
     let account = testAccount()
@@ -928,6 +974,10 @@ struct RoomSessionModelTests {
     startedAt = clock.now
     await connection.emit(.notice(.freshAdmissionInterrupted))
     #expect(await modelEventually(attempts: 200) { model.banner?.title == "Room not confirmed" })
+    #expect(model.banner?.message == "Skyjo could not confirm that room. Create or join again.")
+    #expect(model.savedSeatKnownAbsent)
+    #expect(!model.shouldShowRetrySavedSeat)
+    #expect(!model.shouldShowForgetSavedSeat)
     #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
 
     startedAt = clock.now

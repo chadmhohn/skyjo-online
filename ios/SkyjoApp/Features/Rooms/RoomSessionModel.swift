@@ -295,6 +295,7 @@ final class RoomSessionModel {
   private(set) var isPreparingConnection = false
   private(set) var isAdmissionOperationPending = false
   private(set) var isSeatCleanupPending = false
+  private(set) var savedSeatKnownAbsent = false
 
   private let environment: RoomSessionEnvironment
   private var connection: (any RoomSessionConnection)?
@@ -392,6 +393,18 @@ final class RoomSessionModel {
       && (connectionStatus.phase == .idle || connectionStatus.phase == .error)
   }
 
+  var shouldShowRetrySavedSeat: Bool {
+    !savedSeatKnownAbsent
+  }
+
+  var shouldShowForgetSavedSeat: Bool {
+    !savedSeatKnownAbsent || resetRecoveryCleanupRequired
+  }
+
+  var canRetrySavedSeat: Bool {
+    shouldShowRetrySavedSeat && canSubmitAdmission
+  }
+
   var canAcceptInvite: Bool {
     pendingInviteReview != nil
       && !isPreparingConnection
@@ -414,6 +427,7 @@ final class RoomSessionModel {
     !isPreparingConnection
       && !isAdmissionOperationPending
       && !isSeatCleanupPending
+      && shouldShowForgetSavedSeat
       && (
         resetRecoveryCleanupRequired
           || connectionStatus.phase == .idle
@@ -511,6 +525,7 @@ final class RoomSessionModel {
     let generation = lifecycleGeneration
     let automaticRecoveryGeneration = recoveryGeneration
     connectionStatus = Self.idleConnectionStatus
+    savedSeatKnownAbsent = false
     resetRecoveryInitiated = false
     resetRecoveryCleanupVerified = false
     isResetRecoveryCleanupInProgress = false
@@ -609,6 +624,7 @@ final class RoomSessionModel {
               activeAdmissionOperationID == nil,
               pendingInviteReview == nil
         else { return }
+        savedSeatKnownAbsent = false
         recoveringRoomCode = saved.roomCode
         joinCode = saved.roomCode
         acceptsSeatPersistence = false
@@ -621,6 +637,14 @@ final class RoomSessionModel {
             playerID: saved.playerID
           )
         )
+      } else {
+        guard lifecycleGeneration == generation,
+              started,
+              recoveryGeneration == automaticRecoveryGeneration,
+              activeAdmissionOperationID == nil,
+              pendingInviteReview == nil
+        else { return }
+        savedSeatKnownAbsent = true
       }
     } catch {
       guard lifecycleGeneration == generation,
@@ -833,9 +857,7 @@ final class RoomSessionModel {
       pendingInviteReview = nil
     } catch {
       guard admissionOperationIsCurrent(operationID) else { return }
-      awaitsFreshAdmissionSnapshot = false
-      expectedFreshAdmissionRoomCode = nil
-      showCommandError(error)
+      showFreshAdmissionRetry()
     }
   }
 
@@ -872,9 +894,7 @@ final class RoomSessionModel {
       return true
     } catch {
       guard admissionOperationIsCurrent(operationID) else { return false }
-      awaitsFreshAdmissionSnapshot = false
-      expectedFreshAdmissionRoomCode = nil
-      showCommandError(error)
+      showFreshAdmissionRetry()
       return false
     }
   }
@@ -888,6 +908,7 @@ final class RoomSessionModel {
     do {
       guard let saved = try await environment.seatStore.load(accountID: account.id) else {
         guard admissionOperationIsCurrent(operationID) else { return }
+        savedSeatKnownAbsent = true
         banner = RoomBanner(
           title: "No saved seat",
           message: "Create or join a room to continue.",
@@ -900,6 +921,7 @@ final class RoomSessionModel {
             pendingInviteReview == nil,
             let connection
       else { return }
+      savedSeatKnownAbsent = false
       recoveringRoomCode = saved.roomCode
       joinCode = saved.roomCode
       acceptsSeatPersistence = false
@@ -978,9 +1000,11 @@ final class RoomSessionModel {
     do {
       try await environment.seatStore.clear(accountID: account.id)
       guard admissionOperationIsCurrent(operationID) else { return }
+      savedSeatKnownAbsent = true
       savedSeatWasCleared = true
     } catch {
       guard admissionOperationIsCurrent(operationID) else { return }
+      savedSeatKnownAbsent = false
       savedSeatWasCleared = false
     }
     guard admissionOperationIsCurrent(operationID) else { return }
@@ -1322,6 +1346,7 @@ final class RoomSessionModel {
       return false
     }
     guard admissionOperationIsCurrent(operationID) else {
+      savedSeatKnownAbsent = true
       await restoreRoutingAfterCanceledClear(
         operationID: operationID,
         generation: generation,
@@ -1329,6 +1354,7 @@ final class RoomSessionModel {
       )
       return false
     }
+    savedSeatKnownAbsent = true
     routingClearOperationID = nil
     routingClearRoomCode = nil
     bufferedSnapshotDuringRoutingClear = nil
@@ -1477,6 +1503,8 @@ final class RoomSessionModel {
             playerID: nextSnapshot.playerID
           )
         )
+        guard lifecycleGeneration == generation, started else { return }
+        savedSeatKnownAbsent = false
       } catch {
         guard lifecycleGeneration == generation, started else { return }
         banner = RoomBanner(
@@ -1595,14 +1623,7 @@ final class RoomSessionModel {
         tone: .warning
       )
     case .freshAdmissionInterrupted:
-      acceptsSeatPersistence = false
-      awaitsFreshAdmissionSnapshot = false
-      expectedFreshAdmissionRoomCode = nil
-      banner = RoomBanner(
-        title: "Room not confirmed",
-        message: "The network changed before Skyjo confirmed that room. Create or join again.",
-        tone: .warning
-      )
+      showFreshAdmissionRetry()
     case .transportInterrupted:
       banner = RoomBanner(
         title: "Connection interrupted",
@@ -1638,12 +1659,14 @@ final class RoomSessionModel {
             started,
             seatCleanupID == cleanupID
       else { return }
+      savedSeatKnownAbsent = true
       banner = success
     } catch {
       guard lifecycleGeneration == generation,
             started,
             seatCleanupID == cleanupID
       else { return }
+      savedSeatKnownAbsent = false
       banner = failure
     }
   }
@@ -1691,6 +1714,18 @@ final class RoomSessionModel {
     banner = RoomBanner(
       title: "Room action unavailable",
       message: Self.safeMessage(for: error),
+      tone: .warning
+    )
+  }
+
+  private func showFreshAdmissionRetry() {
+    acceptsSeatPersistence = false
+    awaitsFreshAdmissionSnapshot = false
+    expectedFreshAdmissionRoomCode = nil
+    savedSeatKnownAbsent = true
+    banner = RoomBanner(
+      title: "Room not confirmed",
+      message: "Skyjo could not confirm that room. Create or join again.",
       tone: .warning
     )
   }

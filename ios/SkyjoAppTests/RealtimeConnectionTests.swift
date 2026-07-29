@@ -1285,6 +1285,22 @@ struct RoomConnectionStateMachineTests {
     await connection.dispose()
   }
 
+  @Test("Fresh create and join failures before their first snapshot require explicit retry")
+  func freshAdmissionFailuresBeforeSnapshotFailClosed() async throws {
+    let admissions: [RoomAdmission] = [
+      .create(displayName: "Host"),
+      .join(code: "ABCDE", displayName: "Host", playerID: nil),
+    ]
+    for admission in admissions {
+      for failure in FreshAdmissionFailure.allCases {
+        try await assertFreshAdmissionFailureRequiresExplicitRetry(
+          admission: admission,
+          failure: failure
+        )
+      }
+    }
+  }
+
   @Test("Visibility is explicit and the public event stream stays bounded for slow consumers")
   func presenceAndBoundedEvents() async throws {
     let socket = FakeRoomWebSocket()
@@ -1960,6 +1976,75 @@ private func makeTestConnection(
   )
 }
 
+private enum FreshAdmissionFailure: CaseIterable, Equatable {
+  case socketCreation
+  case synchronizationTimeout
+  case invalidFrame
+  case transportEnd
+
+  var legacyNotice: RoomConnectionNotice? {
+    switch self {
+    case .socketCreation: .transportInterrupted
+    case .synchronizationTimeout: .synchronizationTimedOut
+    case .invalidFrame: .invalidServerResponse
+    case .transportEnd: .transportInterrupted
+    }
+  }
+}
+
+private func assertFreshAdmissionFailureRequiresExplicitRetry(
+  admission: RoomAdmission,
+  failure: FreshAdmissionFailure
+) async throws {
+  let firstSocket = FakeRoomWebSocket()
+  let retrySocket = FakeRoomWebSocket()
+  let sleeper = ControlledSleeper()
+  let factory = failure == .socketCreation
+    ? FakeSocketFactory([retrySocket], failuresBeforeSockets: 1)
+    : FakeSocketFactory([firstSocket, retrySocket])
+  let connection = try makeTestConnection(
+    factory: factory,
+    sleeper: sleeper,
+    commandIDs: []
+  )
+  let notices = RoomConnectionNoticeRecorder()
+  let events = await connection.events()
+  let observation = Task {
+    for await event in events { await notices.record(event) }
+  }
+
+  try await connection.connect(admission)
+  switch failure {
+  case .socketCreation:
+    break
+  case .synchronizationTimeout:
+    #expect(await eventually { await firstSocket.sentTexts().count == 1 })
+    #expect(await eventually { await sleeper.hasPending(milliseconds: 8_000) })
+    #expect(await sleeper.release(milliseconds: 8_000))
+  case .invalidFrame:
+    #expect(await eventually { await firstSocket.sentTexts().count == 1 })
+    await firstSocket.deliver(.data(Data("not-json-text".utf8)))
+  case .transportEnd:
+    #expect(await eventually { await firstSocket.sentTexts().count == 1 })
+    await firstSocket.fail()
+  }
+
+  #expect(await eventually { await connection.status().phase == .error })
+  #expect(await connection.recoveryAdmission() == nil)
+  #expect(await eventually { await notices.contains(.freshAdmissionInterrupted) })
+  if let legacyNotice = failure.legacyNotice {
+    #expect(!(await notices.contains(legacyNotice)))
+  }
+  #expect(!(await sleeper.hasPending(milliseconds: 500)))
+
+  try await connection.connect(admission)
+  #expect(await eventually { await retrySocket.sentTexts().count == 1 })
+  let expectedAdmission = try RealtimeFrameCodec.encodeAdmission(admission)
+  #expect((await retrySocket.sentTexts()).first == expectedAdmission)
+  observation.cancel()
+  await connection.dispose()
+}
+
 private actor FakeRoomWebSocket: RoomWebSocket {
   private var queuedMessages: [RoomWebSocketMessage] = []
   private var receiver: CheckedContinuation<RoomWebSocketMessage, Error>?
@@ -2224,15 +2309,21 @@ private actor RoomConnectionStatusRecorder {
 private final class FakeSocketFactory: @unchecked Sendable {
   private let lock = NSLock()
   private var sockets: [FakeRoomWebSocket]
+  private var remainingFailures: Int
   private var requests: [URLRequest] = []
 
-  init(_ sockets: [FakeRoomWebSocket]) {
+  init(_ sockets: [FakeRoomWebSocket], failuresBeforeSockets: Int = 0) {
     self.sockets = sockets
+    remainingFailures = failuresBeforeSockets
   }
 
   func make(_ request: URLRequest) throws -> any RoomWebSocket {
     lock.lock()
     defer { lock.unlock() }
+    if remainingFailures > 0 {
+      remainingFailures -= 1
+      throw RealtimeTestError.noSocket
+    }
     guard !sockets.isEmpty else { throw RealtimeTestError.noSocket }
     requests.append(request)
     return sockets.removeFirst()

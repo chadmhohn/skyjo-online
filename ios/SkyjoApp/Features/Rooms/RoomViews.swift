@@ -256,22 +256,27 @@ private struct RoomJoinView: View {
         .disabled(connectionRequestDisabled)
         .accessibilityIdentifier("rooms.create")
 
-        if model.connectionStatus.phase == .error || model.connectionStatus.phase == .idle {
+        if (model.connectionStatus.phase == .error || model.connectionStatus.phase == .idle),
+           model.shouldShowRetrySavedSeat || model.shouldShowForgetSavedSeat {
           HStack(spacing: 12) {
-            Button("Retry Saved Seat") {
-              Task { await model.retrySavedSeat() }
+            if model.shouldShowRetrySavedSeat {
+              Button("Retry Saved Seat") {
+                Task { await model.retrySavedSeat() }
+              }
+              .disabled(!model.canRetrySavedSeat)
+              .frame(minHeight: 44)
+              .accessibilityIdentifier("rooms.retry-seat")
             }
-            .disabled(!model.canSubmitAdmission)
-            .frame(minHeight: 44)
-            .accessibilityIdentifier("rooms.retry-seat")
 
-            Button("Forget Saved Seat", role: .destructive) {
-              confirmsForgetSavedSeat = true
+            if model.shouldShowForgetSavedSeat {
+              Button("Forget Saved Seat", role: .destructive) {
+                confirmsForgetSavedSeat = true
+              }
+              .disabled(!model.canForgetSavedSeat)
+              .frame(minHeight: 44)
+              .accessibilityIdentifier("rooms.forget-seat")
+              .accessibilityHint("Requires confirmation before removing saved routing data")
             }
-            .disabled(!model.canForgetSavedSeat)
-            .frame(minHeight: 44)
-            .accessibilityIdentifier("rooms.forget-seat")
-            .accessibilityHint("Requires confirmation before removing saved routing data")
           }
         }
       }
@@ -822,6 +827,16 @@ private struct RoomTableBand: View {
   }
 }
 
+struct RoomConnectionAnnouncementState: Equatable {
+  let phase: RoomConnectionPhase
+  let hasPendingCommand: Bool
+
+  init(_ status: RoomConnectionStatus) {
+    phase = status.phase
+    hasPendingCommand = status.hasPendingCommand
+  }
+}
+
 @MainActor
 private struct RoomConnectionBanner: View {
   let model: RoomSessionModel
@@ -840,7 +855,7 @@ private struct RoomConnectionBanner: View {
       .accessibilityIdentifier("rooms.connection.\(model.connectionStatus.phase.rawValue)")
       .transition(.opacity)
       .onAppear(perform: announceStatus)
-      .onChange(of: model.connectionStatus) {
+      .onChange(of: announcementState) {
         announceStatus()
       }
     }
@@ -848,6 +863,10 @@ private struct RoomConnectionBanner: View {
 
   private func announceStatus() {
     AccessibilityNotification.Announcement("\(title). \(message)").post()
+  }
+
+  private var announcementState: RoomConnectionAnnouncementState {
+    RoomConnectionAnnouncementState(model.connectionStatus)
   }
 
   private var title: String {
@@ -880,7 +899,10 @@ private struct RoomConnectionBanner: View {
       }
       return "The table is read-only while Skyjo reconnects."
     case .offline: return "The last table remains visible and read-only until the network returns."
-    case .error: return "The last table is read-only. Retry the saved seat."
+    case .error:
+      return model.savedSeatKnownAbsent
+        ? "That room was not confirmed. Create or join again."
+        : "The last table is read-only. Retry the saved seat."
     case .upgradeRequired: return "Install a compatible Skyjo version before continuing."
     }
   }
@@ -1205,14 +1227,15 @@ private struct RoomOptionsView: View {
             Button("Reset Room", role: .destructive) { confirmation = .reset }
               .disabled(!model.commandsEnabled)
           }
-          if model.connectionStatus.phase == .error || model.connectionStatus.phase == .idle {
+          if (model.connectionStatus.phase == .error || model.connectionStatus.phase == .idle),
+             model.shouldShowRetrySavedSeat {
             Button("Retry Saved Seat") {
               dismiss()
               Task { await model.retrySavedSeat() }
             }
-            .disabled(!model.canSubmitAdmission)
+            .disabled(!model.canRetrySavedSeat)
           }
-          if model.canForgetSavedSeat {
+          if model.shouldShowForgetSavedSeat {
             Button("Forget Saved Seat", role: .destructive) {
               confirmation = .forgetSavedSeat
             }

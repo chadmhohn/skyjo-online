@@ -686,6 +686,11 @@ public actor RoomConnection {
       if recovering && isRecoverable(admission) {
         scheduleReconnect()
       } else {
+        if self.admission != nil {
+          publish(.notice(.freshAdmissionInterrupted))
+          self.admission = nil
+          admissionWasAttempted = false
+        }
         transition(to: .error)
       }
       return
@@ -1178,40 +1183,59 @@ public actor RoomConnection {
 
   private func synchronizationTimedOut(socketGeneration: UInt64) async {
     guard isCurrent(socketGeneration), synchronizedGeneration != socketGeneration else { return }
-    publish(.notice(.synchronizationTimedOut))
     let canRecover = isRecoverable(admission)
+    let freshAdmissionWasInterrupted = admission != nil && !canRecover
+    publish(.notice(
+      freshAdmissionWasInterrupted ? .freshAdmissionInterrupted : .synchronizationTimedOut
+    ))
     retireCurrentSocket(code: 4_001, reason: "Room synchronization timed out")
     if canRecover {
       scheduleReconnect()
     } else {
       admission = nil
+      admissionWasAttempted = false
       transition(to: .error)
     }
   }
 
   private func failClosedInvalidFrame(socketGeneration: UInt64) async {
     guard isCurrent(socketGeneration) else { return }
-    publish(.notice(.invalidServerResponse))
     let canRecover = isRecoverable(admission)
+    let freshAdmissionWasInterrupted = admission != nil && !canRecover
+    publish(.notice(
+      freshAdmissionWasInterrupted ? .freshAdmissionInterrupted : .invalidServerResponse
+    ))
     retireCurrentSocket(code: 1_002, reason: "Invalid server response")
     if canRecover {
       scheduleReconnect()
     } else {
       admission = nil
+      admissionWasAttempted = false
       transition(to: .error)
     }
   }
 
   private func handleTransportEnd(socketGeneration: UInt64, shouldNotify: Bool) async {
     guard isCurrent(socketGeneration) else { return }
-    if shouldNotify { publish(.notice(.transportInterrupted)) }
+    let canRecover = isRecoverable(admission)
+    let freshAdmissionWasInterrupted = admission != nil && !canRecover
+    if shouldNotify {
+      if freshAdmissionWasInterrupted {
+        // The connectivity transition owns the eventual fail-closed notice while
+        // offline so the user is not first told that an impossible replay exists.
+        if online { publish(.notice(.freshAdmissionInterrupted)) }
+      } else {
+        publish(.notice(.transportInterrupted))
+      }
+    }
     retireCurrentSocket(code: 1_011, reason: "Transport interrupted")
     if !online {
       transition(to: .offline)
-    } else if isRecoverable(admission) {
+    } else if canRecover {
       scheduleReconnect()
     } else {
       admission = nil
+      admissionWasAttempted = false
       transition(to: .error)
     }
   }
