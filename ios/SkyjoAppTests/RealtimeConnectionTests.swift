@@ -1407,10 +1407,13 @@ struct RoomConnectionNodeIntegrationTests {
       return true
     })
 
+    // Opening reveals are server-authoritative and advance in room seat order.
+    // The PWA host owns the first seat, so it must complete its two reveals
+    // before the seven native seats can take their opening turns.
+    try await control.revealOpening(count: 2)
     for connection in roomConnections {
       try await revealTwoOpeningCards(on: connection)
     }
-    try await control.revealOpening(count: 2)
     #expect(await eventually(attempts: 7_500) {
       for connection in roomConnections {
         guard await connection.snapshot()?.room.state?.phase == .chooseSource else { return false }
@@ -1660,8 +1663,10 @@ struct RoomConnectionNodeIntegrationTests {
       return status.synchronized && !status.hasPendingCommand
         && snapshot.room.status == .playing && snapshot.room.state != nil
     })
-    try await revealTwoOpeningCards(on: connection)
+    // Host transfer does not reorder game seats. The PWA remains the first
+    // opening-reveal player even though the native client now owns room host.
     try await control.revealOpening(count: 2)
+    try await revealTwoOpeningCards(on: connection)
     #expect(await eventually(attempts: 5_000) {
       await connection.snapshot()?.room.state?.phase == .chooseSource
     })
@@ -1680,6 +1685,7 @@ struct RoomConnectionNodeIntegrationTests {
     let waitMilliseconds = max(0, takeoverAt - disconnected.room.serverNow + 200)
     try await Task<Never, Never>.sleep(for: .milliseconds(waitMilliseconds))
 
+    let revisionBeforeTakeover = disconnected.revision
     _ = try await connection.send(.takeoverPlayerWithAI(pwaPlayerID))
     #expect(await eventually(attempts: 5_000) {
       guard let snapshot = await connection.snapshot() else { return false }
@@ -1687,9 +1693,22 @@ struct RoomConnectionNodeIntegrationTests {
       return status.synchronized && !status.hasPendingCommand
         && snapshot.room.players.first(where: { $0.id == pwaPlayerID })?.controller == .ai
     })
-    let takeoverRevision = try #require(await connection.snapshot()).revision
+    let afterTakeover = try #require(await connection.snapshot())
+    guard let afterTakeoverGame = afterTakeover.room.state,
+          afterTakeoverGame.players.indices.contains(afterTakeoverGame.currentPlayerIndex)
+    else { throw RealtimeTestError.invalidFixture }
+    let currentPlayerID = afterTakeoverGame.players[afterTakeoverGame.currentPlayerIndex].id
+    let aiProgressBaseline: Int64
+    if currentPlayerID == nativePlayerID {
+      // The opening draw is intentionally random, so either seat can start.
+      // Complete the native turn when necessary and require the following AI
+      // seat to advance the authoritative revision as well.
+      aiProgressBaseline = try await completeBlindDrawTurn(on: connection)
+    } else {
+      aiProgressBaseline = revisionBeforeTakeover
+    }
     #expect(await eventually(attempts: 5_000) {
-      await connection.snapshot()?.revision ?? 0 > takeoverRevision
+      await connection.snapshot()?.revision ?? 0 >= aiProgressBaseline + 2
     })
 
     #expect(try await control.reopenPage())
@@ -2221,6 +2240,34 @@ private func revealTwoOpeningCards(on connection: RoomConnection) async throws {
         && nextGame.openingRevealCounts[snapshot.playerID, default: 0] >= expectedCount
     }) else { throw RealtimeTestError.invalidFixture }
   }
+}
+
+private func completeBlindDrawTurn(on connection: RoomConnection) async throws -> Int64 {
+  guard let snapshot = await connection.snapshot(),
+        let game = snapshot.room.state,
+        game.phase == .chooseSource,
+        game.players.indices.contains(game.currentPlayerIndex),
+        game.players[game.currentPlayerIndex].id == snapshot.playerID,
+        let player = game.players.first(where: { $0.id == snapshot.playerID }),
+        let index = player.grid.firstIndex(where: { !$0.faceUp && !$0.removed })
+  else { throw RealtimeTestError.invalidFixture }
+
+  _ = try await connection.send(.drawBlind)
+  guard await eventually(attempts: 5_000, {
+    guard let next = await connection.snapshot(), let nextGame = next.room.state else {
+      return false
+    }
+    let status = await connection.status()
+    return status.synchronized
+      && !status.hasPendingCommand
+      && nextGame.phase == .chooseReplacement
+      && nextGame.hasDrawnCard
+  }), let drawn = await connection.snapshot()
+  else { throw RealtimeTestError.invalidFixture }
+
+  let revisionBeforeCompletion = drawn.revision
+  _ = try await connection.send(.discardAndReveal(index))
+  return revisionBeforeCompletion
 }
 
 private func realtimeCookieStorage(label: String) -> HTTPCookieStorage {
