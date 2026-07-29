@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
+  appendFileSync,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readSync,
+  renameSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,6 +21,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  boundedReadOpenFlags,
   builtNativeApplicationInventoryFailures,
   extractWavePcm,
   nativeApplicationResourceNames,
@@ -20,6 +31,11 @@ import {
   unexpectedNativeResources,
   unexpectedPublicResources
 } from './check-audio-assets.mjs';
+
+const boundedReadsSupported = typeof constants.O_RDONLY === 'number'
+  && typeof constants.O_NOFOLLOW === 'number'
+  && typeof constants.O_NONBLOCK === 'number';
+const boundedReadTestOptions = { skip: !boundedReadsSupported };
 
 const validAppleAudioInfo = `<?xml version="1.0" encoding="UTF8"?>
 <audio_info xmlns="http://apple.com/core_audio/audio_info">
@@ -74,6 +90,66 @@ function testWave() {
   return { pcm, wave };
 }
 
+function instrumentedFileOperations(hooks = {}) {
+  let descriptor;
+  let closeCount = 0;
+  let fstatCall = 0;
+  let lstatCall = 0;
+  let openCount = 0;
+  let readCall = 0;
+  const operations = {
+    closeSync(value) {
+      closeCount += 1;
+      return closeSync(value);
+    },
+    fstatSync(...args) {
+      const call = fstatCall;
+      fstatCall += 1;
+      hooks.beforeFstat?.({ call, descriptor: args[0] });
+      const stat = fstatSync(...args);
+      hooks.afterFstat?.({ call, descriptor: args[0], stat });
+      return hooks.transformFstat?.({ call, descriptor: args[0], stat }) ?? stat;
+    },
+    lstatSync(...args) {
+      const call = lstatCall;
+      lstatCall += 1;
+      hooks.beforeLstat?.({ call, filePath: args[0] });
+      const stat = lstatSync(...args);
+      hooks.afterLstat?.({ call, filePath: args[0], stat });
+      return stat;
+    },
+    openSync(...args) {
+      openCount += 1;
+      hooks.beforeOpen?.({ filePath: args[0], flags: args[1] });
+      descriptor = openSync(...args);
+      return descriptor;
+    },
+    readSync(...args) {
+      const call = readCall;
+      readCall += 1;
+      hooks.beforeRead?.({ call, descriptor: args[0] });
+      const bytesRead = readSync(...args);
+      hooks.afterRead?.({ bytesRead, call, descriptor: args[0] });
+      return bytesRead;
+    }
+  };
+  return {
+    closeCount: () => closeCount,
+    descriptor: () => descriptor,
+    openCount: () => openCount,
+    operations
+  };
+}
+
+function assertDescriptorClosed(instrumentation) {
+  assert.equal(instrumentation.closeCount(), 1);
+  assert.notEqual(instrumentation.descriptor(), undefined);
+  assert.throws(
+    () => fstatSync(instrumentation.descriptor()),
+    (error) => error?.code === 'EBADF'
+  );
+}
+
 test('parseAppleAudioInfo accepts one MP3 track and preserves measured metadata', () => {
   assert.deepEqual(parseAppleAudioInfo(validAppleAudioInfo, 4_225), {
     channels: 1,
@@ -117,7 +193,40 @@ test('extractWavePcm rejects mismatched formats and truncated data chunks', () =
   assert.throws(() => extractWavePcm(truncatedData, 44_100), /chunk exceeds the file bounds/);
 });
 
-test('bounded regular-file reads reject oversized, linked, and non-file output', () => {
+test('bounded read flags fail closed when atomic protections are unavailable', () => {
+  assert.throws(
+    () => boundedReadOpenFlags({ O_RDONLY: 0, O_NONBLOCK: 4 }),
+    /require O_NOFOLLOW and O_NONBLOCK support/
+  );
+  assert.throws(
+    () => boundedReadOpenFlags({ O_RDONLY: 0, O_NOFOLLOW: 2 }),
+    /require O_NOFOLLOW and O_NONBLOCK support/
+  );
+  if (boundedReadsSupported) {
+    assert.equal(
+      boundedReadOpenFlags(constants),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
+  }
+});
+
+test('bounded reads do not open or close a file when atomic protections are unavailable', () => {
+  const instrumentation = instrumentedFileOperations();
+  assert.throws(
+    () => readBoundedRegularFile(
+      '/not-opened',
+      4,
+      'Decoded WAVE output',
+      instrumentation.operations,
+      { O_RDONLY: 0, O_NONBLOCK: 4 }
+    ),
+    /require O_NOFOLLOW and O_NONBLOCK support/
+  );
+  assert.equal(instrumentation.openCount(), 0);
+  assert.equal(instrumentation.closeCount(), 0);
+});
+
+test('bounded regular-file reads reject oversized, linked, and non-file output', boundedReadTestOptions, () => {
   const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-reader-test-'));
   try {
     const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
@@ -147,6 +256,277 @@ test('bounded regular-file reads reject oversized, linked, and non-file output',
   } finally {
     rmSync(temporaryDirectory, { force: true, recursive: true });
   }
+});
+
+test(
+  'bounded regular-file reads reject a FIFO without waiting for a writer',
+  { skip: process.platform === 'win32' || !boundedReadsSupported },
+  () => {
+    const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-fifo-test-'));
+    try {
+      const fifoPath = path.join(temporaryDirectory, 'decoded.wav');
+      const result = spawnSync('mkfifo', [fifoPath], {
+        encoding: 'utf8',
+        timeout: 2_000
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0, result.stderr);
+      const moduleUrl = new URL('./check-audio-assets.mjs', import.meta.url).href;
+      const childScript = `
+        import { readBoundedRegularFile } from ${JSON.stringify(moduleUrl)};
+        try {
+          readBoundedRegularFile(process.argv[1], 4, 'Decoded WAVE output');
+          process.exitCode = 2;
+        } catch (error) {
+          if (!/must be a regular file/.test(String(error?.message))) throw error;
+        }
+      `;
+      const probe = spawnSync(
+        process.execPath,
+        ['--input-type=module', '--eval', childScript, fifoPath],
+        { encoding: 'utf8', timeout: 2_000 }
+      );
+      assert.equal(probe.error, undefined, probe.error?.message);
+      assert.equal(probe.status, 0, probe.stderr);
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  }
+);
+
+test('bounded regular-file reads reject post-open path replacement and close the descriptor', boundedReadTestOptions, () => {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-open-race-test-'));
+  try {
+    const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+    const pinnedPath = path.join(temporaryDirectory, 'pinned.wav');
+    writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+    const instrumentation = instrumentedFileOperations({
+      afterFstat({ call }) {
+        if (call === 0) {
+          renameSync(decodedPath, pinnedPath);
+          writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+        }
+      }
+    });
+    assert.throws(
+      () => readBoundedRegularFile(
+        decodedPath,
+        4,
+        'Decoded WAVE output',
+        instrumentation.operations
+      ),
+      /changed while it was being opened/
+    );
+    assertDescriptorClosed(instrumentation);
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test('bounded regular-file reads reject partial truncation during the read and close the descriptor', boundedReadTestOptions, () => {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-truncate-race-test-'));
+  try {
+    const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+    writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+    const instrumentation = instrumentedFileOperations({
+      beforeRead({ call }) {
+        if (call === 0) truncateSync(decodedPath, 2);
+        if (call === 1) truncateSync(decodedPath, 0);
+      }
+    });
+    assert.throws(
+      () => readBoundedRegularFile(
+        decodedPath,
+        4,
+        'Decoded WAVE output',
+        instrumentation.operations
+      ),
+      /changed while it was being read/
+    );
+    assertDescriptorClosed(instrumentation);
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test('bounded regular-file reads reject appended overflow and close the descriptor', boundedReadTestOptions, () => {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-overflow-race-test-'));
+  try {
+    const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+    writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+    const instrumentation = instrumentedFileOperations({
+      afterRead({ call }) {
+        if (call === 0) appendFileSync(decodedPath, Buffer.from([5]));
+      }
+    });
+    assert.throws(
+      () => readBoundedRegularFile(
+        decodedPath,
+        5,
+        'Decoded WAVE output',
+        instrumentation.operations
+      ),
+      /grew while it was being read/
+    );
+    assertDescriptorClosed(instrumentation);
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test('bounded regular-file reads reject a final size change after the overflow probe', boundedReadTestOptions, () => {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-final-race-test-'));
+  try {
+    const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+    writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+    const instrumentation = instrumentedFileOperations({
+      afterRead({ bytesRead, call }) {
+        if (call === 1 && bytesRead === 0) {
+          appendFileSync(decodedPath, Buffer.from([5]));
+        }
+      }
+    });
+    assert.throws(
+      () => readBoundedRegularFile(
+        decodedPath,
+        5,
+        'Decoded WAVE output',
+        instrumentation.operations
+      ),
+      /changed while it was being read/
+    );
+    assertDescriptorClosed(instrumentation);
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test('bounded regular-file reads reject late same-size path replacement', boundedReadTestOptions, () => {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-late-path-race-test-'));
+  try {
+    const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+    const pinnedPath = path.join(temporaryDirectory, 'pinned.wav');
+    writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+    const instrumentation = instrumentedFileOperations({
+      afterRead({ bytesRead, call }) {
+        if (call === 1 && bytesRead === 0) {
+          renameSync(decodedPath, pinnedPath);
+          writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+        }
+      }
+    });
+    assert.throws(
+      () => readBoundedRegularFile(
+        decodedPath,
+        4,
+        'Decoded WAVE output',
+        instrumentation.operations
+      ),
+      /changed while it was being read/
+    );
+    assertDescriptorClosed(instrumentation);
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test('bounded regular-file reads detect nanosecond metadata changes', boundedReadTestOptions, () => {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-metadata-race-test-'));
+  try {
+    const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+    writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+    const instrumentation = instrumentedFileOperations({
+      transformFstat({ call, stat }) {
+        if (call !== 1) return stat;
+        return {
+          ...stat,
+          ctimeNs: stat.ctimeNs + 1n,
+          isFile: () => stat.isFile()
+        };
+      }
+    });
+    assert.throws(
+      () => readBoundedRegularFile(
+        decodedPath,
+        4,
+        'Decoded WAVE output',
+        instrumentation.operations
+      ),
+      /changed while it was being read/
+    );
+    assertDescriptorClosed(instrumentation);
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test('bounded regular-file reads close the descriptor after a successful read', boundedReadTestOptions, () => {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-success-close-test-'));
+  try {
+    const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+    writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+    const instrumentation = instrumentedFileOperations();
+    assert.deepEqual(
+      readBoundedRegularFile(
+        decodedPath,
+        4,
+        'Decoded WAVE output',
+        instrumentation.operations
+      ),
+      Buffer.from([1, 2, 3, 4])
+    );
+    assertDescriptorClosed(instrumentation);
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+for (const [failureName, hooks, expectedError] of [
+  ['path inspection', { beforeLstat: () => { throw new Error('injected lstat failure'); } }, /injected lstat failure/],
+  ['descriptor read', { beforeRead: () => { throw new Error('injected read failure'); } }, /injected read failure/]
+]) {
+  test(`bounded regular-file reads close the descriptor after ${failureName} failure`, boundedReadTestOptions, () => {
+    const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-operation-failure-test-'));
+    try {
+      const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+      writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+      const instrumentation = instrumentedFileOperations(hooks);
+      assert.throws(
+        () => readBoundedRegularFile(
+          decodedPath,
+          4,
+          'Decoded WAVE output',
+          instrumentation.operations
+        ),
+        expectedError
+      );
+      assertDescriptorClosed(instrumentation);
+    } finally {
+      rmSync(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+}
+
+test('bounded regular-file reads do not close a descriptor when opening fails', boundedReadTestOptions, () => {
+  const instrumentation = instrumentedFileOperations({
+    beforeOpen() {
+      const error = new Error('injected open failure');
+      error.code = 'EACCES';
+      throw error;
+    }
+  });
+  assert.throws(
+    () => readBoundedRegularFile(
+      '/not-opened',
+      4,
+      'Decoded WAVE output',
+      instrumentation.operations
+    ),
+    /injected open failure/
+  );
+  assert.equal(instrumentation.openCount(), 1);
+  assert.equal(instrumentation.closeCount(), 0);
+  assert.equal(instrumentation.descriptor(), undefined);
 });
 
 test('native resource inventory rejects alternate or disguised media outside the exact allowlist', () => {

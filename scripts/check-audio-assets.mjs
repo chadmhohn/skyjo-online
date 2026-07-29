@@ -4,6 +4,7 @@ import {
   closeSync,
   constants,
   fstatSync,
+  lstatSync,
   mkdtempSync,
   openSync,
   readSync,
@@ -93,6 +94,41 @@ const maximumTailRms = 10 ** (-36 / 20);
 const maximumFinalSample = 10 ** (-40 / 20);
 const appleAfconvertPath = '/usr/bin/afconvert';
 const appleAfinfoPath = '/usr/bin/afinfo';
+const boundedReadFileOperations = Object.freeze({
+  closeSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync
+});
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameStableFileMetadata(left, right) {
+  return sameFileIdentity(left, right)
+    && left.mode === right.mode
+    && left.nlink === right.nlink
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
+}
+
+export function boundedReadOpenFlags(fileConstants = constants) {
+  if (
+    typeof fileConstants.O_RDONLY !== 'number'
+    || typeof fileConstants.O_NOFOLLOW !== 'number'
+    || typeof fileConstants.O_NONBLOCK !== 'number'
+  ) {
+    throw new Error(
+      'Secure bounded file reads require O_NOFOLLOW and O_NONBLOCK support on this platform.'
+    );
+  }
+  return fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW | fileConstants.O_NONBLOCK;
+}
 
 function portableRelativePath(value) {
   return value.split(path.sep).join('/');
@@ -467,29 +503,49 @@ function decodeMonoPcmWithApple(filePath, sampleRate) {
   }
 }
 
-export function readBoundedRegularFile(filePath, maximumBytes, label = 'File') {
+export function readBoundedRegularFile(
+  filePath,
+  maximumBytes,
+  label = 'File',
+  fileOperations = boundedReadFileOperations,
+  fileConstants = constants
+) {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
     throw new Error('Maximum file size must be a non-negative safe integer.');
   }
-  const descriptor = openSync(
-    filePath,
-    constants.O_RDONLY | constants.O_NOFOLLOW
-  );
+  const openFlags = boundedReadOpenFlags(fileConstants);
+  let descriptor;
   try {
-    const initialStat = fstatSync(descriptor);
-    if (!initialStat.isFile()) {
-      throw new Error(`${label} must be a regular file.`);
+    descriptor = fileOperations.openSync(filePath, openFlags);
+  } catch (error) {
+    if (error?.code === 'ELOOP') {
+      throw new Error(`${label} must be a regular file and cannot be a symbolic link.`);
     }
-    if (!Number.isSafeInteger(initialStat.size) || initialStat.size > maximumBytes) {
+    throw error;
+  }
+  try {
+    const initialStat = fileOperations.fstatSync(descriptor, { bigint: true });
+    const initialPathStat = fileOperations.lstatSync(filePath, { bigint: true });
+    if (
+      !initialStat.isFile()
+      || !initialPathStat.isFile()
+      || initialPathStat.isSymbolicLink()
+    ) {
+      throw new Error(`${label} must be a regular file and cannot be a symbolic link.`);
+    }
+    if (!sameStableFileMetadata(initialStat, initialPathStat)) {
+      throw new Error(`${label} changed while it was being opened.`);
+    }
+    if (initialStat.size > BigInt(maximumBytes)) {
       throw new Error(
         `${label} ${initialStat.size} bytes exceeds the audio gate's safe bound.`
       );
     }
 
-    const contents = Buffer.alloc(initialStat.size);
+    const contents = Buffer.alloc(Number(initialStat.size));
     let offset = 0;
     while (offset < contents.length) {
-      const bytesRead = readSync(
+      const bytesRead = fileOperations.readSync(
         descriptor,
         contents,
         offset,
@@ -503,15 +559,23 @@ export function readBoundedRegularFile(filePath, maximumBytes, label = 'File') {
     }
 
     const overflowProbe = Buffer.alloc(1);
-    if (readSync(descriptor, overflowProbe, 0, 1, offset) !== 0) {
+    if (fileOperations.readSync(descriptor, overflowProbe, 0, 1, offset) !== 0) {
       throw new Error(`${label} grew while it was being read.`);
     }
-    if (fstatSync(descriptor).size !== initialStat.size) {
+    const finalStat = fileOperations.fstatSync(descriptor, { bigint: true });
+    const finalPathStat = fileOperations.lstatSync(filePath, { bigint: true });
+    if (
+      !finalStat.isFile()
+      || !finalPathStat.isFile()
+      || finalPathStat.isSymbolicLink()
+      || !sameStableFileMetadata(initialStat, finalStat)
+      || !sameStableFileMetadata(finalStat, finalPathStat)
+    ) {
       throw new Error(`${label} changed while it was being read.`);
     }
     return contents;
   } finally {
-    closeSync(descriptor);
+    fileOperations.closeSync(descriptor);
   }
 }
 
