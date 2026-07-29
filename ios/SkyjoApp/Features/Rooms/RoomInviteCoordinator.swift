@@ -67,6 +67,13 @@ final class RoomInviteCoordinator {
     state = .idle
   }
 
+  /// Reclaims sanitized review state from a room model that is being retired.
+  /// A newer URL request always wins over the older review.
+  func restoreReviewIfIdle(_ invite: RedeemedRoomInvite) {
+    guard case .idle = state else { return }
+    state = .review(invite)
+  }
+
   private static func safeMessage(for error: any Error) -> String {
     if let error = error as? SkyjoHTTPClientError {
       if case .server(_, let code, _) = error {
@@ -96,5 +103,114 @@ final class RoomInviteCoordinator {
       && components.host?.lowercased() == RoomInviteLink.productionHost
       && (components.percentEncodedPath == "/invite"
         || components.percentEncodedPath.hasPrefix("/invite/"))
+  }
+}
+
+/// Bridges universal-link redemption and the account-scoped room session without
+/// allowing an invite received during sign-in or account replacement to reach an
+/// older account's socket.
+@MainActor
+@Observable
+final class RoomAppCoordinator {
+  @ObservationIgnored
+  private let makeSessionHost: @MainActor @Sendable (AccountUser) -> RoomSessionHost
+  private let inviteHandoff: RoomInviteCoordinator
+  private var synchronizationGeneration: UInt64 = 0
+
+  private(set) var sessionHost: RoomSessionHost?
+  var isRoomPresented = false
+
+  init(apiClient: SkyjoAPIClient, inviteClient: RoomInviteClient) {
+    inviteHandoff = RoomInviteCoordinator(client: inviteClient)
+    makeSessionHost = { account in
+      RoomSessionHost(
+        account: account,
+        apiClient: apiClient,
+        inviteClient: inviteClient
+      )
+    }
+  }
+
+  init(
+    inviteHandoff: RoomInviteCoordinator,
+    makeSessionHost: @escaping @MainActor @Sendable (AccountUser) -> RoomSessionHost
+  ) {
+    self.inviteHandoff = inviteHandoff
+    self.makeSessionHost = makeSessionHost
+  }
+
+  var handoffState: RoomInviteHandoffState {
+    inviteHandoff.state
+  }
+
+  var inviteFailureMessage: String? {
+    guard case .failed(let message) = handoffState else { return nil }
+    return message
+  }
+
+  /// Returns false for URLs outside the committed Skyjo universal-link contract.
+  @discardableResult
+  func accept(_ url: URL) async -> Bool {
+    guard await inviteHandoff.accept(url) else { return false }
+    routePendingInviteIfPossible()
+    return true
+  }
+
+  /// Keeps the room host aligned with the currently authenticated account. A nil
+  /// account retires the socket but intentionally leaves sanitized invite review
+  /// state in memory so sign-in can finish the handoff.
+  func synchronize(account: AccountUser?) async {
+    synchronizationGeneration &+= 1
+    let generation = synchronizationGeneration
+
+    guard let account else {
+      let previousHost = sessionHost
+      preservePendingReview(from: previousHost)
+      sessionHost = nil
+      isRoomPresented = false
+      await previousHost?.stop()
+      return
+    }
+
+    if let currentHost = sessionHost,
+       currentHost.model.account.id == account.id {
+      await currentHost.synchronize(account: account)
+      guard synchronizationGeneration == generation else { return }
+      routePendingInviteIfPossible()
+      return
+    }
+
+    let previousHost = sessionHost
+    preservePendingReview(from: previousHost)
+    sessionHost = nil
+    isRoomPresented = false
+    await previousHost?.stop()
+    guard synchronizationGeneration == generation else { return }
+
+    sessionHost = makeSessionHost(account)
+    routePendingInviteIfPossible()
+  }
+
+  func presentRooms(for account: AccountUser) async {
+    await synchronize(account: account)
+    guard sessionHost?.model.account.id == account.id else { return }
+    isRoomPresented = true
+  }
+
+  func dismissInviteHandoff() {
+    inviteHandoff.dismiss()
+  }
+
+  private func routePendingInviteIfPossible() {
+    guard let sessionHost,
+          let invite = inviteHandoff.consumeReview()
+    else { return }
+    sessionHost.applyInvite(invite)
+    isRoomPresented = true
+  }
+
+  private func preservePendingReview(from host: RoomSessionHost?) {
+    guard let invite = host?.model.pendingInviteReview else { return }
+    inviteHandoff.restoreReviewIfIdle(invite)
   }
 }

@@ -1043,18 +1043,22 @@ final class RoomSessionModel {
     isCreatingInvite = false
   }
 
-  private func clearVisibleRoom() {
-    snapshot = nil
-    joinCode = ""
+  private func dismissRoomScopedPresentation() {
     isChatPresented = false
     isRoomOptionsPresented = false
     isScorePresented = false
+    invalidateShareInvite()
+  }
+
+  private func clearVisibleRoom() {
+    snapshot = nil
+    joinCode = ""
+    dismissRoomScopedPresentation()
     lastSeenChatMessageID = nil
     lastChatRoomCode = nil
     resetRecoveryInitiated = false
     awaitsFreshAdmissionSnapshot = false
     expectedFreshAdmissionRoomCode = nil
-    invalidateShareInvite()
   }
 
   private func clearRoutingForFreshAdmission(_ operationID: UUID) async -> Bool {
@@ -1158,8 +1162,9 @@ final class RoomSessionModel {
         expectedFreshAdmissionRoomCode = nil
       }
       let previousCode = lastChatRoomCode
-      if snapshot?.room.code != nextSnapshot.room.code {
-        invalidateShareInvite()
+      if let visibleRoomCode = snapshot?.room.code,
+         visibleRoomCode != nextSnapshot.room.code {
+        dismissRoomScopedPresentation()
       }
       banner = nil
       snapshot = nextSnapshot

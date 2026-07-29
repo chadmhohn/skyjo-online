@@ -145,12 +145,14 @@ public actor RoomInviteClient {
 
   private let environment: SkyjoNetworkEnvironment
   private let session: URLSession
+  private let cookieStorage: HTTPCookieStorage?
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
 
   public init(environment: SkyjoNetworkEnvironment, session: URLSession) {
     self.environment = environment
     self.session = session
+    cookieStorage = session.configuration.httpCookieStorage
   }
 
   public init(
@@ -158,6 +160,7 @@ public actor RoomInviteClient {
     persistentCookieStorage: HTTPCookieStorage = .shared
   ) {
     self.environment = environment
+    cookieStorage = persistentCookieStorage
     session = SkyjoURLSessionFactory.makeDedicated(cookieStorage: persistentCookieStorage)
   }
 
@@ -209,6 +212,12 @@ public actor RoomInviteClient {
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
     request.cachePolicy = .reloadIgnoringLocalCacheData
+    if let cookieStorage {
+      let cookies = cookieStorage.cookies(for: endpoint) ?? []
+      for (header, value) in HTTPCookie.requestHeaderFields(with: cookies) {
+        request.setValue(value, forHTTPHeaderField: header)
+      }
+    }
 
     let bytes: URLSession.AsyncBytes
     let response: URLResponse
@@ -228,6 +237,7 @@ public actor RoomInviteClient {
       bytes.task.cancel()
       throw SkyjoHTTPClientError.redirected
     }
+    persistResponseCookies(httpResponse, for: endpoint)
     guard response.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
       bytes.task.cancel()
       throw SkyjoHTTPClientError.responseTooLarge(limit: Self.maximumResponseBytes)
@@ -309,6 +319,23 @@ public actor RoomInviteClient {
       .split(separator: ";", maxSplits: 1).first?
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased() == "application/json"
+  }
+
+  private func persistResponseCookies(_ response: HTTPURLResponse, for endpoint: URL) {
+    guard let cookieStorage else { return }
+    let headerFields = response.allHeaderFields.reduce(into: [String: String]()) { fields, item in
+      guard let name = item.key as? String, let value = item.value as? String else { return }
+      fields[name] = value
+    }
+    let cookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: endpoint)
+    guard let endpointHost = endpoint.host?.lowercased() else { return }
+    for cookie in cookies {
+      let cookieHost = cookie.domain
+        .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        .lowercased()
+      guard cookieHost == endpointHost else { continue }
+      cookieStorage.setCookie(cookie)
+    }
   }
 
   private static func isNoStore(_ response: HTTPURLResponse) -> Bool {

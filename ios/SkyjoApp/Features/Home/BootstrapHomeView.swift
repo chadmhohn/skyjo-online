@@ -1,4 +1,6 @@
+import Foundation
 import SkyjoDesignSystem
+import SkyjoNetworking
 import SwiftUI
 
 @MainActor
@@ -35,7 +37,11 @@ struct BootstrapHomeView: View {
   var body: some View {
     Group {
       if let model, let dependencies {
-        NativeRootView(model: model, dependencies: dependencies)
+        NativeRootView(
+          model: model,
+          dependencies: dependencies,
+          rooms: dependencies.rooms
+        )
       } else {
         NavigationStack {
           StateMessageView(
@@ -49,6 +55,26 @@ struct BootstrapHomeView: View {
       }
     }
     .tint(Color("AccentColor"))
+    .onOpenURL { url in
+      guard let model, let dependencies else { return }
+      Task {
+        guard await dependencies.rooms.accept(url) else { return }
+        guard case .review = dependencies.rooms.handoffState else { return }
+
+        // Successful redemption may install the outer-access cookie. Keep only
+        // sanitized room/expiry review state while bootstrap advances through
+        // the access and account gates.
+        if !model.hasConfirmedAccountSession {
+          await model.bootstrap()
+        }
+        await dependencies.rooms.synchronize(
+          account: model.hasConfirmedAccountSession ? model.user : nil
+        )
+        if model.hasConfirmedAccountSession {
+          model.selectedTab = .home
+        }
+      }
+    }
   }
 }
 
@@ -56,6 +82,7 @@ struct BootstrapHomeView: View {
 private struct NativeRootView: View {
   @Bindable var model: AppModel
   let dependencies: AppDependencies
+  @Bindable var rooms: RoomAppCoordinator
   @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
@@ -85,6 +112,7 @@ private struct NativeRootView: View {
           user: nil,
           solo: dependencies.solo,
           preferences: dependencies.preferences,
+          rooms: rooms,
           offlineMessage: nil
         )
       case .authenticated:
@@ -93,6 +121,7 @@ private struct NativeRootView: View {
           user: model.user,
           solo: dependencies.solo,
           preferences: dependencies.preferences,
+          rooms: rooms,
           offlineMessage: nil
         )
       case .offline(let message):
@@ -115,6 +144,7 @@ private struct NativeRootView: View {
           user: model.user,
           solo: dependencies.solo,
           preferences: dependencies.preferences,
+          rooms: rooms,
           offlineMessage: message
         )
       case .serviceNotReady:
@@ -203,6 +233,38 @@ private struct NativeRootView: View {
 #endif
       await model.synchronizeLocalSolo(dependencies.solo)
     }
+    .task(
+      id: RoomAccountSynchronizationID(
+        rootState: model.rootState,
+        account: model.user
+      )
+    ) {
+      await rooms.synchronize(
+        account: model.hasConfirmedAccountSession ? model.user : nil
+      )
+      if case .idle = rooms.handoffState,
+         rooms.isRoomPresented,
+         model.hasConfirmedAccountSession {
+        model.selectedTab = .home
+      }
+    }
+    .safeAreaInset(edge: .top) {
+      InviteHandoffStatusView(
+        state: rooms.handoffState,
+        waitsForAccount: !model.hasConfirmedAccountSession
+      )
+    }
+    .alert(
+      "Invite unavailable",
+      isPresented: Binding(
+        get: { rooms.inviteFailureMessage != nil },
+        set: { if !$0 { rooms.dismissInviteHandoff() } }
+      )
+    ) {
+      Button("OK") { rooms.dismissInviteHandoff() }
+    } message: {
+      Text(rooms.inviteFailureMessage ?? "Skyjo could not open this invite.")
+    }
     .onChange(of: dependencies.sessionInvalidation.generation) {
       guard let invalidation = dependencies.sessionInvalidation.pendingInvalidation else { return }
       model.handleStatsAuthorizationInvalidation(invalidation)
@@ -217,6 +279,45 @@ private struct NativeRootView: View {
 private struct LocalSoloSynchronizationID: Equatable {
   let rootState: AppRootState
   let localSessionGeneration: Int
+}
+
+private struct RoomAccountSynchronizationID: Equatable {
+  let rootState: AppRootState
+  let account: AccountUser?
+}
+
+private struct InviteHandoffStatusView: View {
+  let state: RoomInviteHandoffState
+  let waitsForAccount: Bool
+
+  @ViewBuilder
+  var body: some View {
+    switch state {
+    case .redeeming:
+      HStack(spacing: 10) {
+        ProgressView()
+        Text("Opening Skyjo invite…")
+          .font(.subheadline.weight(.semibold))
+      }
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .padding(.horizontal)
+      .background(.regularMaterial)
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("rooms.invite.redeeming")
+    case .review(let invite) where waitsForAccount:
+      Label(
+        "Invite for room \(invite.roomCode) is ready. Sign in to review it.",
+        systemImage: "person.crop.circle.badge.checkmark"
+      )
+      .font(.subheadline.weight(.semibold))
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .padding(.horizontal)
+      .background(.regularMaterial)
+      .accessibilityIdentifier("rooms.invite.waiting-for-account")
+    case .idle, .review, .failed:
+      EmptyView()
+    }
+  }
 }
 
 struct StateMessageView<Actions: View>: View {

@@ -188,6 +188,8 @@ actor SoloStatsDeliveryAdapter {
 @MainActor
 final class AppDependencies {
   let apiClient: SkyjoAPIClient
+  let inviteClient: RoomInviteClient
+  let rooms: RoomAppCoordinator
   let preferences: SoloPreferencesStore
   let sessionInvalidation: SessionInvalidationRelay
   let persistenceStore: SoloPersistenceStore
@@ -203,10 +205,18 @@ final class AppDependencies {
       statsOutboxAuthorization: statsOutboxAuthorization
     )
     let networkEnvironment = SkyjoNetworkEnvironment(baseURL: configuration.apiBaseURL)
-    apiClient = SkyjoAPIClient(
+    let cookieStorage = HTTPCookieStorage.shared
+    let apiClient = SkyjoAPIClient(
       environment: networkEnvironment,
-      persistentCookieStorage: .shared
+      persistentCookieStorage: cookieStorage
     )
+    self.apiClient = apiClient
+    let inviteClient = RoomInviteClient(
+      environment: networkEnvironment,
+      persistentCookieStorage: cookieStorage
+    )
+    self.inviteClient = inviteClient
+    rooms = RoomAppCoordinator(apiClient: apiClient, inviteClient: inviteClient)
 
     let container: ModelContainer
     var initialWarning: SoloPersistenceWarning?
