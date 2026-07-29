@@ -21,9 +21,25 @@ struct RoomBanner: Equatable, Identifiable {
   let title: String
   let message: String
   let tone: Tone
+  let survivesAuthoritativeSnapshot: Bool
+
+  init(
+    title: String,
+    message: String,
+    tone: Tone,
+    survivesAuthoritativeSnapshot: Bool = false
+  ) {
+    self.title = title
+    self.message = message
+    self.tone = tone
+    self.survivesAuthoritativeSnapshot = survivesAuthoritativeSnapshot
+  }
 
   static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.title == rhs.title && lhs.message == rhs.message && lhs.tone == rhs.tone
+    lhs.title == rhs.title
+      && lhs.message == rhs.message
+      && lhs.tone == rhs.tone
+      && lhs.survivesAuthoritativeSnapshot == rhs.survivesAuthoritativeSnapshot
   }
 }
 
@@ -1085,7 +1101,8 @@ final class RoomSessionModel {
       banner = RoomBanner(
         title: "Saved room could not be replaced",
         message: "Skyjo kept the current room because its saved routing data could not be cleared. Try again.",
-        tone: .error
+        tone: .error,
+        survivesAuthoritativeSnapshot: true
       )
       return false
     }
@@ -1178,7 +1195,9 @@ final class RoomSessionModel {
          visibleRoomCode != nextSnapshot.room.code {
         dismissRoomScopedPresentation()
       }
-      banner = nil
+      if banner?.survivesAuthoritativeSnapshot != true {
+        banner = nil
+      }
       snapshot = nextSnapshot
       resetRecoveryInitiated = false
       joinCode = nextSnapshot.room.code

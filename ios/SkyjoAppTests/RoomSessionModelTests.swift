@@ -536,6 +536,7 @@ struct RoomSessionModelTests {
     #expect(await scoringConnection.actions() == [.setNextRoundReady(true)])
 
     let allReady = try await authoritativeFixture(revision: 10, variant: .scoring(allReady: true))
+    await scoringConnection.emit(.status(connectedStatus(revision: 10)))
     await scoringConnection.emit(.snapshot(allReady))
     #expect(await modelEventually { scoringModel.allPlayersReady })
     await scoringModel.startGame()
