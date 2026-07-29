@@ -361,6 +361,8 @@ standard_tests=(
   testSoloAccessibilityAdaptationsAreActive
   testSoloAccessibilityXXXLRemainsOperable
   testSoloRightToLeftLayoutKeepsControlsContained
+  testRoomCreateRendersDecodedAuthoritativeWaitingRoom
+  testRoomJoinRendersDecodedAuthoritativeWaitingRoom
   testRoomEightPlayerWaitingRoomAndHostRemovalConfirmation
   testRoomActiveTableKeepsChatCompactAndRedactsHiddenValues
   testRoomShortLandscapeContainsEightPlayerBoardsAndTargets
@@ -389,7 +391,7 @@ ipad_landscape_tests=(
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
   testRoomIPadLandscapeKeepsAuthoritativeContentContained
 )
-[[ "${#standard_tests[@]}" -eq 24 && \
+[[ "${#standard_tests[@]}" -eq 26 && \
    "${#large_tests[@]}" -eq 5 && \
    "${#ipad_portrait_tests[@]}" -eq 8 && \
    "${#ipad_landscape_tests[@]}" -eq 2 ]] || {
@@ -477,13 +479,13 @@ run_matrix_entry() {
 
 case "$selected_role" in
   "")
-    run_matrix_entry standard-phone "$standard_udid" 24 "${standard_tests[@]}"
+    run_matrix_entry standard-phone "$standard_udid" 26 "${standard_tests[@]}"
     run_matrix_entry large-phone "$large_udid" 5 "${large_tests[@]}"
     run_matrix_entry ipad-portrait "$ipad_udid" 8 "${ipad_portrait_tests[@]}"
     run_matrix_entry ipad-landscape "$ipad_udid" 2 "${ipad_landscape_tests[@]}"
     ;;
   standard-phone)
-    run_matrix_entry standard-phone "$standard_udid" 24 "${standard_tests[@]}"
+    run_matrix_entry standard-phone "$standard_udid" 26 "${standard_tests[@]}"
     ;;
   large-phone)
     run_matrix_entry large-phone "$large_udid" 5 "${large_tests[@]}"

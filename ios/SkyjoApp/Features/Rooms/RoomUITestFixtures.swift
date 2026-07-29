@@ -7,6 +7,7 @@ import SkyjoNetworking
 /// app keeps exercising production decoding, redaction, revision, and pending-command
 /// behavior. No room snapshot is injected directly into `RoomSessionModel`.
 enum RoomUITestFixtureMode: String, Sendable {
+  case admission
   case waiting
   case active
   case scoring
@@ -21,8 +22,9 @@ enum RoomUITestFixtureMode: String, Sendable {
     return Self(rawValue: String(argument.dropFirst("--ui-room-fixture=".count)))
   }
 
-  var startsWaiting: Bool { self == .waiting }
+  var startsWaiting: Bool { self == .admission || self == .waiting }
   var startsScoring: Bool { self == .scoring }
+  var startsWithSavedSeat: Bool { self != .admission }
 }
 
 @MainActor
@@ -41,17 +43,22 @@ enum RoomUITestFixtureFactory {
     mode: RoomUITestFixtureMode
   ) -> RoomSessionModel {
     let playerID = account.id.uuidString.lowercased()
-    let record: RoomSeatRecoveryRecord
-    do {
-      record = try RoomSeatRecoveryRecord(
-        accountID: account.id,
-        roomCode: RoomUITestFixtureSnapshot.roomCode,
-        playerID: playerID
-      )
-    } catch {
-      preconditionFailure("The committed room UI fixture must use valid seat routing.")
+    let seatStore: VolatileRoomSeatRecoveryStore
+    if mode.startsWithSavedSeat {
+      let record: RoomSeatRecoveryRecord
+      do {
+        record = try RoomSeatRecoveryRecord(
+          accountID: account.id,
+          roomCode: RoomUITestFixtureSnapshot.roomCode,
+          playerID: playerID
+        )
+      } catch {
+        preconditionFailure("The committed room UI fixture must use valid seat routing.")
+      }
+      seatStore = VolatileRoomSeatRecoveryStore(record: record)
+    } else {
+      seatStore = VolatileRoomSeatRecoveryStore()
     }
-    let seatStore = VolatileRoomSeatRecoveryStore(record: record)
 
     return RoomSessionModel(
       account: account,
@@ -175,6 +182,7 @@ private actor RoomUITestFixtureSocket: RoomWebSocket {
   private let localPlayerID: String
   private var revision: Int64 = RoomUITestFixtureSnapshot.initialRevision
   private var readyPlayerIDs: [String]
+  private var localChatMessages: [String] = []
   private var queuedMessages: [RoomWebSocketMessage] = []
   private var receiver: CheckedContinuation<RoomWebSocketMessage, Error>?
   private var isClosed = false
@@ -198,7 +206,12 @@ private actor RoomUITestFixtureSocket: RoomWebSocket {
     else { throw RoomUITestFixtureError.invalidClientFrame }
 
     switch type {
-    case "join-room":
+    case "create-room", "join-room":
+      if type == "join-room" {
+        guard frame["code"] as? String == RoomUITestFixtureSnapshot.roomCode else {
+          throw RoomUITestFixtureError.invalidClientFrame
+        }
+      }
       try enqueue(
         RoomUITestFixtureSnapshot.frame(
           mode: mode,
@@ -266,6 +279,13 @@ private actor RoomUITestFixtureSocket: RoomWebSocket {
     if actionType == "set-next-round-ready", action["ready"] as? Bool == true {
       readyPlayerIDs = RoomUITestFixtureSnapshot.playerIDs(localPlayerID: localPlayerID)
     }
+    if actionType == "send-chat-message" {
+      guard let text = action["text"] as? String, !text.isEmpty else {
+        throw RoomUITestFixtureError.invalidClientFrame
+      }
+      localChatMessages.append(text)
+      localChatMessages = Array(localChatMessages.suffix(79))
+    }
 
     try enqueue([
       "type": "ack",
@@ -278,7 +298,8 @@ private actor RoomUITestFixtureSocket: RoomWebSocket {
         mode: mode,
         localPlayerID: localPlayerID,
         revision: revision,
-        readyPlayerIDs: readyPlayerIDs
+        readyPlayerIDs: readyPlayerIDs,
+        localChatMessages: localChatMessages
       )
     )
   }
@@ -313,7 +334,8 @@ private enum RoomUITestFixtureSnapshot {
     revision: Int64,
     readyPlayerIDs: [String],
     resyncCommandID: String? = nil,
-    includesChat: Bool = true
+    includesChat: Bool = true,
+    localChatMessages: [String] = []
   ) -> [String: Any] {
     var value: [String: Any] = [
       "type": resyncCommandID == nil ? "snapshot" : "resync",
@@ -325,7 +347,8 @@ private enum RoomUITestFixtureSnapshot {
         localPlayerID: localPlayerID,
         revision: revision,
         readyPlayerIDs: readyPlayerIDs,
-        includesChat: includesChat
+        includesChat: includesChat,
+        localChatMessages: localChatMessages
       ),
     ]
     if let resyncCommandID {
@@ -340,7 +363,8 @@ private enum RoomUITestFixtureSnapshot {
     localPlayerID: String,
     revision: Int64,
     readyPlayerIDs: [String],
-    includesChat: Bool
+    includesChat: Bool,
+    localChatMessages: [String]
   ) -> [String: Any] {
     let ids = playerIDs(localPlayerID: localPlayerID)
     let names = ["Fixture User"] + (2...8).map { "Guest \($0)" }
@@ -358,19 +382,30 @@ private enum RoomUITestFixtureSnapshot {
       ]
     }
 
+    var chatMessages: [[String: Any]] = includesChat
+      ? [[
+        "id": "fixture-chat-1",
+        "playerId": ids[1],
+        "playerName": names[1],
+        "text": "Eight-player table is ready.",
+        "createdAt": serverNow - 2_000,
+      ]]
+      : []
+    chatMessages += localChatMessages.enumerated().map { index, text in
+      [
+        "id": "fixture-local-chat-\(index + 1)",
+        "playerId": localPlayerID,
+        "playerName": names[0],
+        "text": text,
+        "createdAt": serverNow - 1_000 + Int64(index),
+      ]
+    }
+
     return [
       "code": roomCode,
       "hostId": localPlayerID,
       "players": players,
-      "chatMessages": includesChat
-        ? [[
-          "id": "fixture-chat-1",
-          "playerId": ids[1],
-          "playerName": names[1],
-          "text": "Eight-player table is ready.",
-          "createdAt": serverNow - 2_000,
-        ]]
-        : [],
+      "chatMessages": chatMessages,
       "readyForNextRoundPlayerIds": readyPlayerIDs,
       "state": mode.startsWaiting
         ? NSNull()

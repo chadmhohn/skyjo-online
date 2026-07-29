@@ -218,6 +218,66 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  func testRoomCreateRendersDecodedAuthoritativeWaitingRoom() throws {
+    let app = launchRoomFixture("admission")
+    defer { app.terminate() }
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    XCTAssertEqual(app.webViews.count, 0)
+
+    let create = app.buttons["rooms.create"]
+    XCTAssertTrue(create.waitForExistence(timeout: 5))
+    XCTAssertTrue(create.isEnabled)
+    XCTAssertTrue(create.isHittable)
+    XCTAssertGreaterThanOrEqual(create.frame.height, 44)
+    create.tap()
+
+    let waiting = element(in: app, identifier: "rooms.waiting-screen")
+    XCTAssertTrue(
+      waiting.waitForExistence(timeout: 8),
+      "Create must render the decoded authoritative waiting-room snapshot."
+    )
+    let roomCode = element(in: app, identifier: "rooms.code")
+    XCTAssertTrue(roomCode.waitForExistence(timeout: 5))
+    XCTAssertEqual(roomCode.label, "Room code ABCDE")
+    XCTAssertFalse(joinScreen.exists)
+    attachScreenshot(app, name: "ios8-room-create-authoritative-waiting")
+  }
+
+  @MainActor
+  func testRoomJoinRendersDecodedAuthoritativeWaitingRoom() throws {
+    let app = launchRoomFixture("admission")
+    defer { app.terminate() }
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    XCTAssertEqual(app.webViews.count, 0)
+
+    let code = app.textFields["rooms.join-code"]
+    XCTAssertTrue(code.waitForExistence(timeout: 5))
+    replaceText(in: code, with: "abcde")
+    XCTAssertEqual(code.value as? String, "ABCDE")
+
+    let join = app.buttons["rooms.join"]
+    XCTAssertTrue(join.isEnabled)
+    XCTAssertTrue(join.isHittable)
+    XCTAssertGreaterThanOrEqual(join.frame.height, 44)
+    join.tap()
+
+    let waiting = element(in: app, identifier: "rooms.waiting-screen")
+    XCTAssertTrue(
+      waiting.waitForExistence(timeout: 8),
+      "Join must render the decoded authoritative waiting-room snapshot."
+    )
+    let roomCode = element(in: app, identifier: "rooms.code")
+    XCTAssertTrue(roomCode.waitForExistence(timeout: 5))
+    XCTAssertEqual(roomCode.label, "Room code ABCDE")
+    XCTAssertFalse(joinScreen.exists)
+    attachScreenshot(app, name: "ios8-room-join-authoritative-waiting")
+  }
+
+  @MainActor
   func testAuthenticatedInviteFromStatsAndAccountSelectsHomeAfterReviewIsConsumed() throws {
     for (sourceArgument, sourceLabel) in [
       ("--ui-start-tab=stats", "Stats"),
@@ -352,7 +412,21 @@ final class SkyjoAppUITests: XCTestCase {
     let message = element(in: app, identifier: "rooms.chat.message.0")
     XCTAssertTrue(message.waitForExistence(timeout: 5))
     XCTAssertEqual(message.label, "Guest 2: Eight-player table is ready.")
-    XCTAssertGreaterThanOrEqual(app.buttons["rooms.chat.send"].frame.height, 44)
+    let chatDraft = app.textFields["rooms.chat.message"]
+    XCTAssertTrue(chatDraft.waitForExistence(timeout: 5))
+    replaceText(in: chatDraft, with: "Hello from native UI.")
+    let send = app.buttons["rooms.chat.send"]
+    XCTAssertTrue(send.isEnabled)
+    XCTAssertTrue(send.isHittable)
+    XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+    send.tap()
+
+    let echoedMessage = element(in: app, identifier: "rooms.chat.message.1")
+    XCTAssertTrue(
+      echoedMessage.waitForExistence(timeout: 5),
+      "Chat send must render the decoded authoritative echo."
+    )
+    XCTAssertEqual(echoedMessage.label, "You: Hello from native UI.")
     app.navigationBars["Table Chat"].buttons["Done"].tap()
 
     XCTAssertTrue(table.waitForExistence(timeout: 5))
