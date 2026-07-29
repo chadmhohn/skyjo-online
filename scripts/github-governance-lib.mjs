@@ -6,6 +6,7 @@ export const REQUIRED_CHECKS = Object.freeze([
   'iOS / Build',
   'iOS / Domain & Persistence',
   'iOS / Networking Contracts',
+  'iOS / UI & Accessibility',
   'CI / Unit (domain)',
   'CI / Unit (data)',
   'CI / E2E (chromium 1)',

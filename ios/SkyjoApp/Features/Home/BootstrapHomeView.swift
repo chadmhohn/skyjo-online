@@ -4,29 +4,44 @@ import SwiftUI
 @MainActor
 struct BootstrapHomeView: View {
   @State private var model: AppModel?
-  private let configurationError: AppConfigurationError?
+  @State private var dependencies: AppDependencies?
+  private let configurationErrorMessage: String?
 
   init(configuration: Result<AppConfiguration, AppConfigurationError>) {
     switch configuration {
     case .success(let configuration):
-      _model = State(initialValue: AppModel(configuration: configuration))
-      configurationError = nil
+      do {
+        let dependencies = try AppDependencies(configuration: configuration)
+        _dependencies = State(initialValue: dependencies)
+        _model = State(
+          initialValue: AppModel(
+            dependencies: dependencies,
+            baseURL: configuration.apiBaseURL
+          )
+        )
+        configurationErrorMessage = nil
+      } catch {
+        _dependencies = State(initialValue: nil)
+        _model = State(initialValue: nil)
+        configurationErrorMessage = "Local game storage could not be initialized."
+      }
     case .failure(let error):
+      _dependencies = State(initialValue: nil)
       _model = State(initialValue: nil)
-      configurationError = error
+      configurationErrorMessage = error.localizedDescription
     }
   }
 
   var body: some View {
     Group {
-      if let model {
-        NativeRootView(model: model)
+      if let model, let dependencies {
+        NativeRootView(model: model, dependencies: dependencies)
       } else {
         NavigationStack {
           StateMessageView(
             title: "Configuration unavailable",
             systemImage: "exclamationmark.triangle",
-            message: configurationError?.localizedDescription ?? "The app is not configured.",
+            message: configurationErrorMessage ?? "The app is not configured.",
             accessibilityIdentifier: "bootstrap.configuration-error"
           )
           .navigationTitle("Skyjo")
@@ -40,6 +55,8 @@ struct BootstrapHomeView: View {
 @MainActor
 private struct NativeRootView: View {
   @Bindable var model: AppModel
+  let dependencies: AppDependencies
+  @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
     Group {
@@ -62,19 +79,22 @@ private struct NativeRootView: View {
         AccessGateView(model: model)
       case .accountRequired:
         AuthenticationView(model: model)
+      case .guest:
+        HomeShellView(
+          model: model,
+          user: nil,
+          solo: dependencies.solo,
+          preferences: dependencies.preferences,
+          offlineMessage: nil
+        )
       case .authenticated:
-        if let user = model.user {
-          HomeShellView(model: model, user: user)
-        } else {
-          StateMessageView(
-            title: "Account unavailable",
-            systemImage: "person.crop.circle.badge.exclamationmark",
-            message: "Sign in again to continue.",
-            accessibilityIdentifier: "state.account-missing"
-          ) {
-            Button("Retry") { Task { await model.bootstrap() } }
-          }
-        }
+        HomeShellView(
+          model: model,
+          user: model.user,
+          solo: dependencies.solo,
+          preferences: dependencies.preferences,
+          offlineMessage: nil
+        )
       case .offline(let message):
         NavigationStack {
           StateMessageView(
@@ -89,6 +109,14 @@ private struct NativeRootView: View {
           }
           .navigationTitle("Skyjo")
         }
+      case .offlineReady(let message):
+        HomeShellView(
+          model: model,
+          user: model.user,
+          solo: dependencies.solo,
+          preferences: dependencies.preferences,
+          offlineMessage: message
+        )
       case .serviceNotReady:
         NavigationStack {
           StateMessageView(
@@ -152,13 +180,43 @@ private struct NativeRootView: View {
     .task {
 #if DEBUG
       if model.applyUITestState(arguments: ProcessInfo.processInfo.arguments) {
+        await model.synchronizeLocalSolo(dependencies.solo)
+        _ = await dependencies.solo.applyUITestState(arguments: ProcessInfo.processInfo.arguments)
         return
       }
 #endif
       guard model.rootState == .loading else { return }
       await model.bootstrap()
     }
+    .task(
+      id: LocalSoloSynchronizationID(
+        rootState: model.rootState,
+        localSessionGeneration: model.localSessionGeneration
+      )
+    ) {
+#if DEBUG
+      if ProcessInfo.processInfo.arguments.contains(where: {
+        $0.hasPrefix("--ui-state=solo-")
+      }) {
+        return
+      }
+#endif
+      await model.synchronizeLocalSolo(dependencies.solo)
+    }
+    .onChange(of: dependencies.sessionInvalidation.generation) {
+      guard let invalidation = dependencies.sessionInvalidation.pendingInvalidation else { return }
+      model.handleStatsAuthorizationInvalidation(invalidation)
+      dependencies.sessionInvalidation.consume(invalidation)
+    }
+    .onChange(of: scenePhase, initial: true) { _, phase in
+      dependencies.solo.setSceneActive(phase == .active)
+    }
   }
+}
+
+private struct LocalSoloSynchronizationID: Equatable {
+  let rootState: AppRootState
+  let localSessionGeneration: Int
 }
 
 struct StateMessageView<Actions: View>: View {

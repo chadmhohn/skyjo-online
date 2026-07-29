@@ -84,7 +84,7 @@ public enum GameEngine {
       log: [
         hasOpeningReveals
           ? "\(starter.name) starts round \(round). Pick from the discard pile or draw blind."
-          : "\(starter.name) chooses two opening cards to reveal."
+          : "\(starter.name): reveal 2 cards."
       ],
       nextStarterId: hasOpeningReveals ? nil : (round > 1 ? startPlayerId : nil),
       openingRevealCounts: openingRevealCounts(players)
@@ -181,10 +181,11 @@ public enum GameEngine {
       return withLog(updated, "\(player.name) revealed an opening card.")
     }
     if let nextPlayerIndex = firstPlayerNeedingOpeningReveal(updated.players) {
+      let nextPlayerName = updated.players[nextPlayerIndex].name
       updated.currentPlayerIndex = nextPlayerIndex
       return withLog(
         updated,
-        "\(player.name) finished opening reveals. \(updated.players[nextPlayerIndex].name) chooses two opening cards."
+        "\(player.name) finished. \(nextPlayerName): reveal 2 cards."
       )
     }
 

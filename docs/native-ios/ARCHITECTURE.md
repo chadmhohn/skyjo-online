@@ -65,7 +65,7 @@ The TypeScript engine remains the reference implementation during the port. Once
 
 - One dedicated `URLSession` configured with an explicitly supplied, persistent `HTTPCookieStorage` for the outer access and account HttpOnly cookies; tests inject an isolated cookie store.
 - `AccessSessionClient` owns typed `GET`, `POST`, and `DELETE /api/access/session` calls. It tolerates additive success fields, requires the typed `authenticated` field, rejects redirects and unexpected final URLs, caps requests at 256 KiB and responses at 64 KiB, and maps only known stable error codes to server messages.
-- `SkyjoAPIClient` composes that access actor on the same session/cookie jar and adds typed current-account, signup/login/logout, profile/password, stats summary/list/detail/player, readiness, and version requests. General responses are capped at 2 MiB while the access route retains its 64 KiB boundary.
+- `SkyjoAPIClient` composes that access actor on the same session/cookie jar and adds typed current-account, signup/login/logout, profile/password, stats summary/list/detail/player, solo-stats submission, readiness, and version requests. Solo submission requires exactly HTTP 201 and a returned `single` game. General responses are capped at 2 MiB while the access route retains its 64 KiB boundary.
 - Operational DTOs require schema 2 and protocol 2 plus valid release identity/timestamps. Unsupported values become an explicit upgrade state. Contract-required nullable keys must be present even when their value is `null`; absent keys fail decoding.
 - Canonical valid/invalid HTTP fixtures under `contracts/v1/fixtures/` are decoded by Swift tests in addition to focused `URLProtocol` boundary and safe-error tests.
 - Typed Codable request/response models remain the boundary for later invite and realtime contracts.
@@ -100,11 +100,11 @@ The implemented store uses a custom real V1-to-V2 migration: it resolves impossi
 
 Signed-in completion atomically removes the active save and inserts an immutable idempotent stats request; an acknowledgement-loss retry preserves that first request and its original completion timestamp, while guest completion inserts no outbox row. Delivery is owner-scoped FIFO, capped at four per pass, generation-fenced across every await, and retried with exponential backoff capped at five minutes. Attempt counters use a portable saturating bound. Permanent delivery failures and corrupt FIFO heads remain visible blockers across relaunch. Recovery exposes an optional safe game UUID for presentation plus an actor-scoped opaque handle required to retry or discard the exact head, so malformed persisted identifiers cannot make the queue unrecoverable.
 
-The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, because a schema-valid 256-round Unicode history can exceed 256 KiB. The current Node JSON-body and native HTTP request boundary is separately 256 KiB; the IOS-7 solo integration must map size, invalid-payload, and unsupported-version responses to permanent outbox failures. CloudKit and PWA IndexedDB import remain outside v0.1.0.
+The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, because a schema-valid 256-round Unicode history can exceed 256 KiB. The current Node JSON-body and native HTTP request boundary is separately 256 KiB. The implemented solo adapter maps local request-size rejection and server size, invalid-payload, and unsupported-version responses to durable permanent outbox failures; account replacement or loss of either authenticated layer aborts the in-flight delivery without mutating its row. CloudKit and PWA IndexedDB import remain outside v0.1.0.
 
 ### SkyjoDesignSystem
 
-- Card, grid, table band, player summary, score, connection banner, badges, controls, spacing, typography, colors, sounds, and haptics.
+- Card, grid, stable action slot, player summary, score, connection banner, badges, controls, spacing, typography, colors, sounds, and haptics.
 - Semantic roles and accessibility labels live alongside the reusable component.
 - Dynamic Type and safe-area behavior are requirements, not later overrides.
 - Animations use semantic events, stable IDs, and `accessibilityReduceMotion` alternatives.
@@ -113,6 +113,8 @@ The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, becaus
 
 - `AppModel` is `@MainActor` and owns the implemented access/account/home/stats navigation plus authenticated product state. It publishes explicit loading, access-required, account-required, offline, empty, disabled/ended-session, not-ready, upgrade-required, and safe failure states.
 - Account-generation and per-request identity guards discard stale bootstrap, profile, password, logout, stats, game-detail, and player-history responses. Logout and replacement reset navigation to Home before establishing the next account state.
+- `SoloFeatureModel` is `@MainActor` and owns the implemented guest/account-partitioned launcher, replacement review, setup, immediate pure-reducer turns, AI scheduling, score/settings sheets, lifecycle autosave, completion, and stats-outbox recovery state. Every storage or delivery await is fenced by the current owner generation; an account change cannot publish stale state or submit another account's result.
+- The solo table keeps opponents in an explicit scroll region while the local board and four-slot action band remain stable. Text honors the uncapped system Dynamic Type category, including Accessibility XXXL; compact board geometry and explicit horizontal/vertical scrolling keep cards and headers contained without shrinking the requested text category. The UI matrix compares rendered normal and Accessibility XXXL text, checks board/card containment, and runs focused Dynamic Type and contrast audits. Face-down presentation values are structurally absent, not merely visually obscured. Feedback is emitted from semantic game events through an injected controller, respects scene state and Reduce Motion, and reads only nonsecret `UserDefaults` preferences.
 - Each feature has a small observable model whose dependencies are injected as protocols.
 - Long-lived work is owned by actors/services, not detached `Task` calls in views.
 - Navigation state is typed and restorable where safe. Invite routes are validated before they affect state.
@@ -160,7 +162,7 @@ IOS-2 adds two native-enabling capabilities to the repository:
 1. The pre-gate JSON access-session endpoint, stable `{ code, error }` API failures, and an `ACCESS_REQUIRED` JSON response for unauthenticated API requests. The legacy HTML `/login` and PWA `error` message fallback remain intact.
 2. Versioned JSON Schemas and deterministic, sanitized fixtures under `contracts/v1/`.
 
-These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. IOS-5 consumes them with the typed native HTTP/session client and accessible access/account/home/stats shell described above. Its local simulator/server evidence proves source compatibility, not production promotion or native distribution. Remaining additive backend work is:
+These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. IOS-5 consumes them with the typed native HTTP/session client and accessible access/account/home/stats shell described above; IOS-7 adds the repository-owned native solo experience and multi-device UI/accessibility gate. Local simulator/server evidence proves source compatibility, not production promotion or native distribution. Remaining additive backend work is:
 
 1. A two-release APNs storage sequence: #203 first freezes and validates an optional exact `apns_devices` physical table while retaining public schema 2; after that release is promoted and becomes the verified `previous` rollback anchor, #204 may create/use the same descriptor for authenticated registration/unregistration and provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
 
@@ -176,7 +178,7 @@ All additions must leave the current PWA and web-push paths working. Deploy serv
 - Use `Logger` categories and privacy annotations; diagnostics expose release/protocol/status, not secrets or raw state.
 - Validate every decoded payload, array bound, identifier length, revision, URL path, and enum. A decoding failure closes or quarantines the affected flow safely.
 - Universal links may navigate to a lobby/invite review only; they never directly mutate or delete user data.
-- Add `PrivacyInfo.xcprivacy` before external distribution and keep App Store privacy answers consistent with actual account, chat, stats, and notification data.
+- Maintain the committed `PrivacyInfo.xcprivacy` as accessed APIs change, and keep App Store privacy answers consistent with actual account, chat, stats, and notification data before external distribution.
 - Do not add analytics or crash-reporting SDKs without a separate privacy/supply-chain review.
 
 ## Architecture Change Rule

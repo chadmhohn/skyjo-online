@@ -1,5 +1,7 @@
 import Foundation
+import SkyjoDomain
 import SkyjoNetworking
+import SkyjoPersistence
 import Testing
 
 @testable import SkyjoNative
@@ -7,7 +9,7 @@ import Testing
 @Suite("Native app state and navigation", .serialized)
 @MainActor
 struct AppModelTests {
-  @Test("Bootstrap routes access, account, and authenticated empty states")
+  @Test("Bootstrap routes access, guest, and authenticated empty states")
   func bootstrapRoutes() async {
     let accessModel = makeModel(scenario: .accessRequired)
     await accessModel.bootstrap()
@@ -15,7 +17,7 @@ struct AppModelTests {
 
     let accountModel = makeModel(scenario: .accountRequired)
     await accountModel.bootstrap()
-    #expect(accountModel.rootState == .accountRequired)
+    #expect(accountModel.rootState == .guest)
 
     let authenticatedModel = makeModel(scenario: .normal)
     await authenticatedModel.bootstrap()
@@ -96,6 +98,379 @@ struct AppModelTests {
       Issue.record("Expected the post-access account check to expose a retryable offline state.")
       return
     }
+  }
+
+  @Test("Offline solo hints never authorize stats")
+  func offlineHintsNeverAuthorizeStats() async throws {
+    let suiteName = "skyjo.app-model.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let preferences = SoloPreferencesStore(defaults: defaults)
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+
+    let guestModel = AppModel(
+      service: MockSkyjoService(scenario: .accountRequired),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      preferences: preferences
+    )
+    await guestModel.bootstrap()
+    #expect(guestModel.rootState == .guest)
+    #expect(preferences.accessWasConfirmed)
+    #expect(guestModel.localSoloOwner == .guest)
+    #expect(guestModel.confirmedStatsAccountID == nil)
+
+    preferences.confirmAccount(accountID)
+    let offlineModel = AppModel(
+      service: MockSkyjoService(scenario: .offline),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      preferences: preferences
+    )
+    await offlineModel.bootstrap()
+    guard case .offlineReady = offlineModel.rootState else {
+      Issue.record("Prior outer access should keep only the local solo shell available offline.")
+      return
+    }
+    #expect(offlineModel.localSoloOwner == .account(accountID))
+    #expect(offlineModel.confirmedStatsAccountID == nil)
+    #expect(preferences.lastConfirmedAccountID == accountID)
+  }
+
+  @Test("Offline-ready cached accounts retire remote controls without losing solo ownership")
+  func offlineReadyCachedAccountIsReadOnly() async throws {
+    let suiteName = "skyjo.app-model.offline-cached.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let preferences = SoloPreferencesStore(defaults: defaults)
+    let service = MockSkyjoService(scenario: .profileServiceUnavailable)
+    let model = AppModel(
+      service: service,
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      preferences: preferences
+    )
+
+    await model.bootstrap()
+    let accountID = try #require(model.user?.id)
+    #expect(model.hasConfirmedAccountSession)
+    #expect(model.confirmedStatsAccountID == accountID)
+
+    model.accountSettings.displayName = "Offline Player"
+    await model.updateProfile()
+
+    guard case .offlineReady = model.rootState else {
+      Issue.record("A service outage should preserve only the offline solo shell.")
+      return
+    }
+    #expect(model.user?.id == accountID)
+    #expect(!model.hasConfirmedAccountSession)
+    #expect(model.confirmedStatsAccountID == nil)
+    #expect(model.localSoloOwner == .account(accountID))
+    #expect(preferences.lastConfirmedAccountID == accountID)
+  }
+
+  @Test("Stale stats authorization failures cannot invalidate a newer account or login generation")
+  func statsAuthorizationInvalidationIsOwnerAndGenerationFenced() async throws {
+    let accountA = UUID(uuidString: "30000000-0000-4000-8000-000000000099")!
+    let accountB = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let relay = SessionInvalidationRelay()
+
+    relay.setConfirmedAccount(accountA)
+    let staleAccountAFence = try #require(relay.authorizationFence(for: accountA))
+    relay.setConfirmedAccount(nil)
+    relay.setConfirmedAccount(accountB)
+    let accountBGeneration = relay.generation
+
+    relay.invalidate(.accountSessionChanged, ifCurrent: staleAccountAFence)
+
+    #expect(relay.generation == accountBGeneration)
+    #expect(relay.pendingInvalidation == nil)
+    #expect(relay.authorizationFence(for: accountB) != nil)
+
+    relay.setConfirmedAccount(nil)
+    relay.setConfirmedAccount(accountA)
+    let staleLoginFence = try #require(relay.authorizationFence(for: accountA))
+    relay.setConfirmedAccount(nil)
+    relay.setConfirmedAccount(accountA)
+    let currentLoginFence = try #require(relay.authorizationFence(for: accountA))
+    #expect(currentLoginFence != staleLoginFence)
+
+    relay.invalidate(.accessRequired, ifCurrent: staleLoginFence)
+
+    #expect(relay.pendingInvalidation == nil)
+    #expect(relay.authorizationFence(for: accountA) == currentLoginFence)
+
+    let modelRelay = SessionInvalidationRelay()
+    let model = AppModel(
+      service: MockSkyjoService(scenario: .normal),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      sessionInvalidation: modelRelay
+    )
+    await model.bootstrap()
+    #expect(model.rootState == .authenticated)
+    #expect(model.user?.id == accountB)
+
+    let staleQueuedInvalidation = SessionInvalidationRelay.Invalidation(
+      reason: .accountSessionChanged,
+      authorizationFence: staleAccountAFence
+    )
+    model.handleStatsAuthorizationInvalidation(staleQueuedInvalidation)
+    #expect(model.rootState == .authenticated)
+    #expect(model.user?.id == accountB)
+
+    let currentModelFence = try #require(modelRelay.authorizationFence(for: accountB))
+    modelRelay.invalidate(.accountSessionChanged, ifCurrent: currentModelFence)
+    let currentInvalidation = try #require(modelRelay.pendingInvalidation)
+    model.handleStatsAuthorizationInvalidation(currentInvalidation)
+    modelRelay.consume(currentInvalidation)
+
+    #expect(model.rootState == .guest)
+    #expect(model.user == nil)
+    #expect(modelRelay.pendingInvalidation == nil)
+
+    let accessRelay = SessionInvalidationRelay()
+    let accessModel = AppModel(
+      service: MockSkyjoService(scenario: .normal),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      sessionInvalidation: accessRelay
+    )
+    await accessModel.bootstrap()
+    let accessFence = try #require(accessRelay.authorizationFence(for: accountB))
+    accessRelay.invalidate(.accessRequired, ifCurrent: accessFence)
+    let accessInvalidation = try #require(accessRelay.pendingInvalidation)
+    accessModel.handleStatsAuthorizationInvalidation(accessInvalidation)
+    accessRelay.consume(accessInvalidation)
+
+    #expect(accessModel.rootState == .accessRequired)
+    #expect(accessModel.user == nil)
+  }
+
+  @Test("Logout synchronously fences a suspended destructive stats recovery")
+  func logoutFencesSuspendedStatsDiscard() async throws {
+    let authorization = StatsOutboxAuthorizationController()
+    let relay = SessionInvalidationRelay(statsOutboxAuthorization: authorization)
+    let model = AppModel(
+      service: MockSkyjoService(scenario: .normal),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      sessionInvalidation: relay
+    )
+    await model.bootstrap()
+    let accountID = try #require(model.user?.id)
+
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let normalStore = SoloPersistenceStore(modelContainer: container)
+    let gameID = UUID(uuidString: "40000000-0000-4000-8000-000000000091")!
+    let terminal = try makeStatsDeliveryTerminalState()
+    let setup = try SoloAISetup.resolve(
+      SoloGameSetup(aiOpponentCount: 1, difficulty: .hard),
+      state: terminal,
+      gameId: gameID.uuidString.lowercased()
+    )
+    try await normalStore.prepareBlockedOutboxForUITesting(
+      accountID: accountID,
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      kind: .terminal,
+      completedAtMilliseconds: 100
+    )
+
+    let gate = AppModelPersistenceGate(checkpoint: .beforeOutboxDelete)
+    let gatedStore = SoloPersistenceStore(
+      modelContainer: container,
+      environment: SoloPersistenceEnvironment(
+        recoveryBarrier: { checkpoint in await gate.pause(at: checkpoint) }
+      )
+    )
+    let coordinator = StatsOutboxCoordinator(
+      store: gatedStore,
+      authorizationController: authorization
+    ) { _ in }
+    await coordinator.setConfirmedAccount(accountID)
+    let recoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    let discard = Task { () -> SoloPersistenceError? in
+      do {
+        try await coordinator.discardBlockedHead(
+          expectedRecoveryHandle: recoveryHandle
+        )
+        return nil
+      } catch let error as SoloPersistenceError {
+        return error
+      } catch {
+        return .storageUnavailable
+      }
+    }
+
+    await gate.waitUntilBlocked()
+    await model.logoutAccount()
+    #expect(model.rootState == .guest)
+    #expect(model.user == nil)
+    await gate.release()
+
+    #expect(await discard.value == .sessionConflict)
+    let status = try await normalStore.outboxStatus(accountID: accountID)
+    #expect(status.queued == 1)
+    #expect(status.terminalFailures == 1)
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == gameID)
+  }
+
+  @Test("A delivery-side session invalidation fences a suspended stats retry")
+  func deliveryInvalidationFencesSuspendedStatsRetry() async throws {
+    let authorization = StatsOutboxAuthorizationController()
+    let relay = SessionInvalidationRelay(statsOutboxAuthorization: authorization)
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    relay.setConfirmedAccount(accountID)
+    let relayFence = try #require(relay.authorizationFence(for: accountID))
+
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let normalStore = SoloPersistenceStore(modelContainer: container)
+    let gameID = UUID(uuidString: "40000000-0000-4000-8000-000000000092")!
+    let terminal = try makeStatsDeliveryTerminalState()
+    let setup = try SoloAISetup.resolve(
+      SoloGameSetup(aiOpponentCount: 1, difficulty: .hard),
+      state: terminal,
+      gameId: gameID.uuidString.lowercased()
+    )
+    try await normalStore.prepareBlockedOutboxForUITesting(
+      accountID: accountID,
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      kind: .terminal,
+      completedAtMilliseconds: 100
+    )
+
+    let gate = AppModelPersistenceGate(checkpoint: .beforeOutboxRetryUpdate)
+    let delivery = AppModelStatsDeliveryProbe()
+    let gatedStore = SoloPersistenceStore(
+      modelContainer: container,
+      environment: SoloPersistenceEnvironment(
+        recoveryBarrier: { checkpoint in await gate.pause(at: checkpoint) }
+      )
+    )
+    let coordinator = StatsOutboxCoordinator(
+      store: gatedStore,
+      authorizationController: authorization
+    ) { request in
+      await delivery.deliver(request)
+    }
+    await coordinator.setConfirmedAccount(accountID)
+    let recoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    let retry = Task {
+      await coordinator.retryTerminalHead(expectedRecoveryHandle: recoveryHandle)
+    }
+
+    await gate.waitUntilBlocked()
+    relay.invalidate(.accountSessionChanged, ifCurrent: relayFence)
+    relay.setConfirmedAccount(accountID)
+    let replacementRelayFence = try #require(relay.authorizationFence(for: accountID))
+    #expect(replacementRelayFence != relayFence)
+    await coordinator.setConfirmedAccount(accountID)
+    await gate.release()
+
+    #expect(
+      await retry.value
+        == StatsFlushResult(attempted: 0, delivered: 0, pending: 0, aborted: true)
+    )
+    #expect(await delivery.calls == 0)
+    let status = try await normalStore.outboxStatus(accountID: accountID)
+    #expect(status.queued == 1)
+    #expect(status.terminalFailures == 1)
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == gameID)
+
+    // A delayed pre-login hint cannot clear the authoritative replacement lease.
+    await coordinator.setConfirmedAccount(nil)
+    relay.invalidate(.accessRequired, ifCurrent: relayFence)
+    #expect(relay.authorizationFence(for: accountID) == replacementRelayFence)
+    #expect(relay.pendingInvalidation == nil)
+
+    do {
+      try await coordinator.discardBlockedHead(expectedRecoveryHandle: recoveryHandle)
+      Issue.record("A recovery capability from the prior login must not be reusable")
+    } catch let error as SoloPersistenceError {
+      #expect(error == .sessionConflict)
+    }
+    let currentRecoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    #expect(currentRecoveryHandle != recoveryHandle)
+    try await coordinator.discardBlockedHead(expectedRecoveryHandle: currentRecoveryHandle)
+    let recoveredStatus = try await normalStore.outboxStatus(accountID: accountID)
+    #expect(recoveredStatus.queued == 0)
+    #expect(recoveredStatus.terminalFailures == 0)
+    #expect(!recoveredStatus.blockedByTerminalFailure)
+  }
+
+  @Test("Every account-ended path retires the stale offline solo owner hint")
+  func accountEndedPathsRetireOfflineOwnerHint() async throws {
+    let suiteName = "skyjo.app-model.account-ended.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let preferences = SoloPreferencesStore(defaults: defaults)
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+
+    func makeModel(_ scenario: MockSkyjoService.Scenario) -> AppModel {
+      preferences.confirmAccess()
+      preferences.confirmAccount(accountID)
+      return AppModel(
+        service: MockSkyjoService(scenario: scenario),
+        baseURL: URL(string: "https://skyjo.example.invalid")!,
+        preferences: preferences
+      )
+    }
+
+    let bootstrapModel = makeModel(.disabled)
+    await bootstrapModel.bootstrap()
+    #expect(bootstrapModel.rootState == .accountEnded)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    let accessModel = makeModel(.disabled)
+    accessModel.rootState = .accessRequired
+    accessModel.access.password = "synthetic-access-value"
+    await accessModel.submitAccess()
+    #expect(accessModel.rootState == .accountEnded)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    let authenticationModel = makeModel(.disabled)
+    authenticationModel.authentication.email = "native@example.invalid"
+    authenticationModel.authentication.password = "native-password"
+    await authenticationModel.submitAuthentication()
+    #expect(authenticationModel.rootState == .accountEnded)
+    #expect(authenticationModel.user == nil)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    let profileModel = makeModel(.disabledProfileUpdate)
+    await profileModel.bootstrap()
+    profileModel.accountSettings.displayName = "Native Prime"
+    await profileModel.updateProfile()
+    #expect(profileModel.rootState == .accountEnded)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    let passwordModel = makeModel(.passwordAccountNotFound)
+    await passwordModel.bootstrap()
+    passwordModel.accountSettings.currentPassword = "old-password"
+    passwordModel.accountSettings.password = "new-password"
+    passwordModel.accountSettings.confirmPassword = "new-password"
+    await passwordModel.changePassword()
+    #expect(passwordModel.rootState == .accountEnded)
+    #expect(preferences.lastConfirmedAccountID == nil)
+
+    let offlineModel = AppModel(
+      service: MockSkyjoService(scenario: .offline),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      preferences: preferences
+    )
+    await offlineModel.bootstrap()
+    guard case .offlineReady = offlineModel.rootState else {
+      Issue.record("The outer access hint should still allow the local offline shell.")
+      return
+    }
+    #expect(offlineModel.localSoloOwner == .guest)
+    #expect(offlineModel.confirmedStatsAccountID == nil)
   }
 
   @Test("Unknown server detail stays hidden and forms disable invalid actions")
@@ -234,8 +609,8 @@ struct AppModelTests {
     profileModel.accountSettings.confirmPassword = "new-password"
     profileModel.selectedTab = .account
     await profileModel.changePassword()
-    #expect(profileModel.rootState == .accountRequired)
-    #expect(profileModel.selectedTab == .home)
+    #expect(profileModel.rootState == .guest)
+    #expect(profileModel.selectedTab == .account)
     #expect(profileModel.accountSettings.currentPassword.isEmpty)
     #expect(profileModel.accountSettings.password.isEmpty)
     #expect(profileModel.authentication.email == "native@example.invalid")
@@ -245,7 +620,7 @@ struct AppModelTests {
     await logoutModel.bootstrap()
     logoutModel.selectedTab = .account
     await logoutModel.logoutAccount()
-    #expect(logoutModel.rootState == .accountRequired)
+    #expect(logoutModel.rootState == .guest)
     #expect(logoutModel.selectedTab == .home)
     #expect(logoutModel.user == nil)
   }
@@ -309,7 +684,7 @@ struct AppModelTests {
     #expect(model.access.isSubmitting)
     await service.completePendingCurrentAccount()
     await submitTask.value
-    #expect(model.rootState == .accountRequired)
+    #expect(model.rootState == .guest)
     #expect(!model.access.isSubmitting)
   }
 
@@ -330,11 +705,11 @@ struct AppModelTests {
     #expect(await service.hasPendingProfileRequest())
 
     await model.logoutAccount()
-    #expect(model.rootState == .accountRequired)
+    #expect(model.rootState == .guest)
     await service.completePendingProfile(displayName: "Stale profile")
     await profileTask.value
 
-    #expect(model.rootState == .accountRequired)
+    #expect(model.rootState == .guest)
     #expect(model.user == nil)
     #expect(model.accountSettings.profileMessage.isEmpty)
   }
@@ -410,6 +785,44 @@ struct AppModelTests {
   }
 }
 
+private actor AppModelPersistenceGate {
+  private let checkpoint: PersistenceCheckpoint
+  private var isBlocked = false
+  private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+  init(checkpoint: PersistenceCheckpoint) {
+    self.checkpoint = checkpoint
+  }
+
+  func pause(at candidate: PersistenceCheckpoint) async {
+    guard candidate == checkpoint else { return }
+    isBlocked = true
+    for waiter in blockedWaiters { waiter.resume() }
+    blockedWaiters.removeAll()
+    await withCheckedContinuation { releaseWaiter = $0 }
+  }
+
+  func waitUntilBlocked() async {
+    if isBlocked { return }
+    await withCheckedContinuation { blockedWaiters.append($0) }
+  }
+
+  func release() {
+    releaseWaiter?.resume()
+    releaseWaiter = nil
+  }
+}
+
+private actor AppModelStatsDeliveryProbe {
+  private(set) var calls = 0
+
+  func deliver(_ request: StatsSubmissionRequest) {
+    _ = request
+    calls += 1
+  }
+}
+
 private actor MockSkyjoService: SkyjoService {
   enum Scenario: Equatable, Sendable {
     case normal
@@ -428,6 +841,7 @@ private actor MockSkyjoService: SkyjoService {
     case deferredAccessFollowup
     case deferredStatsRefresh
     case disabledProfileUpdate
+    case profileServiceUnavailable
     case passwordAccountNotFound
     case mismatchedIdentifiers
   }
@@ -505,7 +919,7 @@ private actor MockSkyjoService: SkyjoService {
   }
 
   func loginAccount(email: String, password: String) async throws -> AccountUser {
-    makeUser()
+    makeUser(disabled: scenario == .disabled)
   }
 
   func logoutAccount() async throws {}
@@ -524,6 +938,13 @@ private actor MockSkyjoService: SkyjoService {
     }
     if scenario == .disabledProfileUpdate {
       return makeUser(displayName: displayName, disabled: true)
+    }
+    if scenario == .profileServiceUnavailable {
+      throw SkyjoHTTPClientError.server(
+        statusCode: 503,
+        code: .serviceUnavailable,
+        message: "The service is temporarily unavailable."
+      )
     }
     return makeUser(displayName: displayName)
   }

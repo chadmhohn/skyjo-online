@@ -15,7 +15,7 @@
     "audit:release": "node scripts/check-release-audit.mjs",
     "benchmark:ai": "npm run build:server && node scripts/benchmark-ai.mjs",
     "benchmark:ai:verify": "node scripts/verify-ai-benchmark.mjs",
-    "check:audio": "node scripts/check-audio-assets.mjs",
+    "check:audio": "node --test scripts/check-audio-assets.test.mjs && node scripts/check-audio-assets.mjs",
     "check:bundle": "node scripts/check-bundle-budget.mjs",
     "check:types": "tsc --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "contracts:fixtures:check": "npm run build:server && node scripts/generate-contract-fixtures.mjs --check",

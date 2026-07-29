@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,6 +34,7 @@ import {
   writeRssStageEvidence
 } from '../../../scripts/certification-lib.mjs';
 import { REQUIRED_CHECKS } from '../../../scripts/github-governance-lib.mjs';
+import { selectSimulatorMatrix } from '../../../scripts/select-ios-ui-simulators.mjs';
 import { MULTIPLAYER_PROTOCOL_VERSION, type GameCommand } from '../../../src/protocolV2';
 import {
   createPropagationArrivalTracker,
@@ -700,9 +702,43 @@ describe('v0.3.2 certification evidence', () => {
 });
 
 describe('v0.3.2 workflow governance', () => {
+  it('selects a compact standard phone independently from the large-phone entry', () => {
+    type SimulatorMatrixEntry = {
+      role: 'standard-phone' | 'large-phone' | 'ipad';
+      runtime: string;
+      name: string;
+      udid: string;
+    };
+    const runtime = 'com.apple.CoreSimulator.SimRuntime.iOS-26-5';
+    const device = (name: string, udid: string) => ({ name, udid, isAvailable: true });
+    const baseDevices = [
+      device('iPhone 17 Pro', '00000000-0000-4000-8000-000000000001'),
+      device('iPhone 17e', '00000000-0000-4000-8000-000000000002'),
+      device('iPhone 17 Pro Max', '00000000-0000-4000-8000-000000000003'),
+      device('iPad Pro 13-inch (M5)', '00000000-0000-4000-8000-000000000004')
+    ];
+
+    let matrix = selectSimulatorMatrix({ devices: { [runtime]: baseDevices } }) as SimulatorMatrixEntry[];
+    expect(matrix.find((entry) => entry.role === 'standard-phone')?.name).toBe('iPhone 17e');
+    expect(matrix.find((entry) => entry.role === 'large-phone')?.name).toBe('iPhone 17 Pro Max');
+
+    matrix = selectSimulatorMatrix({
+      devices: {
+        [runtime]: [
+          ...baseDevices,
+          device('iPhone SE (3rd generation)', '00000000-0000-4000-8000-000000000005')
+        ]
+      }
+    });
+    expect(matrix.find((entry) => entry.role === 'standard-phone')?.name).toBe(
+      'iPhone SE (3rd generation)'
+    );
+  });
+
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
     const [
       ci,
+      uiAccessibilityHarness,
       nightly,
       installer,
       load,
@@ -717,6 +753,7 @@ describe('v0.3.2 workflow governance', () => {
       securityAddendum
     ] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'ios-ui-accessibility-test.sh'), 'utf8'),
       fs.readFile(path.join(root, '.github', 'workflows', 'nightly-certification.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'install-k6.sh'), 'utf8'),
       fs.readFile(path.join(root, 'tests', 'load', 'skyjo-realtime.k6.js'), 'utf8'),
@@ -736,14 +773,53 @@ describe('v0.3.2 workflow governance', () => {
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'iOS / Build')).toHaveLength(1);
     expect(REQUIRED_CHECKS).toContain('iOS / Networking Contracts');
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'iOS / Networking Contracts')).toHaveLength(1);
+    expect(REQUIRED_CHECKS).toContain('iOS / UI & Accessibility');
+    expect(REQUIRED_CHECKS.filter((check: string) => check === 'iOS / UI & Accessibility')).toHaveLength(1);
+    expect(REQUIRED_CHECKS).toHaveLength(14);
     expect(ci).toMatch(/ios-build:\s*\n\s*name: iOS \/ Build/);
     expect(ci).toMatch(/ios-networking-contracts:\s*\n\s*name: iOS \/ Networking Contracts/);
+    expect(ci).toMatch(/ios-ui-accessibility:\s*\n\s*name: iOS \/ UI & Accessibility/);
     const iosBuildSection = ci.match(/\n {2}ios-build:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     const iosNetworkingSection = ci.match(/\n {2}ios-networking-contracts:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
+    const iosUiRoleSection = ci.match(/\n {2}ios-ui-accessibility-role:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
+    const iosUiAggregateSection = ci.match(/\n {2}ios-ui-accessibility:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     expect(iosNetworkingSection).toMatch(/fetch-depth: 0/);
     expect(iosNetworkingSection).toMatch(/npm exec -- playwright install chromium/);
     expect(iosNetworkingSection).toMatch(/\.\/scripts\/ios-build-test\.sh --networking-contracts/);
     expect(iosBuildSection).not.toMatch(/playwright install chromium/);
+    expect(iosUiRoleSection).toMatch(/name: iOS \/ UI & Accessibility \(\$\{\{ matrix\.role \}\}\)/);
+    expect(iosUiRoleSection).toMatch(
+      /role:\s*\n\s*- standard-phone\s*\n\s*- large-phone\s*\n\s*- ipad-portrait\s*\n\s*- ipad-landscape/
+    );
+    expect(iosUiRoleSection).toMatch(/SKYJO_IOS_UI_ACCESSIBILITY_ROLE: \$\{\{ matrix\.role \}\}/);
+    expect(iosUiRoleSection).toMatch(
+      /name: ios-ui-accessibility-\$\{\{ matrix\.role \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/
+    );
+    expect(iosUiAggregateSection).toMatch(/if: \$\{\{ always\(\) \}\}/);
+    expect(iosUiAggregateSection).toMatch(/needs: ios-ui-accessibility-role/);
+    expect(iosUiAggregateSection).toMatch(
+      /ROLE_JOBS_RESULT: \$\{\{ needs\.ios-ui-accessibility-role\.result \}\}/
+    );
+    expect(uiAccessibilityHarness).toContain(
+      '""|standard-phone|large-phone|ipad-portrait|ipad-landscape) ;;'
+    );
+    expect(uiAccessibilityHarness).toContain('for udid in "${active_udids[@]}"; do');
+    expect(uiAccessibilityHarness).toContain(
+      'printf \'Selected UI accessibility role: %s\\n\' "${selected_role:-full-matrix}"'
+    );
+    const invalidUiRole = spawnSync(
+      'bash',
+      [path.join(root, 'scripts', 'ios-ui-accessibility-test.sh')],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, SKYJO_IOS_UI_ACCESSIBILITY_ROLE: 'full-matrix' }
+      }
+    );
+    expect(invalidUiRole.status).toBe(1);
+    expect(invalidUiRole.stderr).toContain(
+      'SKYJO_IOS_UI_ACCESSIBILITY_ROLE must be one of standard-phone, large-phone, ipad-portrait, or ipad-landscape.'
+    );
     expect(ci).toMatch(/load-recovery:\s*\n\s*name: CI \/ Load & Recovery/);
     const loadRecoverySection = ci.match(/\n {2}load-recovery:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     expect(loadRecoverySection).toContain('test-results/certification');

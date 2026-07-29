@@ -39,6 +39,28 @@ struct GameInvariantTests {
     #expect(GameEngine.defaultSinglePlayerAIOpponents.count == 7)
   }
 
+  @Test("Opening reveal logs use subject-aware copy")
+  func openingRevealCopy() {
+    var soloRandom = SeededRandom(seed: 42)
+    let solo = GameEngine.startFreshGame(random: &soloRandom)
+    #expect(solo.log.first == "You: reveal 2 cards.")
+
+    var multiplayerRandom = SeededRandom(seed: 7)
+    var multiplayer = GameEngine.createMultiplayerGame(
+      players: [
+        PlayerSeed(id: "ada", name: "Ada", kind: .human),
+        PlayerSeed(id: "you", name: "You", kind: .human),
+      ],
+      random: &multiplayerRandom
+    )
+    #expect(multiplayer.log.first == "Ada: reveal 2 cards.")
+    multiplayer = GameEngine.revealOpeningCard(multiplayer, at: 0)
+    multiplayer = GameEngine.revealOpeningCard(multiplayer, at: 1)
+    #expect(
+      multiplayer.log.first == "Ada finished. You: reveal 2 cards."
+    )
+  }
+
   @Test("Invalid phase, index, removed-card, and missing-source moves are inert")
   func invalidActionsAreInert() {
     var random = SeededRandom(seed: 17)

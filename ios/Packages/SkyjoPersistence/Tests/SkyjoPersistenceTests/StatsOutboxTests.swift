@@ -409,13 +409,17 @@ struct StatsOutboxTests {
     #expect(blockedStatus.corruptRecords == 1)
     #expect(blockedStatus.blockedByTerminalFailure)
     #expect(blockedStatus.blockedHeadGameID == gameID)
-    let recoveryHandle = try #require(blockedStatus.blockedHeadRecoveryHandle)
+    #expect(blockedStatus.blockedHeadKind == .corrupt)
+    _ = try #require(blockedStatus.blockedHeadRecoveryHandle)
     let coordinator = StatsOutboxCoordinator(store: store) { _ in
       Issue.record("A corrupt outbox body must not reach delivery")
     }
     await coordinator.setConfirmedAccount(accountID)
     #expect(await coordinator.flush(force: true).attempted == 0)
     #expect(await coordinator.latestWarning?.kind == .statsNotSaved)
+    let recoveryHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
     do {
       try await coordinator.discardBlockedHead(
         expectedRecoveryHandle: StatsOutboxRecoveryHandle(token: UUID())
@@ -427,6 +431,55 @@ struct StatsOutboxTests {
     try await coordinator.discardBlockedHead(expectedRecoveryHandle: recoveryHandle)
     #expect(await coordinator.latestWarning == nil)
     #expect(await coordinator.status() == .empty)
+  }
+
+  @Test(
+    "UI blocked-outbox fixtures expose the production recovery contract",
+    arguments: [StatsOutboxBlockedHeadKind.terminal, .corrupt]
+  )
+  func uiBlockedOutboxFixture(kind: StatsOutboxBlockedHeadKind) async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    let terminal = try PersistenceTestSupport.terminalState()
+    let accountID = PersistenceTestSupport.aliceID
+    let gameID = PersistenceTestSupport.guestGameID
+    try await store.prepareBlockedOutboxForUITesting(
+      accountID: accountID,
+      gameID: gameID,
+      state: terminal,
+      setup: try PersistenceTestSupport.setup(for: terminal, gameID: gameID),
+      kind: kind,
+      completedAtMilliseconds: 20
+    )
+
+    let status = try await store.outboxStatus(accountID: accountID)
+    #expect(status.queued == 1)
+    #expect(status.terminalFailures == (kind == .terminal ? 1 : 0))
+    #expect(status.corruptRecords == (kind == .corrupt ? 1 : 0))
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == gameID)
+    #expect(status.blockedHeadKind == kind)
+    let recoveryHandle = try #require(status.blockedHeadRecoveryHandle)
+
+    await expectStatsPersistenceError(.sessionConflict) {
+      try await store.prepareBlockedOutboxForUITesting(
+        accountID: accountID,
+        gameID: PersistenceTestSupport.secondGameID,
+        state: terminal,
+        setup: try PersistenceTestSupport.setup(
+          for: terminal,
+          gameID: PersistenceTestSupport.secondGameID
+        ),
+        kind: kind,
+        completedAtMilliseconds: 21
+      )
+    }
+
+    try await store.discardBlockedOutboxHead(
+      accountID: accountID,
+      expectedRecoveryHandle: recoveryHandle
+    )
+    #expect(try await store.outboxStatus(accountID: accountID) == .empty)
   }
 
   @Test("Permanent delivery failure dead-letters the FIFO head without overtaking or retry")
@@ -479,6 +532,7 @@ struct StatsOutboxTests {
     #expect(status.terminalFailures == 1)
     #expect(status.blockedByTerminalFailure)
     #expect(status.blockedHeadGameID == PersistenceTestSupport.guestGameID)
+    #expect(status.blockedHeadKind == .terminal)
     let recoveryHandle = try #require(status.blockedHeadRecoveryHandle)
     let blocked = await coordinator.flush(force: true)
     #expect(blocked.attempted == 0)
@@ -507,6 +561,54 @@ struct StatsOutboxTests {
     #expect(try await store.pendingOutboxCount(accountID: bob) == 0)
   }
 
+  @Test("Authorization changes abort without mutating or delaying the FIFO head")
+  func authorizationChangeLeavesHeadUntouched() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    let terminal = try PersistenceTestSupport.terminalState()
+    let accountID = PersistenceTestSupport.aliceID
+    let gameID = PersistenceTestSupport.guestGameID
+    try await store.completeSession(
+      owner: .account(accountID),
+      gameID: gameID,
+      state: terminal,
+      setup: try PersistenceTestSupport.setup(for: terminal, gameID: gameID),
+      saveSequence: 0,
+      completedAtMilliseconds: 10
+    )
+    let before = try #require(
+      try await store.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 20,
+        force: true,
+        limit: 1
+      ).first
+    )
+    let coordinator = StatsOutboxCoordinator(store: store) { _ in
+      throw StatsDeliveryError.authorizationChanged
+    }
+    await coordinator.setConfirmedAccount(accountID)
+
+    #expect(
+      await coordinator.flush(force: true)
+        == StatsFlushResult(attempted: 0, delivered: 0, pending: 0, aborted: true)
+    )
+
+    let after = try #require(
+      try await store.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 20,
+        force: true,
+        limit: 1
+      ).first
+    )
+    #expect(after.envelopeData == before.envelopeData)
+    #expect(after.attempts == before.attempts)
+    #expect(after.nextAttemptAtMilliseconds == before.nextAttemptAtMilliseconds)
+    #expect(!after.isTerminalFailure)
+    #expect(try await store.pendingOutboxCount(accountID: accountID) == 1)
+  }
+
   @Test("Dead-letter status survives a disk-store relaunch")
   func permanentFailureSurvivesRelaunch() async throws {
     let paths = try PersistenceTestSupport.temporaryStoreURL()
@@ -529,8 +631,9 @@ struct StatsOutboxTests {
     #expect(await coordinator.flush(force: true).attempted == 0)
     #expect(await coordinator.latestWarning?.kind == .statsNotSaved)
     #expect(await calls.values.isEmpty)
+    let confirmedStatus = await coordinator.status()
     let recovered = await coordinator.retryTerminalHead(
-      expectedRecoveryHandle: try #require(status.blockedHeadRecoveryHandle)
+      expectedRecoveryHandle: try #require(confirmedStatus.blockedHeadRecoveryHandle)
     )
     #expect(recovered.delivered == 1)
     #expect(recovered.pending == 0)
@@ -692,6 +795,79 @@ struct StatsOutboxTests {
     #expect(aliceStatus.terminalFailures == 1)
     #expect(aliceStatus.blockedByTerminalFailure)
     #expect(aliceStatus.blockedHeadGameID == PersistenceTestSupport.guestGameID)
+  }
+
+  @Test("A queued recovery capability cannot cross same-account reauthorization")
+  func queuedRecoveryCannotCrossSameAccountReauthorization() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    try await makeTerminalHead(in: store)
+
+    let gate = AsyncCoordinatorRecoveryGate()
+    let coordinator = StatsOutboxCoordinator(
+      store: store,
+      environment: StatsOutboxCoordinatorEnvironment(
+        recoveryBarrier: { checkpoint in await gate.pause(at: checkpoint) }
+      )
+    ) { _ in }
+    let accountID = PersistenceTestSupport.aliceID
+    await coordinator.setConfirmedAccount(accountID)
+    let staleHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    let discard = Task { () -> SoloPersistenceError? in
+      do {
+        try await coordinator.discardBlockedHead(expectedRecoveryHandle: staleHandle)
+        return nil
+      } catch let error as SoloPersistenceError {
+        return error
+      } catch {
+        return .storageUnavailable
+      }
+    }
+
+    await gate.waitUntilBlocked()
+    await coordinator.setConfirmedAccount(nil)
+    await coordinator.setConfirmedAccount(accountID)
+    let currentHandle = try #require(
+      await coordinator.status().blockedHeadRecoveryHandle
+    )
+    #expect(currentHandle != staleHandle)
+    await gate.release()
+
+    #expect(await discard.value == .sessionConflict)
+    let blockedStatus = try await store.outboxStatus(accountID: accountID)
+    #expect(blockedStatus.queued == 1)
+    #expect(blockedStatus.terminalFailures == 1)
+    #expect(blockedStatus.blockedByTerminalFailure)
+
+    try await coordinator.discardBlockedHead(expectedRecoveryHandle: currentHandle)
+    #expect(try await store.outboxStatus(accountID: accountID) == .empty)
+  }
+
+  @Test("Recovery capabilities cannot cross coordinator instances")
+  func recoveryCapabilitiesAreCoordinatorScoped() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    try await makeTerminalHead(in: store)
+    let first = StatsOutboxCoordinator(store: store) { _ in }
+    let second = StatsOutboxCoordinator(store: store) { _ in }
+    let accountID = PersistenceTestSupport.aliceID
+    await first.setConfirmedAccount(accountID)
+    await second.setConfirmedAccount(accountID)
+    let firstHandle = try #require(
+      await first.status().blockedHeadRecoveryHandle
+    )
+
+    await expectStatsPersistenceError(.sessionConflict) {
+      try await second.discardBlockedHead(expectedRecoveryHandle: firstHandle)
+    }
+    let secondHandle = try #require(
+      await second.status().blockedHeadRecoveryHandle
+    )
+    #expect(secondHandle != firstHandle)
+    try await second.discardBlockedHead(expectedRecoveryHandle: secondHandle)
+    #expect(try await store.outboxStatus(accountID: accountID) == .empty)
   }
 
   @Test("Concurrent triggers share one flight and drain a queued trigger")
@@ -911,6 +1087,32 @@ private actor AsyncPersistenceGate {
 
   func pause(at candidate: PersistenceCheckpoint) async {
     guard candidate == checkpoint else { return }
+    isBlocked = true
+    for waiter in blockedWaiters { waiter.resume() }
+    blockedWaiters.removeAll()
+    await withCheckedContinuation { releaseWaiter = $0 }
+  }
+
+  func waitUntilBlocked() async {
+    if isBlocked { return }
+    await withCheckedContinuation { blockedWaiters.append($0) }
+  }
+
+  func release() {
+    releaseWaiter?.resume()
+    releaseWaiter = nil
+  }
+}
+
+private actor AsyncCoordinatorRecoveryGate {
+  private var shouldBlock = true
+  private var isBlocked = false
+  private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+  func pause(at checkpoint: StatsOutboxCoordinatorCheckpoint) async {
+    guard checkpoint == .beforeRecoveryAuthorization, shouldBlock else { return }
+    shouldBlock = false
     isBlocked = true
     for waiter in blockedWaiters { waiter.resume() }
     blockedWaiters.removeAll()

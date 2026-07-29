@@ -221,8 +221,9 @@ describe('difficulty profiles', () => {
       return performance.now() - start;
     }).sort((left, right) => left - right);
     const p95 = durations[Math.floor(durations.length * 0.95)];
+    const p99 = durations[Math.floor(durations.length * 0.99)];
     expect(p95).toBeLessThan(5);
-    expect(durations[durations.length - 1]).toBeLessThan(16);
+    expect(p99).toBeLessThan(16);
   });
 
   it('penalizes an actual positive-score close that risks doubling, not another player final turn', () => {

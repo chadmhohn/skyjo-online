@@ -141,12 +141,14 @@ public enum SoloPersistenceError: Error, Equatable, Sendable {
 }
 
 public enum PersistenceCheckpoint: String, CaseIterable, Sendable {
+  case beforeSessionRead
   case beforeTransaction
   case afterNewSessionInsert
   case afterPriorSessionDelete
   case afterOutboxInsert
   case beforeCommit
   case afterCommitAcknowledgement
+  case beforeOutboxRead
   case beforeOutboxDelete
   case beforeOutboxRetryUpdate
 }
@@ -222,22 +224,73 @@ public enum StatsFailureCategory: String, Codable, CaseIterable, Sendable {
 public enum StatsDeliveryError: Error, Equatable, Sendable {
   case retryable(StatsFailureCategory)
   case permanent(StatsFailureCategory)
+  /// The live account/access session changed while a request was in flight. The queue remains
+  /// untouched until the app confirms an account again; this is neither a payload failure nor a
+  /// retryable transport failure.
+  case authorizationChanged
 }
 
-/// An actor-scoped capability for the exact blocked FIFO head. Its token is intentionally not
-/// exposed as a string, identifier, or persistence detail; callers can only return the value to
-/// the store after confirming recovery with the user.
+/// An opaque capability for the exact blocked FIFO head. The coordinator additionally binds the
+/// value to the account-authorization generation that exposed it to the UI. None of those tokens
+/// are available as strings, identifiers, or persistence details; callers can only return the
+/// complete value after confirming recovery with the user.
 public struct StatsOutboxRecoveryHandle: Equatable, Hashable, Sendable,
   CustomStringConvertible, CustomDebugStringConvertible
 {
   private let token: UUID
+  private let authorizationScope: UUID?
+  private let authorizationAccountID: UUID?
+  private let authorizationGeneration: UInt64?
 
   init(token: UUID) {
     self.token = token
+    authorizationScope = nil
+    authorizationAccountID = nil
+    authorizationGeneration = nil
+  }
+
+  private init(
+    token: UUID,
+    authorizationScope: UUID,
+    authorizationAccountID: UUID,
+    authorizationGeneration: UInt64
+  ) {
+    self.token = token
+    self.authorizationScope = authorizationScope
+    self.authorizationAccountID = authorizationAccountID
+    self.authorizationGeneration = authorizationGeneration
+  }
+
+  func authorized(
+    scope: UUID,
+    accountID: UUID,
+    generation: UInt64
+  ) -> StatsOutboxRecoveryHandle {
+    StatsOutboxRecoveryHandle(
+      token: token,
+      authorizationScope: scope,
+      authorizationAccountID: accountID,
+      authorizationGeneration: generation
+    )
+  }
+
+  func authorizes(scope: UUID, accountID: UUID, generation: UInt64) -> Bool {
+    authorizationScope == scope
+      && authorizationAccountID == accountID
+      && authorizationGeneration == generation
+  }
+
+  func matchesStoredToken(_ other: StatsOutboxRecoveryHandle) -> Bool {
+    token == other.token
   }
 
   public var description: String { "StatsOutboxRecoveryHandle(redacted)" }
   public var debugDescription: String { description }
+}
+
+public enum StatsOutboxBlockedHeadKind: String, Equatable, Sendable {
+  case terminal
+  case corrupt
 }
 
 public struct StatsOutboxStatus: Equatable, Sendable {
@@ -251,6 +304,9 @@ public struct StatsOutboxStatus: Equatable, Sendable {
   /// Opaque capability required to retry or discard the exact currently blocked FIFO head.
   /// Unlike `blockedHeadGameID`, this remains available when persisted identifiers are corrupt.
   public let blockedHeadRecoveryHandle: StatsOutboxRecoveryHandle?
+  /// Safe recovery classification for the FIFO head. Aggregate failure counts cannot determine
+  /// which recovery action is valid for the first record.
+  public let blockedHeadKind: StatsOutboxBlockedHeadKind?
 
   public init(
     queued: Int,
@@ -258,7 +314,8 @@ public struct StatsOutboxStatus: Equatable, Sendable {
     corruptRecords: Int = 0,
     blockedByTerminalFailure: Bool,
     blockedHeadGameID: UUID? = nil,
-    blockedHeadRecoveryHandle: StatsOutboxRecoveryHandle? = nil
+    blockedHeadRecoveryHandle: StatsOutboxRecoveryHandle? = nil,
+    blockedHeadKind: StatsOutboxBlockedHeadKind? = nil
   ) {
     self.queued = queued
     self.terminalFailures = terminalFailures
@@ -266,6 +323,7 @@ public struct StatsOutboxStatus: Equatable, Sendable {
     self.blockedByTerminalFailure = blockedByTerminalFailure
     self.blockedHeadGameID = blockedHeadGameID
     self.blockedHeadRecoveryHandle = blockedHeadRecoveryHandle
+    self.blockedHeadKind = blockedHeadKind
   }
 
   static let empty = StatsOutboxStatus(
@@ -274,16 +332,93 @@ public struct StatsOutboxStatus: Equatable, Sendable {
     corruptRecords: 0,
     blockedByTerminalFailure: false,
     blockedHeadGameID: nil,
-    blockedHeadRecoveryHandle: nil
+    blockedHeadRecoveryHandle: nil,
+    blockedHeadKind: nil
   )
+
+  func authorizingRecoveryHandle(
+    scope: UUID,
+    accountID: UUID,
+    generation: UInt64
+  ) -> StatsOutboxStatus {
+    guard let blockedHeadRecoveryHandle else { return self }
+    return StatsOutboxStatus(
+      queued: queued,
+      terminalFailures: terminalFailures,
+      corruptRecords: corruptRecords,
+      blockedByTerminalFailure: blockedByTerminalFailure,
+      blockedHeadGameID: blockedHeadGameID,
+      blockedHeadRecoveryHandle: blockedHeadRecoveryHandle.authorized(
+        scope: scope,
+        accountID: accountID,
+        generation: generation
+      ),
+      blockedHeadKind: blockedHeadKind
+    )
+  }
 }
 
-/// A lock-backed capability makes outbox mutations linearizable with account sign-out/switch.
-/// The store holds the capability only around its synchronous SwiftData transaction; invalidating
-/// it therefore either wins before the mutation or waits until an already-authorized mutation ends.
+struct StatsOutboxAuthorizationLease: Sendable {
+  let accountID: UUID
+  let generation: UInt64
+}
+
+/// The synchronous source of truth for account-authorized outbox mutations.
+///
+/// Account transitions take the same lock that a persistence mutation holds for its transaction.
+/// A transition therefore either revokes the lease before the mutation begins or waits until an
+/// already-authorized mutation finishes. The generation prevents a stale task from restoring a
+/// prior login for the same account UUID.
+public final class StatsOutboxAuthorizationController: @unchecked Sendable {
+  private let lock = NSLock()
+  private var confirmedAccountID: UUID?
+  private var generation: UInt64 = 0
+
+  public init() {}
+
+  public func setConfirmedAccount(_ accountID: UUID?) {
+    lock.lock()
+    defer { lock.unlock() }
+    guard confirmedAccountID != accountID else { return }
+    confirmedAccountID = accountID
+    generation &+= 1
+  }
+
+  func currentLease() -> StatsOutboxAuthorizationLease? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let accountID = confirmedAccountID else { return nil }
+    return StatsOutboxAuthorizationLease(accountID: accountID, generation: generation)
+  }
+
+  func perform<T>(
+    with lease: StatsOutboxAuthorizationLease,
+    operation: () throws -> T
+  ) throws -> T {
+    lock.lock()
+    defer { lock.unlock() }
+    guard confirmedAccountID == lease.accountID, generation == lease.generation else {
+      throw SoloPersistenceError.sessionConflict
+    }
+    return try operation()
+  }
+}
+
+/// A coordinator-local capability paired with the relay's exact account authorization lease.
+/// The store holds both locks only around its synchronous SwiftData transaction.
 final class StatsOutboxAccountFence: @unchecked Sendable {
+  private let authorizationController: StatsOutboxAuthorizationController
+  private let authorizationLease: StatsOutboxAuthorizationLease
   private let lock = NSLock()
   private var isValid = true
+
+  init(
+    authorizationController: StatsOutboxAuthorizationController,
+    authorizationLease: StatsOutboxAuthorizationLease
+  ) {
+    self.authorizationController = authorizationController
+    self.authorizationLease = authorizationLease
+  }
 
   func invalidate() {
     lock.lock()
@@ -292,10 +427,20 @@ final class StatsOutboxAccountFence: @unchecked Sendable {
   }
 
   func perform<T>(_ operation: () throws -> T) throws -> T {
-    lock.lock()
-    defer { lock.unlock() }
-    guard isValid else { throw SoloPersistenceError.sessionConflict }
-    return try operation()
+    try authorizationController.perform(with: authorizationLease) {
+      lock.lock()
+      defer { lock.unlock() }
+      guard isValid else { throw SoloPersistenceError.sessionConflict }
+      return try operation()
+    }
+  }
+
+  func isCurrent() -> Bool {
+    (try? authorizationController.perform(with: authorizationLease) {
+      lock.lock()
+      defer { lock.unlock() }
+      return isValid
+    }) ?? false
   }
 }
 

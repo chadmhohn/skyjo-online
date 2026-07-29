@@ -488,7 +488,7 @@ export function createGameForPlayers(
     log: [
       hasOpeningReveals
         ? `${starter.name} starts round ${round}. Pick from the discard pile or draw blind.`
-        : `${starter.name} chooses two opening cards to reveal.`
+        : `${starter.name}: reveal 2 cards.`
     ],
     winnerId: null,
     nextStarterId: hasOpeningReveals ? null : round > 1 ? startPlayerId || null : null,
@@ -582,12 +582,13 @@ export function revealOpeningCard(state: GameState, cardIndex: number): GameStat
 
   const nextPlayerIndex = updatedState.players.findIndex((item) => openingRevealCount(item) < 2);
   if (nextPlayerIndex >= 0) {
+    const nextPlayerName = updatedState.players[nextPlayerIndex].name;
     return withLog(
       {
         ...updatedState,
         currentPlayerIndex: nextPlayerIndex
       },
-      `${player.name} finished opening reveals. ${updatedState.players[nextPlayerIndex].name} chooses two opening cards.`
+      `${player.name} finished. ${nextPlayerName}: reveal 2 cards.`
     );
   }
 

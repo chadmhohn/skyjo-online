@@ -22,6 +22,7 @@ public actor SoloPersistenceStore: ModelActor {
 
   public func loadSession(for owner: SoloOwnerPartition) throws -> SoloSessionLoadResult {
     do {
+      try environment.faults.check(.beforeSessionRead)
       let records = try sessionRecords(ownerKey: owner.storageKey)
       guard !records.isEmpty else {
         return SoloSessionLoadResult(session: nil, warning: nil)
@@ -353,6 +354,7 @@ public actor SoloPersistenceStore: ModelActor {
   public func outboxStatus(accountID: UUID) throws -> StatsOutboxStatus {
     let ownerKey = SoloOwnerPartition.account(accountID).storageKey
     do {
+      try environment.faults.check(.beforeOutboxRead)
       let records = try outboxRecords(ownerKey: ownerKey)
       var valid: [StatsOutboxItem] = []
       var corruptRecords = 0
@@ -377,13 +379,21 @@ public actor SoloPersistenceStore: ModelActor {
       let blockedHeadRecoveryHandle = blocked
         ? records.first.map { recoveryHandle(for: $0) }
         : nil
+      let blockedHeadKind: StatsOutboxBlockedHeadKind? = if firstIsCorrupt {
+        .corrupt
+      } else if valid.first?.isTerminalFailure == true {
+        .terminal
+      } else {
+        nil
+      }
       return StatsOutboxStatus(
         queued: records.count,
         terminalFailures: terminalFailures,
         corruptRecords: corruptRecords,
         blockedByTerminalFailure: blocked,
         blockedHeadGameID: blockedHeadGameID,
-        blockedHeadRecoveryHandle: blockedHeadRecoveryHandle
+        blockedHeadRecoveryHandle: blockedHeadRecoveryHandle,
+        blockedHeadKind: blockedHeadKind
       )
     } catch {
       modelContext.rollback()
@@ -499,7 +509,7 @@ public actor SoloPersistenceStore: ModelActor {
     }
   }
 
-  public func retryTerminalOutboxHead(
+  func retryTerminalOutboxHead(
     accountID: UUID,
     expectedRecoveryHandle: StatsOutboxRecoveryHandle,
     nowMilliseconds: Int64
@@ -530,7 +540,7 @@ public actor SoloPersistenceStore: ModelActor {
       let update = {
         try self.modelContext.transaction {
           guard let head = try self.outboxRecords(ownerKey: ownerKey).first,
-                self.recoveryHandle(for: head) == expectedRecoveryHandle,
+                self.recoveryHandle(for: head).matchesStoredToken(expectedRecoveryHandle),
                 try self.decodeOutbox(head, expectedAccountID: accountID).isTerminalFailure
           else {
             throw SoloPersistenceError.sessionConflict
@@ -552,7 +562,7 @@ public actor SoloPersistenceStore: ModelActor {
     }
   }
 
-  public func discardBlockedOutboxHead(
+  func discardBlockedOutboxHead(
     accountID: UUID,
     expectedRecoveryHandle: StatsOutboxRecoveryHandle
   ) async throws {
@@ -575,7 +585,7 @@ public actor SoloPersistenceStore: ModelActor {
       let deletion = {
         try self.modelContext.transaction {
           guard let head = try self.outboxRecords(ownerKey: ownerKey).first,
-                self.recoveryHandle(for: head) == expectedRecoveryHandle
+                self.recoveryHandle(for: head).matchesStoredToken(expectedRecoveryHandle)
           else {
             throw SoloPersistenceError.sessionConflict
           }
@@ -597,6 +607,54 @@ public actor SoloPersistenceStore: ModelActor {
       throw mapStorageError(error)
     }
   }
+
+#if DEBUG
+  /// Builds a real blocked FIFO head for XCUITest. The fixture travels through the same
+  /// envelope validation and opaque recovery-handle path as production data; only the final
+  /// failure/corruption injection is test-only.
+  public func prepareBlockedOutboxForUITesting(
+    accountID: UUID,
+    gameID: UUID,
+    state: GameState,
+    setup: SoloGameSetup,
+    kind: StatsOutboxBlockedHeadKind,
+    completedAtMilliseconds: Int64
+  ) throws {
+    let owner = SoloOwnerPartition.account(accountID)
+    guard try outboxRecords(ownerKey: owner.storageKey).isEmpty else {
+      throw SoloPersistenceError.sessionConflict
+    }
+    try completeSession(
+      owner: owner,
+      gameID: gameID,
+      state: state,
+      setup: setup,
+      saveSequence: 0,
+      completedAtMilliseconds: completedAtMilliseconds
+    )
+
+    do {
+      try modelContext.transaction {
+        guard let head = try self.outboxRecords(ownerKey: owner.storageKey).first else {
+          throw SoloPersistenceError.sessionConflict
+        }
+        switch kind {
+        case .terminal:
+          head.attempts = 1
+          head.updatedAtMilliseconds = completedAtMilliseconds
+          head.lastFailureCode = StatsFailureCategory.unsupportedVersion.rawValue
+          head.terminalFailure = true
+        case .corrupt:
+          head.payload = Data("skyjo-corrupt-ui-fixture".utf8)
+          head.updatedAtMilliseconds = completedAtMilliseconds
+        }
+      }
+    } catch {
+      modelContext.rollback()
+      throw mapStorageError(error)
+    }
+  }
+#endif
 
   static func retryDelayMilliseconds(afterAttempts attempts: Int) -> Int64 {
     let exponent = min(max(attempts - 1, 0), 20)

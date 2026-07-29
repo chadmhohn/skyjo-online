@@ -190,13 +190,25 @@
       "ios/Packages/SkyjoPersistence/Tests/SkyjoPersistenceTests",
       "scripts/test-ios-domain-parity.sh"
     ],
+    "nativeSoloFeature": [
+      "ios/SkyjoApp/Features/Solo/SoloFeatureModel.swift",
+      "ios/SkyjoApp/Features/Solo/SoloViews.swift",
+      "ios/SkyjoApp/Features/Settings/GameFeedbackController.swift",
+      "ios/SkyjoApp/Features/Settings/SoloPreferencesStore.swift",
+      "ios/SkyjoAppTests/SoloFeatureModelTests.swift",
+      "ios/SkyjoAppUITests/SkyjoAppUITests.swift",
+      "scripts/ios-ui-accessibility-test.sh",
+      "scripts/select-ios-ui-simulators.mjs"
+    ],
     "visualReference": [
       "src/GameTableLayout.tsx",
       "src/index.css",
       "tests/e2e/__screenshots__/visual"
     ],
     "audioProvenance": [
-      "public/audio/README.md"
+      "public/audio/README.md",
+      "ios/SkyjoApp/Resources/Audio/README.md",
+      "scripts/check-audio-assets.mjs"
     ]
   },
   "requiredHandoffDocuments": [
@@ -219,7 +231,8 @@
     "nativeDomainAndPersistence": "npm run test:domain:parity",
     "apnsRollbackEnvelope": "npm run smoke:apns-rollback",
     "nativeNetworkingContracts": "./scripts/ios-build-test.sh --networking-contracts",
-    "nativeFullBuildAndTest": "./scripts/ios-build-test.sh"
+    "nativeFullBuildAndTest": "./scripts/ios-build-test.sh",
+    "nativeUIAccessibility": "./scripts/ios-build-test.sh --ui-accessibility"
   },
   "nativeNetworkingHarness": {
     "server": "real server.mjs on a dynamic 127.0.0.1 port",
@@ -243,7 +256,8 @@
     "native URLSession access-client tests against an isolated real local Node server",
     "strict actor-owned native protocol-v2 room client with account-fenced durable reset recovery",
     "real Swift and Playwright Chromium mixed-client networking contract gate pinned to cached PWA v0.3.2 compatibility",
-    "schema-2 validation and byte-preserving backup/restore support for the exact optional APNs storage envelope; production rollback-floor verification remains pending"
+    "schema-2 validation and byte-preserving backup/restore support for the exact optional APNs storage envelope; production rollback-floor verification remains pending",
+    "native guest and account-partitioned solo experience with durable stats delivery and multi-device UI/accessibility evidence"
   ],
   "plannedServerAdditions": [
     "authenticated APNs device registration and delivery after the envelope release is promoted and becomes the verified previous rollback anchor",

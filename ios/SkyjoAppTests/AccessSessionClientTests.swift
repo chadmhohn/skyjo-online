@@ -1,6 +1,10 @@
 import Foundation
+import SkyjoDomain
 import SkyjoNetworking
+import SkyjoPersistence
 import Testing
+
+@testable import SkyjoNative
 
 @Suite("Access, account, and stats HTTP clients", .serialized)
 struct AccessSessionClientTests {
@@ -1087,6 +1091,268 @@ struct AccessSessionClientTests {
     #expect(try await client.playerStats(userID: parsedUserID).user.id == parsedUserID)
   }
 
+  @Test("Single-player stats uses the exact idempotent POST contract and requires a single-game 201")
+  func singlePlayerStatsSubmissionContract() async throws {
+    let baseURL = URL(string: "https://solo-stats-\(UUID().uuidString).test")!
+    let cookieStorage = testCookieStorage(for: baseURL)
+    let gameID = UUID(uuidString: "40000000-0000-4000-8000-000000000187")!
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let completedAt: Int64 = 1_784_998_800_000
+    var random = SeededRandom(seed: 187)
+    let state = GameEngine.startFreshGame(aiOpponentCount: 1, random: &random)
+    let requestWasExact = LockedValue(false)
+
+    StubURLProtocol.install { request in
+      guard
+        request.httpMethod == "POST",
+        request.url?.path == "/api/stats/single-player",
+        request.value(forHTTPHeaderField: "Accept") == "application/json",
+        request.value(forHTTPHeaderField: "Content-Type") == "application/json; charset=utf-8",
+        let body = requestBody(request),
+        let payload = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+        Set(payload.keys) == ["state", "clientGameKey", "completedAt", "expectedAccountUserId"],
+        payload["clientGameKey"] as? String == gameID.uuidString.lowercased(),
+        (payload["completedAt"] as? NSNumber)?.int64Value == completedAt,
+        payload["expectedAccountUserId"] as? String == accountID.uuidString.lowercased(),
+        payload["state"] is [String: Any]
+      else { throw StubError.invalidRequest }
+      requestWasExact.set(true)
+      return try stubResponse(
+        for: request,
+        statusCode: 201,
+        body: "{\"game\":\(statsGameJSON())}"
+      )
+    }
+    let session = SkyjoURLSessionFactory.makeDedicated(
+      cookieStorage: cookieStorage,
+      protocolClasses: [StubURLProtocol.self]
+    )
+    let client = SkyjoAPIClient(
+      environment: SkyjoNetworkEnvironment(baseURL: baseURL),
+      session: session
+    )
+    defer {
+      session.invalidateAndCancel()
+      clearCookies(cookieStorage, for: baseURL)
+      StubURLProtocol.removeHandler()
+    }
+
+    let submission = SinglePlayerStatsSubmission(
+      state: state,
+      clientGameID: gameID,
+      completedAt: completedAt,
+      expectedAccountUserID: accountID
+    )
+    let result = try await client.submitSinglePlayerStats(submission)
+    #expect(requestWasExact.get())
+    #expect(result.mode == .single)
+
+    StubURLProtocol.install { request in
+      let multiGame = statsGameJSON().replacingOccurrences(
+        of: #""mode":"single""#,
+        with: #""mode":"multi""#
+      )
+      return try stubResponse(
+        for: request,
+        statusCode: 201,
+        body: "{\"game\":\(multiGame)}"
+      )
+    }
+    await expectError(.invalidSuccessPayload) {
+      _ = try await client.submitSinglePlayerStats(submission)
+    }
+  }
+
+  @Test("Solo stats delivery permanently classifies body errors and fences authorization changes")
+  func soloStatsDeliveryClassification() async throws {
+    let baseURL = URL(string: "https://solo-delivery-\(UUID().uuidString).test")!
+    let cookieStorage = testCookieStorage(for: baseURL)
+    let gameID = UUID(uuidString: "40000000-0000-4000-8000-000000000187")!
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    var random = SeededRandom(seed: 187)
+    let state = GameEngine.startFreshGame(aiOpponentCount: 1, random: &random)
+    let submission = SinglePlayerStatsSubmission(
+      state: state,
+      clientGameID: gameID,
+      completedAt: 1_784_998_800_000,
+      expectedAccountUserID: accountID
+    )
+    let request = try JSONDecoder().decode(
+      StatsSubmissionRequest.self,
+      from: JSONEncoder().encode(submission)
+    )
+    let invalidationReason = LockedValue<SessionInvalidationRelay.Reason?>(nil)
+    let authorizationFence = SessionInvalidationRelay.AuthorizationFence(
+      accountID: accountID,
+      generation: 1
+    )
+    StubURLProtocol.install { request in
+      try stubResponse(
+        for: request,
+        statusCode: 413,
+        body: #"{"code":"REQUEST_TOO_LARGE","error":"Request body is too large."}"#
+      )
+    }
+    let session = SkyjoURLSessionFactory.makeDedicated(
+      cookieStorage: cookieStorage,
+      protocolClasses: [StubURLProtocol.self]
+    )
+    let client = SkyjoAPIClient(
+      environment: SkyjoNetworkEnvironment(baseURL: baseURL),
+      session: session
+    )
+    let adapter = SoloStatsDeliveryAdapter(
+      client: client,
+      authorizationFence: { requestedAccountID in
+        requestedAccountID == accountID ? authorizationFence : nil
+      },
+      invalidateAuthorization: { reason, receivedFence in
+        #expect(receivedFence == authorizationFence)
+        invalidationReason.set(reason)
+      }
+    )
+    defer {
+      session.invalidateAndCancel()
+      clearCookies(cookieStorage, for: baseURL)
+      StubURLProtocol.removeHandler()
+    }
+
+    do {
+      try await adapter.deliver(request)
+      Issue.record("Expected request-too-large to fail permanently.")
+    } catch let error as StatsDeliveryError {
+      #expect(error == .permanent(.requestTooLarge))
+    }
+    #expect(invalidationReason.get() == nil)
+
+    StubURLProtocol.install { request in
+      try stubResponse(
+        for: request,
+        statusCode: 401,
+        body: #"{"code":"ACCOUNT_SESSION_CHANGED","error":"Account session changed."}"#
+      )
+    }
+    do {
+      try await adapter.deliver(request)
+      Issue.record("Expected account-session change to abort delivery.")
+    } catch let error as StatsDeliveryError {
+      #expect(error == .authorizationChanged)
+    }
+    #expect(invalidationReason.get() == .accountSessionChanged)
+
+    invalidationReason.set(nil)
+    StubURLProtocol.install { request in
+      try stubResponse(
+        for: request,
+        statusCode: 401,
+        body: #"{"code":"ACCESS_REQUIRED","error":"Enter the site password."}"#
+      )
+    }
+    do {
+      try await adapter.deliver(request)
+      Issue.record("Expected outer-access loss to abort delivery.")
+    } catch let error as StatsDeliveryError {
+      #expect(error == .authorizationChanged)
+    }
+    #expect(invalidationReason.get() == .accessRequired)
+  }
+
+  @Test(
+    "A changed login generation cannot mutate an in-flight stats row",
+    arguments: StaleStatsDeliveryResponse.allCases
+  )
+  func staleStatsAuthorizationLeavesOutboxUntouched(
+    response: StaleStatsDeliveryResponse
+  ) async throws {
+    let baseURL = URL(string: "https://solo-delivery-fence-\(UUID().uuidString).test")!
+    let cookieStorage = testCookieStorage(for: baseURL)
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let gameID = UUID(uuidString: "40000000-0000-4000-8000-000000000001")!
+    let firstFence = SessionInvalidationRelay.AuthorizationFence(
+      accountID: accountID,
+      generation: 1
+    )
+    let currentFence = LockedValue<SessionInvalidationRelay.AuthorizationFence?>(firstFence)
+    let responseGate = StaleStatsHTTPResponseGate(response: response)
+    StubURLProtocol.install { request in
+      try responseGate.respond(to: request)
+    }
+    let session = SkyjoURLSessionFactory.makeDedicated(
+      cookieStorage: cookieStorage,
+      protocolClasses: [StubURLProtocol.self]
+    )
+    let client = SkyjoAPIClient(
+      environment: SkyjoNetworkEnvironment(baseURL: baseURL),
+      session: session
+    )
+    let adapter = SoloStatsDeliveryAdapter(
+      client: client,
+      authorizationFence: { requestedAccountID in
+        requestedAccountID == accountID ? currentFence.get() : nil
+      },
+      invalidateAuthorization: { _, _ in
+        Issue.record("These synthetic responses must not invalidate the live session.")
+      }
+    )
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    let terminal = try makeStatsDeliveryTerminalState()
+    let setup = try SoloAISetup.resolve(
+      SoloGameSetup(aiOpponentCount: 1, difficulty: .hard),
+      state: terminal,
+      gameId: gameID.uuidString.lowercased()
+    )
+    try await store.completeSession(
+      owner: .account(accountID),
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      saveSequence: 0,
+      completedAtMilliseconds: 100
+    )
+    let coordinator = StatsOutboxCoordinator(store: store) { request in
+      try await adapter.deliver(request)
+    }
+    await coordinator.setConfirmedAccount(accountID)
+    defer {
+      responseGate.release()
+      session.invalidateAndCancel()
+      clearCookies(cookieStorage, for: baseURL)
+      StubURLProtocol.removeHandler()
+    }
+
+    let staleFlush = Task { await coordinator.flush(force: true) }
+    await responseGate.waitUntilStarted()
+    currentFence.set(
+      SessionInvalidationRelay.AuthorizationFence(
+        accountID: accountID,
+        generation: 2
+      )
+    )
+    responseGate.release()
+
+    #expect(
+      await staleFlush.value
+        == StatsFlushResult(attempted: 0, delivered: 0, pending: 0, aborted: true)
+    )
+    let unchanged = try await store.outboxStatus(accountID: accountID)
+    #expect(unchanged.queued == 1)
+    #expect(unchanged.terminalFailures == 0)
+    #expect(!unchanged.blockedByTerminalFailure)
+
+    StubURLProtocol.install { request in
+      try stubResponse(
+        for: request,
+        statusCode: 201,
+        body: "{\"game\":\(statsGameJSON())}"
+      )
+    }
+    let recovered = await coordinator.flush(force: false)
+    #expect(recovered == StatsFlushResult(attempted: 1, delivered: 1, pending: 0, aborted: false))
+    #expect(try await store.outboxStatus(accountID: accountID).queued == 0)
+    await coordinator.dispose()
+  }
+
   @Test("Stats detail endpoints reject mismatched response identities")
   func statsDetailIdentityMismatch() async throws {
     let baseURL = URL(string: "https://stats-identity-\(UUID().uuidString).test")!
@@ -1536,6 +1802,72 @@ private final class LockedValue<Value: Sendable>: @unchecked Sendable {
   }
 }
 
+enum StaleStatsDeliveryResponse: String, CaseIterable, Sendable {
+  case accepted
+  case retryableFailure
+  case permanentFailure
+}
+
+private final class StaleStatsHTTPResponseGate: @unchecked Sendable {
+  private let response: StaleStatsDeliveryResponse
+  private let releaseSemaphore = DispatchSemaphore(value: 0)
+  private let lock = NSLock()
+  private var started = false
+  private var startedWaiter: CheckedContinuation<Void, Never>?
+
+  init(response: StaleStatsDeliveryResponse) {
+    self.response = response
+  }
+
+  func respond(to request: URLRequest) throws -> (HTTPURLResponse, Data) {
+    lock.lock()
+    started = true
+    let waiter = startedWaiter
+    startedWaiter = nil
+    lock.unlock()
+    waiter?.resume()
+    releaseSemaphore.wait()
+
+    switch response {
+    case .accepted:
+      return try stubResponse(
+        for: request,
+        statusCode: 201,
+        body: "{\"game\":\(statsGameJSON())}"
+      )
+    case .retryableFailure:
+      return try stubResponse(
+        for: request,
+        statusCode: 503,
+        body: #"{"code":"SERVICE_UNAVAILABLE","error":"Service unavailable."}"#
+      )
+    case .permanentFailure:
+      return try stubResponse(
+        for: request,
+        statusCode: 413,
+        body: #"{"code":"REQUEST_TOO_LARGE","error":"Request body is too large."}"#
+      )
+    }
+  }
+
+  func waitUntilStarted() async {
+    await withCheckedContinuation { continuation in
+      lock.lock()
+      if started {
+        lock.unlock()
+        continuation.resume()
+      } else {
+        startedWaiter = continuation
+        lock.unlock()
+      }
+    }
+  }
+
+  func release() {
+    releaseSemaphore.signal()
+  }
+}
+
 private enum StubError: Error {
   case invalidRequest
 }
@@ -1728,6 +2060,53 @@ private func accountUserJSON(displayName: String = "Fixture User") -> String {
   """
 }
 
+func makeStatsDeliveryTerminalState() throws -> GameState {
+  var random = SeededRandom(seed: 18_702)
+  var state = GameEngine.startFreshGame(aiOpponentCount: 1, random: &random)
+  for _ in 0..<20 {
+    for _ in 0..<1_000 where state.phase != .roundOver && state.phase != .gameOver {
+      state = advanceStatsDeliveryState(state, random: &random)
+    }
+    if state.phase == .gameOver { return state }
+    try #require(state.phase == .roundOver)
+    state = GameEngine.startNextRound(state, random: &random)
+  }
+  try #require(state.phase == .gameOver)
+  return state
+}
+
+private func advanceStatsDeliveryState<R: SkyjoRandomNumberGenerator>(
+  _ source: GameState,
+  random: inout R
+) -> GameState {
+  switch source.phase {
+  case .openingReveal:
+    guard source.players.indices.contains(source.currentPlayerIndex),
+          let index = source.players[source.currentPlayerIndex].grid.firstIndex(where: {
+            !$0.faceUp && !$0.removed
+          })
+    else { return source }
+    return GameEngine.revealOpeningCard(source, at: index)
+  case .chooseSource:
+    return GameEngine.drawBlind(source, random: &random)
+  case .chooseReplacement:
+    guard source.players.indices.contains(source.currentPlayerIndex) else { return source }
+    if source.selectedSource == .draw,
+       let hiddenIndex = source.players[source.currentPlayerIndex].grid.firstIndex(where: {
+         !$0.faceUp && !$0.removed
+       })
+    {
+      return GameEngine.discardDrawnAndReveal(source, at: hiddenIndex)
+    }
+    guard let replaceIndex = source.players[source.currentPlayerIndex].grid.firstIndex(where: {
+      !$0.removed
+    }) else { return source }
+    return GameEngine.replaceCard(source, at: replaceIndex)
+  case .roundOver, .gameOver:
+    return source
+  }
+}
+
 private func statsSummaryNumbersJSON() -> String {
   """
   {
@@ -1835,20 +2214,21 @@ private func saveSyntheticSoloGame(
       ],
     ],
   ]
-  let payload: [String: Any] = [
-    "state": state,
-    "clientGameKey": "ios-native-\(UUID().uuidString.lowercased())",
-    "completedAt": 1_784_998_800_000 as Int64,
-    "expectedAccountUserId": userID.uuidString.lowercased(),
-  ]
-  var request = URLRequest(url: baseURL.appending(path: "api/stats/single-player"))
-  request.httpMethod = "POST"
-  request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-  request.setValue("application/json", forHTTPHeaderField: "Accept")
-  request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-  let (_, response) = try await session.data(for: request)
-  let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
-  #expect(statusCode == 201)
+  let stateData = try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])
+  let gameState = try JSONDecoder().decode(GameState.self, from: stateData)
+  let client = SkyjoAPIClient(
+    environment: SkyjoNetworkEnvironment(baseURL: baseURL),
+    session: session
+  )
+  let saved = try await client.submitSinglePlayerStats(
+    SinglePlayerStatsSubmission(
+      state: gameState,
+      clientGameID: UUID(),
+      completedAt: 1_784_998_800_000,
+      expectedAccountUserID: userID
+    )
+  )
+  #expect(saved.mode == .single)
 }
 
 private func requestBody(_ request: URLRequest) -> Data? {
