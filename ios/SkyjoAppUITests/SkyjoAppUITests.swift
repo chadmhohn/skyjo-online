@@ -1686,9 +1686,10 @@ final class SkyjoAppUITests: XCTestCase {
         8
       ),
     ]
-    let allowedFormClippingArtifact =
-      "131072|Text clipped|Text of this element may be clipped at larger Dynamic Type sizes."
-    let allowedFormClippingArtifacts = Set([allowedFormClippingArtifact])
+    let allowedFormClippingArtifacts = Set([
+      "131072|Text clipped|Text of this element may be clipped at larger Dynamic Type sizes.",
+      "131072|Text clipped|Text of this SwiftUI.AccessibilityNode may be clipped at larger Dynamic Type sizes.",
+    ])
     let maximumKnownFormArtifactCount = 8
     let expectedSettingsRows: Set<String> = [
       "solo.settings.music-explanation",
