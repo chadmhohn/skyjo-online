@@ -1712,11 +1712,14 @@ final class SkyjoAppUITests: XCTestCase {
       in: adaptationApp,
       identifier: "solo.settings.feedback-header"
     )
+    // Compact iPhones pin the first Form section header flush with the
+    // navigation bar; zero clearance still proves that no text is underneath it.
     scrollToElementFullyVisible(
       feedbackHeader,
       in: adaptationApp,
       requiresHittable: false,
-      searchesTowardTopWhenMissing: true
+      searchesTowardTopWhenMissing: true,
+      navigationClearance: 0
     )
     XCTAssertEqual(feedbackHeader.label, "Feedback")
     XCTAssertTrue(soundEffects.isHittable)
@@ -3138,12 +3141,15 @@ final class SkyjoAppUITests: XCTestCase {
     in app: XCUIApplication,
     bottomInset: CGFloat = 96,
     requiresHittable: Bool = true,
-    searchesTowardTopWhenMissing: Bool = false
+    searchesTowardTopWhenMissing: Bool = false,
+    navigationClearance: CGFloat = 4
   ) {
     let navigationBar = app.navigationBars.firstMatch
     let visibleTop = max(
       app.frame.minY + 4,
-      navigationBar.exists ? navigationBar.frame.maxY + 4 : app.frame.minY + 4
+      navigationBar.exists
+        ? navigationBar.frame.maxY + navigationClearance
+        : app.frame.minY + 4
     )
     let settingsNavigationBar = app.navigationBars["Game Settings"]
     let effectiveBottomInset = settingsNavigationBar.exists ? min(bottomInset, 32) : bottomInset
