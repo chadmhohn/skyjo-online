@@ -122,6 +122,15 @@ The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, becaus
 - SwiftUI views render state and send intents; they do not implement game rules or WebSocket framing.
 - Passwords are cleared after submission and never stored or logged; session cookies never enter UI state. Native admin remains intentionally web-only, and the Account screen links the public-release deletion dependency tracked by issue #192.
 
+### Universal-Link Handoff
+
+- [`RoomInvites.swift`](../../ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RoomInvites.swift) accepts only the exact production HTTPS host and one opaque `/invite/<token>` path segment. User information, ports, query/fragment data, percent-encoded separators, extra path segments, redirects, and oversized tokens fail closed.
+- [`BootstrapHomeView.swift`](../../ios/SkyjoApp/Features/Home/BootstrapHomeView.swift) sends SwiftUI's `onOpenURL` value to [`RoomInviteCoordinator.swift`](../../ios/SkyjoApp/Features/Rooms/RoomInviteCoordinator.swift) through the account-fenced `RoomAppCoordinator`. Redemption grants only the outer access cookie and publishes sanitized review/failure state; it cannot create a multiplayer seat before account authentication and explicit join.
+- [`SkyjoNative.entitlements`](../../ios/SkyjoApp/Resources/SkyjoNative.entitlements) declares only `applinks:skyjo.groundworkrevops.com`, and both app configurations select it through the committed Xcode project. [`check-ios-associated-domains.mjs`](../../scripts/check-ios-associated-domains.mjs) fails closed against a built `.app`: device products must carry the exact domain in signed entitlements, while Xcode-signed simulator products must carry it in every architecture's bounded `__TEXT,__entitlements` section. The audit never substitutes the source plist or an intermediate `.xcent` for built-product evidence.
+- The networking-contract test creates a signed invite on an isolated real Node server, reconstructs the exact production-shaped universal-link URL, enters through `RoomAppCoordinator.accept`, proves only outer access was granted, resets the room, and verifies stable stale-room UI copy. This exercises the app-side handoff beneath `onOpenURL`; it does not prove that iOS selected the installed app for an HTTPS tap.
+
+Operating-system selection depends on the public AASA/application identifier and Apple's association cache. Do not redirect the production hostname to loopback, seed private simulator association state, add a custom-scheme test bypass, or place a real invite token in launch arguments or result bundles. Final proof requires the promoted #202 backend, Apple CDN verification, a team-signed device build with the matching application identifier, and installed/uninstalled taps on physical hardware.
+
 ## State Ownership
 
 ```text

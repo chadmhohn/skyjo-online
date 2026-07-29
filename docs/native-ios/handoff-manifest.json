@@ -84,6 +84,9 @@
     "minimumDeploymentTarget": "18.0",
     "swiftLanguageMode": "6",
     "workingBundleIdentifier": "com.groundworkrevops.skyjo",
+    "associatedDomains": [
+      "applinks:skyjo.groundworkrevops.com"
+    ],
     "releaseTagPrefix": "ios-v",
     "releaseGoal": "Internal TestFlight v0.1.0, then external TestFlight after branding and rights approval"
   },
@@ -167,6 +170,17 @@
       "scripts/deployed-smoke-lib.mjs",
       "scripts/smoke-public-release.mjs"
     ],
+    "nativeUniversalLinkConsumer": [
+      "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RoomInvites.swift",
+      "ios/SkyjoApp/App/AppDependencies.swift",
+      "ios/SkyjoApp/Features/Home/BootstrapHomeView.swift",
+      "ios/SkyjoApp/Features/Rooms/RoomInviteCoordinator.swift",
+      "ios/SkyjoApp/Resources/SkyjoNative.entitlements",
+      "ios/SkyjoNative.xcodeproj/project.pbxproj",
+      "ios/SkyjoAppTests/RealtimeConnectionTests.swift",
+      "scripts/check-ios-associated-domains.mjs",
+      "scripts/ios-build-test.sh"
+    ],
     "nativeRealtimeClient": [
       "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RealtimeContracts.swift",
       "ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RoomConnection.swift",
@@ -232,7 +246,30 @@
     "apnsRollbackEnvelope": "npm run smoke:apns-rollback",
     "nativeNetworkingContracts": "./scripts/ios-build-test.sh --networking-contracts",
     "nativeFullBuildAndTest": "./scripts/ios-build-test.sh",
-    "nativeUIAccessibility": "./scripts/ios-build-test.sh --ui-accessibility"
+    "nativeUIAccessibility": "./scripts/ios-build-test.sh --ui-accessibility",
+    "nativeBuiltAssociatedDomains": "node scripts/check-ios-associated-domains.mjs --app-bundle <absolute signed app bundle>"
+  },
+  "nativeUniversalLinkEvidence": {
+    "repositoryOwned": [
+      "strict exact production-host invite URL parsing",
+      "app-coordinator handoff and real isolated-Node redemption with outer-access-only and stale-room assertions",
+      "exact source Associated Domains declaration selected by both app configurations",
+      "fail-closed built Release simulator executable entitlement audit for every architecture"
+    ],
+    "notClaimedByRepositoryAutomation": "iOS operating-system selection of the installed app for the public HTTPS link",
+    "remainingGates": [
+      "confirmed complete production Apple application identifier",
+      "immutable issue 202 backend promotion and public direct AASA verification",
+      "Apple CDN AASA propagation verification",
+      "Apple-team-signed device archive carrying the matching entitlement",
+      "installed and uninstalled physical iPhone link behavior from Messages, Mail, and Safari"
+    ],
+    "prohibitedShortcuts": [
+      "redirecting the production hostname to loopback",
+      "seeding private simulator association caches",
+      "custom URL-scheme or release validation bypass",
+      "placing invite tokens in launch arguments, logs, or retained artifacts"
+    ]
   },
   "nativeNetworkingHarness": {
     "server": "real server.mjs on a dynamic 127.0.0.1 port",
@@ -254,6 +291,7 @@
     "public exact-shape apple-app-site-association limited to /invite/* with open=browser excluded",
     "pre-gate native invite-token redemption that grants only the outer access cookie",
     "native URLSession access-client tests against an isolated real local Node server",
+    "native app-coordinator invite handoff against an isolated real local Node server plus built Release simulator Associated Domains entitlement audit",
     "strict actor-owned native protocol-v2 room client with account-fenced durable reset recovery",
     "real Swift and Playwright Chromium mixed-client networking contract gate pinned to cached PWA v0.3.2 compatibility",
     "schema-2 validation and byte-preserving backup/restore support for the exact optional APNs storage envelope; production rollback-floor verification remains pending",

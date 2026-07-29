@@ -26,6 +26,7 @@ result_bundle="$artifacts_dir/SkyjoCI-$run_key-$run_attempt.xcresult"
 derived_data="$artifacts_dir/DerivedData-$run_key-$run_attempt"
 release_archive_path="$derived_data/SkyjoNative-audio-audit.xcarchive"
 release_bundle_path="$release_archive_path/Products/Applications/SkyjoNative.app"
+release_simulator_bundle_path="$derived_data/Build/Products/Release-iphonesimulator/SkyjoNative.app"
 toolchain_log="$artifacts_dir/ios-toolchain-$run_key-$run_attempt.log"
 simulator_log="$artifacts_dir/ios-simulators-$run_key-$run_attempt.log"
 xcodebuild_log="$artifacts_dir/ios-xcodebuild-$run_key-$run_attempt.log"
@@ -444,6 +445,38 @@ native_bundle_audit_status=${PIPESTATUS[0]}
 set -e
 if [[ "$native_bundle_audit_status" -ne 0 ]]; then
   report_failure "The clean native application bundle inventory failed."
+fi
+
+# Xcode does not place capability entitlements in an ad-hoc simulator app's
+# code-signature dictionary. It embeds the simulated entitlement plist in each
+# Mach-O architecture instead. Build a genuine Xcode-signed Release simulator
+# product and audit those executable sections directly; never fall back to the
+# source .entitlements file or an intermediate .xcent.
+set +e
+"${xcode_environment[@]}" xcodebuild build \
+  -project "$project_path" \
+  -scheme SkyjoNative \
+  -configuration Release \
+  -destination "generic/platform=iOS Simulator" \
+  -derivedDataPath "$derived_data" \
+  CODE_SIGNING_ALLOWED=YES \
+  CODE_SIGNING_REQUIRED=YES \
+  CODE_SIGN_IDENTITY=- \
+  2>&1 | sanitize_output | tee -a "$xcodebuild_log"
+release_simulator_build_status=${PIPESTATUS[0]}
+set -e
+if [[ "$release_simulator_build_status" -ne 0 ]]; then
+  report_failure "The signed native Release simulator build failed."
+fi
+
+set +e
+"${xcode_environment[@]}" node scripts/check-ios-associated-domains.mjs \
+  --app-bundle "$release_simulator_bundle_path" \
+  2>&1 | sanitize_output | tee -a "$xcodebuild_log"
+associated_domains_audit_status=${PIPESTATUS[0]}
+set -e
+if [[ "$associated_domains_audit_status" -ne 0 ]]; then
+  report_failure "The built native Associated Domains entitlement audit failed."
 fi
 
 if [[ ! -x "$repo_root/node_modules/.bin/tsc" ]]; then

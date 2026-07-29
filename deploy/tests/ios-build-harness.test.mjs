@@ -29,6 +29,23 @@ test('networking mode launches a credential-isolated PWA bridge and current prod
   assert.doesNotMatch(harness, /Started isolated mixed PWA driver[^\n]*\$pwa_driver_control_(?:port|url)/);
 });
 
+test('the build gate audits Associated Domains from a signed Release product', async () => {
+  const harness = await fs.readFile(harnessPath, 'utf8');
+
+  assert.match(
+    harness,
+    /xcodebuild build[\s\\\n]*-project "\$project_path"[\s\S]*-destination "generic\/platform=iOS Simulator"[\s\S]*CODE_SIGNING_ALLOWED=YES[\s\S]*CODE_SIGNING_REQUIRED=YES[\s\S]*CODE_SIGN_IDENTITY=-/
+  );
+  assert.match(
+    harness,
+    /node scripts\/check-ios-associated-domains\.mjs[\s\\\n]*--app-bundle "\$release_simulator_bundle_path"/
+  );
+  const auditBlock = harness.match(
+    /node scripts\/check-ios-associated-domains\.mjs[\s\S]*?associated_domains_audit_status=\$\{PIPESTATUS\[0\]\}/
+  )?.[0] || '';
+  assert.doesNotMatch(auditBlock, /SkyjoNative\.entitlements|\.xcent/);
+});
+
 test('mixed driver cleanup, simulator environment, and lifecycle acceleration stay fail-closed', async () => {
   const harness = await fs.readFile(harnessPath, 'utf8');
 

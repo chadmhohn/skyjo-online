@@ -1256,12 +1256,13 @@ struct RoomConnectionNodeIntegrationTests {
   private let accountPassword = "native-realtime-password-v1"
 
   @Test(
-    "Native invite redemption grants only outer access and rejects a reset room instance",
+    "App universal-link handoff grants only outer access and rejects a reset room instance",
     .enabled(
       if: MixedPWAControlClient.networkingTestsEnabled,
       "Requires scripts/ios-build-test.sh --networking-contracts."
     )
   )
+  @MainActor
   func nativeInviteRedemptionAndStaleRoom() async throws {
     let rawBaseURL = try #require(ProcessInfo.processInfo.environment["SKYJO_IOS_TEST_SERVER_URL"])
     let baseURL = try #require(URL(string: rawBaseURL))
@@ -1297,7 +1298,6 @@ struct RoomConnectionNodeIntegrationTests {
     let productionURL = try #require(
       URL(string: "https://\(RoomInviteLink.productionHost)/invite/\(token)")
     )
-    let link = try RoomInviteLink(url: productionURL)
 
     let guestCookies = realtimeCookieStorage(label: "invite-guest")
     let guestInviteSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: guestCookies)
@@ -1308,7 +1308,22 @@ struct RoomConnectionNodeIntegrationTests {
       clearRealtimeCookies(guestCookies)
     }
     let guestInviteClient = RoomInviteClient(environment: environment, session: guestInviteSession)
-    let redeemed = try await guestInviteClient.redeem(link)
+    // Enter through the same app coordinator called by BootstrapHomeView.onOpenURL.
+    // The production-shaped URL is validated there before the injected local
+    // client redeems its opaque token against this isolated real Node process.
+    let appHandoff = RoomAppCoordinator(
+      inviteHandoff: RoomInviteCoordinator(client: guestInviteClient)
+    ) { _ in
+      preconditionFailure("An unauthenticated invite handoff must not create a room session.")
+    }
+    #expect(await appHandoff.accept(productionURL))
+    let redeemed: RedeemedRoomInvite
+    if case .review(let inviteReview) = appHandoff.handoffState {
+      redeemed = inviteReview
+    } else {
+      Issue.record("The app handoff did not publish sanitized invite review state.")
+      return
+    }
     #expect(redeemed.roomCode == originalRoom)
 
     let guestAPI = SkyjoAPIClient(environment: environment, session: guestAPISession)
@@ -1329,15 +1344,16 @@ struct RoomConnectionNodeIntegrationTests {
       clearRealtimeCookies(staleCookies)
     }
     let staleClient = RoomInviteClient(environment: environment, session: staleSession)
-    await #expect(
-      throws: SkyjoHTTPClientError.server(
-        statusCode: 410,
-        code: .inviteRoomUnavailable,
-        message: "That room is no longer available. Ask the host for a new invite."
-      )
-    ) {
-      _ = try await staleClient.redeem(link)
+    let staleAppHandoff = RoomAppCoordinator(
+      inviteHandoff: RoomInviteCoordinator(client: staleClient)
+    ) { _ in
+      preconditionFailure("A stale unauthenticated invite must not create a room session.")
     }
+    #expect(await staleAppHandoff.accept(productionURL))
+    #expect(
+      staleAppHandoff.handoffState
+        == .failed(message: "That room is no longer available. Ask the host for a new invite.")
+    )
 
     } catch {
       await connection.dispose()
