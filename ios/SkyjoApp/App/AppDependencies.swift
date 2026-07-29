@@ -217,7 +217,18 @@ final class AppDependencies {
     )
     self.inviteClient = inviteClient
 #if DEBUG
-    if ProcessInfo.processInfo.arguments.contains("--ui-open-room-invite") {
+    if let roomFixtureMode = RoomUITestFixtureMode.launchMode(
+      arguments: ProcessInfo.processInfo.arguments
+    ) {
+      rooms = RoomAppCoordinator(
+        inviteHandoff: RoomInviteCoordinator { _ in
+          throw RoomUITestFixtureError.connectionUnavailable
+        },
+        makeSessionHost: { account in
+          RoomUITestFixtureFactory.makeSessionHost(account: account, mode: roomFixtureMode)
+        }
+      )
+    } else if ProcessInfo.processInfo.arguments.contains("--ui-open-room-invite") {
       rooms = RoomAppCoordinator(
         inviteHandoff: RoomInviteCoordinator { _ in
           try RedeemedRoomInvite(

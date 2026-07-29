@@ -32,6 +32,7 @@
 		B20000000000000000000017 /* RoomInviteCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* RoomInviteCoordinator.swift */; };
 		B20000000000000000000018 /* RoomSessionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* RoomSessionModel.swift */; };
 		B20000000000000000000019 /* RoomViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000023 /* RoomViews.swift */; };
+		D20000000000000000000188 /* RoomUITestFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000188 /* RoomUITestFixtures.swift */; };
 		B2000000000000000000001A /* RoomInviteClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000024 /* RoomInviteClientTests.swift */; };
 		B2000000000000000000001B /* RoomSessionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000025 /* RoomSessionModelTests.swift */; };
 		C20000000000000000000001 /* AppDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000001 /* AppDependencies.swift */; };
@@ -100,6 +101,7 @@
 		B10000000000000000000021 /* RoomInviteCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomInviteCoordinator.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* RoomSessionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomSessionModel.swift; sourceTree = "<group>"; };
 		B10000000000000000000023 /* RoomViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomViews.swift; sourceTree = "<group>"; };
+		D10000000000000000000188 /* RoomUITestFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomUITestFixtures.swift; sourceTree = "<group>"; };
 		B10000000000000000000024 /* RoomInviteClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomInviteClientTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000025 /* RoomSessionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomSessionModelTests.swift; sourceTree = "<group>"; };
 		C10000000000000000000001 /* AppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDependencies.swift; sourceTree = "<group>"; };
@@ -254,6 +256,7 @@
 				B10000000000000000000021 /* RoomInviteCoordinator.swift */,
 				B10000000000000000000022 /* RoomSessionModel.swift */,
 				B10000000000000000000023 /* RoomViews.swift */,
+				D10000000000000000000188 /* RoomUITestFixtures.swift */,
 			);
 			path = Rooms;
 			sourceTree = "<group>";
@@ -512,6 +515,7 @@
 				B20000000000000000000017 /* RoomInviteCoordinator.swift in Sources */,
 				B20000000000000000000018 /* RoomSessionModel.swift in Sources */,
 				B20000000000000000000019 /* RoomViews.swift in Sources */,
+				D20000000000000000000188 /* RoomUITestFixtures.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

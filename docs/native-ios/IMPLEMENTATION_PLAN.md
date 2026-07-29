@@ -157,6 +157,8 @@ Acceptance:
 
 Backend sub-issue #202 lands before IOS-8 and owns only the additive AASA/native-redemption server contract, schemas, sanitized fixtures, deployment smoke, and rollout/rollback documentation. IOS-8 consumes that merged contract and still owns Swift URL routing, Associated Domains entitlement/signing, join review UI, Apple CDN verification, and installed/uninstalled physical-device proof.
 
+Deterministic room UI evidence must remain repository-owned and `DEBUG`-only. Fixture states enter through the production realtime connection and strict frame codec, never by directly injecting authoritative snapshots into the room view model or weakening release transport validation.
+
 ## [IOS-9 — Add Native Turn Notifications Through APNs](https://github.com/chadmhohn/skyjo-online/issues/189)
 
 Keep web push working while adding native device delivery.

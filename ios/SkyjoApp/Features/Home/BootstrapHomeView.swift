@@ -220,7 +220,10 @@ private struct NativeRootView: View {
       if model.applyUITestState(arguments: arguments) {
         await model.synchronizeLocalSolo(dependencies.solo)
         _ = await dependencies.solo.applyUITestState(arguments: ProcessInfo.processInfo.arguments)
-        if arguments.contains("--ui-open-room-invite") {
+        if RoomUITestFixtureMode.launchMode(arguments: arguments) != nil,
+           let account = model.user {
+          await rooms.presentRooms(for: account)
+        } else if arguments.contains("--ui-open-room-invite") {
           await rooms.synchronize(account: model.user)
           await routeRoomInviteURL(
             URL(

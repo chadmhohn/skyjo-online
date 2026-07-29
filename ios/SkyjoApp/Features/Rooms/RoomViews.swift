@@ -351,6 +351,7 @@ private struct RoomWaitingView: View {
         .padding(.horizontal)
         .padding(.bottom, 8)
     }
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("rooms.waiting-screen")
   }
 }
@@ -384,6 +385,7 @@ private struct RoomTableView: View {
     .onChange(of: model.isScoring, initial: true) { _, scoring in
       if scoring { model.isScorePresented = true }
     }
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("rooms.table")
   }
 
@@ -479,6 +481,7 @@ private struct RoomTableView: View {
     .overlay(alignment: .topTrailing) {
       chatButton(topPadding: 72)
     }
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("rooms.table.accessible-layout")
   }
 
@@ -932,7 +935,7 @@ private struct RoomRoster: View {
     GroupBox("Players") {
       TimelineView(.periodic(from: .now, by: 1)) { _ in
         VStack(spacing: 8) {
-          ForEach(Array((model.room?.players ?? []).enumerated()), id: \.offset) { _, player in
+          ForEach(Array((model.room?.players ?? []).enumerated()), id: \.offset) { index, player in
             HStack(alignment: .center, spacing: 8) {
               VStack(alignment: .leading, spacing: 3) {
                 Text(player.id == model.playerID ? "You" : player.name)
@@ -950,25 +953,34 @@ private struct RoomRoster: View {
               }
               if showsManagement, model.isLocalHost, player.id != model.playerID {
                 if model.room?.status == .waiting {
-                  Button("Remove", role: .destructive) {
+                  Button(role: .destructive) {
                     removalConfirmation = RoomPlayerRemovalConfirmation(
                       playerID: player.id,
                       playerName: player.name
                     )
+                  } label: {
+                    Text("Remove")
+                      .frame(minWidth: 44, minHeight: 44)
                   }
                   .disabled(!model.commandsEnabled)
-                  .frame(minHeight: 44)
                   .accessibilityLabel("Remove \(player.name) from room")
                   .accessibilityHint("Requires confirmation before removing this seat")
+                  .accessibilityIdentifier("rooms.roster.remove.\(index)")
                 } else if model.canTakeOver(player) {
-                  Button("Hand to AI") { Task { await model.takeOverWithAI(player.id) } }
-                    .frame(minHeight: 44)
+                  Button {
+                    Task { await model.takeOverWithAI(player.id) }
+                  } label: {
+                    Text("Hand to AI")
+                      .frame(minHeight: 44)
+                  }
                     .accessibilityLabel("Hand \(player.name)'s seat to AI")
+                    .accessibilityIdentifier("rooms.roster.takeover.\(index)")
                 }
               }
             }
             .padding(.vertical, 4)
             .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("rooms.roster.player.\(index)")
           }
         }
       }
@@ -1024,11 +1036,16 @@ private struct RoomChatButton: View {
           }
         }
       }
-      .frame(minWidth: 52, minHeight: 52)
+      .labelStyle(.iconOnly)
+      .frame(width: 52, height: 52)
+      .contentShape(Circle())
     }
     .buttonStyle(.borderedProminent)
     .clipShape(Circle())
     .shadow(radius: 4)
+    .accessibilityLabel(
+      model.unreadChatCount > 0 ? "Chat, (model.unreadChatCount) unread" : "Chat"
+    )
     .accessibilityIdentifier("rooms.chat.open")
   }
 }
@@ -1053,7 +1070,8 @@ private struct RoomChatView: View {
                   description: Text("Say hello when friends join the table.")
                 )
               }
-              ForEach(model.room?.chatMessages ?? [], id: \.id) { message in
+              ForEach(Array((model.room?.chatMessages ?? []).enumerated()), id: \.element.id) {
+                index, message in
                 VStack(alignment: .leading, spacing: 3) {
                   HStack {
                     Text(message.playerId == model.playerID ? "You" : message.playerName)
@@ -1077,6 +1095,7 @@ private struct RoomChatView: View {
                 .accessibilityLabel(
                   "\(message.playerId == model.playerID ? "You" : message.playerName): \(message.text)"
                 )
+                .accessibilityIdentifier("rooms.chat.message.\(index)")
                 .id(message.id)
               }
             }
@@ -1109,14 +1128,16 @@ private struct RoomChatView: View {
               if bounded != value { draft = bounded }
             }
             .accessibilityIdentifier("rooms.chat.message")
-          Button("Send") {
+          Button {
             let message = draft
             draft = ""
             Task { await model.sendChat(message) }
+          } label: {
+            Text("Send")
+              .frame(minWidth: 44, minHeight: 44)
           }
           .buttonStyle(.borderedProminent)
           .disabled(!model.commandsEnabled || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          .frame(minHeight: 44)
           .accessibilityIdentifier("rooms.chat.send")
         }
         .padding()
@@ -1276,22 +1297,26 @@ private struct RoomScoreView: View {
             .font(.headline)
             .accessibilityIdentifier("rooms.score.ready-count")
 
-          Button(model.localIsReady ? "Mark Not Ready" : "I'm Ready") {
+          Button {
             Task { await model.toggleReady() }
+          } label: {
+            Text(model.localIsReady ? "Mark Not Ready" : "I'm Ready")
+              .frame(maxWidth: .infinity, minHeight: 44)
           }
           .buttonStyle(.borderedProminent)
           .disabled(!model.commandsEnabled)
-          .frame(maxWidth: .infinity, minHeight: 44)
           .accessibilityIdentifier("rooms.score.ready")
 
           if model.isLocalHost {
-            Button(model.game?.phase == .gameOver ? "Restart Game" : "Start Next Round") {
+            Button {
               dismiss()
               Task { await model.startGame() }
+            } label: {
+              Text(model.game?.phase == .gameOver ? "Restart Game" : "Start Next Round")
+                .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.bordered)
             .disabled(!model.canAdvanceAfterScoring)
-            .frame(maxWidth: .infinity, minHeight: 44)
             .accessibilityIdentifier("rooms.score.advance")
           }
         }
