@@ -39,11 +39,11 @@ struct GameInvariantTests {
     #expect(GameEngine.defaultSinglePlayerAIOpponents.count == 7)
   }
 
-  @Test("Opening reveal logs use subject-aware grammar")
-  func openingRevealGrammar() {
+  @Test("Opening reveal logs use subject-aware copy")
+  func openingRevealCopy() {
     var soloRandom = SeededRandom(seed: 42)
     let solo = GameEngine.startFreshGame(random: &soloRandom)
-    #expect(solo.log.first == "You choose two opening cards to reveal.")
+    #expect(solo.log.first == "Your turn: reveal 2 cards.")
 
     var multiplayerRandom = SeededRandom(seed: 7)
     var multiplayer = GameEngine.createMultiplayerGame(
@@ -53,11 +53,11 @@ struct GameInvariantTests {
       ],
       random: &multiplayerRandom
     )
-    #expect(multiplayer.log.first == "Ada chooses two opening cards to reveal.")
+    #expect(multiplayer.log.first == "Ada's turn: reveal 2 cards.")
     multiplayer = GameEngine.revealOpeningCard(multiplayer, at: 0)
     multiplayer = GameEngine.revealOpeningCard(multiplayer, at: 1)
     #expect(
-      multiplayer.log.first == "Ada finished opening reveals. You choose two opening cards."
+      multiplayer.log.first == "Ada finished. Your turn: reveal 2 cards."
     )
   }
 

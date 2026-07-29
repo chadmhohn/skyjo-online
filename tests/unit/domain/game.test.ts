@@ -120,9 +120,9 @@ describe('deterministic deck and turn engine', () => {
     assertDeckInvariant(first);
   });
 
-  it('uses subject-aware opening reveal grammar at game creation and seat transitions', () => {
+  it('uses subject-aware opening reveal copy at game creation and seat transitions', () => {
     const solo = startFreshGame({ random: createSeededRandom(42) });
-    expect(solo.log[0]).toBe('You choose two opening cards to reveal.');
+    expect(solo.log[0]).toBe('Your turn: reveal 2 cards.');
 
     let multiplayer = createMultiplayerGame(
       [{ id: 'ada', name: 'Ada' }, { id: 'you', name: 'You' }],
@@ -130,11 +130,11 @@ describe('deterministic deck and turn engine', () => {
       null,
       createSeededRandom(7)
     );
-    expect(multiplayer.log[0]).toBe('Ada chooses two opening cards to reveal.');
+    expect(multiplayer.log[0]).toBe("Ada's turn: reveal 2 cards.");
     multiplayer = revealOpeningCard(multiplayer, 0);
     multiplayer = revealOpeningCard(multiplayer, 1);
     expect(multiplayer.log[0]).toBe(
-      'Ada finished opening reveals. You choose two opening cards.'
+      'Ada finished. Your turn: reveal 2 cards.'
     );
   });
 

@@ -778,7 +778,7 @@
         "finalTurnPlayerIds": [],
         "internal": true,
         "log": [
-          "Host chooses two opening cards to reveal."
+          "Host's turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -1734,7 +1734,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "Host chooses two opening cards to reveal."
+          "Host's turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -2690,7 +2690,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "Host chooses two opening cards to reveal."
+          "Host's turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -3640,7 +3640,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "Host chooses two opening cards to reveal."
+          "Host's turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -4598,9 +4598,9 @@
         "log": [
           "Host starts round 1. Pick from the discard pile or draw blind.",
           "Guest revealed an opening card.",
-          "Host finished opening reveals. Guest chooses two opening cards.",
+          "Host finished. Guest's turn: reveal 2 cards.",
           "Host revealed an opening card.",
-          "Host chooses two opening cards to reveal."
+          "Host's turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {

@@ -1679,14 +1679,14 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElementFullyVisible(currentDifficulty, in: adaptationApp)
     let standardOpponentsHeight = currentOpponents.frame.height
     let standardDifficultyHeight = currentDifficulty.frame.height
-    let firstMoveLog = element(
+    let openingMoveLog = element(
       in: adaptationApp,
-      identifier: "solo.settings.move-log.0"
+      identifier: "solo.settings.move-log.1"
     )
-    scrollToElementFullyVisible(firstMoveLog, in: adaptationApp)
-    XCTAssertEqual(firstMoveLog.label, "You choose two opening cards to reveal.")
-    XCTAssertFalse(firstMoveLog.label.contains("You chooses"))
-    XCTAssertGreaterThan(firstMoveLog.frame.height, 0)
+    scrollToElementFullyVisible(openingMoveLog, in: adaptationApp)
+    XCTAssertEqual(openingMoveLog.label, "Your turn: reveal 2 cards.")
+    XCTAssertFalse(openingMoveLog.label.contains("You chooses"))
+    XCTAssertGreaterThan(openingMoveLog.frame.height, 0)
     let completeSettingsRows: [(
       identifier: String,
       label: String,

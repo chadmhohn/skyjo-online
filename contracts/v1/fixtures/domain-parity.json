@@ -4920,7 +4920,7 @@
           "finalTurnPlayerIds": [],
           "log": [
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -5863,9 +5863,9 @@
           "drawnCard": null,
           "finalTurnPlayerIds": [],
           "log": [
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -6809,9 +6809,9 @@
           "finalTurnPlayerIds": [],
           "log": [
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -7756,9 +7756,9 @@
           "log": [
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -8703,9 +8703,9 @@
           "log": [
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -9650,9 +9650,9 @@
           "log": [
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -10597,9 +10597,9 @@
             "Ada drew a blind card.",
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -11546,9 +11546,9 @@
             "Ada drew a blind card.",
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -12495,9 +12495,9 @@
             "Ada drew a blind card.",
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -13445,9 +13445,9 @@
             "Ada drew a blind card.",
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card.",
-            "Ada chooses two opening cards to reveal."
+            "Ada's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -14395,7 +14395,7 @@
             "Ada drew a blind card.",
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards.",
+            "Ada finished. Grace's turn: reveal 2 cards.",
             "Ada revealed an opening card."
           ],
           "nextStarterId": null,
@@ -15346,7 +15346,7 @@
             "Ada drew a blind card.",
             "Ada starts round 1. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "Ada finished opening reveals. Grace chooses two opening cards."
+            "Ada finished. Grace's turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -16290,7 +16290,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "Ada chooses two opening cards to reveal."
+          "Ada's turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -18313,7 +18313,7 @@
           "drawnCard": null,
           "finalTurnPlayerIds": [],
           "log": [
-            "James chooses two opening cards to reveal."
+            "James' turn: reveal 2 cards."
           ],
           "nextStarterId": "tie-closer",
           "openingRevealCounts": {
@@ -19276,7 +19276,7 @@
           "finalTurnPlayerIds": [],
           "log": [
             "James revealed an opening card.",
-            "James chooses two opening cards to reveal."
+            "James' turn: reveal 2 cards."
           ],
           "nextStarterId": "tie-closer",
           "openingRevealCounts": {
@@ -20238,9 +20238,9 @@
           "drawnCard": null,
           "finalTurnPlayerIds": [],
           "log": [
-            "James finished opening reveals. Grace chooses two opening cards.",
+            "James finished. Grace's turn: reveal 2 cards.",
             "James revealed an opening card.",
-            "James chooses two opening cards to reveal."
+            "James' turn: reveal 2 cards."
           ],
           "nextStarterId": "tie-closer",
           "openingRevealCounts": {
@@ -21203,9 +21203,9 @@
           "finalTurnPlayerIds": [],
           "log": [
             "Grace revealed an opening card.",
-            "James finished opening reveals. Grace chooses two opening cards.",
+            "James finished. Grace's turn: reveal 2 cards.",
             "James revealed an opening card.",
-            "James chooses two opening cards to reveal."
+            "James' turn: reveal 2 cards."
           ],
           "nextStarterId": "tie-closer",
           "openingRevealCounts": {
@@ -22169,9 +22169,9 @@
           "log": [
             "James starts round 2. Pick from the discard pile or draw blind.",
             "Grace revealed an opening card.",
-            "James finished opening reveals. Grace chooses two opening cards.",
+            "James finished. Grace's turn: reveal 2 cards.",
             "James revealed an opening card.",
-            "James chooses two opening cards to reveal."
+            "James' turn: reveal 2 cards."
           ],
           "nextStarterId": null,
           "openingRevealCounts": {
@@ -27775,7 +27775,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "You choose two opening cards to reveal."
+          "Your turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -28654,7 +28654,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "You choose two opening cards to reveal."
+          "Your turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -29543,7 +29543,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "You choose two opening cards to reveal."
+          "Your turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -30442,7 +30442,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "You choose two opening cards to reveal."
+          "Your turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -31351,7 +31351,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "You choose two opening cards to reveal."
+          "Your turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -32270,7 +32270,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "You choose two opening cards to reveal."
+          "Your turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -33199,7 +33199,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "You choose two opening cards to reveal."
+          "Your turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -34642,7 +34642,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "Ada chooses two opening cards to reveal."
+          "Ada's turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
@@ -35172,7 +35172,7 @@
         "drawnCard": null,
         "finalTurnPlayerIds": [],
         "log": [
-          "Player 1 chooses two opening cards to reveal."
+          "Player 1's turn: reveal 2 cards."
         ],
         "nextStarterId": null,
         "openingRevealCounts": {
