@@ -916,6 +916,13 @@ final class SkyjoAppUITests: XCTestCase {
     let app = launchSoloFixture("solo-table-one-bot")
     XCTAssertGreaterThanOrEqual(app.frame.width, 400)
 
+    let safeArea = element(in: app, identifier: "solo.table.safe-area")
+    XCTAssertTrue(safeArea.waitForExistence(timeout: 8))
+    try XCTSkipUnless(
+      safeArea.frame.height >= 720,
+      "Requires the dedicated large-phone destination with at least 720 points of safe-area height."
+    )
+
     let opponentScroll = element(in: app, identifier: "solo.opponents.scroll")
     let opponentBoard = element(in: app, identifier: "solo.board.opponent.ai-1")
     XCTAssertTrue(opponentScroll.waitForExistence(timeout: 8))
@@ -936,7 +943,6 @@ final class SkyjoAppUITests: XCTestCase {
 
     let actionBand = element(in: app, identifier: "solo.action-band")
     let guidance = element(in: app, identifier: "solo.action.guidance")
-    let safeArea = element(in: app, identifier: "solo.table.safe-area")
     XCTAssertTrue(actionBand.exists)
     XCTAssertTrue(guidance.exists)
     XCTAssertTrue(safeArea.exists)
