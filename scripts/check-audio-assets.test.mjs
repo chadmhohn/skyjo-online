@@ -1,4 +1,13 @@
 import assert from 'node:assert/strict';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -7,6 +16,7 @@ import {
   nativeApplicationResourceNames,
   parseAppleAudioInfo,
   publicResourceInventoryFailures,
+  readBoundedRegularFile,
   unexpectedNativeResources,
   unexpectedPublicResources
 } from './check-audio-assets.mjs';
@@ -105,6 +115,38 @@ test('extractWavePcm rejects mismatched formats and truncated data chunks', () =
   assert.notEqual(dataOffset, -1);
   truncatedData.writeUInt32LE(1_000, dataOffset + 4);
   assert.throws(() => extractWavePcm(truncatedData, 44_100), /chunk exceeds the file bounds/);
+});
+
+test('bounded regular-file reads reject oversized, linked, and non-file output', () => {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-reader-test-'));
+  try {
+    const decodedPath = path.join(temporaryDirectory, 'decoded.wav');
+    writeFileSync(decodedPath, Buffer.from([1, 2, 3, 4]));
+    assert.deepEqual(
+      readBoundedRegularFile(decodedPath, 4, 'Decoded WAVE output'),
+      Buffer.from([1, 2, 3, 4])
+    );
+    assert.throws(
+      () => readBoundedRegularFile(decodedPath, 3, 'Decoded WAVE output'),
+      /4 bytes exceeds the audio gate's safe bound/
+    );
+
+    const linkedPath = path.join(temporaryDirectory, 'linked.wav');
+    symlinkSync(decodedPath, linkedPath);
+    assert.throws(
+      () => readBoundedRegularFile(linkedPath, 4, 'Decoded WAVE output'),
+      /ELOOP|symbolic link|too many levels/i
+    );
+
+    const directoryPath = path.join(temporaryDirectory, 'directory.wav');
+    mkdirSync(directoryPath);
+    assert.throws(
+      () => readBoundedRegularFile(directoryPath, 4, 'Decoded WAVE output'),
+      /must be a regular file/
+    );
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
 });
 
 test('native resource inventory rejects alternate or disguised media outside the exact allowlist', () => {

@@ -1,6 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  rmSync,
+  statSync
+} from 'node:fs';
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -445,13 +454,64 @@ function decodeMonoPcmWithApple(filePath, sampleRate) {
       '-c',
       '1'
     ]);
-    const outputSize = statSync(outputPath).size;
-    if (outputSize > maxDecodedPcmBytes + 64 * 1024) {
-      throw new Error(`Decoded WAVE output ${outputSize} bytes exceeds the audio gate's safe bound.`);
-    }
-    return extractWavePcm(readFileSync(outputPath), sampleRate);
+    return extractWavePcm(
+      readBoundedRegularFile(
+        outputPath,
+        maxDecodedPcmBytes + 64 * 1024,
+        'Decoded WAVE output'
+      ),
+      sampleRate
+    );
   } finally {
     rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+}
+
+export function readBoundedRegularFile(filePath, maximumBytes, label = 'File') {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
+    throw new Error('Maximum file size must be a non-negative safe integer.');
+  }
+  const descriptor = openSync(
+    filePath,
+    constants.O_RDONLY | constants.O_NOFOLLOW
+  );
+  try {
+    const initialStat = fstatSync(descriptor);
+    if (!initialStat.isFile()) {
+      throw new Error(`${label} must be a regular file.`);
+    }
+    if (!Number.isSafeInteger(initialStat.size) || initialStat.size > maximumBytes) {
+      throw new Error(
+        `${label} ${initialStat.size} bytes exceeds the audio gate's safe bound.`
+      );
+    }
+
+    const contents = Buffer.alloc(initialStat.size);
+    let offset = 0;
+    while (offset < contents.length) {
+      const bytesRead = readSync(
+        descriptor,
+        contents,
+        offset,
+        contents.length - offset,
+        offset
+      );
+      if (bytesRead === 0) {
+        throw new Error(`${label} changed while it was being read.`);
+      }
+      offset += bytesRead;
+    }
+
+    const overflowProbe = Buffer.alloc(1);
+    if (readSync(descriptor, overflowProbe, 0, 1, offset) !== 0) {
+      throw new Error(`${label} grew while it was being read.`);
+    }
+    if (fstatSync(descriptor).size !== initialStat.size) {
+      throw new Error(`${label} changed while it was being read.`);
+    }
+    return contents;
+  } finally {
+    closeSync(descriptor);
   }
 }
 
