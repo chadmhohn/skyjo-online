@@ -364,10 +364,13 @@ private struct RoomTableView: View {
 
   var body: some View {
     GeometryReader { proxy in
+      let safeHeight = max(0, proxy.size.height - proxy.safeAreaInsets.bottom)
       if dynamicTypeSize.isAccessibilitySize {
-        accessibleTable(width: proxy.size.width, height: proxy.size.height)
+        accessibleTable(width: proxy.size.width, height: safeHeight)
+          .frame(height: safeHeight, alignment: .top)
       } else {
-        standardTable(width: proxy.size.width, height: proxy.size.height)
+        standardTable(width: proxy.size.width, height: safeHeight)
+          .frame(height: safeHeight, alignment: .top)
       }
     }
     .background(Color(uiColor: .systemGroupedBackground))

@@ -292,7 +292,7 @@ jobs:
         with:
           node-version-file: .node-version
 
-      - name: Run solo UI and accessibility simulator matrix
+      - name: Run native UI and accessibility simulator matrix
         run: ./scripts/ios-build-test.sh --ui-accessibility
 
       - name: Upload retained UI, accessibility, and screenshot evidence

@@ -512,6 +512,11 @@ final class SkyjoAppUITests: XCTestCase {
 
     let table = element(in: app, identifier: "rooms.table")
     XCTAssertTrue(table.waitForExistence(timeout: 8))
+    XCTAssertTrue(
+      element(in: app, identifier: "rooms.table.accessible-layout")
+        .waitForExistence(timeout: 5),
+      "Accessibility Dynamic Type must use the explicit scrollable room table."
+    )
     let window = app.windows.firstMatch
     assertElement(table, isContainedIn: window, tolerance: 2)
 
@@ -520,6 +525,14 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertEqual(hiddenCard.label, "Guest 2's card, row 1, column 3, face down")
     XCTAssertGreaterThanOrEqual(hiddenCard.frame.width, 44)
     XCTAssertGreaterThanOrEqual(hiddenCard.frame.height, 44)
+    let firstOpponentBoard = element(in: app, identifier: "rooms.board.opponent.0")
+    XCTAssertTrue(firstOpponentBoard.waitForExistence(timeout: 5))
+    let firstOpponentScore = firstOpponentBoard.descendants(matching: .staticText)
+      .matching(NSPredicate(format: "label == %@", "3 pts"))
+      .firstMatch
+    XCTAssertTrue(firstOpponentScore.waitForExistence(timeout: 5))
+    XCTAssertEqual(firstOpponentScore.label, "3 pts")
+    assertElement(firstOpponentScore, isContainedIn: firstOpponentBoard, tolerance: 2)
 
     let localCard = element(in: app, identifier: "rooms.card.local.r1.c1")
     for _ in 0..<6 where !localCard.isHittable {
@@ -539,11 +552,62 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertGreaterThanOrEqual(chat.frame.height, 44)
     attachScreenshot(app, name: "ios8-room-active-accessibility-xxxl")
 
-    try app.performAccessibilityAudit(
-      for: .all.subtracting(
-        .contrast.union(.dynamicType).union(.textClipped)
-      )
+    try performRoomAccessibilityAudits(on: app)
+  }
+
+  @MainActor
+  func testRoomIPadLandscapeKeepsAuthoritativeContentContained() throws {
+    let app = launchRoomFixture("active", orientation: .landscapeLeft)
+    defer {
+      app.terminate()
+      XCUIDevice.shared.orientation = .portrait
+    }
+
+    let table = element(in: app, identifier: "rooms.table")
+    XCTAssertTrue(table.waitForExistence(timeout: 8))
+    waitForSettledOrientation(app, landscape: true, timeout: 12)
+    XCTAssertTrue(
+      element(in: app, identifier: "rooms.table.layout.standard")
+        .waitForExistence(timeout: 5),
+      "The iPad landscape matrix must exercise the regular authoritative table layout."
     )
+
+    let window = app.windows.firstMatch
+    for column in 1...4 {
+      let opponentCard = element(
+        in: app,
+        identifier: "rooms.card.opponent.0.r1.c\(column)"
+      )
+      XCTAssertTrue(opponentCard.exists)
+      XCTAssertGreaterThanOrEqual(opponentCard.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(opponentCard.frame.height, 44)
+      assertElement(opponentCard, isContainedIn: table, tolerance: 2)
+      assertElement(opponentCard, isContainedIn: window, tolerance: 2)
+    }
+
+    let localCards = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "rooms.card.local.")
+    ).allElementsBoundByIndex
+    XCTAssertEqual(localCards.count, 12)
+    for card in localCards {
+      XCTAssertGreaterThanOrEqual(card.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(card.frame.height, 44)
+      assertElement(card, isContainedIn: table, tolerance: 2)
+      assertElement(card, isContainedIn: window, tolerance: 2)
+    }
+
+    for action in [
+      app.buttons["rooms.action.deck"],
+      app.buttons["rooms.action.discard"],
+    ] {
+      XCTAssertTrue(action.exists)
+      XCTAssertGreaterThanOrEqual(action.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(action.frame.height, 44)
+      assertElement(action, isContainedIn: table, tolerance: 2)
+      assertElement(action, isContainedIn: window, tolerance: 2)
+    }
+
+    attachScreenScreenshot(name: "ios8-room-active-eight-player-ipad-landscape")
   }
 
   @MainActor
@@ -3313,6 +3377,165 @@ final class SkyjoAppUITests: XCTestCase {
       on: app,
       allowedUnattributedTextClippingSignatures: allowedUnattributedTextClippingSignatures,
       maximumAllowedUnattributedTextClippingOccurrences: maximumAllowedUnattributedTextClippingOccurrences
+    )
+  }
+
+  @MainActor
+  private func performRoomAccessibilityAudits(on app: XCUIApplication) throws {
+    // Run the categories that do not need framework reconciliation as one
+    // fail-closed pass. Contrast, Dynamic Type, and clipped text are audited
+    // independently below so any allowance stays tied to an exact room node.
+    try app.performAccessibilityAudit(
+      for: .all.subtracting(
+        .contrast.union(.dynamicType).union(.textClipped)
+      )
+    )
+
+    let navigationBar = app.navigationBars["Room ABCDE"]
+    XCTAssertTrue(navigationBar.exists)
+    let opponentHeaders = (0..<7).map { index in
+      (
+        board: element(in: app, identifier: "rooms.board.opponent.\(index)"),
+        labels: Set(["Guest \(index + 2)", "\((index + 1) * 3) pts"])
+      )
+    }
+    let opponentFaceUpValues = (0..<7).flatMap { opponentIndex in
+      (1...2).map { column in
+        (
+          card: element(
+            in: app,
+            identifier: "rooms.card.opponent.\(opponentIndex).r1.c\(column)"
+          ),
+          label: "\(opponentIndex + column)"
+        )
+      }
+    }
+    var contrastFindings: [String] = []
+    try app.performAccessibilityAudit(for: .contrast) { issue in
+      guard let element = issue.element else {
+        contrastFindings.append("unattributed: \(issue.detailedDescription)")
+        return true
+      }
+      // Xcode 26.6 walks header Text children retained by the nested opponent
+      // rail after they have scrolled beneath the translucent navigation bar.
+      // It can then report those intentionally obscured nodes as contrast
+      // failures. Match only an exact deterministic fixture name/score node,
+      // its exact live frame within its exact board, and navigation-material
+      // intersection. Visible room content and every other contrast finding
+      // remain fail-closed.
+      let isObscuredOpponentHeaderFrameworkArtifact = opponentHeaders.contains {
+        contract in
+        guard contract.board.exists,
+              contract.labels.contains(element.label),
+              element.identifier.isEmpty,
+              element.elementType == .staticText,
+              !element.frame.isEmpty,
+              issue.detailedDescription == "Contrast failed for SwiftUI.AccessibilityNode",
+              contract.board.frame.insetBy(dx: -2, dy: -2).contains(element.frame),
+              navigationBar.frame.insetBy(dx: -4, dy: -4).intersects(element.frame)
+        else { return false }
+        let exactNode = contract.board.descendants(matching: .staticText)
+          .matching(NSPredicate(format: "label == %@", element.label))
+          .firstMatch
+        return exactNode.exists && exactNode.frame == element.frame
+      }
+      if isObscuredOpponentHeaderFrameworkArtifact {
+        return true
+      }
+      // The same Xcode release can attribute a contrast finding to the empty-ID
+      // Text child of a high-contrast face-up card on wide iPad layouts. Scope
+      // this allowance to the exact deterministic first-row value, exact live
+      // child frame, and exact card container; no hidden or arbitrary numeric
+      // node is accepted.
+      let isExactOpponentValueFrameworkArtifact = opponentFaceUpValues.contains {
+        contract in
+        guard contract.card.exists,
+              element.identifier.isEmpty,
+              element.elementType == .staticText,
+              element.label == contract.label,
+              !element.frame.isEmpty,
+              issue.detailedDescription == "Contrast failed for SwiftUI.AccessibilityNode",
+              contract.card.frame.insetBy(dx: -2, dy: -2).contains(element.frame),
+              app.frame.intersects(element.frame)
+        else { return false }
+        let exactNode = contract.card.descendants(matching: .staticText)
+          .matching(NSPredicate(format: "label == %@", contract.label))
+          .firstMatch
+        return exactNode.exists && exactNode.frame == element.frame
+      }
+      if isExactOpponentValueFrameworkArtifact {
+        return true
+      }
+      contrastFindings.append(
+        "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), detail=\(issue.detailedDescription)"
+      )
+      return true
+    }
+
+    var dynamicTypeFindings: [String] = []
+    var allowedSystemTabLabelFindings = 0
+    let systemTabButtons = ["Home", "Stats", "Account"].map { app.buttons[$0].firstMatch }
+    let systemTabButtonFrames = systemTabButtons.filter(\.exists).map(\.frame)
+    let systemTabButtonMidYs = systemTabButtonFrames.map(\.midY)
+    let hasExactSystemTabShell = systemTabButtons.allSatisfy {
+      $0.exists
+        && $0.isHittable
+        && $0.elementType == .button
+        && app.frame.insetBy(dx: -2, dy: -2).contains($0.frame)
+    }
+      && systemTabButtonFrames.count == 3
+      && Set(systemTabButtonFrames.map { "\($0.minX),\($0.minY),\($0.width),\($0.height)" }).count == 3
+      && (systemTabButtonMidYs.max() ?? 0) - (systemTabButtonMidYs.min() ?? 0) <= 4
+    try app.performAccessibilityAudit(for: .dynamicType) { issue in
+      guard let element = issue.element else {
+        // Xcode 26.6 omits the element for the three UIKit-owned labels in the
+        // iPad floating TabView bar. The room's SwiftUI Dynamic Type branch,
+        // complete tab labels, and exact three-button shell are asserted; cap
+        // the exact UILabel diagnostic at those three system controls.
+        if issue.detailedDescription
+            == "User will not be able to change the font size of this UILabel",
+           self.element(in: app, identifier: "rooms.table.accessible-layout").exists,
+           hasExactSystemTabShell
+        {
+          allowedSystemTabLabelFindings += 1
+          return true
+        }
+        dynamicTypeFindings.append("unattributed: \(issue.detailedDescription)")
+        return true
+      }
+      dynamicTypeFindings.append(
+        "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), detail=\(issue.detailedDescription)"
+      )
+      return true
+    }
+    XCTAssertLessThanOrEqual(
+      allowedSystemTabLabelFindings,
+      3,
+      "Only the exact three UIKit-owned iPad tab labels may be unattributed."
+    )
+    if allowedSystemTabLabelFindings > 0 {
+      XCTAssertEqual(
+        allowedSystemTabLabelFindings,
+        3,
+        "The bounded UIKit tab-label framework signature changed."
+      )
+    }
+
+    var textClippingFindings: [String] = []
+    try app.performAccessibilityAudit(for: .textClipped) { issue in
+      guard let element = issue.element else {
+        textClippingFindings.append("unattributed: \(issue.detailedDescription)")
+        return true
+      }
+      textClippingFindings.append(
+        "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), detail=\(issue.detailedDescription)"
+      )
+      return true
+    }
+
+    XCTAssertTrue(
+      contrastFindings.isEmpty && dynamicTypeFindings.isEmpty && textClippingFindings.isEmpty,
+      "Unexpected focused room accessibility findings:\nContrast:\n\(contrastFindings.joined(separator: "\n"))\nDynamic Type:\n\(dynamicTypeFindings.joined(separator: "\n"))\nText clipping:\n\(textClippingFindings.joined(separator: "\n"))"
     )
   }
 

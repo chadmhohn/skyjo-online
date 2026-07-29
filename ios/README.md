@@ -34,13 +34,13 @@ Run the focused access/networking gate used by `iOS / Networking Contracts` with
 
 Networking mode first verifies the immutable v0.3.2 PWA parser/validator source and its established UTF-16 wire bounds, builds the current production PWA, and starts a real incognito Chromium peer under a credential-isolated environment. The Swift tests drive that peer through a narrow loopback control client while all room creation/join/chat/lifecycle actions occur through the visible PWA UI. Driver profiles, logs, and temporary state remain inside the exact harness directory and are removed before sanitized evidence is staged.
 
-Run the focused native-solo UI gate used by `iOS / UI & Accessibility` with:
+Run the focused native solo-and-room UI gate used by `iOS / UI & Accessibility` with:
 
 ```sh
 ./scripts/ios-build-test.sh --ui-accessibility
 ```
 
-UI/accessibility mode needs no backend, account, or credential. It discovers a standard iPhone, large iPhone, and iPad on the newest installed simulator runtime, builds once without signing, then exercises the solo launcher, replacement review, setup, table, scoring, settings, recovery, and accessibility states across phone portrait, phone landscape, iPad portrait, and iPad landscape. The command above runs the complete matrix locally. CI sets the validated harness-only `SKYJO_IOS_UI_ACCESSIBILITY_ROLE` to one of `standard-phone`, `large-phone`, `ipad-portrait`, or `ipad-landscape` so those entries run in parallel behind the stable aggregate check. The ignored per-run artifact directory retains sanitized logs and each `.xcresult`, including keep-always screenshots, whether a matrix entry passes or fails.
+UI/accessibility mode needs no backend, account, or credential. It discovers a standard iPhone, large iPhone, and iPad on the newest installed simulator runtime, builds once without signing, then exercises solo launch/setup/table/scoring/settings/recovery plus authoritative waiting/active/scoring/pending/offline/resynchronized room fixtures across phone portrait and short landscape, large phone, and iPad portrait/landscape. The command above runs the complete matrix locally. CI sets the validated harness-only `SKYJO_IOS_UI_ACCESSIBILITY_ROLE` to one of `standard-phone`, `large-phone`, `ipad-portrait`, or `ipad-landscape` so those entries run in parallel behind the stable aggregate check. The ignored per-run artifact directory retains sanitized logs and each `.xcresult`, including keep-always screenshots, whether a matrix entry passes or fails.
 
 Verify the portable schemas and deterministic fixture corpus separately:
 
@@ -80,7 +80,7 @@ xcodebuild \
 - `Packages/SkyjoPersistence` validates every solo snapshot, owns a custom SwiftData V1-to-V2 migration that restores nonzero autosave sequences before enforcing one durable save per owner, partitions guest/account saves, enforces monotonic autosave sequences, replaces saves atomically, and retains a signed-in-only FIFO stats outbox with generation-fenced delivery and opaque terminal/corrupt-head recovery. CloudKit is disabled.
 - `Packages/SkyjoDesignSystem` contains reusable SwiftUI card, status, and stable action-slot primitives. Face-down cards structurally carry no value into the presentation or accessibility tree.
 - `Packages/SkyjoTestSupport` aggregates all four package boundaries for tests and is never linked into the production app.
-- `TestPlans/SkyjoCI.xctestplan` enables unit, package-graph, resource, launch, no-web-view, UI, and accessibility checks with coverage. Canonical `contracts/v1` HTTP/realtime fixtures, real local-server two-cookie relaunch simulation, transactional invite-cookie handoff through the app coordinator, stale-room recovery, state-model races, native access/account/stats flows, durable room reset/seat recovery, real Swift/PWA mixed-room scenarios, consumed-review invite navigation from Stats and Account, destructive room confirmations, compact opponent geometry, and the IOS-7 multi-device solo UI matrix are committed gates.
+- `TestPlans/SkyjoCI.xctestplan` enables unit, package-graph, resource, launch, no-web-view, UI, and accessibility checks with coverage. Canonical `contracts/v1` HTTP/realtime fixtures, real local-server two-cookie relaunch simulation, transactional invite-cookie handoff through the app coordinator, stale-room recovery, state-model races, native access/account/stats flows, durable room reset/seat recovery, real Swift/PWA mixed-room scenarios, consumed-review invite navigation from Stats and Account, destructive room confirmations, compact opponent geometry, and the multi-device solo-and-room UI matrix are committed gates.
 
 All packages use Swift 6 language mode, require iOS 18 or later, and have no remote dependencies.
 
