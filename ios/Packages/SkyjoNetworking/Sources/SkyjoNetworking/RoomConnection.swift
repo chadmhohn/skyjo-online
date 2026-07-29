@@ -60,8 +60,8 @@ public enum RoomConnectionNotice: Equatable, Sendable, CustomStringConvertible,
   )
   case commandResynchronized(reason: RoomResyncReason)
   case resetRecoveryPersistenceFailed
-  case roomResetByHost(roomCode: String?)
-  case seatRemoved(roomCode: String?)
+  case roomResetByHost(roomCode: String?, admissionAttemptID: UUID)
+  case seatRemoved(roomCode: String?, admissionAttemptID: UUID)
   case upgradeRequired
 
   public var description: String { debugDescription }
@@ -80,8 +80,10 @@ public enum RoomConnectionNotice: Equatable, Sendable, CustomStringConvertible,
       return "RoomConnectionNotice.commandResynchronized(reason: \(reason.rawValue))"
     case .resetRecoveryPersistenceFailed:
       return "RoomConnectionNotice.resetRecoveryPersistenceFailed"
-    case .roomResetByHost: return "RoomConnectionNotice.roomResetByHost(roomCode: <redacted>)"
-    case .seatRemoved: return "RoomConnectionNotice.seatRemoved(roomCode: <redacted>)"
+    case .roomResetByHost:
+      return "RoomConnectionNotice.roomResetByHost(roomCode: <redacted>, admissionAttemptID: <redacted>)"
+    case .seatRemoved:
+      return "RoomConnectionNotice.seatRemoved(roomCode: <redacted>, admissionAttemptID: <redacted>)"
     case .upgradeRequired: return "RoomConnectionNotice.upgradeRequired"
     }
   }
@@ -976,6 +978,10 @@ public actor RoomConnection {
 
   private func acceptError(_ frame: RoomErrorFrame, socketGeneration: UInt64) async {
     if frame.code == "room-reset" {
+      guard let retiredAdmissionAttemptID = admissionAttemptID else {
+        await failClosedInvalidFrame(socketGeneration: socketGeneration)
+        return
+      }
       lifecycleEpoch &+= 1
       let retiredRoomCode = terminalRoomCode()
       let recoveryCommandID = activeResetRecoveryCommandID()
@@ -989,12 +995,19 @@ public actor RoomConnection {
       cancelReconnect()
       retireCurrentSocket(code: 1_000, reason: "Room reset by host")
       transition(to: .idle)
-      publish(.notice(.roomResetByHost(roomCode: retiredRoomCode)))
+      publish(.notice(.roomResetByHost(
+        roomCode: retiredRoomCode,
+        admissionAttemptID: retiredAdmissionAttemptID
+      )))
       await drainPersistedRecoveryClears()
       return
     }
 
     if frame.code == "seat-removed" || frame.code == "stale-seat" {
+      guard let retiredAdmissionAttemptID = admissionAttemptID else {
+        await failClosedInvalidFrame(socketGeneration: socketGeneration)
+        return
+      }
       lifecycleEpoch &+= 1
       let retiredRoomCode = terminalRoomCode()
       let recoveryCommandID = activeResetRecoveryCommandID()
@@ -1008,7 +1021,10 @@ public actor RoomConnection {
       cancelReconnect()
       retireCurrentSocket(code: 1_000, reason: "Room seat removed")
       transition(to: .idle)
-      publish(.notice(.seatRemoved(roomCode: retiredRoomCode)))
+      publish(.notice(.seatRemoved(
+        roomCode: retiredRoomCode,
+        admissionAttemptID: retiredAdmissionAttemptID
+      )))
       await drainPersistedRecoveryClears()
       return
     }

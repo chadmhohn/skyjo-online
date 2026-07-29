@@ -663,15 +663,17 @@ struct RoomSessionModelTests {
     await model.stop()
   }
 
-  @Test("Stale admission terminal notices cannot erase a newer invite admission")
+  @Test("Stale admission notices cannot erase a newer same-room invite admission")
   func staleAdmissionNoticesAreAttemptScoped() async throws {
     enum NoticeKind {
       case interrupted
       case rejected
+      case roomReset
+      case seatRemoved
     }
 
     let invite = try RedeemedRoomInvite(
-      roomCode: "FGHIJ",
+      roomCode: "ABCDE",
       expiresAt: 1_784_999_100_000
     )
     let targetRoom = try await authoritativeFixture(
@@ -680,7 +682,12 @@ struct RoomSessionModelTests {
       roomCode: invite.roomCode
     )
 
-    for noticeKind in [NoticeKind.interrupted, .rejected] {
+    for noticeKind in [
+      NoticeKind.interrupted,
+      .rejected,
+      .roomReset,
+      .seatRemoved,
+    ] {
       let connection = ModelRoomConnection()
       let seatStore = RecordingSeatStore()
       let model = makeModel(connection: connection, seatStore: seatStore)
@@ -714,6 +721,16 @@ struct RoomSessionModelTests {
           usedSavedSeat: false,
           admissionAttemptID: oldAttemptID
         )
+      case .roomReset:
+        .roomResetByHost(
+          roomCode: invite.roomCode,
+          admissionAttemptID: oldAttemptID
+        )
+      case .seatRemoved:
+        .seatRemoved(
+          roomCode: invite.roomCode,
+          admissionAttemptID: oldAttemptID
+        )
       }
       await connection.emit(.notice(staleNotice))
       await connection.emit(.status(RoomConnectionStatus(
@@ -726,6 +743,8 @@ struct RoomSessionModelTests {
       #expect(await modelEventually { model.connectionStatus.phase == .connecting })
       #expect(model.banner?.title != "Room not confirmed")
       #expect(model.banner?.title != "Room admission not accepted")
+      #expect(model.banner?.title != "Room reset")
+      #expect(model.banner?.title != "Seat unavailable")
 
       await connection.resumeConnect()
       await switchTask.value
@@ -734,6 +753,66 @@ struct RoomSessionModelTests {
       #expect(await modelEventually { model.room?.code == invite.roomCode })
       #expect(await modelEventually { await seatStore.record()?.roomCode == invite.roomCode })
       #expect(model.pendingInviteReview == nil)
+      await model.stop()
+    }
+  }
+
+  @Test("A stale terminal notice cannot erase invite-superseded admission restoration")
+  func staleTerminalNoticePreservesInviteSupersededAdmission() async throws {
+    let invite = try RedeemedRoomInvite(
+      roomCode: "ABCDE",
+      expiresAt: 1_784_999_100_000
+    )
+    let admittedRoom = try await authoritativeFixture(revision: 7, variant: .waiting)
+
+    for isRoomReset in [true, false] {
+      let connection = ModelRoomConnection()
+      let seatStore = RecordingSeatStore()
+      let model = makeModel(connection: connection, seatStore: seatStore)
+
+      await model.start()
+      await connection.suspendNextConnect()
+      let supersededJoin = Task { await model.join(code: invite.roomCode) }
+      #expect(await modelEventually { await connection.connectIsSuspended() })
+      let supersededAttemptID = try #require(
+        await connection.admissionAttemptIDs().last
+      )
+
+      model.applyInvite(invite)
+      let staleAttemptID = UUID(
+        uuidString: "40000000-0000-4000-8000-000000000051"
+      )!
+      #expect(staleAttemptID != supersededAttemptID)
+      let staleNotice: RoomConnectionNotice = isRoomReset
+        ? .roomResetByHost(
+          roomCode: invite.roomCode,
+          admissionAttemptID: staleAttemptID
+        )
+        : .seatRemoved(
+          roomCode: invite.roomCode,
+          admissionAttemptID: staleAttemptID
+        )
+      await connection.emit(.notice(staleNotice))
+      await connection.emit(.status(connectedStatus(revision: admittedRoom.revision)))
+      // The model consumes this stream in order. Observing the later status
+      // proves the stale terminal notice crossed the invite-review window
+      // before Cancel attempts to restore the superseded admission.
+      #expect(await modelEventually {
+        model.connectionStatus.phase == .connected
+      })
+      await connection.emit(.snapshot(admittedRoom))
+      await connection.resumeConnect()
+
+      #expect(!(await supersededJoin.value))
+      #expect(model.pendingInviteReview == invite)
+      #expect(model.room == nil)
+      await model.dismissInviteReview()
+
+      #expect(await modelEventually { model.room?.code == invite.roomCode })
+      #expect(await modelEventually {
+        await seatStore.record()?.roomCode == invite.roomCode
+      })
+      #expect(model.commandsEnabled)
       await model.stop()
     }
   }
@@ -1401,8 +1480,14 @@ struct RoomSessionModelTests {
     #expect(await modelEventually { await seatStore.clearIsSuspended() })
     await seatStore.resumeClear()
     #expect(await modelEventually { await connection.connectIsSuspended() })
+    let targetAttemptID = try #require(await connection.admissionAttemptIDs().last)
 
-    await connection.emit(.notice(.roomResetByHost(roomCode: "ABCDE")))
+    await connection.emit(.notice(.roomResetByHost(
+      roomCode: "ABCDE",
+      // Match the target attempt deliberately so this regression continues to
+      // isolate the independent different-room-code fence.
+      admissionAttemptID: targetAttemptID
+    )))
     await connection.emit(.status(RoomConnectionStatus(
       phase: .connecting,
       retryInMilliseconds: nil,
@@ -1760,6 +1845,10 @@ struct RoomSessionModelTests {
     )
 
     await model.start()
+    #expect(await model.join(code: "ABCDE"))
+    let currentAdmissionAttemptID = try #require(
+      await connection.admissionAttemptIDs().last
+    )
     await connection.emit(.status(connectedStatus(revision: 9)))
     await connection.emit(.snapshot(roomNine))
     #expect(await modelEventually { model.snapshot?.revision == 9 })
@@ -1784,7 +1873,10 @@ struct RoomSessionModelTests {
     model.isScorePresented = true
     await model.createShareInvite()
     assertRoomScopedPresentation(model, isPresented: true)
-    await connection.emit(.notice(.seatRemoved(roomCode: "KLMNO")))
+    await connection.emit(.notice(.seatRemoved(
+      roomCode: "KLMNO",
+      admissionAttemptID: currentAdmissionAttemptID
+    )))
     #expect(await modelEventually { model.room == nil })
     assertRoomScopedPresentation(model, isPresented: false)
     await model.stop()
@@ -1794,26 +1886,49 @@ struct RoomSessionModelTests {
   func terminalCleanupSerializesNextAdmission() async throws {
     let connection = ModelRoomConnection()
     let seatStore = SuspendedSeatClearStore()
+    let savedSeat = try RoomSeatRecoveryRecord(
+      accountID: testAccount().id,
+      roomCode: "ABCDE",
+      playerID: "seat-current"
+    )
+    await seatStore.save(savedSeat)
     let model = makeModel(connection: connection, seatStore: seatStore)
     let waiting = try await authoritativeFixture(revision: 7, variant: .waiting)
 
     await model.start()
+    let currentAdmissionAttemptID = try #require(
+      await connection.admissionAttemptIDs().last
+    )
     await connection.emit(.status(connectedStatus(revision: 7)))
     await connection.emit(.snapshot(waiting))
     #expect(await modelEventually { model.room != nil })
     await connection.emit(.status(idleStatus()))
-    await connection.emit(.notice(.roomResetByHost(roomCode: "ABCDE")))
+    await connection.emit(.notice(.roomResetByHost(
+      roomCode: "ABCDE",
+      admissionAttemptID: currentAdmissionAttemptID
+    )))
     #expect(await modelEventually { model.isSeatCleanupPending })
     #expect(await seatStore.clearIsSuspended())
 
     model.joinCode = "FGHIJ"
     await model.join()
-    #expect(await connection.admissions().isEmpty)
+    #expect(await connection.admissions() == [
+      .join(
+        code: savedSeat.roomCode,
+        displayName: "Host",
+        playerID: savedSeat.playerID
+      ),
+    ])
 
     await seatStore.resumeClear()
     #expect(await modelEventually { !model.isSeatCleanupPending })
     await model.join()
     #expect(await connection.admissions() == [
+      .join(
+        code: savedSeat.roomCode,
+        displayName: "Host",
+        playerID: savedSeat.playerID
+      ),
       .join(code: "FGHIJ", displayName: "Host", playerID: nil),
     ])
     await model.stop()

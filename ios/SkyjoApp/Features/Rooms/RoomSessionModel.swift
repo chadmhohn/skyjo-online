@@ -1653,8 +1653,11 @@ final class RoomSessionModel {
           tone: .error
         )
       )
-    case .roomResetByHost(let roomCode):
-      guard !terminalNoticePredatesFreshAdmission(roomCode: roomCode) else { return }
+    case .roomResetByHost(let roomCode, let admissionAttemptID):
+      guard !terminalNoticePredatesFreshAdmission(
+        roomCode: roomCode,
+        admissionAttemptID: admissionAttemptID
+      ) else { return }
       pendingTerminalAction = nil
       await clearSeatAfterTerminal(
         generation: generation,
@@ -1669,8 +1672,11 @@ final class RoomSessionModel {
           tone: .warning
         )
       )
-    case .seatRemoved(let roomCode):
-      guard !terminalNoticePredatesFreshAdmission(roomCode: roomCode) else { return }
+    case .seatRemoved(let roomCode, let admissionAttemptID):
+      guard !terminalNoticePredatesFreshAdmission(
+        roomCode: roomCode,
+        admissionAttemptID: admissionAttemptID
+      ) else { return }
       pendingTerminalAction = nil
       await clearSeatAfterTerminal(
         generation: generation,
@@ -1757,7 +1763,20 @@ final class RoomSessionModel {
     }
   }
 
-  private func terminalNoticePredatesFreshAdmission(roomCode: String?) -> Bool {
+  private func terminalNoticePredatesFreshAdmission(
+    roomCode: String?,
+    admissionAttemptID: UUID
+  ) -> Bool {
+    // Room codes are reusable and a same-room replacement can overtake an event
+    // already buffered by the retired connection. The opaque attempt identity is
+    // the authoritative fence whenever the model has an active admission or an
+    // invite-superseded admission that Cancel can still restore.
+    let admissionAttemptIDFence = currentAdmissionAttemptID
+      ?? supersededAdmissionAttemptID
+    if let admissionAttemptIDFence,
+       admissionAttemptIDFence != admissionAttemptID {
+      return true
+    }
     guard awaitsFreshAdmissionSnapshot, let roomCode else { return false }
     if let expectedFreshAdmissionRoomCode {
       return roomCode != expectedFreshAdmissionRoomCode

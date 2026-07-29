@@ -203,9 +203,17 @@ struct RealtimeContractTests {
       matchedAction: .replaceCard(2)
     )
     #expect(!String(reflecting: notice).contains("private server detail"))
-    #expect(!String(reflecting: RoomConnectionNotice.roomResetByHost(
-      roomCode: "ABCDE"
-    )).contains("ABCDE"))
+    let terminalAdmissionAttemptID = UUID(
+      uuidString: "40000000-0000-4000-8000-000000000001"
+    )!
+    let terminalNotice = RoomConnectionNotice.roomResetByHost(
+      roomCode: "ABCDE",
+      admissionAttemptID: terminalAdmissionAttemptID
+    )
+    #expect(!String(reflecting: terminalNotice).contains("ABCDE"))
+    #expect(!String(reflecting: terminalNotice).contains(
+      terminalAdmissionAttemptID.uuidString
+    ))
   }
 }
 
@@ -1081,17 +1089,30 @@ struct RoomConnectionStateMachineTests {
       UUID(uuidString: "40000000-0000-4000-8000-000000000061")!,
       UUID(uuidString: "40000000-0000-4000-8000-000000000062")!,
     ]
+    let terminalAdmissionAttemptIDs = [
+      UUID(uuidString: "40000000-0000-4000-8000-000000000160")!,
+      UUID(uuidString: "40000000-0000-4000-8000-000000000161")!,
+      UUID(uuidString: "40000000-0000-4000-8000-000000000162")!,
+    ]
     for (index, code) in ["room-reset", "seat-removed", "stale-seat"].enumerated() {
       let socket = FakeRoomWebSocket()
       let store = VolatileRoomResetRecoveryStore()
       let commandID = terminalCommandIDs[index]
+      let admissionAttemptID = terminalAdmissionAttemptIDs[index]
       let connection = try makeTestConnection(
         factory: FakeSocketFactory([socket]),
         sleeper: ControlledSleeper(),
         commandIDs: [commandID],
         resetRecoveryStore: store
       )
-      try await connection.connect(.create(displayName: "Host"))
+      let notices = RoomConnectionNoticeRecorder()
+      let observation = Task {
+        for await event in await connection.events() { await notices.record(event) }
+      }
+      try await connection.connect(
+        .create(displayName: "Host"),
+        admissionAttemptID: admissionAttemptID
+      )
       await socket.deliver(.text(try personalizedSnapshotText(revision: 7)))
       #expect(await eventually { await connection.status().synchronized })
       _ = try await connection.send(.resetRoom)
@@ -1101,6 +1122,18 @@ struct RoomConnectionStateMachineTests {
       #expect(await connection.status().revision == nil)
       #expect(await connection.recoveryAdmission() == nil)
       #expect(await eventually { await store.load(accountID: UUID(uuidString: "30000000-0000-4000-8000-000000000003")!) == nil })
+      let expectedNotice: RoomConnectionNotice = code == "room-reset"
+        ? .roomResetByHost(
+          roomCode: "ABCDE",
+          admissionAttemptID: admissionAttemptID
+        )
+        : .seatRemoved(
+          roomCode: "ABCDE",
+          admissionAttemptID: admissionAttemptID
+        )
+      #expect(await eventually { await notices.contains(expectedNotice) })
+      #expect(!String(reflecting: expectedNotice).contains(admissionAttemptID.uuidString))
+      observation.cancel()
       await connection.dispose()
     }
 
