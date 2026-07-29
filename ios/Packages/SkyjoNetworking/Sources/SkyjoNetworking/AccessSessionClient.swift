@@ -173,6 +173,25 @@ public enum SkyjoURLSessionFactory: Sendable {
       delegateQueue: nil
     )
   }
+
+  /// Creates a transport that can send explicitly attached cookies but can never
+  /// accept response cookies on URLSession's behalf. Callers must validate a
+  /// complete response before committing any parsed cookies to their shared jar.
+  public static func makeCookieDisabled(copying sourceSession: URLSession? = nil) -> URLSession {
+    let configuration = sourceSession?.configuration ?? .default
+    configuration.httpCookieStorage = nil
+    configuration.httpCookieAcceptPolicy = .never
+    configuration.httpShouldSetCookies = false
+    configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+    configuration.urlCache = nil
+    configuration.urlCredentialStorage = nil
+
+    return URLSession(
+      configuration: configuration,
+      delegate: RedirectRejectingURLSessionDelegate(),
+      delegateQueue: nil
+    )
+  }
 }
 
 public actor AccessSessionClient {

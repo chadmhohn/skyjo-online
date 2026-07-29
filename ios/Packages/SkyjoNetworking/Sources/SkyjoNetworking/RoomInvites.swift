@@ -151,8 +151,8 @@ public actor RoomInviteClient {
 
   public init(environment: SkyjoNetworkEnvironment, session: URLSession) {
     self.environment = environment
-    self.session = session
     cookieStorage = session.configuration.httpCookieStorage
+    self.session = SkyjoURLSessionFactory.makeCookieDisabled(copying: session)
   }
 
   public init(
@@ -161,28 +161,37 @@ public actor RoomInviteClient {
   ) {
     self.environment = environment
     cookieStorage = persistentCookieStorage
-    session = SkyjoURLSessionFactory.makeDedicated(cookieStorage: persistentCookieStorage)
+    session = SkyjoURLSessionFactory.makeCookieDisabled()
   }
 
   /// Redeems only the outer-access layer. Account authentication and room admission remain separate.
   public func redeem(_ link: RoomInviteLink) async throws -> RedeemedRoomInvite {
-    let response: RedemptionResponse = try await request(
+    let result: PendingCookieResponse<RedemptionResponse> = try await request(
       path: "api/rooms/invite/redeem",
       body: RedemptionRequest(token: link.token.rawValue),
       requireNoStore: true
     )
-    return try RedeemedRoomInvite(roomCode: response.roomCode, expiresAt: response.expiresAt)
+    let invite = try RedeemedRoomInvite(
+      roomCode: result.value.roomCode,
+      expiresAt: result.value.expiresAt
+    )
+    guard result.cookies.count == 1 else {
+      throw SkyjoHTTPClientError.invalidSuccessPayload
+    }
+    persistResponseCookies(result.cookies)
+    return invite
   }
 
   public func create(roomCode: String) async throws -> NativeRoomInvite {
     guard RedeemedRoomInvite.isRoomCode(roomCode) else {
       throw RoomInviteContractError.invalidRoomCode
     }
-    let response: CreationResponse = try await request(
+    let result: PendingCookieResponse<CreationResponse> = try await request(
       path: "api/rooms/invite",
       body: CreationRequest(roomCode: roomCode),
       requireNoStore: true
     )
+    let response = result.value
     guard response.roomCode == roomCode,
           RedeemedRoomInvite.isSafeEpochMilliseconds(response.expiresAt)
     else { throw SkyjoHTTPClientError.invalidSuccessPayload }
@@ -200,7 +209,7 @@ public actor RoomInviteClient {
     path: String,
     body: Body,
     requireNoStore: Bool
-  ) async throws -> Response {
+  ) async throws -> PendingCookieResponse<Response> {
     let bodyData = try encoder.encode(body)
     guard bodyData.count <= Self.maximumRequestBytes else {
       throw SkyjoHTTPClientError.requestTooLarge(limit: Self.maximumRequestBytes)
@@ -237,7 +246,6 @@ public actor RoomInviteClient {
       bytes.task.cancel()
       throw SkyjoHTTPClientError.redirected
     }
-    persistResponseCookies(httpResponse, for: endpoint)
     guard response.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
       bytes.task.cancel()
       throw SkyjoHTTPClientError.responseTooLarge(limit: Self.maximumResponseBytes)
@@ -268,7 +276,10 @@ public actor RoomInviteClient {
         throw SkyjoHTTPClientError.invalidSuccessPayload
       }
       do {
-        return try decoder.decode(Response.self, from: data)
+        return PendingCookieResponse(
+          value: try decoder.decode(Response.self, from: data),
+          cookies: responseCookies(httpResponse, for: endpoint)
+        )
       } catch {
         throw SkyjoHTTPClientError.invalidSuccessPayload
       }
@@ -321,21 +332,25 @@ public actor RoomInviteClient {
       .lowercased() == "application/json"
   }
 
-  private func persistResponseCookies(_ response: HTTPURLResponse, for endpoint: URL) {
-    guard let cookieStorage else { return }
+  private func responseCookies(_ response: HTTPURLResponse, for endpoint: URL) -> [HTTPCookie] {
+    guard cookieStorage != nil else { return [] }
     let headerFields = response.allHeaderFields.reduce(into: [String: String]()) { fields, item in
       guard let name = item.key as? String, let value = item.value as? String else { return }
       fields[name] = value
     }
     let cookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: endpoint)
-    guard let endpointHost = endpoint.host?.lowercased() else { return }
-    for cookie in cookies {
+    guard let endpointHost = endpoint.host?.lowercased() else { return [] }
+    return cookies.filter { cookie in
       let cookieHost = cookie.domain
         .trimmingCharacters(in: CharacterSet(charactersIn: "."))
         .lowercased()
-      guard cookieHost == endpointHost else { continue }
-      cookieStorage.setCookie(cookie)
+      return cookieHost == endpointHost
     }
+  }
+
+  private func persistResponseCookies(_ cookies: [HTTPCookie]) {
+    guard let cookieStorage else { return }
+    for cookie in cookies { cookieStorage.setCookie(cookie) }
   }
 
   private static func isNoStore(_ response: HTTPURLResponse) -> Bool {
@@ -344,6 +359,11 @@ public actor RoomInviteClient {
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
       .contains("no-store") == true
   }
+}
+
+private struct PendingCookieResponse<Value: Sendable>: Sendable {
+  let value: Value
+  let cookies: [HTTPCookie]
 }
 
 private struct RedemptionRequest: Encodable, Sendable {
