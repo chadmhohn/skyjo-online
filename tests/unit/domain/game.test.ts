@@ -120,6 +120,24 @@ describe('deterministic deck and turn engine', () => {
     assertDeckInvariant(first);
   });
 
+  it('uses subject-aware opening reveal grammar at game creation and seat transitions', () => {
+    const solo = startFreshGame({ random: createSeededRandom(42) });
+    expect(solo.log[0]).toBe('You choose two opening cards to reveal.');
+
+    let multiplayer = createMultiplayerGame(
+      [{ id: 'ada', name: 'Ada' }, { id: 'you', name: 'You' }],
+      1,
+      null,
+      createSeededRandom(7)
+    );
+    expect(multiplayer.log[0]).toBe('Ada chooses two opening cards to reveal.');
+    multiplayer = revealOpeningCard(multiplayer, 0);
+    multiplayer = revealOpeningCard(multiplayer, 1);
+    expect(multiplayer.log[0]).toBe(
+      'Ada finished opening reveals. You choose two opening cards.'
+    );
+  });
+
   it('preserves deck composition for every supported multiplayer size and seed', () => {
     fc.assert(
       fc.property(fc.integer(), fc.integer({ min: 2, max: 8 }), (seed, playerCount) => {

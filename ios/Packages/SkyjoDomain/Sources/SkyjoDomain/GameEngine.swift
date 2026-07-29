@@ -84,7 +84,7 @@ public enum GameEngine {
       log: [
         hasOpeningReveals
           ? "\(starter.name) starts round \(round). Pick from the discard pile or draw blind."
-          : "\(starter.name) chooses two opening cards to reveal."
+          : "\(starter.name) \(openingRevealVerb(for: starter.name)) two opening cards to reveal."
       ],
       nextStarterId: hasOpeningReveals ? nil : (round > 1 ? startPlayerId : nil),
       openingRevealCounts: openingRevealCounts(players)
@@ -181,10 +181,11 @@ public enum GameEngine {
       return withLog(updated, "\(player.name) revealed an opening card.")
     }
     if let nextPlayerIndex = firstPlayerNeedingOpeningReveal(updated.players) {
+      let nextPlayerName = updated.players[nextPlayerIndex].name
       updated.currentPlayerIndex = nextPlayerIndex
       return withLog(
         updated,
-        "\(player.name) finished opening reveals. \(updated.players[nextPlayerIndex].name) chooses two opening cards."
+        "\(player.name) finished opening reveals. \(nextPlayerName) \(openingRevealVerb(for: nextPlayerName)) two opening cards."
       )
     }
 
@@ -494,6 +495,10 @@ public enum GameEngine {
     var next = state
     next.log = Array(([message] + state.log).prefix(8))
     return next
+  }
+
+  private static func openingRevealVerb(for name: String) -> String {
+    name == "You" ? "choose" : "chooses"
   }
 
   private static func possessiveName(_ name: String) -> String {

@@ -296,6 +296,10 @@ function withLog(state: GameState, message: string): GameState {
   return { ...state, log: [message, ...state.log].slice(0, 8) };
 }
 
+function openingRevealVerb(name: string): 'choose' | 'chooses' {
+  return name === 'You' ? 'choose' : 'chooses';
+}
+
 function possessiveName(name: string): string {
   if (name.toLowerCase() === 'you') return 'Your';
   return name.endsWith('s') ? `${name}'` : `${name}'s`;
@@ -488,7 +492,7 @@ export function createGameForPlayers(
     log: [
       hasOpeningReveals
         ? `${starter.name} starts round ${round}. Pick from the discard pile or draw blind.`
-        : `${starter.name} chooses two opening cards to reveal.`
+        : `${starter.name} ${openingRevealVerb(starter.name)} two opening cards to reveal.`
     ],
     winnerId: null,
     nextStarterId: hasOpeningReveals ? null : round > 1 ? startPlayerId || null : null,
@@ -582,12 +586,13 @@ export function revealOpeningCard(state: GameState, cardIndex: number): GameStat
 
   const nextPlayerIndex = updatedState.players.findIndex((item) => openingRevealCount(item) < 2);
   if (nextPlayerIndex >= 0) {
+    const nextPlayerName = updatedState.players[nextPlayerIndex].name;
     return withLog(
       {
         ...updatedState,
         currentPlayerIndex: nextPlayerIndex
       },
-      `${player.name} finished opening reveals. ${updatedState.players[nextPlayerIndex].name} chooses two opening cards.`
+      `${player.name} finished opening reveals. ${nextPlayerName} ${openingRevealVerb(nextPlayerName)} two opening cards.`
     );
   }
 

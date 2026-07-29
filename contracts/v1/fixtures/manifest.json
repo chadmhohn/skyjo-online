@@ -1,7 +1,7 @@
 {
   "contractVersion": 1,
   "files": {
-    "domain-parity.json": "f26632cfbbde23fba62c72e9089d92864e61731120fcd2724a032288296e3a71",
+    "domain-parity.json": "55114f22c541a18397f14519419b78d0e6e0f3c904aff78aaaae3a4125635ad0",
     "game-state.invalid.json": "df6b503aae147b2f5191ddd6cdf3af397082ec50f2abde5e1b86abfb489572a5",
     "game-state.valid.json": "15dbc45b430afcc49cfe5f5d327d1fb608ea739af75b2e46ab1f308d311277bd",
     "http.invalid.json": "f3e76ec8c7f9039360239d65c9ee36cacc86be5cfb6986055a956f2f15efb048",

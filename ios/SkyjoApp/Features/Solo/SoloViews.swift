@@ -211,6 +211,7 @@ private struct SoloSetupView: View {
         Text("Opponents")
           .font(.caption.weight(.black))
           .foregroundStyle(Color.primary)
+          .accessibilityIdentifier("solo.setup.opponents-header")
       }
 
       Section {
@@ -233,6 +234,7 @@ private struct SoloSetupView: View {
         Text("Difficulty")
           .font(.caption.weight(.black))
           .foregroundStyle(Color.primary)
+          .accessibilityIdentifier("solo.setup.difficulty-header")
       }
 
       Section {
@@ -1729,8 +1731,10 @@ private struct SoloSettingsView: View {
         }
 
         Section("Move log") {
-          ForEach(Array((model.game?.log ?? []).prefix(20).enumerated()), id: \.offset) { _, entry in
+          ForEach(Array((model.game?.log ?? []).prefix(20).enumerated()), id: \.offset) { offset, entry in
             Text(entry)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("solo.settings.move-log.\(offset)")
           }
         }
 
@@ -1764,6 +1768,7 @@ private struct SoloSettingsView: View {
   private var accessibilityAdaptationSummary: String {
     "Reduce Motion \(reduceMotion ? "on" : "off"); Increase Contrast \(colorSchemeContrast == .increased ? "on" : "off"); Differentiate Without Color \(differentiateWithoutColor ? "on" : "off")"
   }
+
 }
 
 @MainActor
