@@ -613,6 +613,9 @@ private struct PublicRoomPlayerBoard: View {
             aspectRatio: isCompact ? 1 : 1.34,
             action: { actionForIndex(index) }
           )
+          .accessibilityIdentifier(
+            "rooms.card.\(boardIdentifier).r\(row).c\(column)"
+          )
           .overlay(alignment: .topTrailing) {
             if differentiateWithoutColor, card.faceUp, !card.removed, let value = card.value {
               Image(systemName: value >= 9 ? "exclamationmark" : "checkmark")
@@ -621,9 +624,6 @@ private struct PublicRoomPlayerBoard: View {
                 .accessibilityHidden(true)
             }
           }
-          .accessibilityIdentifier(
-            "rooms.card.\(boardIdentifier).r\(row).c\(column)"
-          )
         }
       }
     }
