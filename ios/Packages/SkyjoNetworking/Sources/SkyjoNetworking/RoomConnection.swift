@@ -469,8 +469,7 @@ public actor RoomConnection {
         )
         try await environment.resetRecoveryStore.save(recoveryRecord)
       } catch {
-        let cleared = await clearPersistedRecovery(commandID: commandID)
-        if cleared { publish(.notice(.resetRecoveryPersistenceFailed)) }
+        _ = await clearPersistedRecovery(commandID: commandID)
         throw RoomConnectionError.resetRecoveryPersistenceFailed
       }
       let preparationWasCancelled = Task.isCancelled

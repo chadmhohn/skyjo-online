@@ -45,6 +45,7 @@ struct RoomBanner: Equatable, Identifiable {
 
 protocol RoomSessionConnection: Sendable {
   func events() async -> AsyncStream<RoomConnectionEvent>
+  func currentAuthoritativeSnapshot() async -> AuthoritativeRoomSnapshot?
   func recoverPersistedReset() async throws -> Bool
   func connect(_ admission: RoomAdmission) async throws
   func recover(_ admission: RoomAdmission) async throws
@@ -55,7 +56,9 @@ protocol RoomSessionConnection: Sendable {
   func dispose() async
 }
 
-extension RoomConnection: RoomSessionConnection {}
+extension RoomConnection: RoomSessionConnection {
+  func currentAuthoritativeSnapshot() -> AuthoritativeRoomSnapshot? { snapshot() }
+}
 
 struct RoomSessionEnvironment: Sendable {
   let makeConnection: @Sendable () async throws -> any RoomSessionConnection
@@ -226,6 +229,15 @@ final class RoomSessionHost {
     }
   }
 
+  /// Removes the latest sanitized review from a host that is about to retire.
+  /// An invite queued during a profile-driven model transition is newer than a
+  /// review still held by the old model.
+  func drainPendingInviteForRetirement() -> RedeemedRoomInvite? {
+    let invite = queuedInvite ?? model.pendingInviteReview
+    queuedInvite = nil
+    return invite
+  }
+
   func stop() async {
     lifecycleGeneration &+= 1
     let generation = lifecycleGeneration
@@ -291,8 +303,11 @@ final class RoomSessionModel {
   private var acceptsSeatPersistence = true
   private var awaitsFreshAdmissionSnapshot = false
   private var expectedFreshAdmissionRoomCode: String?
+  private var routingClearOperationID: UUID?
   private var routingClearRoomCode: String?
   private var bufferedSnapshotDuringRoutingClear: AuthoritativeRoomSnapshot?
+  private var inviteSupersededAdmission = false
+  private var supersededAdmissionSnapshot: AuthoritativeRoomSnapshot?
   private var seatCleanupID: UUID?
 
   init(
@@ -342,6 +357,7 @@ final class RoomSessionModel {
   var commandsEnabled: Bool {
     snapshot != nil
       && localRoomPlayer != nil
+      && !resetRecoveryCleanupRequired
       && connectionStatus.phase == .connected
       && connectionStatus.synchronized
       && !connectionStatus.hasPendingCommand
@@ -354,6 +370,7 @@ final class RoomSessionModel {
       && !isAdmissionOperationPending
       && !isSeatCleanupPending
       && !resetRecoveryInitiated
+      && !resetRecoveryCleanupRequired
       && !connectionStatus.hasPendingCommand
       && (connectionStatus.phase == .idle || connectionStatus.phase == .error)
   }
@@ -364,6 +381,7 @@ final class RoomSessionModel {
       && !isAdmissionOperationPending
       && !isSeatCleanupPending
       && !resetRecoveryInitiated
+      && !resetRecoveryCleanupRequired
       && !connectionStatus.hasPendingCommand
       && pendingTerminalAction == nil
       && connectionStatus.phase != .upgradeRequired
@@ -387,6 +405,9 @@ final class RoomSessionModel {
   }
 
   var interactionDisabledReason: String? {
+    if resetRecoveryCleanupRequired {
+      return "Saved room recovery must be cleared before multiplayer can continue."
+    }
     if localRoomPlayer?.controller == .ai {
       return "AI is controlling your seat. Keep this app active to reclaim it."
     }
@@ -455,6 +476,7 @@ final class RoomSessionModel {
   var canCreateShareInvite: Bool {
     room != nil
       && localRoomPlayer != nil
+      && !resetRecoveryCleanupRequired
       && connectionStatus.phase == .connected
       && connectionStatus.synchronized
       && !connectionStatus.hasPendingCommand
@@ -473,10 +495,10 @@ final class RoomSessionModel {
     let automaticRecoveryGeneration = recoveryGeneration
     connectionStatus = Self.idleConnectionStatus
     resetRecoveryInitiated = false
-    resetRecoveryCleanupRequired = false
     acceptsSeatPersistence = true
     awaitsFreshAdmissionSnapshot = false
     expectedFreshAdmissionRoomCode = nil
+    routingClearOperationID = nil
     routingClearRoomCode = nil
     bufferedSnapshotDuringRoutingClear = nil
     isPreparingConnection = true
@@ -521,18 +543,34 @@ final class RoomSessionModel {
       }
     }
     do {
-      if try await nextConnection.recoverPersistedReset() {
-        guard lifecycleGeneration == generation, started else { return }
+      let recoveredPersistedReset = try await nextConnection.recoverPersistedReset()
+      guard lifecycleGeneration == generation, started else { return }
+      // A successful read verifies that an earlier undecodable/unavailable
+      // recovery is no longer unresolved. An actual recovered command remains
+      // gated separately until its authoritative convergence.
+      let clearedRecoveryCleanupBlocker = resetRecoveryCleanupRequired
+      resetRecoveryCleanupRequired = false
+      if clearedRecoveryCleanupBlocker,
+         let bannerTitle = banner?.title,
+         [
+           "Room reset recovery unavailable",
+           "Room reset cleanup needed",
+           "Room reset paused",
+         ].contains(bannerTitle) {
+        banner = nil
+      }
+      if recoveredPersistedReset {
         resetRecoveryInitiated = true
         return
       }
     } catch {
       guard lifecycleGeneration == generation, started else { return }
-      resetRecoveryCleanupRequired = true
+      requireResetRecoveryCleanup()
       banner = RoomBanner(
         title: "Room reset recovery unavailable",
         message: "Skyjo could not safely finish the pending room reset. Reopen multiplayer and try again.",
-        tone: .error
+        tone: .error,
+        survivesAuthoritativeSnapshot: true
       )
       return
     }
@@ -583,6 +621,8 @@ final class RoomSessionModel {
     expectedFreshAdmissionRoomCode = nil
     routingClearRoomCode = nil
     bufferedSnapshotDuringRoutingClear = nil
+    inviteSupersededAdmission = false
+    supersededAdmissionSnapshot = nil
     isSeatCleanupPending = false
     seatCleanupID = nil
     let retiredEventTask = eventTask
@@ -626,19 +666,78 @@ final class RoomSessionModel {
       acceptsSeatPersistence = false
       awaitsFreshAdmissionSnapshot = false
       expectedFreshAdmissionRoomCode = nil
+      inviteSupersededAdmission = true
+      supersededAdmissionSnapshot = nil
     }
     pendingInviteReview = invite
     joinCode = invite.roomCode
   }
 
-  func dismissInviteReview() {
+  func dismissInviteReview() async {
     pendingInviteReview = nil
+    guard inviteSupersededAdmission else { return }
+
+    let generation = lifecycleGeneration
+    let supersededConnection = connection
+    let bufferedSnapshot = supersededAdmissionSnapshot
+    activeAdmissionOperationID = nil
+    activeAdmissionRecoveryGeneration = nil
+    isAdmissionOperationPending = false
+    guard let cancellationID = beginAdmissionOperation() else { return }
+    defer { finishAdmissionOperation(cancellationID) }
+    awaitsFreshAdmissionSnapshot = false
+    expectedFreshAdmissionRoomCode = nil
+
+    let authoritativeSnapshot = if let bufferedSnapshot {
+      bufferedSnapshot
+    } else {
+      await supersededConnection?.currentAuthoritativeSnapshot()
+    }
+    guard lifecycleGeneration == generation,
+          admissionOperationIsCurrent(cancellationID),
+          pendingInviteReview == nil
+    else { return }
+    inviteSupersededAdmission = false
+    supersededAdmissionSnapshot = nil
+
+    if let authoritativeSnapshot {
+      acceptsSeatPersistence = true
+      await consume(.snapshot(authoritativeSnapshot), generation: generation)
+      return
+    }
+
+    acceptsSeatPersistence = false
+    do {
+      try await supersededConnection?.disconnect()
+    } catch {
+      guard lifecycleGeneration == generation, started else { return }
+      requireResetRecoveryCleanup()
+      banner = RoomBanner(
+        title: "Saved room cleanup needed",
+        message: "Skyjo canceled the room connection, but saved reset recovery still needs explicit cleanup.",
+        tone: .error,
+        survivesAuthoritativeSnapshot: true
+      )
+    }
+    guard lifecycleGeneration == generation,
+          admissionOperationIsCurrent(cancellationID)
+    else { return }
+    clearVisibleRoom()
   }
 
   func acceptInviteAndJoin() async {
     guard let invite = pendingInviteReview else { return }
+    guard !resetRecoveryCleanupRequired else {
+      banner = RoomBanner(
+        title: "Room reset cleanup needed",
+        message: "Use Forget Saved Seat before joining this invite.",
+        tone: .error,
+        survivesAuthoritativeSnapshot: true
+      )
+      return
+    }
     guard !invite.isExpired(at: environment.nowMilliseconds()) else {
-      pendingInviteReview = nil
+      await dismissInviteReview()
       banner = RoomBanner(
         title: "Invite expired",
         message: "Ask the host for a new room invite.",
@@ -669,6 +768,8 @@ final class RoomSessionModel {
       code: invite.roomCode,
       replacingCurrentRoom: room != nil || connectionHasAdmission
     ) {
+      inviteSupersededAdmission = false
+      supersededAdmissionSnapshot = nil
       pendingInviteReview = nil
     }
   }
@@ -782,18 +883,28 @@ final class RoomSessionModel {
     isRoomOptionsPresented = false
     isScorePresented = false
     clearVisibleRoom()
+    let cleanupConnection = connection
     var resetRecoveryWasCleared = true
-    do {
-      try await connection?.disconnect()
-    } catch {
+    if let cleanupConnection {
+      do {
+        try await cleanupConnection.disconnect()
+      } catch {
+        resetRecoveryWasCleared = false
+      }
+    } else if resetRecoveryCleanupRequired {
       resetRecoveryWasCleared = false
     }
     if resetRecoveryCleanupRequired || !resetRecoveryWasCleared {
-      do {
-        try await connection?.discardPersistedResetRecovery()
-        resetRecoveryWasCleared = true
-        resetRecoveryCleanupRequired = false
-      } catch {
+      if let cleanupConnection {
+        do {
+          try await cleanupConnection.discardPersistedResetRecovery()
+          resetRecoveryWasCleared = true
+          resetRecoveryCleanupRequired = false
+        } catch {
+          resetRecoveryWasCleared = false
+          resetRecoveryCleanupRequired = true
+        }
+      } else {
         resetRecoveryWasCleared = false
         resetRecoveryCleanupRequired = true
       }
@@ -982,6 +1093,15 @@ final class RoomSessionModel {
       )
       return false
     }
+    guard !resetRecoveryCleanupRequired else {
+      banner = RoomBanner(
+        title: "Room reset cleanup needed",
+        message: "Use Forget Saved Seat to clear unresolved reset recovery before creating or joining a room.",
+        tone: .error,
+        survivesAuthoritativeSnapshot: true
+      )
+      return false
+    }
     guard !resetRecoveryInitiated else {
       banner = RoomBanner(
         title: "Room reset recovered",
@@ -1087,16 +1207,28 @@ final class RoomSessionModel {
     resetRecoveryInitiated = false
     awaitsFreshAdmissionSnapshot = false
     expectedFreshAdmissionRoomCode = nil
+    routingClearOperationID = nil
+    routingClearRoomCode = nil
+    bufferedSnapshotDuringRoutingClear = nil
+    inviteSupersededAdmission = false
+    supersededAdmissionSnapshot = nil
   }
 
   private func clearRoutingForFreshAdmission(_ operationID: UUID) async -> Bool {
+    let generation = lifecycleGeneration
+    let accountID = account.id
     acceptsSeatPersistence = false
+    routingClearOperationID = operationID
     routingClearRoomCode = snapshot?.room.code
     bufferedSnapshotDuringRoutingClear = nil
     do {
       try await environment.seatStore.clear(accountID: account.id)
     } catch {
-      await restoreRoutingAfterCanceledClear()
+      await restoreRoutingAfterCanceledClear(
+        operationID: operationID,
+        generation: generation,
+        accountID: accountID
+      )
       guard admissionOperationIsCurrent(operationID) else { return false }
       banner = RoomBanner(
         title: "Saved room could not be replaced",
@@ -1107,26 +1239,58 @@ final class RoomSessionModel {
       return false
     }
     guard admissionOperationIsCurrent(operationID) else {
-      await restoreRoutingAfterCanceledClear()
+      await restoreRoutingAfterCanceledClear(
+        operationID: operationID,
+        generation: generation,
+        accountID: accountID
+      )
       return false
     }
+    routingClearOperationID = nil
     routingClearRoomCode = nil
     bufferedSnapshotDuringRoutingClear = nil
     return true
   }
 
-  private func restoreRoutingAfterCanceledClear() async {
-    let bufferedSnapshot = bufferedSnapshotDuringRoutingClear
+  private func restoreRoutingAfterCanceledClear(
+    operationID: UUID,
+    generation: UInt64,
+    accountID: UUID
+  ) async {
+    guard lifecycleGeneration == generation,
+          started,
+          account.id == accountID,
+          routingClearOperationID == operationID
+    else { return }
+    let authoritativeSnapshot = bufferedSnapshotDuringRoutingClear ?? snapshot
+    routingClearOperationID = nil
     routingClearRoomCode = nil
     bufferedSnapshotDuringRoutingClear = nil
-    guard started, snapshot != nil else {
+    guard let authoritativeSnapshot else {
       acceptsSeatPersistence = false
       return
     }
     acceptsSeatPersistence = true
-    if let bufferedSnapshot {
-      await consume(.snapshot(bufferedSnapshot), generation: lifecycleGeneration)
+    // Reconsume even the already-visible snapshot: the clear may have succeeded
+    // before a newer invite invalidated the admission operation, so the current
+    // account's recovery record must be written back under the original lifecycle.
+    await consume(.snapshot(authoritativeSnapshot), generation: generation)
+  }
+
+  private func requireResetRecoveryCleanup() {
+    if !resetRecoveryCleanupRequired {
+      recoveryGeneration &+= 1
+      activeAdmissionOperationID = nil
+      activeAdmissionRecoveryGeneration = nil
+      isAdmissionOperationPending = false
+      if snapshot == nil, awaitsFreshAdmissionSnapshot {
+        acceptsSeatPersistence = false
+        awaitsFreshAdmissionSnapshot = false
+        expectedFreshAdmissionRoomCode = nil
+      }
     }
+    resetRecoveryCleanupRequired = true
+    invalidateShareInvite()
   }
 
   private func beginSeatCleanup() -> UUID {
@@ -1160,9 +1324,6 @@ final class RoomSessionModel {
     switch event {
     case .status(let status):
       connectionStatus = status
-      if resetRecoveryCleanupRequired, !status.hasPendingCommand, snapshot != nil {
-        resetRecoveryCleanupRequired = false
-      }
       if status.phase == .idle, pendingTerminalAction == .leaveRoom {
         pendingTerminalAction = nil
         await clearSeatAfterTerminal(
@@ -1177,6 +1338,12 @@ final class RoomSessionModel {
       }
     case .snapshot(let nextSnapshot):
       if !acceptsSeatPersistence {
+        if inviteSupersededAdmission, snapshot == nil {
+          if nextSnapshot.revision >= (supersededAdmissionSnapshot?.revision ?? 0) {
+            supersededAdmissionSnapshot = nextSnapshot
+          }
+          return
+        }
         if let routingClearRoomCode,
            snapshot?.room.code == routingClearRoomCode,
            nextSnapshot.room.code == routingClearRoomCode,
@@ -1351,20 +1518,13 @@ final class RoomSessionModel {
       )
     case .resetRecoveryPersistenceFailed:
       if banner?.title == "Saved room cleanup needed" { return }
-      if connectionStatus.hasPendingCommand {
-        resetRecoveryCleanupRequired = true
-        banner = RoomBanner(
-          title: "Room reset cleanup needed",
-          message: "Saved reset recovery data could not be cleared. Use Forget Saved Seat before continuing multiplayer.",
-          tone: .error
-        )
-      } else {
-        banner = RoomBanner(
-          title: "Room reset paused",
-          message: "Recovery data could not be saved, so the room was not reset.",
-          tone: .error
-        )
-      }
+      requireResetRecoveryCleanup()
+      banner = RoomBanner(
+        title: "Room reset cleanup needed",
+        message: "Saved reset recovery data could not be cleared. Use Forget Saved Seat before continuing multiplayer.",
+        tone: .error,
+        survivesAuthoritativeSnapshot: true
+      )
     }
   }
 

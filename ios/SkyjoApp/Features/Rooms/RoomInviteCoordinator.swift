@@ -210,7 +210,7 @@ final class RoomAppCoordinator {
   }
 
   private func preservePendingReview(from host: RoomSessionHost?) {
-    guard let invite = host?.model.pendingInviteReview else { return }
+    guard let invite = host?.drainPendingInviteForRetirement() else { return }
     inviteHandoff.restoreReviewIfIdle(invite)
   }
 }

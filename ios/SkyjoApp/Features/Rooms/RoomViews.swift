@@ -61,7 +61,7 @@ struct RoomRootView: View {
     .sheet(
       isPresented: Binding(
         get: { model.pendingInviteReview != nil },
-        set: { if !$0 { model.dismissInviteReview() } }
+        set: { if !$0 { Task { await model.dismissInviteReview() } } }
       )
     ) {
       RoomInviteReviewView(model: model)
@@ -1170,7 +1170,7 @@ private struct RoomInviteReviewView: View {
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button("Cancel") {
-            model.dismissInviteReview()
+            Task { await model.dismissInviteReview() }
             dismiss()
           }
         }
