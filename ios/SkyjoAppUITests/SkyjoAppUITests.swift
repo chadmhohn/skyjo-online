@@ -661,6 +661,9 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave() throws {
+    // Four fixture launches plus repeated AXRuntime audits can exceed XCTest's
+    // default budget when CI schedules several simulators in parallel.
+    executionTimeAllowance = 1_200
     let app = launchSoloFixture("solo-setup-blocked-outbox")
 
     XCTAssertTrue(element(in: app, identifier: "solo.setup").waitForExistence(timeout: 8))
@@ -2964,15 +2967,34 @@ final class SkyjoAppUITests: XCTestCase {
         "solo.setup.opponents-header": "Opponents",
         "solo.setup.difficulty-header": "Difficulty",
       ]
-      // Xcode 26 intermittently samples the transparent, full-width SwiftUI
-      // Section-header wrapper instead of its black primary-style glyphs on
-      // iPad. The setup test proves each identifier, label, nonempty frame, and
-      // containment before allowing only that current visible wrapper.
-      let isVerifiedSetupHeaderWrapper =
-        allowedContrastElementIdentifiers.contains(element.identifier)
-          && setupHeaderLabelsByIdentifier[element.identifier] == element.label
-          && element.elementType == .staticText
-          && visibleContentFrame.contains(element.frame)
+      // Xcode 26 intermittently attributes the transparent, full-width SwiftUI
+      // Section wrapper instead of its identifier-bearing header on iPad. Only
+      // accept that empty-ID duplicate when the exact visible header proves it
+      // refers to the same rendered content.
+      let isVerifiedSetupHeaderWrapper: Bool = {
+        guard element.identifier.isEmpty,
+              element.elementType == .staticText,
+              let verifiedHeader = setupHeaderLabelsByIdentifier.first(where: {
+                allowedContrastElementIdentifiers.contains($0.key)
+                  && $0.value == element.label
+              })
+        else {
+          return false
+        }
+        let header = self.element(in: app, identifier: verifiedHeader.key)
+        let setup = self.element(in: app, identifier: "solo.setup")
+        guard header.exists, setup.exists else { return false }
+        let headerFrame = header.frame
+        let auditedFrame = element.frame
+        let setupFrame = setup.frame.insetBy(dx: -2, dy: -2)
+        return header.label == verifiedHeader.value
+          && header.elementType == element.elementType
+          && headerFrame.width > 0
+          && headerFrame.height > 0
+          && visibleContentFrame.contains(headerFrame)
+          && setupFrame.contains(headerFrame)
+          && (headerFrame == auditedFrame || headerFrame.intersects(auditedFrame))
+      }()
       // A List keeps its first section header and row alive while they scroll
       // beneath SwiftUI's translucent navigation material. Xcode can sample
       // that intentionally blurred copy for contrast; scope the allowance to
