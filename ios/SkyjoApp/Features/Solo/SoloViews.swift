@@ -346,9 +346,11 @@ private struct SoloReplacementReviewView: View {
           Button(
             model.activeSessionIsPersistent ? "Replace Saved Game" : "Replace Temporary Game"
           ) {
-            Task {
-              await model.confirmReplacement()
-              if !model.isReplacementReviewPresented { dismiss() }
+            if let replacement = model.confirmReplacement() {
+              Task {
+                await replacement.value
+                if !model.isReplacementReviewPresented { dismiss() }
+              }
             }
           }
           .disabled(model.isWorking || model.hasUncommittedTerminalCompletion)
@@ -368,9 +370,9 @@ private struct SoloReplacementReviewView: View {
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button("Cancel") {
-            model.isReplacementReviewPresented = false
-            dismiss()
+            if model.cancelReplacementReview() { dismiss() }
           }
+          .disabled(model.isWorking)
           .frame(minWidth: 44, minHeight: 44)
           .contentShape(Rectangle())
           .accessibilityIdentifier("solo.replace.cancel")
@@ -1618,7 +1620,7 @@ private struct SoloSettingsView: View {
               .accessibilityIdentifier("solo.settings.persistence-warning")
           }
         }
-        Section("Feedback") {
+        Section {
           Toggle("Sound effects", isOn: $preferences.soundEffectsEnabled)
             .accessibilityIdentifier("solo.settings.sound")
           Toggle("Haptics", isOn: $preferences.hapticsEnabled)
@@ -1629,6 +1631,12 @@ private struct SoloSettingsView: View {
           Text("Music defaults off and remains unavailable until an original or licensed track is approved. Sound effects use the bundled CC0 card cues.")
             .font(.footnote)
             .foregroundStyle(.primary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.settings.music-explanation")
+        } header: {
+          Text("Feedback")
+            .foregroundStyle(Color.primary)
+            .accessibilityIdentifier("solo.settings.feedback-header")
         }
 
         Section("System accessibility") {
@@ -1647,6 +1655,8 @@ private struct SoloSettingsView: View {
           Text("Skyjo follows the system settings for motion, contrast, and color-independent card markers.")
             .font(.footnote)
             .foregroundStyle(.primary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.settings.accessibility-explanation")
         }
 
         if let setup = model.setup {
@@ -1701,8 +1711,21 @@ private struct SoloSettingsView: View {
         }
 
         Section("How to play") {
-          Text("Reveal two cards. On each turn, take the discard or draw blind, then replace a card or discard the draw and reveal. Three matching revealed cards in a column clear for zero points.")
-          Text("When someone reveals every remaining card, each other player gets one final turn. The lowest total wins; reaching 100 ends the game.")
+          Text("Reveal two cards.")
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.settings.rules-opening")
+          Text("On each turn, take the discard or draw blind, then replace a card or discard the draw and reveal.")
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.settings.rules-turn")
+          Text("Three matching revealed cards in a column clear for zero points.")
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.settings.rules-column")
+          Text("When someone reveals every remaining card, each other player gets one final turn.")
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.settings.rules-round-end")
+          Text("The lowest total wins; reaching 100 ends the game.")
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("solo.settings.rules-scoring")
         }
 
         Section("Move log") {

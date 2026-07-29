@@ -24,6 +24,8 @@ if [[ ! "$run_key" =~ ^(local-[0-9]+|[0-9]+)$ || ! "$run_attempt" =~ ^[1-9][0-9]
 fi
 result_bundle="$artifacts_dir/SkyjoCI-$run_key-$run_attempt.xcresult"
 derived_data="$artifacts_dir/DerivedData-$run_key-$run_attempt"
+release_archive_path="$derived_data/SkyjoNative-audio-audit.xcarchive"
+release_bundle_path="$release_archive_path/Products/Applications/SkyjoNative.app"
 toolchain_log="$artifacts_dir/ios-toolchain-$run_key-$run_attempt.log"
 simulator_log="$artifacts_dir/ios-simulators-$run_key-$run_attempt.log"
 xcodebuild_log="$artifacts_dir/ios-xcodebuild-$run_key-$run_attempt.log"
@@ -413,6 +415,37 @@ command -v npm >/dev/null 2>&1 || report_failure "npm is required for native net
 command -v curl >/dev/null 2>&1 || report_failure "curl is required for native networking contract tests."
 command -v uuidgen >/dev/null 2>&1 || report_failure "uuidgen is required for isolated native networking tests."
 
+# Audit the clean, unsigned device Release product before XCTest injects test
+# plug-ins and frameworks into the Debug simulator host. The exact recursive
+# bundle inventory prevents device-conditional copy phases, package resources,
+# or disguised containers from distributing unapproved music outside the three
+# reviewed CC0 cues.
+set +e
+"${xcode_environment[@]}" xcodebuild archive \
+  -project "$project_path" \
+  -scheme SkyjoNative \
+  -configuration Release \
+  -destination "generic/platform=iOS" \
+  -derivedDataPath "$derived_data" \
+  -archivePath "$release_archive_path" \
+  CODE_SIGNING_ALLOWED=NO \
+  2>&1 | sanitize_output | tee "$xcodebuild_log"
+release_build_status=${PIPESTATUS[0]}
+set -e
+if [[ "$release_build_status" -ne 0 ]]; then
+  report_failure "The clean unsigned native Release build failed."
+fi
+
+set +e
+"${xcode_environment[@]}" node scripts/check-audio-assets.mjs \
+  --native-app-bundle "$release_bundle_path" \
+  2>&1 | sanitize_output | tee -a "$xcodebuild_log"
+native_bundle_audit_status=${PIPESTATUS[0]}
+set -e
+if [[ "$native_bundle_audit_status" -ne 0 ]]; then
+  report_failure "The clean native application bundle inventory failed."
+fi
+
 if [[ ! -x "$repo_root/node_modules/.bin/tsc" ]]; then
   set +e
   "${xcode_environment[@]}" npm ci \
@@ -679,7 +712,7 @@ xcode_test_arguments+=(CODE_SIGNING_ALLOWED=NO)
 
 set +e
 "${xcode_environment[@]}" xcodebuild "${xcode_test_arguments[@]}" \
-  2>&1 | sanitize_output | tee "$xcodebuild_log"
+  2>&1 | sanitize_output | tee -a "$xcodebuild_log"
 xcodebuild_status=${PIPESTATUS[0]}
 set -e
 

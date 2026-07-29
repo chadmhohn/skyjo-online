@@ -856,7 +856,23 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertEqual(draw.label, "Draw blind")
     XCTAssertTrue(discard.label.hasPrefix("Discard pile, top card"))
     XCTAssertEqual(guidance.label, "Reveal two of your face-down cards.")
-    XCTAssertEqual(guidance.value as? String, "Visible guidance: Reveal 2 cards")
+    // Pin the acceptance breakpoint to the viewport input. Deriving the
+    // expectation from the band output would let a threshold regression alter
+    // both the geometry and the copy while this test continued to pass.
+    let expectsCompactGuidance = safeArea.frame.width < safeArea.frame.height
+      && safeArea.frame.height < 720
+    let expectedVisibleGuidance = expectsCompactGuidance
+      ? "Reveal 2 cards"
+      : "Reveal two of your face-down cards."
+    if expectsCompactGuidance {
+      XCTAssertEqual(actionBand.frame.height, 76, accuracy: 2)
+    } else {
+      XCTAssertGreaterThanOrEqual(actionBand.frame.height, 119)
+    }
+    XCTAssertEqual(
+      guidance.value as? String,
+      "Visible guidance: \(expectedVisibleGuidance)"
+    )
     XCTAssertEqual(localHeader.label, "You")
     XCTAssertFalse(firstOpponentHeader.label.isEmpty)
     XCTAssertTrue((localHeader.value as? String)?.contains("points") == true)
@@ -920,11 +936,18 @@ final class SkyjoAppUITests: XCTestCase {
 
     let actionBand = element(in: app, identifier: "solo.action-band")
     let guidance = element(in: app, identifier: "solo.action.guidance")
+    let safeArea = element(in: app, identifier: "solo.table.safe-area")
     XCTAssertTrue(actionBand.exists)
     XCTAssertTrue(guidance.exists)
+    XCTAssertTrue(safeArea.exists)
     assertElement(guidance, isContainedIn: actionBand, tolerance: 2)
     XCTAssertEqual(guidance.label, "Reveal two of your face-down cards.")
-    XCTAssertEqual(guidance.value as? String, "Visible guidance: Reveal 2 cards")
+    XCTAssertGreaterThanOrEqual(safeArea.frame.height, 720)
+    XCTAssertGreaterThanOrEqual(actionBand.frame.height, 119)
+    XCTAssertEqual(
+      guidance.value as? String,
+      "Visible guidance: Reveal two of your face-down cards."
+    )
 
     attachScreenshot(app, name: "ios7-solo-single-opponent-large-phone")
     try performSoloAccessibilityAudit(on: app)
@@ -1398,7 +1421,12 @@ final class SkyjoAppUITests: XCTestCase {
     )
     let reconciliation = element(in: reconciliationApp, identifier: "solo.reconciliation")
     XCTAssertTrue(reconciliation.waitForExistence(timeout: 8))
-    XCTAssertTrue(reconciliationApp.staticTexts["Saved game status unknown"].exists)
+    let reconciliationHeading = reconciliationApp.staticTexts["Saved game status unknown"]
+    let reconciliationMessage = reconciliationApp.staticTexts[
+      "Skyjo must reload the authoritative saved game before play can continue."
+    ]
+    XCTAssertTrue(reconciliationHeading.exists)
+    XCTAssertTrue(reconciliationMessage.exists)
     XCTAssertFalse(reconciliationApp.buttons["solo.continue"].exists)
     let reload = reconciliationApp.buttons["solo.reconciliation.reload"]
     scrollToElementFullyVisible(reload, in: reconciliationApp)
@@ -1406,8 +1434,69 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(reload.isHittable)
     XCTAssertGreaterThanOrEqual(reload.frame.width, 44)
     XCTAssertGreaterThanOrEqual(reload.frame.height, 44)
-    try performSoloAccessibilityAudit(on: reconciliationApp)
-    attachScreenshot(reconciliationApp, name: "ios7-solo-reconciliation-accessibility-xxxl")
+    // The complete AXXXL banner is taller than the chrome-free viewport. Audit
+    // its exact heading and message separately, fully clear of navigation and
+    // tab-bar materials. Each pass may ignore only the other exact copy item
+    // while that independently audited item is not fully visible.
+    let floatingTabBar = reconciliationApp.tabBars.firstMatch
+    let recoveryBottomInset = floatingTabBar.exists
+      ? reconciliationApp.frame.maxY - floatingTabBar.frame.minY + 16
+      : 96
+    let navigationBar = reconciliationApp.navigationBars["Single Player"]
+    scrollToElementFullyVisible(
+      reconciliationHeading,
+      in: reconciliationApp,
+      bottomInset: recoveryBottomInset,
+      requiresHittable: false,
+      searchesTowardTopWhenMissing: true
+    )
+    XCTAssertGreaterThanOrEqual(
+      reconciliationHeading.frame.minY,
+      navigationBar.frame.maxY + 4
+    )
+    if floatingTabBar.exists {
+      XCTAssertLessThanOrEqual(
+        reconciliationHeading.frame.maxY,
+        floatingTabBar.frame.minY - 16
+      )
+    }
+    attachScreenshot(
+      reconciliationApp,
+      name: "ios7-solo-reconciliation-heading-accessibility-xxxl"
+    )
+    try performFocusedSoloAccessibilityAudits(
+      on: reconciliationApp,
+      enforceDynamicType: false,
+      allowedOffscreenContrastLabels: [reconciliationMessage.label]
+    )
+
+    scrollToElementFullyVisible(
+      reconciliationMessage,
+      in: reconciliationApp,
+      bottomInset: recoveryBottomInset,
+      requiresHittable: false,
+      searchesTowardTopWhenMissing: false
+    )
+    XCTAssertGreaterThanOrEqual(
+      reconciliationMessage.frame.minY,
+      navigationBar.frame.maxY + 4
+    )
+    if floatingTabBar.exists {
+      XCTAssertLessThanOrEqual(
+        reconciliationMessage.frame.maxY,
+        floatingTabBar.frame.minY - 16
+      )
+    }
+    attachScreenshot(
+      reconciliationApp,
+      name: "ios7-solo-reconciliation-message-accessibility-xxxl"
+    )
+    try performFocusedSoloAccessibilityAudits(
+      on: reconciliationApp,
+      allowedOffscreenContrastLabels: [reconciliationHeading.label]
+    )
+    try performAccessibilityAudit(on: reconciliationApp)
+    scrollToElementFullyVisible(reload, in: reconciliationApp)
     reload.tap()
     XCTAssertTrue(element(in: reconciliationApp, identifier: "solo.setup").waitForExistence(timeout: 8))
   }
@@ -1454,6 +1543,10 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloAccessibilityAdaptationsAreActive() throws {
+    // This acceptance test deliberately launches 18 isolated fixtures so each
+    // lazy settings row begins a fresh application-wide accessibility audit.
+    // Keep the per-test budget explicit and below the owning CI job timeout.
+    executionTimeAllowance = 900
     try XCTSkipUnless(
       ProcessInfo.processInfo.environment["SKYJO_IOS_UI_ACCESSIBILITY_MATRIX"] == "1",
       "The focused UI matrix owns and restores simulator accessibility settings."
@@ -1532,13 +1625,123 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElementFullyVisible(currentDifficulty, in: adaptationApp)
     let standardOpponentsHeight = currentOpponents.frame.height
     let standardDifficultyHeight = currentDifficulty.frame.height
-    scrollToElementFullyVisible(adaptations, in: adaptationApp)
+    let completeSettingsRows: [(
+      identifier: String,
+      label: String,
+      textStyle: UIFont.TextStyle,
+      minimumLargeHeightIncrease: CGFloat
+    )] = [
+      (
+        "solo.settings.music-explanation",
+        "Music defaults off and remains unavailable until an original or licensed track is approved. Sound effects use the bundled CC0 card cues.",
+        .footnote,
+        8
+      ),
+      (
+        "solo.settings.accessibility-explanation",
+        "Skyjo follows the system settings for motion, contrast, and color-independent card markers.",
+        .footnote,
+        8
+      ),
+      (
+        "solo.settings.new-game",
+        "Set Up Another Game",
+        .body,
+        40
+      ),
+      (
+        "solo.settings.rules-opening",
+        "Reveal two cards.",
+        .body,
+        8
+      ),
+      (
+        "solo.settings.rules-turn",
+        "On each turn, take the discard or draw blind, then replace a card or discard the draw and reveal.",
+        .body,
+        8
+      ),
+      (
+        "solo.settings.rules-column",
+        "Three matching revealed cards in a column clear for zero points.",
+        .body,
+        8
+      ),
+      (
+        "solo.settings.rules-round-end",
+        "When someone reveals every remaining card, each other player gets one final turn.",
+        .body,
+        8
+      ),
+      (
+        "solo.settings.rules-scoring",
+        "The lowest total wins; reaching 100 ends the game.",
+        .body,
+        8
+      ),
+    ]
+    let allowedFormClippingArtifact =
+      "131072|Text clipped|Text of this element may be clipped at larger Dynamic Type sizes."
+    let allowedFormClippingArtifacts = Set([allowedFormClippingArtifact])
+    let maximumKnownFormArtifactCount = 8
+    let expectedSettingsRows: Set<String> = [
+      "solo.settings.music-explanation",
+      "solo.settings.accessibility-explanation",
+      "solo.settings.new-game",
+      "solo.settings.rules-opening",
+      "solo.settings.rules-turn",
+      "solo.settings.rules-column",
+      "solo.settings.rules-round-end",
+      "solo.settings.rules-scoring",
+    ]
+    XCTAssertEqual(completeSettingsRows.count, 8)
+    XCTAssertEqual(Set(completeSettingsRows.map(\.identifier)), expectedSettingsRows)
+    let soundEffects = adaptationApp.switches["solo.settings.sound"]
+    scrollToElementFullyVisible(
+      soundEffects,
+      in: adaptationApp,
+      searchesTowardTopWhenMissing: true
+    )
+    let feedbackHeader = element(
+      in: adaptationApp,
+      identifier: "solo.settings.feedback-header"
+    )
+    scrollToElementFullyVisible(
+      feedbackHeader,
+      in: adaptationApp,
+      requiresHittable: false,
+      searchesTowardTopWhenMissing: true
+    )
+    XCTAssertEqual(feedbackHeader.label, "Feedback")
+    XCTAssertTrue(soundEffects.isHittable)
     attachScreenshot(adaptationApp, name: "ios7-solo-accessibility-adaptations")
+    // Xcode 26 emits a small variable number of identical, element-less
+    // predictive Form artifacts across clean simulator runs. Bound that known
+    // framework behavior while retaining the complete-screen audit. Fresh
+    // fixtures below additionally put each acceptance-critical row on screen
+    // for its own exact clipping audit and retained screenshot.
     try performSoloAccessibilityAudit(
       on: adaptationApp,
-      expectedUnattributedTextClippingCount: 1
+      allowedUnattributedTextClippingSignatures: allowedFormClippingArtifacts,
+      maximumAllowedUnattributedTextClippingOccurrences: maximumKnownFormArtifactCount
     )
     adaptationApp.terminate()
+
+    var standardRowHeights: [String: CGFloat] = [:]
+    var standardAuditedRows = Set<String>()
+    for definition in completeSettingsRows {
+      standardRowHeights[definition.identifier] = try captureSettingsRowEvidence(
+        identifier: definition.identifier,
+        label: definition.label,
+        textStyle: definition.textStyle,
+        contentSizeCategory: .large,
+        size: "standard",
+        allowedUnattributedTextClippingSignatures: allowedFormClippingArtifacts,
+        maximumAllowedUnattributedTextClippingOccurrences: maximumKnownFormArtifactCount
+      )
+      standardAuditedRows.insert(definition.identifier)
+    }
+    XCTAssertEqual(standardAuditedRows, expectedSettingsRows)
 
     let largeSettingsApp = launchSoloFixture(
       "solo-table",
@@ -1572,6 +1775,31 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertGreaterThan(largeDifficulty.frame.height, standardDifficultyHeight + 4)
     attachScreenshot(largeSettingsApp, name: "ios7-solo-settings-accessibility-xxxl")
     largeSettingsApp.terminate()
+
+    var xxxLargeAuditedRows = Set<String>()
+    for definition in completeSettingsRows {
+      let standardHeight = try XCTUnwrap(standardRowHeights[definition.identifier])
+      let largeHeight = try captureSettingsRowEvidence(
+        identifier: definition.identifier,
+        label: definition.label,
+        textStyle: definition.textStyle,
+        contentSizeCategory: .accessibilityExtraExtraExtraLarge,
+        size: "AXXXL",
+        additionalArguments: [
+          "-UIPreferredContentSizeCategoryName",
+          "UICTContentSizeCategoryAccessibilityXXXL",
+        ],
+        allowedUnattributedTextClippingSignatures: allowedFormClippingArtifacts,
+        maximumAllowedUnattributedTextClippingOccurrences: maximumKnownFormArtifactCount
+      )
+      XCTAssertGreaterThan(
+        largeHeight,
+        standardHeight + definition.minimumLargeHeightIncrease,
+        "\(definition.identifier) must expand materially at Accessibility XXXL"
+      )
+      xxxLargeAuditedRows.insert(definition.identifier)
+    }
+    XCTAssertEqual(xxxLargeAuditedRows, expectedSettingsRows)
   }
 
   @MainActor
@@ -2335,9 +2563,116 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  private func captureSettingsRowEvidence(
+    identifier: String,
+    label: String,
+    textStyle: UIFont.TextStyle,
+    contentSizeCategory: UIContentSizeCategory,
+    size: String,
+    additionalArguments: [String] = [],
+    allowedUnattributedTextClippingSignatures: Set<String>,
+    maximumAllowedUnattributedTextClippingOccurrences: Int
+  ) throws -> CGFloat {
+    let rowApp = launchSoloFixture(
+      "solo-table",
+      additionalArguments: additionalArguments
+    )
+    defer { rowApp.terminate() }
+
+    let settingsButton = rowApp.buttons["solo.settings.open"]
+    guard settingsButton.waitForExistence(timeout: 8), settingsButton.isHittable else {
+      XCTFail("Settings control was unavailable for \(identifier) \(size) evidence")
+      return 0
+    }
+    settingsButton.tap()
+    guard rowApp.navigationBars["Game Settings"].waitForExistence(timeout: 8) else {
+      XCTFail("Game Settings did not open for \(identifier) \(size) evidence")
+      return 0
+    }
+    let row = element(in: rowApp, identifier: identifier)
+    let isAction = identifier == "solo.settings.new-game"
+    guard scrollToSettingsRowFullyVisible(
+      row,
+      in: rowApp,
+      requiresHittable: isAction
+    ) else { return 0 }
+    XCTAssertEqual(row.label, label)
+    XCTAssertGreaterThan(row.frame.width, 0)
+    XCTAssertGreaterThan(row.frame.height, 0)
+    if isAction {
+      XCTAssertEqual(row.elementType, .button)
+      XCTAssertTrue(row.isHittable)
+      XCTAssertGreaterThanOrEqual(row.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(row.frame.height, 44)
+    }
+
+    let measuredFrame = row.frame
+    let textTraits = UITraitCollection(preferredContentSizeCategory: contentSizeCategory)
+    let expectedFont = UIFont.preferredFont(
+      forTextStyle: textStyle,
+      compatibleWith: textTraits
+    )
+    let idealTextBounds = (label as NSString).boundingRect(
+      with: CGSize(width: measuredFrame.width, height: .greatestFiniteMagnitude),
+      options: [.usesLineFragmentOrigin, .usesFontLeading],
+      attributes: [.font: expectedFont],
+      context: nil
+    )
+    let idealTextHeight = ceil(idealTextBounds.height)
+    XCTAssertLessThanOrEqual(
+      idealTextBounds.width,
+      measuredFrame.width + 1,
+      "\(identifier) ideal rendered text exceeds its measured row width"
+    )
+    XCTAssertGreaterThanOrEqual(
+      measuredFrame.height + 1,
+      idealTextHeight,
+      "\(identifier) measured row cannot contain its complete \(size) rendered label"
+    )
+    attachScreenshot(
+      rowApp,
+      name: "ios7-solo-settings-\(size.lowercased())-\(identifier)"
+    )
+    let signatures = try exactTextClippingSignatures(
+      on: rowApp,
+      allowedUnattributedSignatures: allowedUnattributedTextClippingSignatures,
+      maximumAllowedUnattributedOccurrences: maximumAllowedUnattributedTextClippingOccurrences
+    )
+    attachSettingsRowTextClippingEvidence(
+      signatures,
+      identifier: identifier,
+      label: label,
+      frame: measuredFrame,
+      idealTextHeight: idealTextHeight,
+      fontPointSize: expectedFont.pointSize,
+      size: size
+    )
+    return measuredFrame.height
+  }
+
+  @MainActor
   private func attachScreenshot(_ app: XCUIApplication, name: String) {
     let attachment = XCTAttachment(screenshot: app.screenshot())
     attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
+  @MainActor
+  private func attachSettingsRowTextClippingEvidence(
+    _ signatures: [String],
+    identifier: String,
+    label: String,
+    frame: CGRect,
+    idealTextHeight: CGFloat,
+    fontPointSize: CGFloat,
+    size: String
+  ) {
+    let evidence = signatures.isEmpty ? "No text-clipping findings." : signatures.joined(separator: "\n")
+    let attachment = XCTAttachment(
+      string: "The application-wide text-clipping audit began with this settings row fully visible.\nIdentifier: \(identifier)\nExpected label: \(label)\nPre-audit frame: \(frame)\nExpected font point size: \(fontPointSize)\nIndependent ideal text height: \(idealTextHeight)\n\n\(evidence)"
+    )
+    attachment.name = "\(size) text-clipping audit - \(identifier)"
     attachment.lifetime = .keepAlways
     add(attachment)
   }
@@ -2416,7 +2751,8 @@ final class SkyjoAppUITests: XCTestCase {
   @MainActor
   private func performAccessibilityAudit(
     on app: XCUIApplication,
-    expectedUnattributedTextClippingCount: Int = 0
+    allowedUnattributedTextClippingSignatures: Set<String> = [],
+    maximumAllowedUnattributedTextClippingOccurrences: Int = 0
   ) throws {
     // XCTest currently reports system-dimmed inactive SwiftUI controls as
     // contrast failures even though inactive controls are exempt. Their
@@ -2430,28 +2766,10 @@ final class SkyjoAppUITests: XCTestCase {
         .contrast.union(.dynamicType).union(.hitRegion).union(.textClipped)
       )
     )
-    var unattributedTextClippingCount = 0
-    try app.performAccessibilityAudit(for: .textClipped) { issue in
-      guard let element = issue.element else {
-        unattributedTextClippingCount += 1
-        // Exact Xcode 26 callers may expect one element-less framework artifact
-        // after directly proving their principal copy and geometry.
-        // The post-audit exact count prevents additional regressions from being
-        // absorbed; every attributed finding remains fatal below.
-        if expectedUnattributedTextClippingCount == 0 {
-          XCTFail("Unexpected unattributed clipped-text finding")
-        }
-        return true
-      }
-      XCTFail(
-        "Unexpected clipped text: id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue)"
-      )
-      return true
-    }
-    XCTAssertEqual(
-      unattributedTextClippingCount,
-      expectedUnattributedTextClippingCount,
-      "The element-less clipped-text artifact count changed"
+    try performExactTextClippingAudit(
+      on: app,
+      allowedUnattributedSignatures: allowedUnattributedTextClippingSignatures,
+      maximumAllowedUnattributedOccurrences: maximumAllowedUnattributedTextClippingOccurrences
     )
     try app.performAccessibilityAudit(for: .hitRegion) { issue in
       // Xcode 26 can retain the menu backing the intentionally hidden drawn-card
@@ -2465,25 +2783,76 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  private func performExactTextClippingAudit(
+    on app: XCUIApplication,
+    allowedUnattributedSignatures: Set<String> = [],
+    maximumAllowedUnattributedOccurrences: Int = 0
+  ) throws {
+    _ = try exactTextClippingSignatures(
+      on: app,
+      allowedUnattributedSignatures: allowedUnattributedSignatures,
+      maximumAllowedUnattributedOccurrences: maximumAllowedUnattributedOccurrences
+    )
+  }
+
+  @MainActor
+  private func exactTextClippingSignatures(
+    on app: XCUIApplication,
+    allowedUnattributedSignatures: Set<String> = [],
+    maximumAllowedUnattributedOccurrences: Int = 0
+  ) throws -> [String] {
+    var unattributedTextClippingSignatures: [String] = []
+    try app.performAccessibilityAudit(for: .textClipped) { issue in
+      guard let element = issue.element else {
+        unattributedTextClippingSignatures.append(
+          "\(issue.auditType.rawValue)|\(issue.compactDescription)|\(issue.detailedDescription)"
+        )
+        return true
+      }
+      XCTFail(
+        "Unexpected clipped text: id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue)"
+      )
+      return true
+    }
+    let signatures = unattributedTextClippingSignatures.sorted()
+    let unexpectedSignatures = signatures.filter {
+      !allowedUnattributedSignatures.contains($0)
+    }
+    XCTAssertTrue(
+      unexpectedSignatures.isEmpty,
+      "Unexpected element-less clipped-text artifacts: \(unexpectedSignatures)"
+    )
+    XCTAssertLessThanOrEqual(
+      signatures.count,
+      maximumAllowedUnattributedOccurrences,
+      "Too many known element-less clipped-text artifacts: \(signatures.count)"
+    )
+    return signatures
+  }
+
+  @MainActor
   private func performSoloAccessibilityAudit(
     on app: XCUIApplication,
     enforceDynamicType: Bool = true,
-    expectedUnattributedTextClippingCount: Int = 0
+    allowedUnattributedTextClippingSignatures: Set<String> = [],
+    maximumAllowedUnattributedTextClippingOccurrences: Int = 0
   ) throws {
-    try performAccessibilityAudit(
-      on: app,
-      expectedUnattributedTextClippingCount: expectedUnattributedTextClippingCount
-    )
     try performFocusedSoloAccessibilityAudits(
       on: app,
       enforceDynamicType: enforceDynamicType
+    )
+    try performAccessibilityAudit(
+      on: app,
+      allowedUnattributedTextClippingSignatures: allowedUnattributedTextClippingSignatures,
+      maximumAllowedUnattributedTextClippingOccurrences: maximumAllowedUnattributedTextClippingOccurrences
     )
   }
 
   @MainActor
   private func performFocusedSoloAccessibilityAudits(
     on app: XCUIApplication,
-    enforceDynamicType: Bool = true
+    enforceDynamicType: Bool = true,
+    allowedOffscreenContrastLabels: Set<String> = []
   ) throws {
     try app.performAccessibilityAudit(for: .contrast) { issue in
       guard let element = issue.element else {
@@ -2509,6 +2878,32 @@ final class SkyjoAppUITests: XCTestCase {
       } else {
         isObscuredByTabBar = false
       }
+      let navigationBar = app.navigationBars.firstMatch
+      let visibleContentTop = navigationBar.exists
+        ? navigationBar.frame.maxY + 4
+        : app.frame.minY + 4
+      let visibleContentBottom = tabBar.exists
+        ? tabBar.frame.minY - 16
+        : app.frame.maxY - 4
+      let visibleContentFrame = CGRect(
+        x: app.frame.minX,
+        y: visibleContentTop,
+        width: app.frame.width,
+        height: max(0, visibleContentBottom - visibleContentTop)
+      ).insetBy(dx: -2, dy: -2)
+      let isIndependentlyAuditedOffscreenCopy =
+        allowedOffscreenContrastLabels.contains(element.label)
+          && !visibleContentFrame.contains(element.frame)
+      // A List keeps its first section header and row alive while they scroll
+      // beneath SwiftUI's translucent navigation material. Xcode can sample
+      // that intentionally blurred copy for contrast; scope the allowance to
+      // content fully contained by the measured navigation frame while retaining
+      // enforcement for the title and Done control rendered by that chrome.
+      let settingsNavigationBar = app.navigationBars["Game Settings"]
+      let isSettingsCopyBehindNavigationMaterial = settingsNavigationBar.exists
+        && settingsNavigationBar.frame.contains(element.frame)
+        && !element.isHittable
+        && element.identifier == "solo.settings.feedback-header"
       let opponentScroll = self.element(in: app, identifier: "solo.opponents.scroll")
       let opponentHeaders = (1...7).map {
         self.element(in: app, identifier: "solo.board.header.opponent.ai-\($0)")
@@ -2524,14 +2919,30 @@ final class SkyjoAppUITests: XCTestCase {
             && header.frame.intersects(element.frame)
             && !opponentScroll.frame.intersects(header.frame)
         }
-      if !isDisabledControl && !isObscuredByTabBar && !isOffscreenOpponentHeaderChild {
+      if !isDisabledControl
+          && !isObscuredByTabBar
+          && !isIndependentlyAuditedOffscreenCopy
+          && !isSettingsCopyBehindNavigationMaterial
+          && !isOffscreenOpponentHeaderChild {
         let localBoard = self.element(in: app, identifier: "solo.board.local.human")
         let opponentHeaderFrames = opponentHeaders
           .filter(\.exists)
           .map { "\($0.identifier)=\($0.frame)" }
           .joined(separator: ", ")
+        // Do not ask a missing navigation-bar query for its frame while
+        // reporting an unrelated screen's audit issue. XCTest treats that as a
+        // second snapshot failure and hides the original contrast diagnostic.
+        let settingsNavigationState = settingsNavigationBar.exists
+          ? "present"
+          : "absent"
+        let opponentScrollState = opponentScroll.exists
+          ? "\(opponentScroll.frame)"
+          : "absent"
+        let localBoardState = localBoard.exists
+          ? "\(localBoard.frame)"
+          : "absent"
         XCTFail(
-          "Unexpected contrast finding: id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), opponentScroll=\(opponentScroll.frame), localBoard=\(localBoard.frame), opponentHeaders=[\(opponentHeaderFrames)]"
+          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), localBoard=\(localBoardState), opponentHeaders=[\(opponentHeaderFrames)]"
         )
       }
       return true
@@ -2558,6 +2969,7 @@ final class SkyjoAppUITests: XCTestCase {
           "solo.settings.current-difficulty",
           "solo.settings.current-difficulty.label",
           "solo.settings.current-difficulty.value",
+          "solo.settings.new-game",
           "solo.settings.done",
         ]
         if verifiedContainerIdentifiers.contains(element.identifier) {
@@ -2594,34 +3006,261 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  private func scrollToSettingsRowFullyVisible(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    requiresHittable: Bool
+  ) -> Bool {
+    let navigationBar = app.navigationBars["Game Settings"]
+    let scrollContainer = [
+      app.collectionViews.firstMatch,
+      app.tables.firstMatch,
+      app.scrollViews.firstMatch,
+    ].first { candidate in
+      candidate.exists && !candidate.frame.isEmpty
+    }
+    let containerFrame = scrollContainer?.frame ?? app.frame
+    let visibleTop = max(containerFrame.minY, navigationBar.frame.maxY) + 4
+    let visibleBottom = min(containerFrame.maxY, app.frame.maxY - 32)
+    let visibleViewport = CGRect(
+      x: containerFrame.minX,
+      y: visibleTop,
+      width: containerFrame.width,
+      height: visibleBottom - visibleTop
+    )
+    let containmentViewport = visibleViewport.insetBy(dx: -2, dy: -2)
+    let markerIdentifiers = [
+      "solo.settings.feedback-header",
+      "solo.settings.sound",
+      "solo.settings.haptics",
+      "solo.settings.music",
+      "solo.settings.music-explanation",
+      "solo.settings.accessibility-adaptations",
+      "solo.settings.accessibility-explanation",
+      "solo.settings.current-opponents",
+      "solo.settings.current-difficulty",
+      "solo.settings.new-game",
+      "solo.settings.rules-opening",
+      "solo.settings.rules-turn",
+      "solo.settings.rules-column",
+      "solo.settings.rules-round-end",
+      "solo.settings.rules-scoring",
+    ]
+    var priorProgressSignature: String?
+    var unchangedProgressCount = 0
+    var searchGestureCount = 0
+    var alignmentGestureCount = 0
+    let maximumSearchGestures = 18
+    let maximumAlignmentGestures = 4
+
+    while searchGestureCount < maximumSearchGestures
+        || (element.exists && alignmentGestureCount < maximumAlignmentGestures) {
+      if element.exists {
+        let frame = element.frame
+        guard frame.height <= visibleViewport.height else {
+          XCTFail("\(element.identifier) is taller than the settings viewport: \(frame)")
+          return false
+        }
+        if frame.minY >= visibleTop, frame.maxY <= visibleBottom {
+          guard containmentViewport.contains(frame) else {
+            XCTFail(
+              "Settings row \(element.identifier) overflows horizontally; frame=\(frame), viewport=\(visibleViewport)"
+            )
+            return false
+          }
+          if requiresHittable, !element.isHittable {
+            XCTFail("Fully visible settings action \(element.identifier) is not hittable")
+            return false
+          }
+          return true
+        }
+      }
+
+      let progressSignature = markerIdentifiers.compactMap { identifier -> String? in
+        let marker = self.element(in: app, identifier: identifier)
+        guard marker.exists, marker.frame.intersects(visibleViewport) else { return nil }
+        return "\(identifier)@\(Int((marker.frame.midY / 8).rounded()))"
+      }.joined(separator: "|")
+      if progressSignature == priorProgressSignature {
+        unchangedProgressCount += 1
+      } else {
+        unchangedProgressCount = 0
+        priorProgressSignature = progressSignature
+      }
+      if unchangedProgressCount >= 3 {
+        XCTFail(
+          "Settings list stopped progressing toward \(element.identifier); viewport=\(visibleViewport); markers=\(progressSignature)"
+        )
+        return false
+      }
+
+      let adjustment: CGFloat
+      if element.exists, element.frame.minY < visibleTop {
+        guard alignmentGestureCount < maximumAlignmentGestures else { break }
+        adjustment = visibleTop - element.frame.minY + 12
+        alignmentGestureCount += 1
+      } else if element.exists, element.frame.maxY > visibleBottom {
+        guard alignmentGestureCount < maximumAlignmentGestures else { break }
+        adjustment = -(element.frame.maxY - visibleBottom + 12)
+        alignmentGestureCount += 1
+      } else {
+        guard searchGestureCount < maximumSearchGestures else { break }
+        adjustment = -(app.frame.height * 0.38)
+        searchGestureCount += 1
+      }
+      dragContent(
+        in: app,
+        verticallyBy: adjustment,
+        velocity: element.exists ? .slow : .fast
+      )
+    }
+
+    let visibleMarkers = markerIdentifiers.compactMap { identifier -> String? in
+      let marker = self.element(in: app, identifier: identifier)
+      guard marker.exists, marker.frame.intersects(visibleViewport) else { return nil }
+      return "\(identifier)=\(marker.frame)"
+    }.joined(separator: ", ")
+    XCTFail(
+      "Settings row \(element.identifier) did not become fully visible after \(searchGestureCount) search and \(alignmentGestureCount) alignment gestures; viewport=\(visibleViewport); markers=[\(visibleMarkers)]"
+    )
+    return false
+  }
+
+  @MainActor
   private func scrollToElementFullyVisible(
     _ element: XCUIElement,
     in app: XCUIApplication,
     bottomInset: CGFloat = 96,
-    requiresHittable: Bool = true
+    requiresHittable: Bool = true,
+    searchesTowardTopWhenMissing: Bool = false
   ) {
-    for _ in 0..<8 {
+    let navigationBar = app.navigationBars.firstMatch
+    let visibleTop = max(
+      app.frame.minY + 4,
+      navigationBar.exists ? navigationBar.frame.maxY + 4 : app.frame.minY + 4
+    )
+    let settingsNavigationBar = app.navigationBars["Game Settings"]
+    let effectiveBottomInset = settingsNavigationBar.exists ? min(bottomInset, 32) : bottomInset
+    let visibleBottom = app.frame.maxY - effectiveBottomInset
+    let preferredSearchAttempts = 12
+    let maximumAttempts = 24
+    var previousFrame: CGRect?
+    var previousAdjustmentDirection: CGFloat = 0
+    for attempt in 0..<maximumAttempts {
       if element.exists {
         let frame = element.frame
         if (!requiresHittable || element.isHittable),
-           frame.minY >= app.frame.minY,
-           frame.maxY <= app.frame.maxY - bottomInset {
+           frame.minY >= visibleTop,
+           frame.maxY <= visibleBottom,
+           frame.minX >= app.frame.minX - 2,
+           frame.maxX <= app.frame.maxX + 2 {
           return
         }
-        if frame.minY < app.frame.minY {
-          app.swipeDown(velocity: .slow)
+        if (!requiresHittable || element.isHittable),
+           frame.minY >= visibleTop,
+           frame.maxY <= visibleBottom,
+           (frame.minX < app.frame.minX - 2 || frame.maxX > app.frame.maxX + 2) {
+          XCTFail(
+            "\(element.identifier) overflows horizontally; frame=\(frame), app=\(app.frame)"
+          )
+          return
+        }
+        guard frame.height <= visibleBottom - visibleTop else {
+          XCTFail("\(element.identifier) is taller than the available viewport")
+          return
+        }
+        let adjustment: CGFloat
+        if frame.minY < visibleTop {
+          adjustment = visibleTop - frame.minY + 12
+        } else if frame.maxY > visibleBottom {
+          adjustment = -(frame.maxY - visibleBottom + 12)
+        } else {
+          adjustment = requiresHittable && !element.isHittable
+            ? -(app.frame.height * 0.18)
+            : 0
+        }
+        if adjustment != 0 {
+          let direction: CGFloat = adjustment < 0 ? -1 : 1
+          let madeProgress = previousFrame.map {
+            abs(frame.midY - $0.midY) >= 2 || abs(frame.height - $0.height) >= 2
+          } ?? true
+          let isStalled = !madeProgress && direction == previousAdjustmentDirection
+          let coarseAdjustment = app.frame.height * 0.36
+          dragContent(
+            in: app,
+            verticallyBy: isStalled
+              ? copysign(max(abs(adjustment), coarseAdjustment), adjustment)
+              : adjustment,
+            velocity: isStalled ? .fast : .slow
+          )
+          previousFrame = frame
+          previousAdjustmentDirection = direction
           continue
         }
       }
-      app.swipeUp(velocity: .slow)
+      previousFrame = nil
+      previousAdjustmentDirection = 0
+      let shouldSearchTowardTop = attempt < preferredSearchAttempts
+        ? searchesTowardTopWhenMissing
+        : !searchesTowardTopWhenMissing
+      let searchOffset = app.frame.height * 0.42
+      dragContent(
+        in: app,
+        verticallyBy: shouldSearchTowardTop ? searchOffset : -searchOffset,
+        velocity: .fast
+      )
     }
 
-    XCTAssertTrue(element.exists)
+    guard element.exists else {
+      XCTFail("Requested element did not enter the accessibility hierarchy")
+      return
+    }
     let frame = element.frame
     if requiresHittable {
-      XCTAssertTrue(element.isHittable)
+      XCTAssertTrue(
+        element.isHittable,
+        "\(element.identifier) did not become hittable; frame=\(frame), visibleTop=\(visibleTop), visibleBottom=\(visibleBottom)"
+      )
     }
-    XCTAssertGreaterThanOrEqual(frame.minY, app.frame.minY)
-    XCTAssertLessThanOrEqual(frame.maxY, app.frame.maxY - bottomInset)
+    XCTAssertGreaterThanOrEqual(
+      frame.minY,
+      visibleTop,
+      "\(element.identifier) remained above the visible viewport"
+    )
+    XCTAssertLessThanOrEqual(
+      frame.maxY,
+      visibleBottom,
+      "\(element.identifier) remained below the visible viewport"
+    )
+    XCTAssertGreaterThanOrEqual(
+      frame.minX,
+      app.frame.minX - 2,
+      "\(element.identifier) remained left of the visible viewport"
+    )
+    XCTAssertLessThanOrEqual(
+      frame.maxX,
+      app.frame.maxX + 2,
+      "\(element.identifier) remained right of the visible viewport"
+    )
+  }
+
+  @MainActor
+  private func dragContent(
+    in app: XCUIApplication,
+    verticallyBy offset: CGFloat,
+    velocity: XCUIGestureVelocity = .slow
+  ) {
+    let maximumTravel = app.frame.height * 0.42
+    let boundedOffset = copysign(min(abs(offset), maximumTravel), offset)
+    let start = app.coordinate(
+      withNormalizedOffset: CGVector(dx: 0.5, dy: boundedOffset > 0 ? 0.30 : 0.70)
+    )
+    let destination = start.withOffset(CGVector(dx: 0, dy: boundedOffset))
+    start.press(
+      forDuration: 0.05,
+      thenDragTo: destination,
+      withVelocity: velocity,
+      thenHoldForDuration: 0.05
+    )
   }
 }

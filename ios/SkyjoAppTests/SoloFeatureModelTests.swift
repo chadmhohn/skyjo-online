@@ -140,7 +140,7 @@ struct SoloFeatureModelTests {
     #expect(restored.gameID == originalID)
     #expect(try await harness.store.loadSession(for: .guest).session?.gameID == originalID)
 
-    await restored.confirmReplacement()
+    await restored.confirmReplacement()?.value
     let replacementID = try #require(restored.gameID)
     #expect(replacementID != originalID)
     #expect(!restored.isReplacementReviewPresented)
@@ -149,6 +149,54 @@ struct SoloFeatureModelTests {
     #expect(durable.gameID == replacementID)
     #expect(durable.setup.aiOpponentCount == 3)
     #expect(durable.setup.difficulty == .hard)
+  }
+
+  @Test("Replacement review cannot cancel while its transaction is committing")
+  func replacementReviewCannotCancelDuringCommit() async throws {
+    let gate = CompletionCommitGate()
+    let harness = try SoloHarness(replacementCommitBarrier: { await gate.wait() })
+    defer {
+      Task { await gate.release() }
+      harness.dispose()
+    }
+
+    await harness.model.switchOwner(.guest, confirmedAccountID: nil)
+    await harness.model.reviewNewGame()
+    let originalID = try #require(harness.model.gameID)
+    harness.model.showSetup()
+    harness.model.setupOpponentCount = 3
+    await harness.model.reviewNewGame()
+    #expect(harness.model.isReplacementReviewPresented)
+
+    let replacement = try #require(harness.model.confirmReplacement())
+    // The UI-facing call must claim the busy state before its returned task
+    // receives an actor turn, closing the tap/dismiss handoff race.
+    #expect(harness.model.isWorking)
+    #expect(harness.model.isReplacementReviewPresented)
+    #expect(!harness.model.cancelReplacementReview())
+    #expect(harness.model.isReplacementReviewPresented)
+    let commitDidStart = await gate.waitUntilEntered()
+    #expect(commitDidStart)
+    guard commitDidStart else {
+      replacement.cancel()
+      await gate.release()
+      return
+    }
+
+    #expect(harness.model.isWorking)
+    #expect(harness.model.isReplacementReviewPresented)
+    #expect(harness.model.gameID == originalID)
+    #expect(try await harness.store.loadSession(for: .guest).session?.gameID == originalID)
+
+    await gate.release()
+    await replacement.value
+
+    let replacementID = try #require(harness.model.gameID)
+    #expect(replacementID != originalID)
+    #expect(!harness.model.isWorking)
+    #expect(!harness.model.isReplacementReviewPresented)
+    #expect(harness.model.screen == .table)
+    #expect(try await harness.store.loadSession(for: .guest).session?.gameID == replacementID)
   }
 
   @Test("Interrupted start acknowledgement reloads the committed authoritative game")
@@ -234,7 +282,7 @@ struct SoloFeatureModelTests {
     #expect(harness.model.isReplacementReviewPresented)
 
     faults.setFailing(true)
-    await harness.model.confirmReplacement()
+    await harness.model.confirmReplacement()?.value
 
     let authoritative = try #require(try await harness.store.loadSession(for: .guest).session)
     #expect(authoritative.gameID != originalGameID)
@@ -273,7 +321,7 @@ struct SoloFeatureModelTests {
     await harness.model.reviewNewGame()
     acknowledgementFault.setFailing(true)
     readFault.setFailing(true)
-    await harness.model.confirmReplacement()
+    await harness.model.confirmReplacement()?.value
 
     #expect(harness.model.sessionReconciliationRequired)
     #expect(harness.model.gameID == staleGameID)
@@ -325,7 +373,7 @@ struct SoloFeatureModelTests {
     harness.model.showSetup()
     harness.model.setupOpponentCount = 3
     await harness.model.reviewNewGame()
-    await harness.model.confirmReplacement()
+    await harness.model.confirmReplacement()?.value
 
     let authoritative = try #require(try await harness.store.loadSession(for: .guest).session)
     #expect(authoritative.gameID == originalGameID)
@@ -376,7 +424,7 @@ struct SoloFeatureModelTests {
     harness.model.setupOpponentCount = 3
     await harness.model.reviewNewGame()
     faults.arm(1)
-    await harness.model.confirmReplacement()
+    await harness.model.confirmReplacement()?.value
 
     #expect(harness.model.screen == .launcher)
     #expect(harness.model.gameID == originalGameID)
@@ -422,7 +470,7 @@ struct SoloFeatureModelTests {
     harness.model.showSetup()
     await harness.model.reviewNewGame()
     readFault.setFailing(true)
-    await harness.model.confirmReplacement()
+    await harness.model.confirmReplacement()?.value
 
     #expect(harness.model.sessionReconciliationRequired)
     #expect(harness.model.gameID == staleGameID)
@@ -657,7 +705,7 @@ struct SoloFeatureModelTests {
     await interrupted.reviewNewGame()
     #expect(interrupted.isReplacementReviewPresented)
 
-    await interrupted.confirmReplacement()
+    await interrupted.confirmReplacement()?.value
     #expect(interrupted.isReplacementReviewPresented)
     #expect(interrupted.gameID == originalID)
     #expect(interrupted.lastActionError?.contains("previous game") == true)
@@ -683,7 +731,7 @@ struct SoloFeatureModelTests {
     #expect(harness.model.isReplacementReviewPresented)
     try await harness.store.deleteSession(owner: .guest, expectedGameID: removedID)
 
-    await harness.model.confirmReplacement()
+    await harness.model.confirmReplacement()?.value
     #expect(harness.model.screen == .setup)
     #expect(harness.model.game == nil)
     #expect(harness.model.gameID == nil)
@@ -1892,7 +1940,7 @@ struct SoloFeatureModelTests {
     #expect(harness.model.isScoreSummaryPresented)
     #expect(!harness.model.isReplacementReviewPresented)
 
-    await harness.model.confirmReplacement()
+    await harness.model.confirmReplacement()?.value
     #expect(harness.model.screen == .table)
     #expect(harness.model.isScoreSummaryPresented)
     #expect(!harness.model.isReplacementReviewPresented)
@@ -1955,6 +2003,7 @@ struct SoloFeatureModelTests {
       #expect(data.count == artifact.0)
       #expect(digest == artifact.1)
     }
+
   }
 
   private func makeHarness() throws -> SoloHarness {
@@ -2057,6 +2106,7 @@ private final class SoloHarness {
   init(
     persistenceEnvironment: SoloPersistenceEnvironment = SoloPersistenceEnvironment(),
     persistenceIsDurable: Bool = true,
+    replacementCommitBarrier: @escaping @Sendable () async -> Void = {},
     completionCommitBarrier: @escaping @Sendable () async -> Void = {},
     completionStatusReadBarrier: @escaping @Sendable () async -> Void = {},
     aiTurnDelay: @escaping @Sendable () async throws -> Void = {
@@ -2085,6 +2135,7 @@ private final class SoloHarness {
       preferences: preferences,
       feedback: feedback,
       persistenceIsDurable: persistenceIsDurable,
+      replacementCommitBarrier: replacementCommitBarrier,
       completionCommitBarrier: completionCommitBarrier,
       completionStatusReadBarrier: completionStatusReadBarrier,
       aiTurnDelay: aiTurnDelay

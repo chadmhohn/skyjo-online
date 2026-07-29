@@ -58,6 +58,7 @@ final class SoloFeatureModel {
   @ObservationIgnored private let preferences: SoloPreferencesStore
   @ObservationIgnored private let feedback: GameFeedbackController
   @ObservationIgnored private let persistenceIsDurable: Bool
+  @ObservationIgnored private let replacementCommitBarrier: @Sendable () async -> Void
   @ObservationIgnored private let completionCommitBarrier: @Sendable () async -> Void
   @ObservationIgnored private let completionStatusReadBarrier: @Sendable () async -> Void
   @ObservationIgnored private let aiTurnDelay: @Sendable () async throws -> Void
@@ -122,6 +123,7 @@ final class SoloFeatureModel {
     feedback: GameFeedbackController,
     initialWarning: SoloPersistenceWarning? = nil,
     persistenceIsDurable: Bool = true,
+    replacementCommitBarrier: @escaping @Sendable () async -> Void = {},
     completionCommitBarrier: @escaping @Sendable () async -> Void = {},
     completionStatusReadBarrier: @escaping @Sendable () async -> Void = {},
     aiTurnDelay: @escaping @Sendable () async throws -> Void = {
@@ -135,6 +137,7 @@ final class SoloFeatureModel {
     self.preferences = preferences
     self.feedback = feedback
     self.persistenceIsDurable = persistenceIsDurable
+    self.replacementCommitBarrier = replacementCommitBarrier
     self.completionCommitBarrier = completionCommitBarrier
     self.completionStatusReadBarrier = completionStatusReadBarrier
     self.aiTurnDelay = aiTurnDelay
@@ -440,16 +443,37 @@ final class SoloFeatureModel {
     }
   }
 
-  func confirmReplacement() async {
+  @discardableResult
+  func confirmReplacement() -> Task<Void, Never>? {
     guard !hasUncommittedTerminalCompletion else {
       presentUncommittedCompletionForRecovery()
-      return
+      return nil
     }
     guard hasDurableActiveSession, let gameID else {
       isReplacementReviewPresented = false
-      return
+      return nil
     }
-    await startConfiguredGame(replacingGameID: gameID)
+    guard !sessionReconciliationRequired,
+          let operation = beginWorking()
+    else { return nil }
+
+    // Claim the working operation synchronously in the button action. SwiftUI
+    // can therefore disable Cancel and interactive dismissal before this task
+    // gets its first actor turn.
+    return Task { @MainActor [weak self] in
+      guard let self else { return }
+      await startConfiguredGame(
+        replacingGameID: gameID,
+        operation: operation
+      )
+    }
+  }
+
+  @discardableResult
+  func cancelReplacementReview() -> Bool {
+    guard !isWorking else { return false }
+    isReplacementReviewPresented = false
+    return true
   }
 
   func leaveTable() {
@@ -798,12 +822,25 @@ final class SoloFeatureModel {
     guard !sessionReconciliationRequired,
           let operation = beginWorking()
     else { return }
+    await startConfiguredGame(replacingGameID: replacingGameID, operation: operation)
+  }
+
+  private func startConfiguredGame(
+    replacingGameID: UUID?,
+    operation: SoloWorkingOperation
+  ) async {
+    guard workingOperation == operation, isWorking else { return }
     let expectedGeneration = operation.generation
     let expectedOwner = operation.owner
     lastActionError = nil
     defer {
       finishWorking(operation, scheduleAI: true)
     }
+    guard !hasUncommittedTerminalCompletion,
+          !sessionReconciliationRequired,
+          generation == expectedGeneration,
+          owner == expectedOwner
+    else { return }
 
     let newGameID = UUID()
     var random = SystemSkyjoRandom()
@@ -831,6 +868,8 @@ final class SoloFeatureModel {
     do {
       let snapshot: SoloSessionSnapshot
       if let replacingGameID {
+        await replacementCommitBarrier()
+        guard generation == expectedGeneration, owner == expectedOwner else { return }
         snapshot = try await store.replaceSession(
           owner: expectedOwner,
           expectedGameID: replacingGameID,

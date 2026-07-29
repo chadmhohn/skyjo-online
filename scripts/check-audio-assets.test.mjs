@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  builtNativeApplicationInventoryFailures,
   extractWavePcm,
+  nativeApplicationResourceNames,
   parseAppleAudioInfo,
-  unexpectedNativeAudioResources
+  publicResourceInventoryFailures,
+  unexpectedNativeResources,
+  unexpectedPublicResources
 } from './check-audio-assets.mjs';
 
 const validAppleAudioInfo = `<?xml version="1.0" encoding="UTF8"?>
@@ -103,32 +107,135 @@ test('extractWavePcm rejects mismatched formats and truncated data chunks', () =
   assert.throws(() => extractWavePcm(truncatedData, 44_100), /chunk exceeds the file bounds/);
 });
 
-test('native audio inventory rejects alternate bundled formats outside the exact cue allowlist', () => {
+test('native resource inventory rejects alternate or disguised media outside the exact allowlist', () => {
   assert.deepEqual(
-    unexpectedNativeAudioResources([
+    unexpectedNativeResources([
       'Audio/card-flip.mp3',
       'Audio/card-pickup.mp3',
       'Audio/card-place.mp3',
+      'Audio/README.md',
       'Audio/table-ambience.m4a',
       'Audio/ringtone.m4r',
+      'Audio/disguised.bin',
+      'Assets.xcassets/Contents.json',
+      'Assets.xcassets/Hidden.dataset/theme.data',
       'Effects/bonus.WAV',
       'Effects/voice.aifc',
       'Music/radio.adts',
       'Music/theme.mp4',
+      'Music/theme.m4v',
       'Music/trailer.3gp',
       'Music/theme.caf',
-      'Assets.xcassets/Contents.json',
-      'Audio/README.md'
+      'PrivacyInfo.xcprivacy'
     ]),
     [
+      'Assets.xcassets/Hidden.dataset/theme.data',
+      'Audio/disguised.bin',
       'Audio/ringtone.m4r',
       'Audio/table-ambience.m4a',
       'Effects/bonus.WAV',
       'Effects/voice.aifc',
       'Music/radio.adts',
       'Music/theme.caf',
+      'Music/theme.m4v',
       'Music/theme.mp4',
       'Music/trailer.3gp'
     ]
+  );
+});
+
+test('public inventory rejects media anywhere outside the exact published allowlist', () => {
+  assert.deepEqual(
+    unexpectedPublicResources([
+      'audio/README.md',
+      'audio/card-flip.mp3',
+      'audio/card-pickup.mp3',
+      'audio/card-place.mp3',
+      'manifest.webmanifest',
+      'skyjo-icon.svg',
+      'audio/theme.m4v',
+      'music/theme.m4v',
+      'theme.bin',
+      'nested/voice.caf'
+    ]),
+    ['audio/theme.m4v', 'music/theme.m4v', 'nested/voice.caf', 'theme.bin']
+  );
+  assert.deepEqual(
+    publicResourceInventoryFailures([
+      'audio/README.md',
+      'audio/card-flip.mp3',
+      'audio/card-pickup.mp3',
+      'audio/card-place.mp3',
+      'manifest.webmanifest',
+      'skyjo-icon-180.png',
+      'skyjo-icon-192.png',
+      'skyjo-icon-512.png',
+      'skyjo-icon-v2-180.png',
+      'skyjo-icon-v2-192.png',
+      'skyjo-icon-v2-512.png',
+      'skyjo-icon-v2.svg',
+      'music/theme.m4v'
+    ]),
+    [
+      'Missing approved public resource skyjo-icon.svg.',
+      'Unexpected public resource music/theme.m4v.'
+    ]
+  );
+});
+
+test('clean native application inventory rejects every nested or disguised addition', () => {
+  const approved = [
+    'Assets.car',
+    'Info.plist',
+    'PkgInfo',
+    'PrivacyInfo.xcprivacy',
+    'SkyjoNative',
+    'card-flip.mp3',
+    'card-pickup.mp3',
+    'card-place.mp3'
+  ];
+  assert.deepEqual(builtNativeApplicationInventoryFailures(approved), []);
+  assert.deepEqual(
+    builtNativeApplicationInventoryFailures([
+      ...approved.filter((file) => file !== 'PrivacyInfo.xcprivacy'),
+      'Frameworks/Some.framework/theme.m4v',
+      'PlugIns/Anything.appex/theme.bin'
+    ]),
+    [
+      'Missing approved native application bundle file PrivacyInfo.xcprivacy.',
+      'Unexpected native application bundle file Frameworks/Some.framework/theme.m4v.',
+      'Unexpected native application bundle file PlugIns/Anything.appex/theme.bin.'
+    ]
+  );
+});
+
+test('Xcode application resource phase inventory fails closed on added build resources', () => {
+  const project = `
+/* Begin PBXNativeTarget section */
+    A10000000000000000000001 /* SkyjoNative */ = {
+      isa = PBXNativeTarget;
+      buildPhases = (
+        A20000000000000000000003 /* Resources */,
+      );
+      productType = "com.apple.product-type.application";
+    };
+/* End PBXNativeTarget section */
+/* Begin PBXResourcesBuildPhase section */
+    A20000000000000000000003 /* Resources */ = {
+      isa = PBXResourcesBuildPhase;
+      files = (
+        B20000000000000000000005 /* Assets.xcassets in Resources */,
+        C20000000000000000000006 /* card-flip.mp3 in Resources */,
+        D20000000000000000000001 /* theme.m4v in Resources */,
+      );
+    };
+/* End PBXResourcesBuildPhase section */`;
+  assert.deepEqual(
+    nativeApplicationResourceNames(project),
+    ['Assets.xcassets', 'card-flip.mp3', 'theme.m4v']
+  );
+  assert.throws(
+    () => nativeApplicationResourceNames(project.replace(' in Resources */', ' */')),
+    /unparseable resource entry/
   );
 });

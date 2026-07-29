@@ -7,9 +7,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const publicDirectory = path.join(repoRoot, 'public');
 const audioDirectory = path.join(repoRoot, 'public', 'audio');
 const nativeResourcesDirectory = path.join(repoRoot, 'ios', 'SkyjoApp', 'Resources');
 const nativeAudioDirectory = path.join(repoRoot, 'ios', 'SkyjoApp', 'Resources', 'Audio');
+const nativeProjectPath = path.join(repoRoot, 'ios', 'SkyjoNative.xcodeproj', 'project.pbxproj');
 
 export const acceptedFlipSha256 = 'dc9c08e4b172d404ce2f1ba8380d552fdd1d302419e2872f067f0d761147df90';
 export const acceptedCueSha256 = Object.freeze({
@@ -22,60 +24,51 @@ export const requiredCueFiles = [
   'card-pickup.mp3',
   'card-place.mp3'
 ];
+const acceptedCueSizeBytes = Object.freeze({
+  'card-flip.mp3': 24_004,
+  'card-pickup.mp3': 4_225,
+  'card-place.mp3': 3_702
+});
 const requiredNativeAudioResources = requiredCueFiles.map((file) => `Audio/${file}`);
-// Include every common Core Audio / AVFoundation extension plus media
-// containers that can carry an audio stream. A future video resource therefore
-// also needs an explicit gate update instead of silently becoming background
-// audio through AVPlayer.
-const nativeAudioExtensions = new Set([
-  '.3g2',
-  '.3gp',
-  '.aa',
-  '.aac',
-  '.aax',
-  '.ac3',
-  '.adts',
-  '.aif',
-  '.aifc',
-  '.aiff',
-  '.alac',
-  '.amr',
-  '.ape',
-  '.au',
-  '.caf',
-  '.dss',
-  '.flac',
-  '.gsm',
-  '.m4a',
-  '.m4b',
-  '.m4p',
-  '.m4r',
-  '.mid',
-  '.midi',
-  '.mka',
-  '.mkv',
-  '.mov',
-  '.mp2',
-  '.mp3',
-  '.mp4',
-  '.mpa',
-  '.mpeg',
-  '.mpg',
-  '.oga',
-  '.ogg',
-  '.opus',
-  '.ra',
-  '.ram',
-  '.raw',
-  '.snd',
-  '.tta',
-  '.voc',
-  '.wav',
-  '.wave',
-  '.webm',
-  '.wma',
-  '.wv'
+const approvedPublicResourceFiles = new Set([
+  'audio/README.md',
+  ...requiredCueFiles.map((file) => `audio/${file}`),
+  'manifest.webmanifest',
+  'skyjo-icon-180.png',
+  'skyjo-icon-192.png',
+  'skyjo-icon-512.png',
+  'skyjo-icon-v2-180.png',
+  'skyjo-icon-v2-192.png',
+  'skyjo-icon-v2-512.png',
+  'skyjo-icon-v2.svg',
+  'skyjo-icon.svg'
 ]);
+// Exact resource inventory is deliberately broader than an audio-extension
+// list. AVFoundation can decode audio from evolving containers and from bytes
+// with misleading extensions, so every new bundled resource must receive an
+// explicit review and gate update before it enters the native target.
+const approvedNativeResourceFiles = new Set([
+  'Assets.xcassets/AccentColor.colorset/Contents.json',
+  'Assets.xcassets/Contents.json',
+  'Audio/README.md',
+  ...requiredNativeAudioResources,
+  'Info.plist',
+  'PrivacyInfo.xcprivacy',
+  'SkyjoNative.entitlements'
+]);
+const approvedNativeProjectResourceNames = [
+  'Assets.xcassets',
+  'PrivacyInfo.xcprivacy',
+  ...requiredCueFiles
+].sort();
+const approvedBuiltNativeApplicationFiles = [
+  'Assets.car',
+  'Info.plist',
+  'PkgInfo',
+  'PrivacyInfo.xcprivacy',
+  'SkyjoNative',
+  ...requiredCueFiles
+].sort();
 
 const legacyAmbienceFile = 'table-ambience.mp3';
 const maxTransferredBytes = 80 * 1024;
@@ -96,33 +89,128 @@ function portableRelativePath(value) {
   return value.split(path.sep).join('/');
 }
 
-function isAudioResource(value) {
-  return nativeAudioExtensions.has(path.extname(value).toLowerCase());
-}
-
-export function unexpectedNativeAudioResources(resourceFiles) {
+export function unexpectedNativeResources(resourceFiles) {
   return resourceFiles
     .map((file) => portableRelativePath(file))
-    .filter(isAudioResource)
-    .filter((file) => !requiredNativeAudioResources.includes(file))
+    .filter((file) => !approvedNativeResourceFiles.has(file))
     .sort();
 }
 
-async function listRelativeResourceFiles(root, directory = root) {
+export function unexpectedPublicResources(resourceFiles) {
+  return resourceFiles
+    .map((file) => portableRelativePath(file))
+    .filter((file) => !approvedPublicResourceFiles.has(file))
+    .sort();
+}
+
+function exactInventoryFailures(resourceFiles, approvedFiles, label) {
+  const normalized = resourceFiles.map((file) => portableRelativePath(file)).sort();
+  const received = new Set(normalized);
+  const approved = new Set(approvedFiles);
+  const failures = [];
+  for (const expected of approvedFiles) {
+    if (!received.has(expected)) failures.push(`Missing approved ${label} ${expected}.`);
+  }
+  for (const unexpected of normalized) {
+    if (!approved.has(unexpected)) failures.push(`Unexpected ${label} ${unexpected}.`);
+  }
+  for (let index = 1; index < normalized.length; index += 1) {
+    if (normalized[index] === normalized[index - 1]) {
+      failures.push(`Duplicate ${label} ${normalized[index]}.`);
+    }
+  }
+  return failures;
+}
+
+export function publicResourceInventoryFailures(resourceFiles) {
+  return exactInventoryFailures(
+    resourceFiles,
+    [...approvedPublicResourceFiles].sort(),
+    'public resource'
+  );
+}
+
+export function builtNativeApplicationInventoryFailures(resourceFiles) {
+  return exactInventoryFailures(
+    resourceFiles,
+    approvedBuiltNativeApplicationFiles,
+    'native application bundle file'
+  );
+}
+
+function projectSection(projectText, kind) {
+  const begin = `/* Begin ${kind} section */`;
+  const end = `/* End ${kind} section */`;
+  const startIndex = projectText.indexOf(begin);
+  const endIndex = projectText.indexOf(end, startIndex + begin.length);
+  if (startIndex === -1 || endIndex === -1) {
+    throw new Error(`The Xcode project is missing its ${kind} section.`);
+  }
+  return projectText.slice(startIndex + begin.length, endIndex);
+}
+
+function projectObject(section, marker) {
+  const startIndex = section.indexOf(marker);
+  if (startIndex === -1) throw new Error(`The Xcode project is missing ${marker}.`);
+  const remainder = section.slice(startIndex + marker.length);
+  const closing = remainder.match(/\n[\t ]*};/);
+  if (!closing || closing.index === undefined) {
+    throw new Error(`The Xcode project has a malformed ${marker} object.`);
+  }
+  const endIndex = startIndex + marker.length + closing.index + closing[0].length;
+  return section.slice(startIndex, endIndex);
+}
+
+export function nativeApplicationResourceNames(projectText) {
+  const target = projectObject(
+    projectSection(projectText, 'PBXNativeTarget'),
+    '/* SkyjoNative */ = {'
+  );
+  if (!target.includes('productType = "com.apple.product-type.application";')) {
+    throw new Error('SkyjoNative is no longer the application target.');
+  }
+  const buildPhases = target.match(/buildPhases = \(([\s\S]*?)\);/)?.[1];
+  if (!buildPhases) throw new Error('SkyjoNative has no parseable build phases.');
+  const resourcePhaseID = buildPhases.match(
+    /([A-F0-9]{24}) \/\* Resources \*\//
+  )?.[1];
+  if (!resourcePhaseID) throw new Error('SkyjoNative has no Resources build phase.');
+
+  const resources = projectObject(
+    projectSection(projectText, 'PBXResourcesBuildPhase'),
+    `${resourcePhaseID} /* Resources */ = {`
+  );
+  const fileList = resources.match(/files = \(([\s\S]*?)\);/)?.[1];
+  if (fileList === undefined) {
+    throw new Error('SkyjoNative has no parseable Resources file list.');
+  }
+  return fileList
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const entry = line.match(/^[A-F0-9]{24} \/\* (.+) in Resources \*\/,$/);
+      if (!entry) throw new Error(`SkyjoNative has an unparseable resource entry: ${line}`);
+      return entry[1];
+    })
+    .sort();
+}
+
+async function listRelativeResourceFiles(root, label, directory = root) {
   const files = [];
   const entries = await fs.readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
     const absolutePath = path.join(directory, entry.name);
     const relativePath = portableRelativePath(path.relative(root, absolutePath));
     if (entry.isSymbolicLink()) {
-      throw new Error(`Native resources must not contain symbolic links: ${relativePath}.`);
+      throw new Error(`${label} must not contain symbolic links: ${relativePath}.`);
     }
     if (entry.isDirectory()) {
-      files.push(...await listRelativeResourceFiles(root, absolutePath));
+      files.push(...await listRelativeResourceFiles(root, label, absolutePath));
     } else if (entry.isFile()) {
       files.push(relativePath);
     } else {
-      throw new Error(`Native resources contain an unsupported entry: ${relativePath}.`);
+      throw new Error(`${label} contain an unsupported entry: ${relativePath}.`);
     }
   }
   return files.sort();
@@ -437,26 +525,48 @@ export async function auditAudioAssets() {
   const mediaBackend = resolveMediaBackend();
   const probeAudio = mediaBackend === 'ffmpeg' ? probeAudioWithFfmpeg : probeAudioWithApple;
   const decodeMonoPcm = mediaBackend === 'ffmpeg' ? decodeMonoPcmWithFfmpeg : decodeMonoPcmWithApple;
-  const directoryEntries = await fs.readdir(audioDirectory, { withFileTypes: true });
-  const nativeResourceFiles = await listRelativeResourceFiles(nativeResourcesDirectory);
-  const cueFiles = directoryEntries
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.mp3'))
-    .map((entry) => entry.name)
+  const publicResourceFiles = await listRelativeResourceFiles(
+    publicDirectory,
+    'Public resources'
+  );
+  const nativeResourceFiles = await listRelativeResourceFiles(
+    nativeResourcesDirectory,
+    'Native resources'
+  );
+  const nativeProjectText = await fs.readFile(nativeProjectPath, 'utf8');
+  const cueFiles = publicResourceFiles
+    .filter((file) => file.startsWith('audio/') && !file.slice('audio/'.length).includes('/'))
+    .map((file) => file.slice('audio/'.length))
+    .filter((file) => file.toLowerCase().endsWith('.mp3'))
     .sort();
   const failures = [];
-  const nativeAudioResources = nativeResourceFiles.filter(isAudioResource);
 
   if (cueFiles.includes(legacyAmbienceFile)) {
     failures.push(`${legacyAmbienceFile} must be removed; continuous ambience is outside issue #159.`);
   }
   for (const required of requiredCueFiles) {
     if (!cueFiles.includes(required)) failures.push(`Missing required cue ${required}.`);
-    if (!nativeAudioResources.includes(`Audio/${required}`)) {
+    if (!nativeResourceFiles.includes(`Audio/${required}`)) {
       failures.push(`Missing required native cue ${required}.`);
     }
   }
-  for (const unexpected of unexpectedNativeAudioResources(nativeResourceFiles)) {
-    failures.push(`Unexpected native cue ${unexpected}; document and gate new audio before bundling it.`);
+  for (const unexpected of unexpectedNativeResources(nativeResourceFiles)) {
+    failures.push(
+      `Unexpected native resource ${unexpected}; document and gate new bundled resources before shipping them.`
+    );
+  }
+  failures.push(...publicResourceInventoryFailures(publicResourceFiles));
+  try {
+    const projectResources = nativeApplicationResourceNames(nativeProjectText);
+    if (JSON.stringify(projectResources) !== JSON.stringify(approvedNativeProjectResourceNames)) {
+      failures.push(
+        `SkyjoNative Resources must remain the exact approved inventory; received ${projectResources.join(', ') || 'none'}.`
+      );
+    }
+  } catch (error) {
+    failures.push(
+      `SkyjoNative Resources could not be verified (${error instanceof Error ? error.message : String(error)}).`
+    );
   }
 
   const report = [];
@@ -576,7 +686,67 @@ export async function auditAudioAssets() {
   };
 }
 
+export async function auditBuiltNativeApplication(bundlePath) {
+  const failures = [];
+  let resourceFiles = [];
+  try {
+    const bundleStat = await fs.lstat(bundlePath);
+    if (bundleStat.isSymbolicLink() || !bundleStat.isDirectory()) {
+      throw new Error('bundle path must be a real directory, not a symbolic link');
+    }
+    resourceFiles = await listRelativeResourceFiles(
+      bundlePath,
+      'Built native application bundle'
+    );
+    failures.push(...builtNativeApplicationInventoryFailures(resourceFiles));
+  } catch (error) {
+    failures.push(
+      `Built native application bundle could not be inventoried (${error instanceof Error ? error.message : String(error)}).`
+    );
+  }
+
+  for (const fileName of requiredCueFiles) {
+    try {
+      const bytes = await fs.readFile(path.join(bundlePath, fileName));
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      if (bytes.length !== acceptedCueSizeBytes[fileName]) {
+        failures.push(
+          `${fileName}: built native bundle size ${bytes.length} does not match approved size ${acceptedCueSizeBytes[fileName]}.`
+        );
+      }
+      if (sha256 !== acceptedCueSha256[fileName]) {
+        failures.push(`${fileName}: built native bundle SHA-256 changed (${sha256}).`);
+      }
+    } catch (error) {
+      failures.push(
+        `${fileName}: built native bundle cue could not be read (${error instanceof Error ? error.message : String(error)}).`
+      );
+    }
+  }
+
+  return {
+    bundle: path.basename(bundlePath),
+    failures,
+    files: resourceFiles
+  };
+}
+
 async function main() {
+  if (process.argv.length === 4 && process.argv[2] === '--native-app-bundle') {
+    const result = await auditBuiltNativeApplication(path.resolve(process.argv[3]));
+    console.log(JSON.stringify(result, null, 2));
+    if (result.failures.length > 0) {
+      throw new Error(
+        `Skyjo built native application gate failed with ${result.failures.length} finding(s).`
+      );
+    }
+    return;
+  }
+  if (process.argv.length !== 2) {
+    throw new Error(
+      'Usage: node scripts/check-audio-assets.mjs [--native-app-bundle <absolute-app-path>]'
+    );
+  }
   const result = await auditAudioAssets();
   console.log(JSON.stringify(result, null, 2));
   if (result.failures.length > 0) {
