@@ -1257,6 +1257,102 @@ struct AccessSessionClientTests {
     #expect(invalidationReason.get() == .accessRequired)
   }
 
+  @Test(
+    "A changed login generation cannot mutate an in-flight stats row",
+    arguments: StaleStatsDeliveryResponse.allCases
+  )
+  func staleStatsAuthorizationLeavesOutboxUntouched(
+    response: StaleStatsDeliveryResponse
+  ) async throws {
+    let baseURL = URL(string: "https://solo-delivery-fence-\(UUID().uuidString).test")!
+    let cookieStorage = testCookieStorage(for: baseURL)
+    let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000003")!
+    let gameID = UUID(uuidString: "40000000-0000-4000-8000-000000000001")!
+    let firstFence = SessionInvalidationRelay.AuthorizationFence(
+      accountID: accountID,
+      generation: 1
+    )
+    let currentFence = LockedValue<SessionInvalidationRelay.AuthorizationFence?>(firstFence)
+    let responseGate = StaleStatsHTTPResponseGate(response: response)
+    StubURLProtocol.install { request in
+      try responseGate.respond(to: request)
+    }
+    let session = SkyjoURLSessionFactory.makeDedicated(
+      cookieStorage: cookieStorage,
+      protocolClasses: [StubURLProtocol.self]
+    )
+    let client = SkyjoAPIClient(
+      environment: SkyjoNetworkEnvironment(baseURL: baseURL),
+      session: session
+    )
+    let adapter = SoloStatsDeliveryAdapter(
+      client: client,
+      authorizationFence: { requestedAccountID in
+        requestedAccountID == accountID ? currentFence.get() : nil
+      },
+      invalidateAuthorization: { _, _ in
+        Issue.record("These synthetic responses must not invalidate the live session.")
+      }
+    )
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    let terminal = try makeStatsDeliveryTerminalState()
+    let setup = try SoloAISetup.resolve(
+      SoloGameSetup(aiOpponentCount: 1, difficulty: .hard),
+      state: terminal,
+      gameId: gameID.uuidString.lowercased()
+    )
+    try await store.completeSession(
+      owner: .account(accountID),
+      gameID: gameID,
+      state: terminal,
+      setup: setup,
+      saveSequence: 0,
+      completedAtMilliseconds: 100
+    )
+    let coordinator = StatsOutboxCoordinator(store: store) { request in
+      try await adapter.deliver(request)
+    }
+    await coordinator.setConfirmedAccount(accountID)
+    defer {
+      responseGate.release()
+      session.invalidateAndCancel()
+      clearCookies(cookieStorage, for: baseURL)
+      StubURLProtocol.removeHandler()
+    }
+
+    let staleFlush = Task { await coordinator.flush(force: true) }
+    await responseGate.waitUntilStarted()
+    currentFence.set(
+      SessionInvalidationRelay.AuthorizationFence(
+        accountID: accountID,
+        generation: 2
+      )
+    )
+    responseGate.release()
+
+    #expect(
+      await staleFlush.value
+        == StatsFlushResult(attempted: 0, delivered: 0, pending: 0, aborted: true)
+    )
+    let unchanged = try await store.outboxStatus(accountID: accountID)
+    #expect(unchanged.queued == 1)
+    #expect(unchanged.terminalFailures == 0)
+    #expect(!unchanged.blockedByTerminalFailure)
+
+    StubURLProtocol.install { request in
+      try stubResponse(
+        for: request,
+        statusCode: 201,
+        body: "{\"game\":\(statsGameJSON())}"
+      )
+    }
+    let recovered = await coordinator.flush(force: false)
+    #expect(recovered == StatsFlushResult(attempted: 1, delivered: 1, pending: 0, aborted: false))
+    #expect(try await store.outboxStatus(accountID: accountID).queued == 0)
+    await coordinator.dispose()
+  }
+
   @Test("Stats detail endpoints reject mismatched response identities")
   func statsDetailIdentityMismatch() async throws {
     let baseURL = URL(string: "https://stats-identity-\(UUID().uuidString).test")!
@@ -1706,6 +1802,72 @@ private final class LockedValue<Value: Sendable>: @unchecked Sendable {
   }
 }
 
+enum StaleStatsDeliveryResponse: String, CaseIterable, Sendable {
+  case accepted
+  case retryableFailure
+  case permanentFailure
+}
+
+private final class StaleStatsHTTPResponseGate: @unchecked Sendable {
+  private let response: StaleStatsDeliveryResponse
+  private let releaseSemaphore = DispatchSemaphore(value: 0)
+  private let lock = NSLock()
+  private var started = false
+  private var startedWaiter: CheckedContinuation<Void, Never>?
+
+  init(response: StaleStatsDeliveryResponse) {
+    self.response = response
+  }
+
+  func respond(to request: URLRequest) throws -> (HTTPURLResponse, Data) {
+    lock.lock()
+    started = true
+    let waiter = startedWaiter
+    startedWaiter = nil
+    lock.unlock()
+    waiter?.resume()
+    releaseSemaphore.wait()
+
+    switch response {
+    case .accepted:
+      return try stubResponse(
+        for: request,
+        statusCode: 201,
+        body: "{\"game\":\(statsGameJSON())}"
+      )
+    case .retryableFailure:
+      return try stubResponse(
+        for: request,
+        statusCode: 503,
+        body: #"{"code":"SERVICE_UNAVAILABLE","error":"Service unavailable."}"#
+      )
+    case .permanentFailure:
+      return try stubResponse(
+        for: request,
+        statusCode: 413,
+        body: #"{"code":"REQUEST_TOO_LARGE","error":"Request body is too large."}"#
+      )
+    }
+  }
+
+  func waitUntilStarted() async {
+    await withCheckedContinuation { continuation in
+      lock.lock()
+      if started {
+        lock.unlock()
+        continuation.resume()
+      } else {
+        startedWaiter = continuation
+        lock.unlock()
+      }
+    }
+  }
+
+  func release() {
+    releaseSemaphore.signal()
+  }
+}
+
 private enum StubError: Error {
   case invalidRequest
 }
@@ -1896,6 +2058,53 @@ private func accountUserJSON(displayName: String = "Fixture User") -> String {
     "lastLoginAt":null
   }
   """
+}
+
+private func makeStatsDeliveryTerminalState() throws -> GameState {
+  var random = SeededRandom(seed: 18_702)
+  var state = GameEngine.startFreshGame(aiOpponentCount: 1, random: &random)
+  for _ in 0..<20 {
+    for _ in 0..<1_000 where state.phase != .roundOver && state.phase != .gameOver {
+      state = advanceStatsDeliveryState(state, random: &random)
+    }
+    if state.phase == .gameOver { return state }
+    try #require(state.phase == .roundOver)
+    state = GameEngine.startNextRound(state, random: &random)
+  }
+  try #require(state.phase == .gameOver)
+  return state
+}
+
+private func advanceStatsDeliveryState<R: SkyjoRandomNumberGenerator>(
+  _ source: GameState,
+  random: inout R
+) -> GameState {
+  switch source.phase {
+  case .openingReveal:
+    guard source.players.indices.contains(source.currentPlayerIndex),
+          let index = source.players[source.currentPlayerIndex].grid.firstIndex(where: {
+            !$0.faceUp && !$0.removed
+          })
+    else { return source }
+    return GameEngine.revealOpeningCard(source, at: index)
+  case .chooseSource:
+    return GameEngine.drawBlind(source, random: &random)
+  case .chooseReplacement:
+    guard source.players.indices.contains(source.currentPlayerIndex) else { return source }
+    if source.selectedSource == .draw,
+       let hiddenIndex = source.players[source.currentPlayerIndex].grid.firstIndex(where: {
+         !$0.faceUp && !$0.removed
+       })
+    {
+      return GameEngine.discardDrawnAndReveal(source, at: hiddenIndex)
+    }
+    guard let replaceIndex = source.players[source.currentPlayerIndex].grid.firstIndex(where: {
+      !$0.removed
+    }) else { return source }
+    return GameEngine.replaceCard(source, at: replaceIndex)
+  case .roundOver, .gameOver:
+    return source
+  }
 }
 
 private func statsSummaryNumbersJSON() -> String {

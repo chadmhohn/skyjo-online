@@ -618,7 +618,11 @@ if [[ "$test_mode" == "networking-contracts" ]]; then
   fi
 fi
 
-xcrun simctl boot "$simulator_udid" >/dev/null 2>&1 || true
+# A long-lived iOS 26 simulator can acknowledge XCUIDevice rotation while its
+# interface remains stuck in portrait. Cold boot the isolated test destination
+# before injecting launchd state so orientation assertions stay deterministic.
+xcrun simctl shutdown "$simulator_udid" >/dev/null 2>&1 || true
+xcrun simctl boot "$simulator_udid"
 xcrun simctl bootstatus "$simulator_udid" -b >/dev/null
 # Start every contract/UI run from a clean app container so persistent-cookie
 # assertions measure this run rather than a prior local simulator install.

@@ -251,6 +251,14 @@ for udid in "$standard_udid" "$large_udid" "$ipad_udid"; do
   ui_reduce_motion_states+=("$reduce_motion_state")
   ui_differentiate_states+=("$differentiate_state")
   ui_matrix_marker_states+=("$matrix_marker_state")
+  if [[ "$udid" == "$standard_udid" || "$udid" == "$ipad_udid" ]]; then
+    # A long-lived iOS/iPadOS simulator can accept XCTest's device rotation
+    # while retaining a stale portrait interface. Preserve its state above,
+    # then cold boot each landscape destination before measuring geometry.
+    xcrun simctl shutdown "$udid"
+    xcrun simctl boot "$udid"
+    xcrun simctl bootstatus "$udid" -b
+  fi
   xcrun simctl ui "$udid" increase_contrast enabled
   [[ "$(xcrun simctl ui "$udid" increase_contrast)" == "enabled" ]] || {
     printf 'ERROR: Failed to verify Increase Contrast on simulator %s.\n' "$udid" >&2

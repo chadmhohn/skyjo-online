@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +34,45 @@ const minimumMeaningfulRms = 10 ** (-46 / 20);
 const maximumTailPeak = 10 ** (-24 / 20);
 const maximumTailRms = 10 ** (-36 / 20);
 const maximumFinalSample = 10 ** (-40 / 20);
+const appleAfconvertPath = '/usr/bin/afconvert';
+const appleAfinfoPath = '/usr/bin/afinfo';
+
+function mediaToolStatus(command, args) {
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+    windowsHide: true
+  });
+  return result.error ? { error: result.error, status: null } : { error: null, status: result.status };
+}
+
+function resolveMediaBackend() {
+  const ffprobe = mediaToolStatus('ffprobe', ['-version']);
+  const ffmpeg = mediaToolStatus('ffmpeg', ['-version']);
+  if (ffprobe.status === 0 && ffmpeg.status === 0) return 'ffmpeg';
+
+  if (process.platform === 'darwin') {
+    const afinfo = mediaToolStatus(appleAfinfoPath, ['-h']);
+    const afconvert = mediaToolStatus(appleAfconvertPath, ['-h']);
+    // Both Apple tools intentionally return non-zero after printing help. A
+    // completed absolute-path invocation is enough to establish availability;
+    // the real probe and decode still have to exit zero for every cue.
+    if (!afinfo.error && afinfo.status !== null && !afconvert.error && afconvert.status !== null) {
+      return 'apple-coreaudio';
+    }
+  }
+
+  const unavailable = [
+    ffprobe.status === 0 ? null : `ffprobe (${ffprobe.error?.message || `exit ${ffprobe.status}`})`,
+    ffmpeg.status === 0 ? null : `ffmpeg (${ffmpeg.error?.message || `exit ${ffmpeg.status}`})`
+  ].filter(Boolean).join(', ');
+  throw new Error(
+    `The Skyjo audio gate requires ffprobe and ffmpeg${unavailable ? `; unavailable: ${unavailable}` : ''}. ` +
+    'Install FFmpeg and make both commands available on PATH. On macOS, the gate can instead use the ' +
+    'system /usr/bin/afinfo and /usr/bin/afconvert tools.'
+  );
+}
 
 function runMediaTool(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -41,10 +82,7 @@ function runMediaTool(command, args, options = {}) {
     windowsHide: true
   });
   if (result.error) {
-    throw new Error(
-      `${command} is required for the Skyjo audio gate (${result.error.message}). ` +
-      'Install FFmpeg and make both ffmpeg and ffprobe available on PATH.'
-    );
+    throw new Error(`${command} could not run for the Skyjo audio gate (${result.error.message}).`);
   }
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || result.stdout || '').trim();
@@ -53,7 +91,7 @@ function runMediaTool(command, args, options = {}) {
   return result.stdout;
 }
 
-function probeAudio(filePath) {
+function probeAudioWithFfmpeg(filePath) {
   const output = runMediaTool('ffprobe', [
     '-v',
     'error',
@@ -80,7 +118,7 @@ function probeAudio(filePath) {
   };
 }
 
-function decodeMonoPcm(filePath, sampleRate) {
+function decodeMonoPcmWithFfmpeg(filePath, sampleRate) {
   const output = runMediaTool('ffmpeg', [
     '-v',
     'error',
@@ -99,6 +137,143 @@ function decodeMonoPcm(filePath, sampleRate) {
     'pipe:1'
   ]);
   return Buffer.isBuffer(output) ? output : Buffer.from(output);
+}
+
+function requiredXmlValue(xml, tagName) {
+  const escapedTagName = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches = [...xml.matchAll(new RegExp(`<${escapedTagName}(?:\\s[^>]*)?>([^<]*)</${escapedTagName}>`, 'g'))];
+  if (matches.length !== 1) {
+    throw new Error(`afinfo returned ${matches.length} ${tagName} values; expected exactly one.`);
+  }
+  return matches[0][1].trim();
+}
+
+export function parseAppleAudioInfo(xml, sizeBytes) {
+  if (!xml.includes('<audio_info ') || !xml.includes('</audio_info>')) {
+    throw new Error('afinfo did not return its expected audio_info XML document.');
+  }
+  if ((xml.match(/<audio_file\b/g) || []).length !== 1) {
+    throw new Error('afinfo must report exactly one audio file.');
+  }
+  if ((xml.match(/<track\b/g) || []).length !== 1) {
+    throw new Error('afinfo must report exactly one audio track.');
+  }
+  if (/<alert\s+level="ERROR"/i.test(xml)) {
+    throw new Error('afinfo reported an error while reading the audio file.');
+  }
+
+  const fileType = requiredXmlValue(xml, 'file_type').replaceAll("'", '');
+  const formatType = requiredXmlValue(xml, 'format_type');
+  if (fileType !== 'MPG3' || formatType !== '.mp3') {
+    throw new Error(`audio format must be MP3; afinfo reported ${fileType || 'unknown'}/${formatType || 'unknown'}.`);
+  }
+
+  return {
+    channels: Number(requiredXmlValue(xml, 'num_channels')),
+    codec: 'mp3',
+    durationSeconds: Number(requiredXmlValue(xml, 'duration')),
+    sampleRate: Number(requiredXmlValue(xml, 'sample_rate')),
+    sizeBytes
+  };
+}
+
+function probeAudioWithApple(filePath) {
+  const output = runMediaTool(appleAfinfoPath, ['-r', '-x', filePath], { encoding: 'utf8' });
+  return parseAppleAudioInfo(output, statSync(filePath).size);
+}
+
+function waveChunk(buffer, offset) {
+  if (offset + 8 > buffer.length) {
+    throw new Error('Decoded WAVE has a truncated chunk header.');
+  }
+  const identifier = buffer.toString('ascii', offset, offset + 4);
+  const length = buffer.readUInt32LE(offset + 4);
+  const dataStart = offset + 8;
+  const dataEnd = dataStart + length;
+  if (dataEnd > buffer.length) {
+    throw new Error(`Decoded WAVE ${identifier || 'unknown'} chunk exceeds the file bounds.`);
+  }
+  return { dataEnd, dataStart, identifier, length, nextOffset: dataEnd + (length % 2) };
+}
+
+export function extractWavePcm(buffer, expectedSampleRate) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) {
+    throw new Error('Decoded WAVE output is missing or truncated.');
+  }
+  if (buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error('Decoded output is not a RIFF/WAVE file.');
+  }
+  if (buffer.readUInt32LE(4) + 8 !== buffer.length) {
+    throw new Error('Decoded WAVE RIFF size does not match the output file size.');
+  }
+
+  let format;
+  let pcm;
+  let offset = 12;
+  while (offset < buffer.length) {
+    const chunk = waveChunk(buffer, offset);
+    if (chunk.identifier === 'fmt ') {
+      if (format) throw new Error('Decoded WAVE contains more than one format chunk.');
+      if (chunk.length < 16) throw new Error('Decoded WAVE format chunk is truncated.');
+      format = {
+        audioFormat: buffer.readUInt16LE(chunk.dataStart),
+        blockAlign: buffer.readUInt16LE(chunk.dataStart + 12),
+        bitsPerSample: buffer.readUInt16LE(chunk.dataStart + 14),
+        byteRate: buffer.readUInt32LE(chunk.dataStart + 8),
+        channels: buffer.readUInt16LE(chunk.dataStart + 2),
+        sampleRate: buffer.readUInt32LE(chunk.dataStart + 4)
+      };
+    } else if (chunk.identifier === 'data') {
+      if (pcm) throw new Error('Decoded WAVE contains more than one data chunk.');
+      pcm = buffer.subarray(chunk.dataStart, chunk.dataEnd);
+    }
+    offset = chunk.nextOffset;
+  }
+
+  if (offset !== buffer.length) throw new Error('Decoded WAVE has an invalid final chunk boundary.');
+  if (!format) throw new Error('Decoded WAVE is missing its format chunk.');
+  if (!pcm) throw new Error('Decoded WAVE is missing its PCM data chunk.');
+  if (
+    format.audioFormat !== 1 ||
+    format.channels !== 1 ||
+    format.sampleRate !== expectedSampleRate ||
+    format.bitsPerSample !== 16 ||
+    format.blockAlign !== 2 ||
+    format.byteRate !== expectedSampleRate * 2
+  ) {
+    throw new Error(
+      'Decoded WAVE must be mono signed 16-bit PCM at the probed sample rate; received ' +
+      `${format.channels} channel(s), format ${format.audioFormat}, ${format.bitsPerSample}-bit, ${format.sampleRate} Hz.`
+    );
+  }
+  if (pcm.length === 0 || pcm.length % format.blockAlign !== 0) {
+    throw new Error('Decoded WAVE PCM data is empty or not frame-aligned.');
+  }
+  return pcm;
+}
+
+function decodeMonoPcmWithApple(filePath, sampleRate) {
+  const temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'skyjo-audio-gate-'));
+  const outputPath = path.join(temporaryDirectory, 'decoded.wav');
+  try {
+    runMediaTool(appleAfconvertPath, [
+      filePath,
+      outputPath,
+      '-f',
+      'WAVE',
+      '-d',
+      `LEI16@${sampleRate}`,
+      '-c',
+      '1'
+    ]);
+    const outputSize = statSync(outputPath).size;
+    if (outputSize > maxDecodedPcmBytes + 64 * 1024) {
+      throw new Error(`Decoded WAVE output ${outputSize} bytes exceeds the audio gate's safe bound.`);
+    }
+    return extractWavePcm(readFileSync(outputPath), sampleRate);
+  } finally {
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
 }
 
 function rms(samples, start, end) {
@@ -168,6 +343,9 @@ function rounded(value, digits = 3) {
 }
 
 export async function auditAudioAssets() {
+  const mediaBackend = resolveMediaBackend();
+  const probeAudio = mediaBackend === 'ffmpeg' ? probeAudioWithFfmpeg : probeAudioWithApple;
+  const decodeMonoPcm = mediaBackend === 'ffmpeg' ? decodeMonoPcmWithFfmpeg : decodeMonoPcmWithApple;
   const directoryEntries = await fs.readdir(audioDirectory, { withFileTypes: true });
   const nativeDirectoryEntries = await fs.readdir(nativeAudioDirectory, { withFileTypes: true });
   const cueFiles = directoryEntries
@@ -303,7 +481,8 @@ export async function auditAudioAssets() {
       transferredBytes
     },
     cues: report,
-    failures
+    failures,
+    mediaBackend
   };
 }
 

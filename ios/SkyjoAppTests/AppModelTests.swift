@@ -133,6 +133,38 @@ struct AppModelTests {
     #expect(preferences.lastConfirmedAccountID == accountID)
   }
 
+  @Test("Offline-ready cached accounts retire remote controls without losing solo ownership")
+  func offlineReadyCachedAccountIsReadOnly() async throws {
+    let suiteName = "skyjo.app-model.offline-cached.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let preferences = SoloPreferencesStore(defaults: defaults)
+    let service = MockSkyjoService(scenario: .profileServiceUnavailable)
+    let model = AppModel(
+      service: service,
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      preferences: preferences
+    )
+
+    await model.bootstrap()
+    let accountID = try #require(model.user?.id)
+    #expect(model.hasConfirmedAccountSession)
+    #expect(model.confirmedStatsAccountID == accountID)
+
+    model.accountSettings.displayName = "Offline Player"
+    await model.updateProfile()
+
+    guard case .offlineReady = model.rootState else {
+      Issue.record("A service outage should preserve only the offline solo shell.")
+      return
+    }
+    #expect(model.user?.id == accountID)
+    #expect(!model.hasConfirmedAccountSession)
+    #expect(model.confirmedStatsAccountID == nil)
+    #expect(model.localSoloOwner == .account(accountID))
+    #expect(preferences.lastConfirmedAccountID == accountID)
+  }
+
   @Test("Stale stats authorization failures cannot invalidate a newer account or login generation")
   func statsAuthorizationInvalidationIsOwnerAndGenerationFenced() async throws {
     let accountA = UUID(uuidString: "30000000-0000-4000-8000-000000000099")!
@@ -607,6 +639,7 @@ private actor MockSkyjoService: SkyjoService {
     case deferredAccessFollowup
     case deferredStatsRefresh
     case disabledProfileUpdate
+    case profileServiceUnavailable
     case passwordAccountNotFound
     case mismatchedIdentifiers
   }
@@ -703,6 +736,13 @@ private actor MockSkyjoService: SkyjoService {
     }
     if scenario == .disabledProfileUpdate {
       return makeUser(displayName: displayName, disabled: true)
+    }
+    if scenario == .profileServiceUnavailable {
+      throw SkyjoHTTPClientError.server(
+        statusCode: 503,
+        code: .serviceUnavailable,
+        message: "The service is temporarily unavailable."
+      )
     }
     return makeUser(displayName: displayName)
   }

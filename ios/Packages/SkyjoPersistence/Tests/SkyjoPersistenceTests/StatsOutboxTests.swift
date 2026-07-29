@@ -430,6 +430,55 @@ struct StatsOutboxTests {
     #expect(await coordinator.status() == .empty)
   }
 
+  @Test(
+    "UI blocked-outbox fixtures expose the production recovery contract",
+    arguments: [StatsOutboxBlockedHeadKind.terminal, .corrupt]
+  )
+  func uiBlockedOutboxFixture(kind: StatsOutboxBlockedHeadKind) async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    let terminal = try PersistenceTestSupport.terminalState()
+    let accountID = PersistenceTestSupport.aliceID
+    let gameID = PersistenceTestSupport.guestGameID
+    try await store.prepareBlockedOutboxForUITesting(
+      accountID: accountID,
+      gameID: gameID,
+      state: terminal,
+      setup: try PersistenceTestSupport.setup(for: terminal, gameID: gameID),
+      kind: kind,
+      completedAtMilliseconds: 20
+    )
+
+    let status = try await store.outboxStatus(accountID: accountID)
+    #expect(status.queued == 1)
+    #expect(status.terminalFailures == (kind == .terminal ? 1 : 0))
+    #expect(status.corruptRecords == (kind == .corrupt ? 1 : 0))
+    #expect(status.blockedByTerminalFailure)
+    #expect(status.blockedHeadGameID == gameID)
+    #expect(status.blockedHeadKind == kind)
+    let recoveryHandle = try #require(status.blockedHeadRecoveryHandle)
+
+    await expectStatsPersistenceError(.sessionConflict) {
+      try await store.prepareBlockedOutboxForUITesting(
+        accountID: accountID,
+        gameID: PersistenceTestSupport.secondGameID,
+        state: terminal,
+        setup: try PersistenceTestSupport.setup(
+          for: terminal,
+          gameID: PersistenceTestSupport.secondGameID
+        ),
+        kind: kind,
+        completedAtMilliseconds: 21
+      )
+    }
+
+    try await store.discardBlockedOutboxHead(
+      accountID: accountID,
+      expectedRecoveryHandle: recoveryHandle
+    )
+    #expect(try await store.outboxStatus(accountID: accountID) == .empty)
+  }
+
   @Test("Permanent delivery failure dead-letters the FIFO head without overtaking or retry")
   func permanentFailureDeadLettersHead() async throws {
     let (container, store) = try PersistenceTestSupport.store()

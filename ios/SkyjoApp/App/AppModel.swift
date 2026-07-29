@@ -649,12 +649,31 @@ final class AppModel {
       rootState = .guest
     case "solo-offline-account":
       let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000187")!
-      resetAccountState()
-      preferences?.confirmAccess()
-      preferences?.confirmAccount(accountID)
-      rootState = .offlineReady(
-        message: "Skyjo could not reach the service. Your account-owned solo save remains available."
-      )
+      if arguments.contains("--ui-offline-cached-account") {
+        establishAuthenticatedUser(
+          AccountUser(
+            id: accountID,
+            email: "fixture.solo@example.invalid",
+            displayName: "Solo Fixture",
+            role: .player,
+            disabled: false,
+            createdAt: 1_784_998_800_104,
+            updatedAt: 1_784_998_800_104,
+            lastLoginAt: nil
+          )
+        )
+        routeUnavailableForLocalSolo(
+          fallback: .offline(message: "Skyjo could not reach the service."),
+          message: "Skyjo could not reach the service. Your account-owned solo save remains available."
+        )
+      } else {
+        resetAccountState()
+        preferences?.confirmAccess()
+        preferences?.confirmAccount(accountID)
+        rootState = .offlineReady(
+          message: "Skyjo could not reach the service. Your account-owned solo save remains available."
+        )
+      }
     case "solo-setup-blocked-outbox", "solo-setup-corrupt-outbox",
          "solo-game-summary-outbox-unknown":
       let accountID = UUID(uuidString: "30000000-0000-4000-8000-000000000187")!
@@ -856,8 +875,12 @@ final class AppModel {
     return .guest
   }
 
+  var hasConfirmedAccountSession: Bool {
+    rootState == .authenticated && user != nil
+  }
+
   var confirmedStatsAccountID: UUID? {
-    rootState == .authenticated ? user?.id : nil
+    hasConfirmedAccountSession ? user?.id : nil
   }
 
   func synchronizeLocalSolo(_ solo: SoloFeatureModel) async {

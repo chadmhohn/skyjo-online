@@ -982,7 +982,13 @@ struct SoloFeatureModelTests {
     let completion = Task { @MainActor in
       await harness.model.acceptForTesting(terminal)
     }
-    await gate.waitUntilEntered()
+    let commitDidStart = await gate.waitUntilEntered()
+    #expect(commitDidStart)
+    guard commitDidStart else {
+      completion.cancel()
+      await gate.release()
+      return
+    }
     #expect(await delivery.count == 0)
 
     await harness.model.switchOwner(.account(accountID), confirmedAccountID: accountID)
@@ -994,6 +1000,193 @@ struct SoloFeatureModelTests {
     #expect(await waitUntil { await delivery.count == 1 })
     #expect(await waitUntil { harness.model.outboxStatus.queued == 0 })
     #expect(try await harness.store.outboxStatus(accountID: accountID).queued == 0)
+  }
+
+  @Test("An owner round-trip during terminal commit preserves the accepted result")
+  func ownerRoundTripDuringCompletionPreservesTerminalResult() async throws {
+    let gate = CompletionCommitGate()
+    let harness = try SoloHarness(completionCommitBarrier: { await gate.wait() })
+    defer {
+      Task { await gate.release() }
+      harness.dispose()
+    }
+    let accountA = UUID(uuidString: "30000000-0000-4000-8000-000000000201")!
+    let accountB = UUID(uuidString: "30000000-0000-4000-8000-000000000202")!
+    let ownerA = SoloOwnerPartition.account(accountA)
+
+    await harness.model.switchOwner(ownerA, confirmedAccountID: nil)
+    await harness.model.reviewNewGame()
+    let gameID = try #require(harness.model.gameID)
+    let durableBeforeCompletion = try #require(
+      try await harness.store.loadSession(for: ownerA).session
+    )
+    let terminal = try makeTerminalState(from: #require(harness.model.game))
+
+    let completion = Task { @MainActor in
+      await harness.model.acceptForTesting(terminal)
+    }
+    let commitDidStart = await gate.waitUntilEntered()
+    #expect(commitDidStart)
+    guard commitDidStart else {
+      completion.cancel()
+      await gate.release()
+      return
+    }
+
+    await harness.model.switchOwner(.account(accountB), confirmedAccountID: nil)
+    #expect(harness.model.owner == .account(accountB))
+    #expect(harness.model.game == nil)
+    await harness.model.switchOwner(ownerA, confirmedAccountID: nil)
+
+    #expect(harness.model.owner == ownerA)
+    #expect(harness.model.gameID == gameID)
+    #expect(harness.model.game == terminal)
+    #expect(harness.model.game?.phase == .gameOver)
+    #expect(harness.model.isScoreSummaryPresented)
+    #expect(!harness.model.completionCommitted)
+    #expect(harness.model.completionError?.contains("Retry saving") == true)
+    #expect(
+      try await harness.store.loadSession(for: ownerA).session == durableBeforeCompletion
+    )
+
+    await gate.release()
+    await completion.value
+
+    #expect(harness.model.game == terminal)
+    #expect(harness.model.game?.phase == .gameOver)
+    #expect(!harness.model.completionCommitted)
+    #expect(harness.model.completionError?.contains("Retry saving") == true)
+
+    await harness.model.retryCompletion()
+
+    #expect(harness.model.completionCommitted)
+    #expect(harness.model.completionError == nil)
+    #expect(try await harness.store.loadSession(for: ownerA).session == nil)
+  }
+
+  @Test("An owner round-trip after terminal persistence preserves the guest result")
+  func ownerRoundTripDuringCompletionStatusReadPreservesGuestResult() async throws {
+    let gate = CompletionCommitGate()
+    let harness = try SoloHarness(completionStatusReadBarrier: { await gate.wait() })
+    defer {
+      Task { await gate.release() }
+      harness.dispose()
+    }
+    let accountB = UUID(uuidString: "30000000-0000-4000-8000-000000000205")!
+
+    await harness.model.switchOwner(.guest, confirmedAccountID: nil)
+    await harness.model.reviewNewGame()
+    let gameID = try #require(harness.model.gameID)
+    let terminal = try makeTerminalState(from: #require(harness.model.game))
+
+    let completion = Task { @MainActor in
+      await harness.model.acceptForTesting(terminal)
+    }
+    let statusReadDidStart = await gate.waitUntilEntered()
+    #expect(statusReadDidStart)
+    guard statusReadDidStart else {
+      completion.cancel()
+      await gate.release()
+      return
+    }
+
+    // The guest session has already been retired, so only the owner-scoped pending result can
+    // preserve the accepted terminal state across this generation change.
+    #expect(try await harness.store.loadSession(for: .guest).session == nil)
+    await harness.model.switchOwner(.account(accountB), confirmedAccountID: nil)
+    #expect(harness.model.owner == .account(accountB))
+    #expect(harness.model.game == nil)
+    await harness.model.switchOwner(.guest, confirmedAccountID: nil)
+
+    #expect(harness.model.owner == .guest)
+    #expect(harness.model.gameID == gameID)
+    #expect(harness.model.game == terminal)
+    #expect(harness.model.game?.phase == .gameOver)
+    #expect(harness.model.isScoreSummaryPresented)
+    #expect(!harness.model.completionCommitted)
+    #expect(harness.model.completionError?.contains("Retry saving") == true)
+
+    await gate.release()
+    await completion.value
+
+    #expect(harness.model.gameID == gameID)
+    #expect(harness.model.game == terminal)
+    #expect(!harness.model.completionCommitted)
+    #expect(harness.model.completionError?.contains("Retry saving") == true)
+
+    await harness.model.retryCompletion()
+
+    #expect(harness.model.completionCommitted)
+    #expect(harness.model.completionError == nil)
+    #expect(try await harness.store.loadSession(for: .guest).session == nil)
+  }
+
+  @Test("A stale owner completion cannot unlock another owner's suspended completion")
+  func staleOwnerCompletionCannotClearCurrentOwnerBusyState() async throws {
+    let gate = SequencedCompletionCommitGate()
+    let harness = try SoloHarness(completionCommitBarrier: { await gate.wait() })
+    defer {
+      Task { await gate.releaseAll() }
+      harness.dispose()
+    }
+    let accountA = UUID(uuidString: "30000000-0000-4000-8000-000000000203")!
+    let accountB = UUID(uuidString: "30000000-0000-4000-8000-000000000204")!
+
+    await harness.model.switchOwner(.account(accountA), confirmedAccountID: nil)
+    await harness.model.reviewNewGame()
+    let terminalA = try makeTerminalState(from: #require(harness.model.game))
+    let completionA = Task { @MainActor in
+      await harness.model.acceptForTesting(terminalA)
+    }
+    let firstCommitDidStart = await gate.waitUntilEntered(1)
+    #expect(firstCommitDidStart)
+    guard firstCommitDidStart else {
+      completionA.cancel()
+      await gate.releaseAll()
+      return
+    }
+
+    await harness.model.switchOwner(.account(accountB), confirmedAccountID: nil)
+    await harness.model.reviewNewGame()
+    let gameBID = try #require(harness.model.gameID)
+    let terminalB = try makeTerminalState(from: #require(harness.model.game))
+    let completionB = Task { @MainActor in
+      await harness.model.acceptForTesting(terminalB)
+    }
+    let secondCommitDidStart = await gate.waitUntilEntered(2)
+    #expect(secondCommitDidStart)
+    guard secondCommitDidStart else {
+      completionA.cancel()
+      completionB.cancel()
+      await gate.releaseAll()
+      return
+    }
+
+    #expect(harness.model.owner == .account(accountB))
+    #expect(harness.model.gameID == gameBID)
+    #expect(harness.model.isWorking)
+    #expect(await gate.enteredCount == 2)
+
+    await gate.release(1)
+    await completionA.value
+
+    #expect(harness.model.owner == .account(accountB))
+    #expect(harness.model.gameID == gameBID)
+    #expect(harness.model.game == terminalB)
+    #expect(harness.model.isWorking)
+    #expect(!harness.model.completionCommitted)
+
+    await harness.model.retryCompletion()
+
+    #expect(harness.model.isWorking)
+    #expect(await gate.enteredCount == 2)
+
+    await gate.release(2)
+    await completionB.value
+
+    #expect(!harness.model.isWorking)
+    #expect(harness.model.completionCommitted)
+    #expect(harness.model.gameID == gameBID)
   }
 
   @Test("Local completion releases score actions while account delivery remains queued")
@@ -1057,7 +1250,13 @@ struct SoloFeatureModelTests {
     let completion = Task { @MainActor in
       await harness.model.acceptForTesting(terminal)
     }
-    await statusGate.waitUntilEntered()
+    let statusReadDidStart = await statusGate.waitUntilEntered()
+    #expect(statusReadDidStart)
+    guard statusReadDidStart else {
+      completion.cancel()
+      await statusGate.release()
+      return
+    }
     await harness.model.setStatsAuthorizationForTesting(accountID)
     #expect(harness.model.outboxStatus.queued == 0)
     await statusGate.release()
@@ -1886,28 +2085,71 @@ private actor StatsDeliveryCounter {
 
 private actor CompletionCommitGate {
   private var entered = false
-  private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+  private var released = false
   private var releaseContinuation: CheckedContinuation<Void, Never>?
 
   func wait() async {
+    guard !released else { return }
     entered = true
-    for waiter in entryWaiters { waiter.resume() }
-    entryWaiters.removeAll()
     await withCheckedContinuation { continuation in
       releaseContinuation = continuation
     }
   }
 
-  func waitUntilEntered() async {
-    if entered { return }
-    await withCheckedContinuation { continuation in
-      entryWaiters.append(continuation)
+  func waitUntilEntered() async -> Bool {
+    for _ in 0..<100 {
+      if entered { return true }
+      try? await Task.sleep(for: .milliseconds(20))
     }
+    return entered
   }
 
   func release() {
+    released = true
     releaseContinuation?.resume()
     releaseContinuation = nil
+  }
+}
+
+private actor SequencedCompletionCommitGate {
+  private(set) var enteredCount = 0
+  private var released: Set<Int> = []
+  private var releaseEveryWait = false
+  private var releaseContinuations: [Int: CheckedContinuation<Void, Never>] = [:]
+
+  func wait() async {
+    enteredCount += 1
+    let index = enteredCount
+    guard !releaseEveryWait, !released.contains(index) else { return }
+    await withCheckedContinuation { continuation in
+      if releaseEveryWait || released.contains(index) {
+        continuation.resume()
+      } else {
+        releaseContinuations[index] = continuation
+      }
+    }
+  }
+
+  func waitUntilEntered(_ target: Int) async -> Bool {
+    for _ in 0..<100 {
+      if enteredCount >= target { return true }
+      if releaseEveryWait { return false }
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    return enteredCount >= target
+  }
+
+  func release(_ index: Int) {
+    released.insert(index)
+    releaseContinuations.removeValue(forKey: index)?.resume()
+  }
+
+  func releaseAll() {
+    releaseEveryWait = true
+    for index in 1...max(enteredCount, 1) { released.insert(index) }
+    let continuations = Array(releaseContinuations.values)
+    releaseContinuations.removeAll()
+    for continuation in continuations { continuation.resume() }
   }
 }
 

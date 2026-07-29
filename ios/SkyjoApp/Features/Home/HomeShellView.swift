@@ -27,8 +27,17 @@ struct HomeShellView: View {
 
       Tab("Stats", systemImage: "chart.bar", value: .stats) {
         NavigationStack {
-          if user != nil {
+          if model.hasConfirmedAccountSession {
             StatsView(model: model)
+          } else if let user {
+            OfflineAccountFeatureView(
+              title: "Stats unavailable offline",
+              navigationTitle: "Stats",
+              message: "Reconnect before refreshing stats for \(user.email). Account-owned solo results remain on this device until the session is confirmed.",
+              accessibilityIdentifier: "stats.offline-account",
+              retryAccessibilityIdentifier: "stats.offline-account.retry",
+              model: model
+            )
           } else {
             SignedOutFeatureView(
               title: "Sign in for stats",
@@ -41,8 +50,10 @@ struct HomeShellView: View {
 
       Tab("Account", systemImage: "person.crop.circle", value: .account) {
         NavigationStack {
-          if let user {
+          if model.hasConfirmedAccountSession, let user {
             AccountView(model: model, user: user)
+          } else if let user {
+            OfflineAccountView(model: model, user: user)
           } else {
             AuthenticationView(model: model, embedsNavigation: false)
           }
@@ -274,6 +285,95 @@ private struct SignedOutFeatureView: View {
         .frame(minHeight: 44)
     }
     .navigationTitle("Stats")
+  }
+}
+
+@MainActor
+private struct OfflineAccountFeatureView: View {
+  let title: String
+  let navigationTitle: String
+  let message: String
+  let accessibilityIdentifier: String
+  let retryAccessibilityIdentifier: String
+  @Bindable var model: AppModel
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 24) {
+        VStack(spacing: 12) {
+          Image(systemName: "wifi.slash")
+            .font(.largeTitle)
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+          Text(title)
+            .font(.title2.bold())
+            .multilineTextAlignment(.center)
+          Text(message)
+            .font(.body)
+            .foregroundStyle(.primary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(accessibilityIdentifier)
+
+        Button {
+          Task { await model.bootstrap() }
+        } label: {
+          Text("Check Connection")
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderedProminent)
+        .frame(maxWidth: 360)
+        .accessibilityIdentifier(retryAccessibilityIdentifier)
+      }
+      .frame(maxWidth: .infinity)
+      .padding(24)
+    }
+    .navigationTitle(navigationTitle)
+  }
+}
+
+@MainActor
+private struct OfflineAccountView: View {
+  @Bindable var model: AppModel
+  let user: AccountUser
+
+  var body: some View {
+    List {
+      Section("Cached account") {
+        LabeledContent("Display name", value: user.displayName)
+        LabeledContent("Email", value: user.email)
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel("Email")
+          .accessibilityValue(user.email)
+          .accessibilityIdentifier("account.offline.email")
+        LabeledContent(
+          "Role",
+          value: user.role == .admin ? "Administrator" : "Player"
+        )
+      }
+
+      Section {
+        SkyjoStatusBanner(
+          title: "Account controls are offline",
+          message: "This cached identity keeps its local solo save available, but profile, password, stats, and sign-out actions require a confirmed online account session.",
+          systemImage: "wifi.slash"
+        )
+        Button {
+          Task { await model.bootstrap() }
+        } label: {
+          Text("Check Connection")
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderedProminent)
+        .accessibilityIdentifier("account.offline.retry")
+      }
+    }
+    .navigationTitle("Account")
+    .accessibilityIdentifier("account.offline")
   }
 }
 

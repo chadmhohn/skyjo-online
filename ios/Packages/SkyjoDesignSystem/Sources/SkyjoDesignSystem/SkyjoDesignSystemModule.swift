@@ -109,7 +109,7 @@ public struct SkyjoCardView: View {
       // table. Keep one relative system style at every content-size category so
       // Accessibility XXXL is rendered rather than replaced by a fitted glyph.
       Text(value.formatted())
-        .font(.caption2.monospacedDigit().bold())
+        .font(.caption2.monospacedDigit().weight(.black))
         .fixedSize(horizontal: true, vertical: true)
         .foregroundStyle(foregroundColor(for: value))
         .accessibilityHidden(true)

@@ -702,6 +702,12 @@ describe('v0.3.2 certification evidence', () => {
 
 describe('v0.3.2 workflow governance', () => {
   it('selects a compact standard phone independently from the large-phone entry', () => {
+    type SimulatorMatrixEntry = {
+      role: 'standard-phone' | 'large-phone' | 'ipad';
+      runtime: string;
+      name: string;
+      udid: string;
+    };
     const runtime = 'com.apple.CoreSimulator.SimRuntime.iOS-26-5';
     const device = (name: string, udid: string) => ({ name, udid, isAvailable: true });
     const baseDevices = [
@@ -711,7 +717,7 @@ describe('v0.3.2 workflow governance', () => {
       device('iPad Pro 13-inch (M5)', '00000000-0000-4000-8000-000000000004')
     ];
 
-    let matrix = selectSimulatorMatrix({ devices: { [runtime]: baseDevices } });
+    let matrix = selectSimulatorMatrix({ devices: { [runtime]: baseDevices } }) as SimulatorMatrixEntry[];
     expect(matrix.find((entry) => entry.role === 'standard-phone')?.name).toBe('iPhone 17e');
     expect(matrix.find((entry) => entry.role === 'large-phone')?.name).toBe('iPhone 17 Pro Max');
 

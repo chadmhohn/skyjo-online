@@ -100,9 +100,25 @@ actor SoloStatsDeliveryAdapter {
         )
       )
     } catch let error as SkyjoHTTPClientError {
-      throw await map(error, authorizationFence: fence)
+      guard await authorizationFence(accountID) == fence else {
+        throw StatsDeliveryError.authorizationChanged
+      }
+      let mappedError = await map(error, authorizationFence: fence)
+      if mappedError != .authorizationChanged {
+        guard await authorizationFence(accountID) == fence else {
+          throw StatsDeliveryError.authorizationChanged
+        }
+      }
+      throw mappedError
     } catch {
+      guard await authorizationFence(accountID) == fence else {
+        throw StatsDeliveryError.authorizationChanged
+      }
       throw StatsDeliveryError.retryable(.transport)
+    }
+
+    guard await authorizationFence(accountID) == fence else {
+      throw StatsDeliveryError.authorizationChanged
     }
   }
 

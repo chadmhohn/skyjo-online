@@ -36,6 +36,20 @@ private struct PendingSessionReconciliation: Sendable {
   let acknowledgementWasIndeterminate: Bool
 }
 
+private struct PendingTerminalCompletion: Equatable, Sendable {
+  let owner: SoloOwnerPartition
+  let gameID: UUID
+  let state: GameState
+  let setup: SoloGameSetup
+  let saveSequence: Int64
+}
+
+private struct SoloWorkingOperation: Equatable, Sendable {
+  let id: UUID
+  let generation: UInt64
+  let owner: SoloOwnerPartition
+}
+
 @MainActor
 @Observable
 final class SoloFeatureModel {
@@ -56,6 +70,10 @@ final class SoloFeatureModel {
   @ObservationIgnored private var loadedSavedSequence: Int64 = 0
   @ObservationIgnored private var completionReloadReason: CompletionReloadReason?
   @ObservationIgnored private var pendingSessionReconciliation: PendingSessionReconciliation?
+  @ObservationIgnored private var pendingTerminalCompletions: [
+    SoloOwnerPartition: PendingTerminalCompletion
+  ] = [:]
+  @ObservationIgnored private var workingOperation: SoloWorkingOperation?
   @ObservationIgnored private let initialWarning: SoloPersistenceWarning?
 #if DEBUG
   @ObservationIgnored private var usesUITestState = false
@@ -323,6 +341,10 @@ final class SoloFeatureModel {
       loadWarning = result.warning ?? initialWarning
       if let session = result.session {
         install(session)
+      }
+      if let pendingCompletion = pendingTerminalCompletions[nextOwner] {
+        restorePendingTerminalCompletion(pendingCompletion)
+      } else if result.session != nil {
         screen = .launcher
       } else {
         screen = .setup
@@ -330,14 +352,22 @@ final class SoloFeatureModel {
     } catch let error as SoloPersistenceError {
       guard generation == expectedGeneration, owner == nextOwner else { return }
       loadWarning = error.warning
-      screen = .setup
+      if let pendingCompletion = pendingTerminalCompletions[nextOwner] {
+        restorePendingTerminalCompletion(pendingCompletion)
+      } else {
+        screen = .setup
+      }
     } catch {
       guard generation == expectedGeneration, owner == nextOwner else { return }
       loadWarning = SoloPersistenceWarning(
         kind: .unavailable,
         message: "Saved games are unavailable on this device right now. You can still play this session."
       )
-      screen = .setup
+      if let pendingCompletion = pendingTerminalCompletions[nextOwner] {
+        restorePendingTerminalCompletion(pendingCompletion)
+      } else {
+        screen = .setup
+      }
     }
     await refreshOutboxStatus()
     guard generation == expectedGeneration,
@@ -482,16 +512,14 @@ final class SoloFeatureModel {
   func retrySessionReconciliation() async {
     guard let pendingSessionReconciliation,
           pendingSessionReconciliation.owner == owner,
-          !isWorking
+          let operation = beginWorking()
     else { return }
-    isWorking = true
     defer {
-      isWorking = false
-      scheduleAIIfNeeded()
+      finishWorking(operation, scheduleAI: true)
     }
     await reconcileAfterSessionWriteFailure(
-      expectedGeneration: generation,
-      expectedOwner: pendingSessionReconciliation.owner,
+      expectedGeneration: operation.generation,
+      expectedOwner: operation.owner,
       attemptedGameID: pendingSessionReconciliation.attemptedGameID,
       replacingGameID: pendingSessionReconciliation.replacingGameID,
       acknowledgementWasIndeterminate: pendingSessionReconciliation.acknowledgementWasIndeterminate
@@ -501,15 +529,12 @@ final class SoloFeatureModel {
   func reloadSavedGameAfterCompletionFailure() async {
     guard completionRequiresSavedGameReload,
           let completionReloadReason,
-          !isWorking
+          let operation = beginWorking()
     else { return }
-    let expectedGeneration = generation
-    let expectedOwner = owner
-    isWorking = true
-    defer { isWorking = false }
+    defer { finishWorking(operation) }
     await recoverSavedGameAfterCompletionFailure(
-      expectedGeneration: expectedGeneration,
-      expectedOwner: expectedOwner,
+      expectedGeneration: operation.generation,
+      expectedOwner: operation.owner,
       reason: completionReloadReason
     )
   }
@@ -765,14 +790,14 @@ final class SoloFeatureModel {
       presentUncommittedCompletionForRecovery()
       return
     }
-    guard !isWorking, !sessionReconciliationRequired else { return }
-    let expectedGeneration = generation
-    let expectedOwner = owner
-    isWorking = true
+    guard !sessionReconciliationRequired,
+          let operation = beginWorking()
+    else { return }
+    let expectedGeneration = operation.generation
+    let expectedOwner = operation.owner
     lastActionError = nil
     defer {
-      isWorking = false
-      scheduleAIIfNeeded()
+      finishWorking(operation, scheduleAI: true)
     }
 
     let newGameID = UUID()
@@ -1126,6 +1151,60 @@ final class SoloFeatureModel {
     )
   }
 
+  private func restorePendingTerminalCompletion(_ pending: PendingTerminalCompletion) {
+    guard pending.owner == owner else { return }
+    gameID = pending.gameID
+    game = pending.state
+    setup = pending.setup
+    saveSequence = pending.saveSequence
+    completionCommitted = false
+    completionRequiresSavedGameReload = false
+    completionReloadReason = nil
+    completionError = "The completed result is still recoverable on this device. Retry saving it before starting another game."
+    lastActionError = nil
+    isReplacementReviewPresented = false
+    isSettingsPresented = false
+    screen = .table
+    isScoreSummaryPresented = true
+    isScoreSummaryMinimized = false
+    pauseAI()
+  }
+
+  private func clearPendingTerminalCompletion(_ pending: PendingTerminalCompletion) {
+    guard pendingTerminalCompletions[pending.owner] == pending else { return }
+    pendingTerminalCompletions[pending.owner] = nil
+  }
+
+  private func beginWorking() -> SoloWorkingOperation? {
+    guard workingOperation == nil, !isWorking else { return nil }
+    let operation = SoloWorkingOperation(
+      id: UUID(),
+      generation: generation,
+      owner: owner
+    )
+    workingOperation = operation
+    isWorking = true
+    return operation
+  }
+
+  private func finishWorking(
+    _ operation: SoloWorkingOperation,
+    scheduleAI: Bool = false
+  ) {
+    guard workingOperation == operation,
+          generation == operation.generation,
+          owner == operation.owner
+    else { return }
+    workingOperation = nil
+    isWorking = false
+    if scheduleAI { scheduleAIIfNeeded() }
+  }
+
+  private func invalidateWorkingOperation() {
+    workingOperation = nil
+    isWorking = false
+  }
+
   private func clearVisibleSession() {
     gameID = nil
     game = nil
@@ -1137,7 +1216,7 @@ final class SoloFeatureModel {
     hasDurableActiveSession = false
     sessionReconciliationRequired = false
     pendingSessionReconciliation = nil
-    isWorking = false
+    invalidateWorkingOperation()
     completionCommitted = false
     completionRequiresSavedGameReload = false
     completionReloadReason = nil
@@ -1221,40 +1300,41 @@ final class SoloFeatureModel {
   }
 
   private func commitCompletion() async {
-    guard let gameID, let game, let setup, game.phase == .gameOver else { return }
-    let expectedGeneration = generation
-    let expectedOwner = owner
+    guard let gameID,
+          let game,
+          let setup,
+          game.phase == .gameOver,
+          let operation = beginWorking()
+    else { return }
+    defer { finishWorking(operation) }
+    let expectedGeneration = operation.generation
+    let expectedOwner = operation.owner
+    let pendingCompletion = PendingTerminalCompletion(
+      owner: expectedOwner,
+      gameID: gameID,
+      state: game,
+      setup: setup,
+      saveSequence: saveSequence
+    )
+    pendingTerminalCompletions[expectedOwner] = pendingCompletion
     let completionAutosave = autosave
-    isWorking = true
     completionError = nil
     let flushWarning = await completionAutosave?.flushPending()
-    guard generation == expectedGeneration, owner == expectedOwner else {
-      isWorking = false
-      return
-    }
+    guard generation == expectedGeneration, owner == expectedOwner else { return }
     autosaveWarning = flushWarning
     await completionCommitBarrier()
-    guard generation == expectedGeneration, owner == expectedOwner else {
-      isWorking = false
-      return
-    }
+    guard generation == expectedGeneration, owner == expectedOwner else { return }
     do {
       try await store.completeSession(
         owner: expectedOwner,
         gameID: gameID,
         state: game,
         setup: setup,
-        saveSequence: saveSequence
+        saveSequence: pendingCompletion.saveSequence
       )
-      guard generation == expectedGeneration, owner == expectedOwner else {
-        isWorking = false
-        return
-      }
+      guard generation == expectedGeneration, owner == expectedOwner else { return }
       await completionAutosave?.cancel()
-      guard generation == expectedGeneration, owner == expectedOwner else {
-        isWorking = false
-        return
-      }
+      guard generation == expectedGeneration, owner == expectedOwner else { return }
       autosave = nil
       hasDurableActiveSession = false
       completionRequiresSavedGameReload = false
@@ -1270,14 +1350,11 @@ final class SoloFeatureModel {
         expectedGeneration: expectedGeneration,
         expectedOwner: expectedOwner
       )
-      guard generation == expectedGeneration, owner == expectedOwner else {
-        isWorking = false
-        return
-      }
+      guard generation == expectedGeneration, owner == expectedOwner else { return }
+      clearPendingTerminalCompletion(pendingCompletion)
       let expectedAuthorizationGeneration = statsAuthorizationGeneration
       let expectedConfirmedAccountID = confirmedAccountID
       completionCommitted = true
-      isWorking = false
       scheduleCompletionStatsDelivery(
         expectedGeneration: expectedGeneration,
         expectedAuthorizationGeneration: expectedAuthorizationGeneration,
@@ -1286,38 +1363,29 @@ final class SoloFeatureModel {
       )
       return
     } catch let error as SoloPersistenceError {
-      guard generation == expectedGeneration, owner == expectedOwner else {
-        isWorking = false
-        return
-      }
+      guard generation == expectedGeneration, owner == expectedOwner else { return }
       if error == .sessionConflict || error == .staleAutosave {
+        clearPendingTerminalCompletion(pendingCompletion)
         await completionAutosave?.cancel()
-        guard generation == expectedGeneration, owner == expectedOwner else {
-          isWorking = false
-          return
-        }
+        guard generation == expectedGeneration, owner == expectedOwner else { return }
         autosave = nil
         await recoverSavedGameAfterCompletionFailure(
           expectedGeneration: expectedGeneration,
           expectedOwner: expectedOwner,
           reason: .conflict
         )
-        isWorking = false
         return
       }
       if error == .invalidSnapshot || error == .incompatibleRecord {
+        clearPendingTerminalCompletion(pendingCompletion)
         await completionAutosave?.cancel()
-        guard generation == expectedGeneration, owner == expectedOwner else {
-          isWorking = false
-          return
-        }
+        guard generation == expectedGeneration, owner == expectedOwner else { return }
         autosave = nil
         await recoverSavedGameAfterCompletionFailure(
           expectedGeneration: expectedGeneration,
           expectedOwner: expectedOwner,
           reason: .invalidResult
         )
-        isWorking = false
         return
       }
       operationWarning = error.warning
@@ -1329,10 +1397,7 @@ final class SoloFeatureModel {
       // candidate so lifecycle or manual completion retry can durably recover every accepted turn.
       autosave = completionAutosave
     } catch {
-      guard generation == expectedGeneration, owner == expectedOwner else {
-        isWorking = false
-        return
-      }
+      guard generation == expectedGeneration, owner == expectedOwner else { return }
       operationWarning = SoloPersistenceWarning(
         kind: .unavailable,
         message: "The completed game could not be committed to device storage."
@@ -1343,7 +1408,6 @@ final class SoloFeatureModel {
       completionReloadReason = nil
       autosave = completionAutosave
     }
-    isWorking = false
   }
 
   private func scheduleCompletionStatsDelivery(
