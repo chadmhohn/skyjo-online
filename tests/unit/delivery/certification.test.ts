@@ -977,7 +977,7 @@ describe('v0.3.3 workflow governance', () => {
     expect(certificationAddendum).toContain('explicit approval in the current conversation naming both exact tag `v0.3.3` and exact `CERT_SHA`');
     expect(certificationAddendum).toContain('`previous` resolves to the exact immutable `v0.3.3` tag');
     expect(certificationAddendum).toContain('keep issue #203 open and #204 blocked');
-    expect(certificationAddendum).toContain('CodeQL does not trigger for tag refs');
+    expect(certificationAddendum).toContain('CodeQL does not run automatically on tag pushes');
     expect(certificationAddendum).toContain('--tag v0.3.3');
     expect(certificationAddendum).toContain('--production-base-url https://skyjo.groundworkrevops.com');
     expect(certificationAddendum).toContain('published release back through GitHub');
@@ -987,6 +987,6 @@ describe('v0.3.3 workflow governance', () => {
     expect(securityAddendum).toContain('does not create or use `apns_devices`');
     expect(securityAddendum).toContain('bound to the current authorized account');
     expect(securityAddendum).toContain('general autonomy is insufficient');
-    expect(securityAddendum).toContain('CodeQL does not trigger for tag refs');
+    expect(securityAddendum).toContain('CodeQL does not run automatically on tag pushes');
   });
 });
