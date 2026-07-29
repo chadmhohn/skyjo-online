@@ -289,7 +289,9 @@ private struct NativeRootView: View {
       dependencies.sessionInvalidation.consume(invalidation)
     }
     .onChange(of: scenePhase, initial: true) { _, phase in
-      dependencies.solo.setSceneActive(phase == .active)
+      let isActive = phase == .active
+      dependencies.solo.setSceneActive(isActive)
+      rooms.setSceneActive(isActive)
     }
   }
 }

@@ -8,10 +8,35 @@ enum RoomLayoutMetrics {
   static let minimumCardTarget: CGFloat = 44
   static let compactGridSpacing: CGFloat = 1
   static let compactBoardPadding: CGFloat = 4
+  static let tableBandSpacing: CGFloat = 7
+  static let shortLandscapeSpacing: CGFloat = 6
+  static let shortLandscapeHorizontalPadding: CGFloat = 8
+  static let shortLandscapeOverlayClearance: CGFloat = 60
+  static let shortLandscapeBottomPadding: CGFloat = 6
+  static let compactBoardHeaderAllowance: CGFloat = 20
   static let compactOpponentBoardWidth =
     minimumCardTarget * CGFloat(SkyjoRules.columns)
       + compactGridSpacing * CGFloat(SkyjoRules.columns - 1)
       + compactBoardPadding * 2
+  static let compactLocalBoardWidth = compactOpponentBoardWidth
+  static let minimumTableBandWidth =
+    minimumCardTarget * 4 + tableBandSpacing * 3
+  static let minimumShortLandscapeWidth =
+    compactOpponentBoardWidth
+      + compactLocalBoardWidth
+      + minimumTableBandWidth
+      + shortLandscapeSpacing * 2
+      + shortLandscapeHorizontalPadding * 2
+
+  struct ShortLandscapeColumns: Equatable {
+    let opponentRail: CGFloat
+    let tableBand: CGFloat
+    let localBoard: CGFloat
+
+    var contentWidth: CGFloat {
+      opponentRail + tableBand + localBoard + RoomLayoutMetrics.shortLandscapeSpacing * 2
+    }
+  }
 
   static func opponentBoardWidth(
     availableWidth: CGFloat,
@@ -19,6 +44,71 @@ enum RoomLayoutMetrics {
   ) -> CGFloat {
     if usesShortLandscapeLayout { return compactOpponentBoardWidth }
     return availableWidth >= 700 ? 240 : max(158, min(230, availableWidth * 0.48))
+  }
+
+  /// Allocates the three non-scrolling table regions without shrinking any card
+  /// or action below its 44-point target. The smallest supported iPhone is wider
+  /// than `minimumShortLandscapeWidth` in landscape.
+  static func shortLandscapeColumns(availableWidth: CGFloat) -> ShortLandscapeColumns {
+    let contentWidth = max(
+      minimumShortLandscapeWidth - shortLandscapeHorizontalPadding * 2,
+      availableWidth - shortLandscapeHorizontalPadding * 2
+    )
+    let minimumColumns =
+      compactOpponentBoardWidth + minimumTableBandWidth + compactLocalBoardWidth
+    let distributableWidth = max(
+      0,
+      contentWidth - shortLandscapeSpacing * 2 - minimumColumns
+    )
+    let localBoard = min(
+      200,
+      compactLocalBoardWidth + distributableWidth * 0.25
+    )
+    let tableBand = min(
+      250,
+      minimumTableBandWidth + distributableWidth * 0.20
+    )
+    let opponentRail =
+      contentWidth - shortLandscapeSpacing * 2 - localBoard - tableBand
+    return ShortLandscapeColumns(
+      opponentRail: opponentRail,
+      tableBand: tableBand,
+      localBoard: localBoard
+    )
+  }
+
+  static func compactCardWidth(boardWidth: CGFloat) -> CGFloat {
+    (
+      boardWidth - compactBoardPadding * 2
+        - compactGridSpacing * CGFloat(SkyjoRules.columns - 1)
+    ) / CGFloat(SkyjoRules.columns)
+  }
+
+  static func tableBandActionWidth(bandWidth: CGFloat) -> CGFloat {
+    (bandWidth - tableBandSpacing * 3) / 4
+  }
+
+  static func compactBoardHeight(boardWidth: CGFloat) -> CGFloat {
+    compactCardWidth(boardWidth: boardWidth) * CGFloat(SkyjoRules.rows)
+      + compactGridSpacing * CGFloat(SkyjoRules.rows - 1)
+      + compactBoardHeaderAllowance
+      + 2 // Compact header-to-grid spacing.
+      + compactBoardPadding * 2
+  }
+
+  static func minimumShortLandscapeHeight(availableWidth: CGFloat) -> CGFloat {
+    let columns = shortLandscapeColumns(availableWidth: availableWidth)
+    let boardHeight = max(
+      compactBoardHeight(boardWidth: compactOpponentBoardWidth),
+      compactBoardHeight(boardWidth: columns.localBoard)
+    )
+    return max(170, boardHeight)
+      + shortLandscapeOverlayClearance
+      + shortLandscapeBottomPadding
+  }
+
+  static func usesShortLandscapeLayout(width: CGFloat, height: CGFloat) -> Bool {
+    width > height && height < 520
   }
 }
 
@@ -42,7 +132,6 @@ struct RoomPlayerRemovalConfirmation: Equatable, Identifiable {
 @MainActor
 struct RoomRootView: View {
   @Bindable var model: RoomSessionModel
-  @Environment(\.scenePhase) private var scenePhase
 
   init(model: RoomSessionModel) {
     self.model = model
@@ -81,9 +170,6 @@ struct RoomRootView: View {
       }
     }
     .task { await model.start() }
-    .onChange(of: scenePhase, initial: true) { _, phase in
-      model.setSceneActive(phase == .active)
-    }
     .sheet(isPresented: $model.isChatPresented) {
       RoomChatView(model: model)
     }
@@ -295,11 +381,6 @@ private struct RoomTableView: View {
       .padding(.horizontal, 10)
       .allowsHitTesting(model.banner != nil)
     }
-    .overlay(alignment: .topTrailing) {
-      RoomChatButton(model: model)
-        .padding(.top, 72)
-        .padding(.trailing, 12)
-    }
     .onChange(of: model.isScoring, initial: true) { _, scoring in
       if scoring { model.isScorePresented = true }
     }
@@ -314,30 +395,69 @@ private struct RoomTableView: View {
   }
 
   private func standardTable(width: CGFloat, height: CGFloat) -> some View {
-    let usesShortLandscapeLayout = height < 520
+    let usesShortLandscapeLayout = RoomLayoutMetrics.usesShortLandscapeLayout(
+      width: width,
+      height: height
+    )
+    if usesShortLandscapeLayout {
+      return AnyView(shortLandscapeTable(width: width, height: height))
+    }
+    return AnyView(regularTable(width: width, height: height))
+  }
+
+  private func regularTable(width: CGFloat, height: CGFloat) -> some View {
     return VStack(spacing: 8) {
-      opponentRail(width: width, usesShortLandscapeLayout: usesShortLandscapeLayout)
+      opponentRail(width: width, usesShortLandscapeLayout: false)
         .frame(maxHeight: .infinity)
 
       RoomTableBand(model: model)
         .frame(maxWidth: 680)
-        .frame(
-          height: usesShortLandscapeLayout
-            ? 88
-            : min(max(height * 0.21, 112), 170)
-        )
+        .frame(height: min(max(height * 0.21, 112), 170))
 
-      localBoard
-        .frame(maxWidth: usesShortLandscapeLayout ? 280 : 560)
-        .frame(
-          maxHeight: usesShortLandscapeLayout
-            ? 182
-            : min(max(height * 0.39, 210), 360)
-        )
+      localBoard(isCompact: false)
+        .frame(maxWidth: 560)
+        .frame(maxHeight: min(max(height * 0.39, 210), 360))
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .padding(.horizontal, 8)
     .padding(.bottom, 6)
+    .overlay(alignment: .topTrailing) {
+      chatButton(topPadding: 72)
+    }
+    .accessibilityIdentifier("rooms.table.layout.standard")
+  }
+
+  private func shortLandscapeTable(width: CGFloat, height: CGFloat) -> some View {
+    let columns = RoomLayoutMetrics.shortLandscapeColumns(availableWidth: width)
+    return HStack(alignment: .bottom, spacing: RoomLayoutMetrics.shortLandscapeSpacing) {
+      opponentRail(width: columns.opponentRail, usesShortLandscapeLayout: true)
+        .frame(width: columns.opponentRail)
+
+      RoomTableBand(model: model)
+        .frame(width: columns.tableBand)
+        .frame(
+          height: min(
+            max(
+              height
+                - RoomLayoutMetrics.shortLandscapeOverlayClearance
+                - RoomLayoutMetrics.shortLandscapeBottomPadding,
+              72
+            ),
+            170
+          )
+        )
+
+      localBoard(isCompact: true)
+        .frame(width: columns.localBoard)
+    }
+    .padding(.horizontal, RoomLayoutMetrics.shortLandscapeHorizontalPadding)
+    .padding(.top, RoomLayoutMetrics.shortLandscapeOverlayClearance)
+    .padding(.bottom, RoomLayoutMetrics.shortLandscapeBottomPadding)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    .overlay(alignment: .topTrailing) {
+      chatButton(topPadding: 8)
+    }
+    .accessibilityIdentifier("rooms.table.layout.short-landscape")
   }
 
   private func accessibleTable(width: CGFloat, height: CGFloat) -> some View {
@@ -349,14 +469,23 @@ private struct RoomTableView: View {
         RoomTableBand(model: model)
           .frame(maxWidth: .infinity, minHeight: 150)
 
-        localBoard
+        localBoard(isCompact: false)
           .frame(maxWidth: min(max(width - 16, 280), 620))
       }
       .frame(maxWidth: .infinity)
       .padding(.horizontal, 8)
       .padding(.vertical, 12)
     }
+    .overlay(alignment: .topTrailing) {
+      chatButton(topPadding: 72)
+    }
     .accessibilityIdentifier("rooms.table.accessible-layout")
+  }
+
+  private func chatButton(topPadding: CGFloat) -> some View {
+    RoomChatButton(model: model)
+      .padding(.top, topPadding)
+      .padding(.trailing, 12)
   }
 
   private func opponentRail(width: CGFloat, usesShortLandscapeLayout: Bool) -> some View {
@@ -370,13 +499,13 @@ private struct RoomTableView: View {
   }
 
   @ViewBuilder
-  private var localBoard: some View {
+  private func localBoard(isCompact: Bool) -> some View {
     if let player = model.localGamePlayer {
       PublicRoomPlayerBoard(
         player: player,
         isLocal: true,
         opponentIndex: nil,
-        isCompact: false,
+        isCompact: isCompact,
         isActive: model.isLocalTurn,
         differentiateWithoutColor: differentiateWithoutColor,
         actionForIndex: { index in Task { await model.selectLocalCard(at: index) } },
@@ -536,7 +665,7 @@ private struct RoomTableBand: View {
   }
 
   private var band: some View {
-    HStack(spacing: 7) {
+    HStack(spacing: RoomLayoutMetrics.tableBandSpacing) {
       SkyjoActionSlot {
         Button {
           Task { await model.drawBlind() }

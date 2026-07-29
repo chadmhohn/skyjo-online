@@ -116,6 +116,7 @@ final class RoomAppCoordinator {
   private let makeSessionHost: @MainActor @Sendable (AccountUser) -> RoomSessionHost
   private let inviteHandoff: RoomInviteCoordinator
   private var synchronizationGeneration: UInt64 = 0
+  private var sceneIsActive = true
 
   private(set) var sessionHost: RoomSessionHost?
   var isRoomPresented = false
@@ -190,6 +191,7 @@ final class RoomAppCoordinator {
        currentHost.model.account.id == account.id {
       await currentHost.synchronize(account: account)
       guard synchronizationGeneration == generation else { return }
+      currentHost.setSceneActive(sceneIsActive)
       routePendingInviteIfPossible()
       return
     }
@@ -201,8 +203,19 @@ final class RoomAppCoordinator {
     await previousHost?.stop()
     guard synchronizationGeneration == generation else { return }
 
-    sessionHost = makeSessionHost(account)
+    let nextHost = makeSessionHost(account)
+    nextHost.setSceneActive(sceneIsActive)
+    sessionHost = nextHost
     routePendingInviteIfPossible()
+  }
+
+  /// App-scoped presence continues even when the multiplayer destination has
+  /// been popped. A replacement host receives the latest phase before it is
+  /// published, so an account transition cannot resurrect stale visibility.
+  func setSceneActive(_ active: Bool) {
+    guard sceneIsActive != active else { return }
+    sceneIsActive = active
+    sessionHost?.setSceneActive(active)
   }
 
   func presentRooms(for account: AccountUser) async {

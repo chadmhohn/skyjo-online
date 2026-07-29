@@ -1232,7 +1232,7 @@ struct RoomConnectionStateMachineTests {
     #expect(await eventually { await connection.status().synchronized })
 
     await connection.setVisible(false)
-    await connection.setVisible(true)
+    await connection.resume()
     let texts = await socket.sentTexts()
     #expect(texts.contains(#"{"type":"set-presence","visible":false}"#))
     #expect(texts.last == #"{"type":"set-presence","visible":true}"#)

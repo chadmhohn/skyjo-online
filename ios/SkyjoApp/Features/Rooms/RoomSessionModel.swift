@@ -51,6 +51,7 @@ protocol RoomSessionConnection: Sendable {
   func recover(_ admission: RoomAdmission) async throws
   func send(_ action: RoomCommandAction) async throws -> UUID
   func setVisible(_ visible: Bool) async
+  func resume() async
   func disconnect() async throws
   func discardPersistedResetRecovery() async throws
   func dispose() async
@@ -173,6 +174,7 @@ final class RoomSessionHost {
   private var intendedAccount: AccountUser
   private var transitionInProgress = false
   private var queuedInvite: RedeemedRoomInvite?
+  private var sceneIsActive = true
 
   init(
     account: AccountUser,
@@ -214,6 +216,7 @@ final class RoomSessionHost {
     let pendingInvite = queuedInvite ?? previous.pendingInviteReview
     queuedInvite = nil
     let nextModel = makeModel(account)
+    nextModel.setSceneActive(sceneIsActive)
     if let pendingInvite { nextModel.applyInvite(pendingInvite) }
     model = nextModel
     transitionInProgress = false
@@ -227,6 +230,12 @@ final class RoomSessionHost {
     } else {
       model.applyInvite(invite)
     }
+  }
+
+  func setSceneActive(_ active: Bool) {
+    guard sceneIsActive != active else { return }
+    sceneIsActive = active
+    model.setSceneActive(active)
   }
 
   var hasPendingInviteForPresentation: Bool {
@@ -669,11 +678,24 @@ final class RoomSessionModel {
   }
 
   func setSceneActive(_ active: Bool) {
+    guard sceneIsActive != active else { return }
     sceneIsActive = active
     schedulePresenceFlushIfNeeded()
   }
 
   func applyInvite(_ invite: RedeemedRoomInvite) {
+    // Opening a newer redeemed link always supersedes older invite intent,
+    // even when local time says the newer link has already expired.
+    pendingInviteReview = nil
+    joinCode = ""
+    recoveryGeneration &+= 1
+    if snapshot == nil, awaitsFreshAdmissionSnapshot {
+      acceptsSeatPersistence = false
+      awaitsFreshAdmissionSnapshot = false
+      expectedFreshAdmissionRoomCode = nil
+      inviteSupersededAdmission = true
+      supersededAdmissionSnapshot = nil
+    }
     guard !invite.isExpired(at: environment.nowMilliseconds()) else {
       banner = RoomBanner(
         title: "Invite expired",
@@ -682,19 +704,11 @@ final class RoomSessionModel {
       )
       return
     }
-    recoveryGeneration &+= 1
     // A universal link can arrive while a create, join, or saved-seat recovery
     // is awaiting socket admission. Invalidate that operation's first-snapshot
     // fence so its late room cannot become visible or repopulate saved routing.
     // An already-authoritative current room is intentionally retained for the
     // explicit same-room/leave-or-switch review below.
-    if snapshot == nil, awaitsFreshAdmissionSnapshot {
-      acceptsSeatPersistence = false
-      awaitsFreshAdmissionSnapshot = false
-      expectedFreshAdmissionRoomCode = nil
-      inviteSupersededAdmission = true
-      supersededAdmissionSnapshot = nil
-    }
     pendingInviteReview = invite
     joinCode = invite.roomCode
   }
@@ -1632,7 +1646,11 @@ final class RoomSessionModel {
     }
     while lifecycleGeneration == generation, started, self.connection != nil {
       let requestedVisibility = sceneIsActive
-      await connection.setVisible(requestedVisibility)
+      if requestedVisibility {
+        await connection.resume()
+      } else {
+        await connection.setVisible(false)
+      }
       guard lifecycleGeneration == generation, started, self.connection != nil else { return }
       if sceneIsActive == requestedVisibility { return }
     }

@@ -127,6 +127,37 @@ struct RoomSessionModelTests {
         usesShortLandscapeLayout: false
       ) == 240
     )
+    #expect(RoomLayoutMetrics.minimumShortLandscapeWidth == 599)
+    #expect(RoomLayoutMetrics.usesShortLandscapeLayout(width: 640, height: 360))
+    #expect(!RoomLayoutMetrics.usesShortLandscapeLayout(width: 375, height: 500))
+    #expect(!RoomLayoutMetrics.usesShortLandscapeLayout(width: 820, height: 600))
+
+    let shortLandscape = RoomLayoutMetrics.shortLandscapeColumns(availableWidth: 640)
+    #expect(
+      shortLandscape.contentWidth
+        + RoomLayoutMetrics.shortLandscapeHorizontalPadding * 2 == 640
+    )
+    #expect(shortLandscape.opponentRail >= RoomLayoutMetrics.compactOpponentBoardWidth)
+    #expect(
+      RoomLayoutMetrics.compactCardWidth(
+        boardWidth: RoomLayoutMetrics.compactOpponentBoardWidth
+      ) >= RoomLayoutMetrics.minimumCardTarget
+    )
+    #expect(
+      RoomLayoutMetrics.compactCardWidth(boardWidth: shortLandscape.localBoard)
+        >= RoomLayoutMetrics.minimumCardTarget
+    )
+    #expect(
+      RoomLayoutMetrics.tableBandActionWidth(bandWidth: shortLandscape.tableBand)
+        >= RoomLayoutMetrics.minimumCardTarget
+    )
+    #expect(RoomLayoutMetrics.minimumShortLandscapeHeight(availableWidth: 640) <= 240)
+    #expect(
+      RoomLayoutMetrics.compactBoardHeight(boardWidth: shortLandscape.localBoard)
+        + RoomLayoutMetrics.shortLandscapeOverlayClearance
+        + RoomLayoutMetrics.shortLandscapeBottomPadding <= 240
+    )
+    #expect(RoomLayoutMetrics.minimumShortLandscapeHeight(availableWidth: 852) <= 242)
 
     let removal = RoomPlayerRemovalConfirmation(
       playerID: "20000000-0000-4000-8000-000000000002",
@@ -136,6 +167,83 @@ struct RoomSessionModelTests {
     #expect(removal.message.contains("waiting-room seat will be removed"))
     #expect(RoomConfirmationCopy.forgetSavedSeatMessage.contains("removed from this device"))
     #expect(RoomConfirmationCopy.forgetSavedSeatMessage.contains("other players are not changed"))
+  }
+
+  @Test("App scene presence follows a retained room after its destination is popped")
+  func appScenePresenceOutlivesRoomDestination() async throws {
+    let account = testAccount()
+    let connection = ModelRoomConnection()
+    let factory = HostRoomModelFactory(connectionsByAccount: [account.id: [connection]])
+    let coordinator = RoomAppCoordinator(
+      inviteHandoff: RoomInviteCoordinator { _ in throw ModelTestError.inviteUnavailable }
+    ) { account in
+      RoomSessionHost(account: account) { factory.makeModel(for: $0) }
+    }
+
+    await coordinator.presentRooms(for: account)
+    let retainedModel = try #require(coordinator.sessionHost?.model)
+    await retainedModel.start()
+    #expect(await modelEventually { await connection.visibilityUpdates() == [true] })
+
+    coordinator.isRoomPresented = false
+    coordinator.setSceneActive(false)
+    #expect(await modelEventually { await connection.visibilityUpdates() == [true, false] })
+
+    coordinator.setSceneActive(true)
+    #expect(await modelEventually { await connection.visibilityUpdates() == [true, false, true] })
+    #expect(await connection.resumeCount() == 2)
+    #expect(coordinator.sessionHost?.model === retainedModel)
+    #expect(!(await connection.disposed()))
+
+    await coordinator.synchronize(account: nil)
+  }
+
+  @Test("Latest app scene phase reaches a replacement account host across disposal")
+  func appScenePresenceFencesAccountHostReplacement() async throws {
+    let accountA = testAccount()
+    let accountB = testAccount(
+      id: UUID(uuidString: "30000000-0000-4000-8000-000000000004")!,
+      displayName: "Guest"
+    )
+    let accountAConnection = ModelRoomConnection()
+    let accountBConnection = ModelRoomConnection()
+    let factory = HostRoomModelFactory(connectionsByAccount: [
+      accountA.id: [accountAConnection],
+      accountB.id: [accountBConnection],
+    ])
+    let coordinator = RoomAppCoordinator(
+      inviteHandoff: RoomInviteCoordinator { _ in throw ModelTestError.inviteUnavailable }
+    ) { account in
+      RoomSessionHost(account: account) { factory.makeModel(for: $0) }
+    }
+
+    await coordinator.synchronize(account: accountA)
+    let accountAHost = try #require(coordinator.sessionHost)
+    await accountAHost.model.start()
+    #expect(await modelEventually { await accountAConnection.visibilityUpdates() == [true] })
+    await accountAConnection.suspendNextDispose()
+
+    let replacement = Task { await coordinator.synchronize(account: accountB) }
+    #expect(await modelEventually {
+      guard coordinator.sessionHost == nil else { return false }
+      return await accountAConnection.disposeIsSuspended()
+    })
+    coordinator.setSceneActive(false)
+    await accountAConnection.resumeDispose()
+    await replacement.value
+
+    let accountBHost = try #require(coordinator.sessionHost)
+    #expect(accountBHost !== accountAHost)
+    await accountBHost.model.start()
+    #expect(await modelEventually { await accountBConnection.visibilityUpdates() == [false] })
+    #expect(await accountBConnection.resumeCount() == 0)
+
+    coordinator.setSceneActive(true)
+    #expect(await modelEventually { await accountBConnection.visibilityUpdates() == [false, true] })
+    #expect(await accountBConnection.resumeCount() == 1)
+    #expect(await accountAConnection.visibilityUpdates() == [true])
+
+    await coordinator.synchronize(account: nil)
   }
 
   @Test("Account replacement retires the old host while the latest live invite waits safely")
@@ -345,6 +453,22 @@ struct RoomSessionModelTests {
     let diagnostics = String(reflecting: model.pendingInviteReview)
     #expect(!diagnostics.contains("ABCDE"))
     #expect(!diagnostics.contains("FGHIJ"))
+  }
+
+  @Test("A newer expired invite supersedes an older live review")
+  func expiredInviteReplacesLiveReview() throws {
+    let model = makeModel(connection: ModelRoomConnection(), now: 1_784_998_800_000)
+    let live = try RedeemedRoomInvite(roomCode: "ABCDE", expiresAt: 1_784_999_000_000)
+    let expired = try RedeemedRoomInvite(roomCode: "FGHIJ", expiresAt: 1_784_998_799_999)
+
+    model.applyInvite(live)
+    #expect(model.pendingInviteReview == live)
+    #expect(model.joinCode == "ABCDE")
+
+    model.applyInvite(expired)
+    #expect(model.pendingInviteReview == nil)
+    #expect(model.joinCode.isEmpty)
+    #expect(model.banner?.title == "Invite expired")
   }
 
   @Test("A live invite supersedes an automatic seat load that was already in flight")
@@ -1727,6 +1851,7 @@ private actor ModelRoomConnection: RoomSessionConnection {
   private var receivedAdmissions: [RoomAdmission] = []
   private var receivedActions: [RoomCommandAction] = []
   private var receivedVisibilityUpdates: [Bool] = []
+  private var receivedResumeCount = 0
   private var latestAuthoritativeSnapshot: AuthoritativeRoomSnapshot?
   private var authoritativeSnapshotReads = 0
   private var delayedEvents: [RoomConnectionEvent] = []
@@ -1788,6 +1913,11 @@ private actor ModelRoomConnection: RoomSessionConnection {
     await withCheckedContinuation { suspendedVisibilityContinuation = $0 }
   }
 
+  func resume() async {
+    receivedResumeCount += 1
+    receivedVisibilityUpdates.append(true)
+  }
+
   func disconnect() async throws {
     disconnectCalls += 1
     latestAuthoritativeSnapshot = nil
@@ -1840,6 +1970,7 @@ private actor ModelRoomConnection: RoomSessionConnection {
   func admissions() -> [RoomAdmission] { receivedAdmissions }
   func actions() -> [RoomCommandAction] { receivedActions }
   func visibilityUpdates() -> [Bool] { receivedVisibilityUpdates }
+  func resumeCount() -> Int { receivedResumeCount }
   func disposed() -> Bool { isDisposed }
 
   func failPersistedResetRecovery(_ error: ModelTestError?) { persistedResetFailure = error }
