@@ -102,6 +102,10 @@ jobs:
           node-version-file: .node-version
           cache: npm
 
+      - name: Bind annotated tag to package and certification identity
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/verify-release-tag-identity.mjs "$GITHUB_REF" "$GITHUB_REF_NAME"
+
       - name: Validate native iOS issue orchestration logic
         run: node scripts/reconcile-native-ios-issues.mjs --self-test
 

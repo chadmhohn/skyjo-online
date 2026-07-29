@@ -36,6 +36,10 @@ import {
 } from '../../../scripts/certification-lib.mjs';
 import { REQUIRED_CHECKS } from '../../../scripts/github-governance-lib.mjs';
 import { selectSimulatorMatrix } from '../../../scripts/select-ios-ui-simulators.mjs';
+import {
+  validateReleaseTagMetadata,
+  verifyReleaseTagIdentity
+} from '../../../scripts/verify-release-tag-identity.mjs';
 import { MULTIPLAYER_PROTOCOL_VERSION, type GameCommand } from '../../../src/protocolV2';
 import {
   createPropagationArrivalTracker,
@@ -702,6 +706,82 @@ describe('v0.3.3 certification evidence', () => {
   });
 });
 
+describe('v0.3.3 immutable tag identity', () => {
+  const metadata = {
+    tagRef: 'refs/tags/v0.3.3',
+    tagName: 'v0.3.3',
+    packageVersion: '0.3.3',
+    packageLockVersion: '0.3.3',
+    packageLockRootVersion: '0.3.3',
+    certificationVersion: '0.3.3'
+  };
+
+  it('binds the full tag ref, package, lockfile, and certification versions exactly', () => {
+    expect(validateReleaseTagMetadata(metadata)).toBe('v0.3.3');
+    for (const changed of [
+      { tagRef: 'refs/tags/v0.3.2', tagName: 'v0.3.2' },
+      { tagRef: 'refs/tags/v0.3.3-extra' },
+      { tagName: 'v0.3.2' },
+      { packageVersion: '0.3.2' },
+      { packageLockVersion: '0.3.2' },
+      { packageLockRootVersion: '0.3.2' },
+      { certificationVersion: '0.3.2' }
+    ]) {
+      expect(() => validateReleaseTagMetadata({ ...metadata, ...changed })).toThrow(/release|version|tag/i);
+    }
+  });
+
+  it('accepts only an annotated tag resolving to the checked-out commit', async () => {
+    const tagObject = 'a'.repeat(40);
+    const commit = 'b'.repeat(40);
+    const responses = new Map([
+      ['cat-file -t refs/tags/v0.3.3', 'tag\n'],
+      ['rev-parse --verify refs/tags/v0.3.3^{tag}', `${tagObject}\n`],
+      ['rev-parse --verify refs/tags/v0.3.3^{commit}', `${commit}\n`],
+      ['rev-parse --verify HEAD^{commit}', `${commit}\n`]
+    ]);
+    const runGit = vi.fn(async (arguments_: string[]) => responses.get(arguments_.join(' ')) || '');
+    await expect(verifyReleaseTagIdentity({
+      tagRef: metadata.tagRef,
+      tagName: metadata.tagName,
+      packageDocument: { version: metadata.packageVersion },
+      packageLock: {
+        version: metadata.packageLockVersion,
+        packages: { '': { version: metadata.packageLockRootVersion } }
+      },
+      certificationVersion: metadata.certificationVersion,
+      runGit
+    })).resolves.toEqual({ expectedTag: 'v0.3.3', tagObject, taggedCommit: commit });
+    expect(runGit).toHaveBeenCalledWith(['rev-parse', '--verify', 'refs/tags/v0.3.3^{tag}']);
+  });
+
+  it('rejects lightweight tags and commit drift', async () => {
+    const packageDocument = { version: '0.3.3' };
+    const packageLock = { version: '0.3.3', packages: { '': { version: '0.3.3' } } };
+    await expect(verifyReleaseTagIdentity({
+      tagRef: metadata.tagRef,
+      tagName: metadata.tagName,
+      packageDocument,
+      packageLock,
+      runGit: async () => 'commit\n'
+    })).rejects.toThrow(/annotated tag/i);
+
+    const responses = new Map([
+      ['cat-file -t refs/tags/v0.3.3', 'tag\n'],
+      ['rev-parse --verify refs/tags/v0.3.3^{tag}', `${'a'.repeat(40)}\n`],
+      ['rev-parse --verify refs/tags/v0.3.3^{commit}', `${'b'.repeat(40)}\n`],
+      ['rev-parse --verify HEAD^{commit}', `${'c'.repeat(40)}\n`]
+    ]);
+    await expect(verifyReleaseTagIdentity({
+      tagRef: metadata.tagRef,
+      tagName: metadata.tagName,
+      packageDocument,
+      packageLock,
+      runGit: async (arguments_: string[]) => responses.get(arguments_.join(' ')) || ''
+    })).rejects.toThrow(/checked-out commit/i);
+  });
+});
+
 describe('v0.3.3 workflow governance', () => {
   it('selects a compact standard phone independently from the large-phone entry', () => {
     type SimulatorMatrixEntry = {
@@ -740,6 +820,7 @@ describe('v0.3.3 workflow governance', () => {
     const [
       ci,
       uiAccessibilityHarness,
+      codeql,
       nightly,
       installer,
       load,
@@ -755,6 +836,7 @@ describe('v0.3.3 workflow governance', () => {
     ] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'ios-ui-accessibility-test.sh'), 'utf8'),
+      fs.readFile(path.join(root, '.github', 'workflows', 'codeql.yml'), 'utf8'),
       fs.readFile(path.join(root, '.github', 'workflows', 'nightly-certification.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'install-k6.sh'), 'utf8'),
       fs.readFile(path.join(root, 'tests', 'load', 'skyjo-realtime.k6.js'), 'utf8'),
@@ -830,6 +912,10 @@ describe('v0.3.3 workflow governance', () => {
     expect(nightly).not.toMatch(/playwright-report|test-results\/playwright|test-results\/server/);
     expect(ci).toMatch(/release-canary:[\s\S]*?needs:[\s\S]*?- load-recovery/);
     expect(ci).toMatch(/pull_request:[\s\S]*push:[\s\S]*tags:[\s\S]*v\*/);
+    expect(ci).toMatch(/Check out repository[\s\S]*?fetch-depth: 0/);
+    expect(ci).toContain('Bind annotated tag to package and certification identity');
+    expect(ci).toContain('node scripts/verify-release-tag-identity.mjs "$GITHUB_REF" "$GITHUB_REF_NAME"');
+    expect(codeql).not.toMatch(/push:[\s\S]*?tags:/);
     expect(nightly).toMatch(/schedule:[\s\S]*cron:/);
     expect(nightly).toMatch(/workflow_dispatch:/);
     expect(nightly).toMatch(/npm run certify:automated/);
@@ -889,9 +975,15 @@ describe('v0.3.3 workflow governance', () => {
     expect(certificationAddendum).toContain('explicit approval in the current conversation naming both exact tag `v0.3.3` and exact `CERT_SHA`');
     expect(certificationAddendum).toContain('`previous` resolves to the exact immutable `v0.3.3` tag');
     expect(certificationAddendum).toContain('keep issue #203 open and #204 blocked');
+    expect(certificationAddendum).toContain('CodeQL does not trigger for tag refs');
+    expect(certificationAddendum).toContain('--tag v0.3.3');
+    expect(certificationAddendum).toContain('--production-base-url https://skyjo.groundworkrevops.com');
+    expect(certificationAddendum).toContain('published release back through GitHub');
+    expect(certificationAddendum).toContain('every SHA-256 sidecar');
     expect(certificationAddendum).not.toContain('physical `PASS V0.3 IOS`');
     expect(securityAddendum).toContain('Production dependencies remain unchanged');
     expect(securityAddendum).toContain('does not create or use `apns_devices`');
     expect(securityAddendum).toContain('general autonomy is insufficient');
+    expect(securityAddendum).toContain('CodeQL does not trigger for tag refs');
   });
 });
