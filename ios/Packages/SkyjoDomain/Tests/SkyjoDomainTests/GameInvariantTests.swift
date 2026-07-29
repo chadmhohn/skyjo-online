@@ -43,7 +43,7 @@ struct GameInvariantTests {
   func openingRevealCopy() {
     var soloRandom = SeededRandom(seed: 42)
     let solo = GameEngine.startFreshGame(random: &soloRandom)
-    #expect(solo.log.first == "Your turn: reveal 2 cards.")
+    #expect(solo.log.first == "You: reveal 2 cards.")
 
     var multiplayerRandom = SeededRandom(seed: 7)
     var multiplayer = GameEngine.createMultiplayerGame(
@@ -53,11 +53,11 @@ struct GameInvariantTests {
       ],
       random: &multiplayerRandom
     )
-    #expect(multiplayer.log.first == "Ada's turn: reveal 2 cards.")
+    #expect(multiplayer.log.first == "Ada: reveal 2 cards.")
     multiplayer = GameEngine.revealOpeningCard(multiplayer, at: 0)
     multiplayer = GameEngine.revealOpeningCard(multiplayer, at: 1)
     #expect(
-      multiplayer.log.first == "Ada finished. Your turn: reveal 2 cards."
+      multiplayer.log.first == "Ada finished. You: reveal 2 cards."
     )
   }
 

@@ -488,7 +488,7 @@ export function createGameForPlayers(
     log: [
       hasOpeningReveals
         ? `${starter.name} starts round ${round}. Pick from the discard pile or draw blind.`
-        : `${possessiveName(starter.name)} turn: reveal 2 cards.`
+        : `${starter.name}: reveal 2 cards.`
     ],
     winnerId: null,
     nextStarterId: hasOpeningReveals ? null : round > 1 ? startPlayerId || null : null,
@@ -588,7 +588,7 @@ export function revealOpeningCard(state: GameState, cardIndex: number): GameStat
         ...updatedState,
         currentPlayerIndex: nextPlayerIndex
       },
-      `${player.name} finished. ${possessiveName(nextPlayerName)} turn: reveal 2 cards.`
+      `${player.name} finished. ${nextPlayerName}: reveal 2 cards.`
     );
   }
 

@@ -81,9 +81,9 @@
                   "log": [
                     "Host starts round 1. Pick from the discard pile or draw blind.",
                     "Guest revealed an opening card.",
-                    "Host finished. Guest's turn: reveal 2 cards.",
+                    "Host finished. Guest: reveal 2 cards.",
                     "Host revealed an opening card.",
-                    "Host's turn: reveal 2 cards."
+                    "Host: reveal 2 cards."
                   ],
                   "nextStarterId": null,
                   "openingRevealCounts": {
@@ -351,9 +351,9 @@
                   "log": [
                     "Host starts round 1. Pick from the discard pile or draw blind.",
                     "Guest revealed an opening card.",
-                    "Host finished. Guest's turn: reveal 2 cards.",
+                    "Host finished. Guest: reveal 2 cards.",
                     "Host revealed an opening card.",
-                    "Host's turn: reveal 2 cards."
+                    "Host: reveal 2 cards."
                   ],
                   "nextStarterId": null,
                   "openingRevealCounts": {
@@ -643,9 +643,9 @@
                   "log": [
                     "Host starts round 1. Pick from the discard pile or draw blind.",
                     "Guest revealed an opening card.",
-                    "Host finished. Guest's turn: reveal 2 cards.",
+                    "Host finished. Guest: reveal 2 cards.",
                     "Host revealed an opening card.",
-                    "Host's turn: reveal 2 cards."
+                    "Host: reveal 2 cards."
                   ],
                   "nextStarterId": null,
                   "openingRevealCounts": {
@@ -908,9 +908,9 @@
                   "log": [
                     "Host starts round 1. Pick from the discard pile or draw blind.",
                     "Guest revealed an opening card.",
-                    "Host finished. Guest's turn: reveal 2 cards.",
+                    "Host finished. Guest: reveal 2 cards.",
                     "Host revealed an opening card.",
-                    "Host's turn: reveal 2 cards."
+                    "Host: reveal 2 cards."
                   ],
                   "nextStarterId": null,
                   "openingRevealCounts": {

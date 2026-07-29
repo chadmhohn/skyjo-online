@@ -1,16 +1,16 @@
 {
   "contractVersion": 1,
   "files": {
-    "domain-parity.json": "1e09218fde278b51cbec6ac0abada98eabe2621578b7bf87fb284e122877db05",
-    "game-state.invalid.json": "a127ee331adcc1a8e31705a14110a553ad698e62b8d0e4b676277dd21fa38809",
-    "game-state.valid.json": "3f5aec9636be80e72863c65af4393a8e01542be3f85e0316a789f44ec0456f99",
+    "domain-parity.json": "10a2ff268b81aef6a39b6fd4857210fb6a575b9ec0e79441a8d0d73e6fc43d90",
+    "game-state.invalid.json": "6c69584c39db733571776e0b752b43b42599f615d2feeb74657ee4b95074ee90",
+    "game-state.valid.json": "7e9b9eed8a52a5eb2c4d0630f59752f6c79b9cc02d05723445476b6862c2b0ef",
     "http.invalid.json": "f3e76ec8c7f9039360239d65c9ee36cacc86be5cfb6986055a956f2f15efb048",
     "http.valid.json": "4abe374582cbb35aabaf37326655ba1fccddfcc3d159214fdae42331181c8720",
     "protocol-client.invalid.json": "a2247757524ce8d601c4424bd8734a2dd52990747269288a6e373a4dec0a25a1",
     "protocol-client.valid.json": "5f917db953d753bd4c1a0a1dea5170a5560c726305659cbac17b6083063358b1",
-    "protocol-server.invalid.json": "0f1184e211c4fef981fc95a03f32925fa9969f3ebc016c12da473a62a89dfde7",
-    "protocol-server.valid.json": "8d517b626108ee63012f348c632430f8dc35e599d7e03d4050bc355c4ce546e0",
-    "protocol-transcripts.json": "6ce6094c06ed899a9b14c79c729585d9fa959567774dd432d5bdee5c18b98627"
+    "protocol-server.invalid.json": "5c2211c56daa7d1e0977e344d7f2de4379dc5742a31dc215c03f0d8ff9d3666c",
+    "protocol-server.valid.json": "41d54ccd3f67589914cfe716937c99594bdd380698a6f550afd18ce2fea339dd",
+    "protocol-transcripts.json": "1af556ee5f594d7faaac01aaca837b928e0630cc0edeff2f03b95cb7c9e9d35f"
   },
   "generator": "scripts/generate-contract-fixtures.mjs"
 }

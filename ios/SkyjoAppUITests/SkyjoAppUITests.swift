@@ -1684,7 +1684,7 @@ final class SkyjoAppUITests: XCTestCase {
       identifier: "solo.settings.move-log.1"
     )
     scrollToElementFullyVisible(openingMoveLog, in: adaptationApp)
-    XCTAssertEqual(openingMoveLog.label, "Your turn: reveal 2 cards.")
+    XCTAssertEqual(openingMoveLog.label, "You: reveal 2 cards.")
     XCTAssertFalse(openingMoveLog.label.contains("You chooses"))
     XCTAssertGreaterThan(openingMoveLog.frame.height, 0)
     let completeSettingsRows: [(

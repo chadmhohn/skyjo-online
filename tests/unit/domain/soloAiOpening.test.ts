@@ -31,7 +31,7 @@ describe('solo AI opening cadence', () => {
     expect(aiOpening.openingRevealCounts[activeAi.id]).toBe(0);
     expect(advanced.openingRevealCounts[activeAi.id]).toBe(2);
     expect(advanced.currentPlayerIndex).not.toBe(aiOpening.currentPlayerIndex);
-    expect(advanced.log[0]).toMatch(/turn: reveal 2 cards\.$/);
+    expect(advanced.log[0]).toMatch(/: reveal 2 cards\.$/);
   });
 
   it('drains every consecutive AI seat for reduced motion', () => {
