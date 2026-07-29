@@ -151,13 +151,16 @@ final class RoomSessionHost {
 
   private(set) var model: RoomSessionModel
   private var lifecycleGeneration: UInt64 = 0
+  private var intendedAccount: AccountUser
   private var transitionInProgress = false
+  private var queuedInvite: RedeemedRoomInvite?
 
   init(
     account: AccountUser,
     makeModel: @escaping @MainActor @Sendable (AccountUser) -> RoomSessionModel
   ) {
     self.makeModel = makeModel
+    intendedAccount = account
     model = makeModel(account)
   }
 
@@ -181,16 +184,16 @@ final class RoomSessionHost {
   }
 
   func synchronize(account: AccountUser) async {
+    guard intendedAccount != account else { return }
+    intendedAccount = account
     lifecycleGeneration &+= 1
     let generation = lifecycleGeneration
-    // Advancing the generation before the equality fast path also cancels an
-    // in-flight A -> B switch when authentication has already returned to A.
-    guard model.account != account || transitionInProgress else { return }
     let previous = model
     transitionInProgress = true
     await previous.stop()
     guard lifecycleGeneration == generation else { return }
-    let pendingInvite = previous.pendingInviteReview
+    let pendingInvite = queuedInvite ?? previous.pendingInviteReview
+    queuedInvite = nil
     let nextModel = makeModel(account)
     if let pendingInvite { nextModel.applyInvite(pendingInvite) }
     model = nextModel
@@ -198,15 +201,24 @@ final class RoomSessionHost {
   }
 
   func applyInvite(_ invite: RedeemedRoomInvite) {
-    model.applyInvite(invite)
+    if transitionInProgress {
+      // A link received while the current account model drains must never route
+      // into that retiring socket. Keep only the latest sanitized redemption.
+      queuedInvite = invite
+    } else {
+      model.applyInvite(invite)
+    }
   }
 
   func stop() async {
     lifecycleGeneration &+= 1
     let generation = lifecycleGeneration
+    intendedAccount = model.account
     transitionInProgress = true
+    queuedInvite = nil
     await model.stop()
     if lifecycleGeneration == generation {
+      queuedInvite = nil
       transitionInProgress = false
     }
   }

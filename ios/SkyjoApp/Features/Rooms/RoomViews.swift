@@ -670,14 +670,14 @@ private struct RoomConnectionBanner: View {
 
   private var title: String {
     if model.connectionStatus.hasPendingCommand { return "Action pending" }
-    switch model.connectionStatus.phase {
-    case .idle: return "Not connected"
-    case .connecting: return "Connecting"
-    case .connected: return "Table synchronized"
-    case .reconnecting: return "Reconnecting"
-    case .offline: return "Offline"
-    case .error: return "Connection error"
-    case .upgradeRequired: return "Update required"
+    return switch model.connectionStatus.phase {
+    case .idle: "Not connected"
+    case .connecting: "Connecting"
+    case .connected: "Table synchronized"
+    case .reconnecting: "Reconnecting"
+    case .offline: "Offline"
+    case .error: "Connection error"
+    case .upgradeRequired: "Update required"
     }
   }
 
@@ -691,10 +691,10 @@ private struct RoomConnectionBanner: View {
     case .connected: return "Room actions use the latest server revision."
     case .reconnecting:
       if let delay = model.connectionStatus.retryInMilliseconds {
-        let seconds = (Double(delay) / 1_000).formatted(
+        let delaySeconds = (Double(delay) / 1_000).formatted(
           .number.precision(.fractionLength(1))
         )
-        return "The table is read-only. Retrying in \(seconds) seconds."
+        return "The table is read-only. Retrying in \(delaySeconds) seconds."
       }
       return "The table is read-only while Skyjo reconnects."
     case .offline: return "The last table remains visible and read-only until the network returns."
