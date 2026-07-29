@@ -146,22 +146,34 @@ public actor RoomInviteClient {
   private let environment: SkyjoNetworkEnvironment
   private let session: URLSession
   private let cookieStorage: HTTPCookieStorage?
+  private let nowMilliseconds: @Sendable () -> Int64
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
 
-  public init(environment: SkyjoNetworkEnvironment, session: URLSession) {
+  public init(
+    environment: SkyjoNetworkEnvironment,
+    session: URLSession,
+    nowMilliseconds: @escaping @Sendable () -> Int64 = {
+      Int64(Date().timeIntervalSince1970 * 1_000)
+    }
+  ) {
     self.environment = environment
     cookieStorage = session.configuration.httpCookieStorage
     self.session = SkyjoURLSessionFactory.makeCookieDisabled(copying: session)
+    self.nowMilliseconds = nowMilliseconds
   }
 
   public init(
     environment: SkyjoNetworkEnvironment,
-    persistentCookieStorage: HTTPCookieStorage = .shared
+    persistentCookieStorage: HTTPCookieStorage = .shared,
+    nowMilliseconds: @escaping @Sendable () -> Int64 = {
+      Int64(Date().timeIntervalSince1970 * 1_000)
+    }
   ) {
     self.environment = environment
     cookieStorage = persistentCookieStorage
     session = SkyjoURLSessionFactory.makeCookieDisabled()
+    self.nowMilliseconds = nowMilliseconds
   }
 
   /// Redeems only the outer-access layer. Account authentication and room admission remain separate.
@@ -175,10 +187,17 @@ public actor RoomInviteClient {
       roomCode: result.value.roomCode,
       expiresAt: result.value.expiresAt
     )
-    guard result.cookies.count == 1 else {
+    guard !invite.isExpired(at: nowMilliseconds()),
+          let cookie = Self.validatedOuterAccessCookie(
+            result.cookies,
+            setCookieHeader: result.setCookieHeader,
+            endpoint: environment.baseURL.appending(path: "api/rooms/invite/redeem"),
+            expectedName: environment.outerAccessCookieName
+          )
+    else {
       throw SkyjoHTTPClientError.invalidSuccessPayload
     }
-    persistResponseCookies(result.cookies)
+    persistResponseCookie(cookie)
     return invite
   }
 
@@ -193,7 +212,8 @@ public actor RoomInviteClient {
     )
     let response = result.value
     guard response.roomCode == roomCode,
-          RedeemedRoomInvite.isSafeEpochMilliseconds(response.expiresAt)
+          RedeemedRoomInvite.isSafeEpochMilliseconds(response.expiresAt),
+          response.expiresAt > nowMilliseconds()
     else { throw SkyjoHTTPClientError.invalidSuccessPayload }
     let token = try Self.token(fromInvitePath: response.path)
     guard let url = URL(string: response.path, relativeTo: environment.baseURL)?.absoluteURL,
@@ -278,7 +298,8 @@ public actor RoomInviteClient {
       do {
         return PendingCookieResponse(
           value: try decoder.decode(Response.self, from: data),
-          cookies: responseCookies(httpResponse, for: endpoint)
+          cookies: responseCookies(httpResponse, for: endpoint),
+          setCookieHeader: httpResponse.value(forHTTPHeaderField: "Set-Cookie")
         )
       } catch {
         throw SkyjoHTTPClientError.invalidSuccessPayload
@@ -338,19 +359,89 @@ public actor RoomInviteClient {
       guard let name = item.key as? String, let value = item.value as? String else { return }
       fields[name] = value
     }
-    let cookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: endpoint)
-    guard let endpointHost = endpoint.host?.lowercased() else { return [] }
-    return cookies.filter { cookie in
-      let cookieHost = cookie.domain
-        .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        .lowercased()
-      return cookieHost == endpointHost
-    }
+    return HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: endpoint)
   }
 
-  private func persistResponseCookies(_ cookies: [HTTPCookie]) {
+  private func persistResponseCookie(_ cookie: HTTPCookie) {
     guard let cookieStorage else { return }
-    for cookie in cookies { cookieStorage.setCookie(cookie) }
+    cookieStorage.setCookie(cookie)
+  }
+
+  private static func validatedOuterAccessCookie(
+    _ cookies: [HTTPCookie],
+    setCookieHeader: String?,
+    endpoint: URL,
+    expectedName: String
+  ) -> HTTPCookie? {
+    // The backend contract emits a finite Max-Age and never an Expires attribute.
+    // Keeping that distinction explicit avoids mistaking Expires' legal comma for
+    // a reliable delimiter when URL loading coalesces repeated Set-Cookie fields.
+    guard cookies.count == 1,
+          let cookie = cookies.first,
+          let setCookieHeader,
+          let parsedHeader = parsedSetCookieHeader(setCookieHeader),
+          let endpointHost = endpoint.host?.lowercased(),
+          parsedHeader.name == expectedName,
+          parsedHeader.value == cookie.value,
+          cookie.name == expectedName,
+          cookie.domain.lowercased() == endpointHost,
+          parsedHeader.attributes["domain"] == nil,
+          parsedHeader.attributes["path"] == "/",
+          cookie.path == "/",
+          parsedHeader.attributes["httponly"] == "",
+          cookie.isHTTPOnly,
+          parsedHeader.attributes["samesite"]?.lowercased() == "lax",
+          let foundationSameSite = cookie.properties?[HTTPCookiePropertyKey("SameSite")] as? String,
+          foundationSameSite.lowercased() == "lax",
+          parsedHeader.attributes["expires"] == nil,
+          let maxAgeText = parsedHeader.attributes["max-age"],
+          !maxAgeText.isEmpty,
+          maxAgeText.unicodeScalars.allSatisfy({ $0.isASCII && $0.properties.numericType != nil }),
+          let maxAge = Int64(maxAgeText),
+          maxAge > 0,
+          !cookie.isSessionOnly,
+          cookie.expiresDate != nil,
+          !cookie.value.isEmpty
+    else { return nil }
+
+    switch endpoint.scheme?.lowercased() {
+    case "https":
+      guard parsedHeader.attributes["secure"] == "", cookie.isSecure else { return nil }
+    case "http":
+      if let secureValue = parsedHeader.attributes["secure"] {
+        guard secureValue.isEmpty, cookie.isSecure else { return nil }
+      }
+    default:
+      return nil
+    }
+    return cookie
+  }
+
+  private static func parsedSetCookieHeader(_ header: String) -> ParsedSetCookieHeader? {
+    guard !header.contains("\r"), !header.contains("\n") else {
+      return nil
+    }
+    let segments = header.split(separator: ";", omittingEmptySubsequences: false)
+    guard let first = segments.first else { return nil }
+    let cookiePair = first.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+    guard cookiePair.count == 2 else { return nil }
+    let name = cookiePair[0].trimmingCharacters(in: .whitespacesAndNewlines)
+    let value = cookiePair[1].trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty, !value.isEmpty else { return nil }
+
+    var attributes: [String: String] = [:]
+    for segment in segments.dropFirst() {
+      let pair = segment.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+      let attributeName = pair[0]
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+      guard !attributeName.isEmpty, attributes[attributeName] == nil else { return nil }
+      let attributeValue = pair.count == 2
+        ? pair[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        : ""
+      attributes[attributeName] = attributeValue
+    }
+    return ParsedSetCookieHeader(name: name, value: value, attributes: attributes)
   }
 
   private static func isNoStore(_ response: HTTPURLResponse) -> Bool {
@@ -364,6 +455,13 @@ public actor RoomInviteClient {
 private struct PendingCookieResponse<Value: Sendable>: Sendable {
   let value: Value
   let cookies: [HTTPCookie]
+  let setCookieHeader: String?
+}
+
+private struct ParsedSetCookieHeader: Sendable {
+  let name: String
+  let value: String
+  let attributes: [String: String]
 }
 
 private struct RedemptionRequest: Encodable, Sendable {

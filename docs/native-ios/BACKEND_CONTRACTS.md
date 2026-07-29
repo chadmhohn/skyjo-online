@@ -164,7 +164,7 @@ Issue #202 adds the backend-only native handoff in repository source. This is no
 The token is accepted only in the body; query parameters are rejected. It must match the established signed-token alphabet/shape within 2,048 characters. The server validates its HMAC, version, expiry, room code, v4 room-instance UUID, and the currently live room instance. Success is a direct HTTP 200 with `Cache-Control: no-store`, exactly one existing outer-access cookie, and the exact sanitized body:
 
 ```json
-{ "roomCode": "ABCDE", "expiresAt": 1780000000000 }
+{ "roomCode": "ABCDE", "expiresAt": 1800003600000 }
 ```
 
 Redemption does not read or create an account session, install-code row, room membership, player seat, room revision, database record, or persistence update. The token and room-instance UUID are never returned, persisted, or logged. The native token route uses the trusted client-IP selection in its own `native-token` limiter namespace and a limiter instance separate from install-code redemption. Other methods return `METHOD_NOT_ALLOWED` with `Allow: POST`.

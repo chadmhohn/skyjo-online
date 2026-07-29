@@ -2,13 +2,16 @@ import Foundation
 import SkyjoNetworking
 import Testing
 
+private let inviteTestNowMilliseconds: Int64 = 1_800_000_000_000
+private let inviteTestExpiresAtMilliseconds: Int64 = 1_800_003_600_000
+
 @Suite("Room invites and seat recovery", .serialized)
 struct RoomInviteClientTests {
   private let productionInviteToken = "signed_payload.signature_123"
   private let productionInviteURL = URL(
     string: "https://skyjo.groundworkrevops.com/invite/signed_payload.signature_123"
   )!
-  private let expiresAt: Int64 = 1_780_000_000_000
+  private let expiresAt = inviteTestExpiresAtMilliseconds
 
   @Test("The app entitlement declares the exact production universal-link domain")
   func associatedDomainsEntitlement() throws {
@@ -131,7 +134,7 @@ struct RoomInviteClientTests {
         body: #"{"roomCode":"A1B2C","expiresAt":\#(expiresAt)}"#,
         headers: [
           "Cache-Control": "private, no-store",
-          "Set-Cookie": "skyjo_session=outer-access-fixture; Path=/; HttpOnly; SameSite=Lax",
+          "Set-Cookie": "skyjo_session=outer-access-fixture; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
         ]
       )
     }
@@ -155,6 +158,14 @@ struct RoomInviteClientTests {
       in: fixture.cookieStorage,
       for: fixture.baseURL
     ) == "existing-account-session")
+    let storedAccessCookie = try #require(
+      fixture.cookieStorage.cookies(for: fixture.baseURL)?.first(where: {
+        $0.name == "skyjo_session"
+      })
+    )
+    let normalizedEndpointHost = try #require(fixture.baseURL.host?.lowercased())
+    #expect(storedAccessCookie.domain.lowercased() == normalizedEndpointHost)
+    #expect(!storedAccessCookie.domain.hasPrefix("."))
 
     let separateRequestUsedRedeemedCookie = InviteLockedValue(false)
     InviteURLProtocol.install { [expiresAt] request in
@@ -176,18 +187,72 @@ struct RoomInviteClientTests {
     defer { separateSession.invalidateAndCancel() }
     let separateClient = RoomInviteClient(
       environment: SkyjoNetworkEnvironment(baseURL: fixture.baseURL),
-      session: separateSession
+      session: separateSession,
+      nowMilliseconds: { inviteTestNowMilliseconds }
     )
     _ = try await separateClient.create(roomCode: "A1B2C")
     #expect(separateRequestUsedRedeemedCookie.get())
   }
 
-  @Test("Rejected invite responses never mutate the shared authentication cookie jar")
-  func rejectedResponsesDoNotCommitCookies() async throws {
-    let fixture = makeInviteFixture { request in
+  @Test("Redemption honors the configured access-cookie name and explicit HTTP policy")
+  func configuredOuterAccessCookieNameAndHTTPPolicy() async throws {
+    let link = try RoomInviteLink(url: productionInviteURL)
+
+    do {
+      let fixture = makeInviteFixture(outerAccessCookieName: "custom_outer_access") {
+        [expiresAt] request in
+        try inviteStubResponse(
+          for: request,
+          body: #"{"roomCode":"A1B2C","expiresAt":\#(expiresAt)}"#,
+          headers: [
+            "Cache-Control": "no-store",
+            "Set-Cookie": "custom_outer_access=configured-value; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
+          ]
+        )
+      }
+      defer { fixture.dispose() }
+
+      _ = try await fixture.client.redeem(link)
+      #expect(inviteCookieValue(
+        named: "custom_outer_access",
+        in: fixture.cookieStorage,
+        for: fixture.baseURL
+      ) == "configured-value")
+      #expect(inviteCookieValue(
+        named: SkyjoNetworkEnvironment.defaultOuterAccessCookieName,
+        in: fixture.cookieStorage,
+        for: fixture.baseURL
+      ) == nil)
+    }
+
+    do {
+      let fixture = makeInviteFixture(scheme: "http") { [expiresAt] request in
+        try inviteStubResponse(
+          for: request,
+          body: #"{"roomCode":"A1B2C","expiresAt":\#(expiresAt)}"#,
+          headers: [
+            "Cache-Control": "no-store",
+            "Set-Cookie": "skyjo_session=http-loopback-value; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600",
+          ]
+        )
+      }
+      defer { fixture.dispose() }
+
+      _ = try await fixture.client.redeem(link)
+      #expect(inviteCookieValue(
+        named: "skyjo_session",
+        in: fixture.cookieStorage,
+        for: fixture.baseURL
+      ) == "http-loopback-value")
+    }
+  }
+
+  @Test("Unsafe or unexpected redemption cookies never mutate authentication storage")
+  func unsafeRedemptionCookiesDoNotCommit() async throws {
+    let fixture = makeInviteFixture { [expiresAt] request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"A1B2C","expiresAt":\#(expiresAt)}"#,
         headers: ["Cache-Control": "no-store"]
       )
     }
@@ -195,7 +260,99 @@ struct RoomInviteClientTests {
     try fixture.setCookie(name: "skyjo_session", value: "existing-access-session")
     try fixture.setCookie(name: "skyjo_account", value: "existing-account-session")
     let link = try RoomInviteLink(url: productionInviteURL)
-    let poisonedCookie = "skyjo_session=unvalidated-response; Path=/; HttpOnly; SameSite=Lax"
+    let host = try #require(fixture.baseURL.host)
+    let validCookie = "skyjo_session=combined-first; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure"
+    let rejectedHeaders = [
+      "skyjo_account=replacement-account; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
+      "unexpected_cookie=unexpected; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
+      "skyjo_session=wrong-path; Path=/api; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
+      "skyjo_session=domain-cookie; Domain=\(host); Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
+      "skyjo_session=missing-http-only; Path=/; SameSite=Lax; Max-Age=3600; Secure",
+      "skyjo_session=missing-same-site; Path=/; HttpOnly; Max-Age=3600; Secure",
+      "skyjo_session=strict-same-site; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600; Secure",
+      "skyjo_session=session-cookie; Path=/; HttpOnly; SameSite=Lax; Secure",
+      "skyjo_session=missing-secure; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600",
+      "skyjo_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure",
+      "skyjo_session=deletion; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure",
+      "\(validCookie), skyjo_account=combined-account; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
+      "\(validCookie), skyjo_session=combined-second; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
+      "skyjo_session=expires-cookie; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Expires=Wed, 09 Jun 2027 10:18:14 GMT; Secure",
+    ]
+
+    for header in rejectedHeaders {
+      InviteURLProtocol.install { [expiresAt] request in
+        try inviteStubResponse(
+          for: request,
+          body: #"{"roomCode":"A1B2C","expiresAt":\#(expiresAt)}"#,
+          headers: [
+            "Cache-Control": "no-store",
+            "Set-Cookie": header,
+          ]
+        )
+      }
+      await expectInviteHTTPError(.invalidSuccessPayload) {
+        _ = try await fixture.client.redeem(link)
+      }
+      expectInviteAuthenticationCookiesUnchanged(fixture)
+    }
+  }
+
+  @Test("Expired redemption and creation DTOs fail before persistent state changes")
+  func expiredInviteResponsesDoNotCommit() async throws {
+    let fixture = makeInviteFixture { request in
+      try inviteStubResponse(
+        for: request,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800000000000}"#,
+        headers: ["Cache-Control": "no-store"]
+      )
+    }
+    defer { fixture.dispose() }
+    try fixture.setCookie(name: "skyjo_session", value: "existing-access-session")
+    try fixture.setCookie(name: "skyjo_account", value: "existing-account-session")
+    let link = try RoomInviteLink(url: productionInviteURL)
+
+    InviteURLProtocol.install { request in
+      try inviteStubResponse(
+        for: request,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800000000000}"#,
+        headers: [
+          "Cache-Control": "no-store",
+          "Set-Cookie": "skyjo_session=expired-response; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
+        ]
+      )
+    }
+    await expectInviteHTTPError(.invalidSuccessPayload) {
+      _ = try await fixture.client.redeem(link)
+    }
+    expectInviteAuthenticationCookiesUnchanged(fixture)
+
+    InviteURLProtocol.install { request in
+      try inviteStubResponse(
+        for: request,
+        body: #"{"roomCode":"A1B2C","path":"/invite/expired.expired_signature","expiresAt":1800000000000}"#,
+        headers: ["Cache-Control": "no-store"]
+      )
+    }
+    await expectInviteHTTPError(.invalidSuccessPayload) {
+      _ = try await fixture.client.create(roomCode: "A1B2C")
+    }
+    expectInviteAuthenticationCookiesUnchanged(fixture)
+  }
+
+  @Test("Rejected invite responses never mutate the shared authentication cookie jar")
+  func rejectedResponsesDoNotCommitCookies() async throws {
+    let fixture = makeInviteFixture { request in
+      try inviteStubResponse(
+        for: request,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#,
+        headers: ["Cache-Control": "no-store"]
+      )
+    }
+    defer { fixture.dispose() }
+    try fixture.setCookie(name: "skyjo_session", value: "existing-access-session")
+    try fixture.setCookie(name: "skyjo_account", value: "existing-account-session")
+    let link = try RoomInviteLink(url: productionInviteURL)
+    let poisonedCookie = "skyjo_session=unvalidated-response; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure"
 
     InviteURLProtocol.install { request in
       try inviteStubResponse(
@@ -235,7 +392,7 @@ struct RoomInviteClientTests {
     InviteURLProtocol.install { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#,
         contentType: "text/plain",
         headers: [
           "Cache-Control": "no-store",
@@ -251,7 +408,7 @@ struct RoomInviteClientTests {
     InviteURLProtocol.install { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#,
         headers: ["Set-Cookie": poisonedCookie]
       )
     }
@@ -296,7 +453,7 @@ struct RoomInviteClientTests {
     InviteURLProtocol.install { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"abc12","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"abc12","expiresAt":1800003600000}"#,
         headers: [
           "Cache-Control": "no-store",
           "Set-Cookie": poisonedCookie,
@@ -311,10 +468,10 @@ struct RoomInviteClientTests {
     InviteURLProtocol.install { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#,
         headers: [
           "Cache-Control": "no-store",
-          "Set-Cookie": "skyjo_session=cross-origin-response; Domain=example.invalid; Path=/; HttpOnly",
+          "Set-Cookie": "skyjo_session=cross-origin-response; Domain=example.invalid; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
         ]
       )
     }
@@ -326,7 +483,7 @@ struct RoomInviteClientTests {
     InviteURLProtocol.installResponseThenFailure(.networkConnectionLost) { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#,
         headers: [
           "Cache-Control": "no-store",
           "Set-Cookie": poisonedCookie,
@@ -364,7 +521,7 @@ struct RoomInviteClientTests {
         body: #"{"roomCode":"A1B2C","path":"/invite/created_payload.created_signature","expiresAt":\#(expiresAt)}"#,
         headers: [
           "Cache-Control": "no-store",
-          "Set-Cookie": "skyjo_session=unexpected-creation-cookie; Path=/; HttpOnly; SameSite=Lax",
+          "Set-Cookie": "skyjo_session=unexpected-creation-cookie; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
         ]
       )
     }
@@ -401,7 +558,7 @@ struct RoomInviteClientTests {
     let fixture = makeInviteFixture { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#,
         headers: ["Cache-Control": "no-store"]
       )
     }
@@ -411,7 +568,7 @@ struct RoomInviteClientTests {
     InviteURLProtocol.install { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#
       )
     }
     await expectInviteHTTPError(.invalidSuccessPayload) {
@@ -421,7 +578,7 @@ struct RoomInviteClientTests {
     InviteURLProtocol.install { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#,
         contentType: "text/plain",
         headers: ["Cache-Control": "no-store"]
       )
@@ -445,7 +602,7 @@ struct RoomInviteClientTests {
     InviteURLProtocol.install { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"A1B2C","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"A1B2C","expiresAt":1800003600000}"#,
         headers: ["Cache-Control": "no-store"],
         responseURL: URL(string: "https://different-origin.invalid/api/rooms/invite/redeem")!
       )
@@ -457,7 +614,7 @@ struct RoomInviteClientTests {
     InviteURLProtocol.install { request in
       try inviteStubResponse(
         for: request,
-        body: #"{"roomCode":"abc12","expiresAt":1780000000000}"#,
+        body: #"{"roomCode":"abc12","expiresAt":1800003600000}"#,
         headers: ["Cache-Control": "no-store"]
       )
     }
@@ -492,7 +649,7 @@ struct RoomInviteClientTests {
       _ = try await fixture.client.redeem(link)
     }
 
-    let validCreationBody = #"{"roomCode":"A1B2C","path":"/invite/created.created_signature","expiresAt":1780000000000}"#
+    let validCreationBody = #"{"roomCode":"A1B2C","path":"/invite/created.created_signature","expiresAt":1800003600000}"#
     InviteURLProtocol.install { request in
       try inviteStubResponse(for: request, body: validCreationBody)
     }
@@ -524,7 +681,7 @@ struct RoomInviteClientTests {
 
   @Test("Unknown-length invite responses cancel immediately at the streaming cap")
   func streamingResponseBoundary() async throws {
-    let prefix = Data(#"{"roomCode":"A1B2C","expiresAt":1780000000000}"#.utf8)
+    let prefix = Data(#"{"roomCode":"A1B2C","expiresAt":1800003600000}"#.utf8)
     let generation = InviteStreamingURLProtocol.reset(
       totalBytes: RoomInviteClient.maximumResponseBytes + 1,
       prefix: prefix
@@ -552,7 +709,8 @@ struct RoomInviteClientTests {
     )
     let client = RoomInviteClient(
       environment: SkyjoNetworkEnvironment(baseURL: baseURL),
-      session: session
+      session: session,
+      nowMilliseconds: { inviteTestNowMilliseconds }
     )
     defer {
       session.invalidateAndCancel()
@@ -799,10 +957,13 @@ private struct InviteClientFixture {
 }
 
 private func makeInviteFixture(
+  scheme: String = "https",
+  outerAccessCookieName: String = SkyjoNetworkEnvironment.defaultOuterAccessCookieName,
+  nowMilliseconds: Int64 = inviteTestNowMilliseconds,
   handler: @escaping InviteURLProtocol.Handler
 ) -> InviteClientFixture {
   InviteURLProtocol.install(handler)
-  let baseURL = URL(string: "https://invite-\(UUID().uuidString.lowercased()).test")!
+  let baseURL = URL(string: "\(scheme)://invite-\(UUID().uuidString.lowercased()).test")!
   let cookieStorage = HTTPCookieStorage.shared
   clearInviteCookies(cookieStorage, for: baseURL)
   let session = SkyjoURLSessionFactory.makeDedicated(
@@ -811,8 +972,12 @@ private func makeInviteFixture(
   )
   return InviteClientFixture(
     client: RoomInviteClient(
-      environment: SkyjoNetworkEnvironment(baseURL: baseURL),
-      session: session
+      environment: SkyjoNetworkEnvironment(
+        baseURL: baseURL,
+        outerAccessCookieName: outerAccessCookieName
+      ),
+      session: session,
+      nowMilliseconds: { nowMilliseconds }
     ),
     session: session,
     cookieStorage: cookieStorage,
@@ -931,7 +1096,7 @@ private final class InviteStreamingURLProtocol: URLProtocol, @unchecked Sendable
             headerFields: [
               "Content-Type": "application/json; charset=utf-8",
               "Cache-Control": "no-store",
-              "Set-Cookie": "skyjo_session=unvalidated-response; Path=/; HttpOnly; SameSite=Lax",
+              "Set-Cookie": "skyjo_session=unvalidated-response; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600; Secure",
             ]
           )
     else {
@@ -1081,6 +1246,9 @@ private func inviteCookieValue(
 }
 
 private func expectInviteAuthenticationCookiesUnchanged(_ fixture: InviteClientFixture) {
+  let cookies = fixture.cookieStorage.cookies(for: fixture.baseURL) ?? []
+  #expect(cookies.count == 2)
+  #expect(Set(cookies.map(\.name)) == ["skyjo_session", "skyjo_account"])
   #expect(inviteCookieValue(
     named: "skyjo_session",
     in: fixture.cookieStorage,
