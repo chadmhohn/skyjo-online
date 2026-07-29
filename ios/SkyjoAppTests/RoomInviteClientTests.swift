@@ -103,7 +103,7 @@ struct RoomInviteClientTests {
     }
   }
 
-  @Test("Redemption sends only the token and persists the outer-access cookie")
+  @Test("Redemption persists outer access for a separate cookie-sharing session")
   func exactRedemptionRequestAndCookie() async throws {
     let requestWasExact = InviteLockedValue(false)
     let fixture = makeInviteFixture { [productionInviteToken, expiresAt] request in
@@ -146,6 +146,31 @@ struct RoomInviteClientTests {
       in: fixture.cookieStorage,
       for: fixture.baseURL
     ) == "outer-access-fixture")
+
+    let separateRequestUsedRedeemedCookie = InviteLockedValue(false)
+    InviteURLProtocol.install { [expiresAt] request in
+      separateRequestUsedRedeemedCookie.set(
+        request.value(forHTTPHeaderField: "Cookie")?.contains(
+          "skyjo_session=outer-access-fixture"
+        ) == true
+      )
+      return try inviteStubResponse(
+        for: request,
+        body: #"{"roomCode":"A1B2C","path":"/invite/separate_payload.separate_signature","expiresAt":\#(expiresAt)}"#,
+        headers: ["Cache-Control": "private, no-store"]
+      )
+    }
+    let separateSession = SkyjoURLSessionFactory.makeDedicated(
+      cookieStorage: fixture.cookieStorage,
+      protocolClasses: [InviteURLProtocol.self]
+    )
+    defer { separateSession.invalidateAndCancel() }
+    let separateClient = RoomInviteClient(
+      environment: SkyjoNetworkEnvironment(baseURL: fixture.baseURL),
+      session: separateSession
+    )
+    _ = try await separateClient.create(roomCode: "A1B2C")
+    #expect(separateRequestUsedRedeemedCookie.get())
   }
 
   @Test("Invite creation sends the authenticated room code and validates the returned path")
@@ -325,7 +350,7 @@ struct RoomInviteClientTests {
       totalBytes: RoomInviteClient.maximumResponseBytes + 1,
       prefix: prefix
     )
-    let baseURL = URL(string: "https://invite-stream-(UUID().uuidString.lowercased()).test")!
+    let baseURL = URL(string: "https://invite-stream-\(UUID().uuidString.lowercased()).test")!
     let cookieStorage = HTTPCookieStorage.shared
     clearInviteCookies(cookieStorage, for: baseURL)
     let session = SkyjoURLSessionFactory.makeDedicated(
@@ -489,7 +514,7 @@ struct RoomInviteClientTests {
     let accountA = try #require(UUID(uuidString: "30000000-0000-4000-8000-000000000003"))
     let accountB = try #require(UUID(uuidString: "30000000-0000-4000-8000-000000000004"))
     let root = FileManager.default.temporaryDirectory
-      .appending(path: "skyjo-room-seat-tests-(UUID().uuidString)", directoryHint: .isDirectory)
+      .appending(path: "skyjo-room-seat-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
     let fileURL = root.appending(path: "seat.json", directoryHint: .notDirectory)
     let store = FileRoomSeatRecoveryStore(fileURL: fileURL)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -574,7 +599,7 @@ private func makeInviteFixture(
   handler: @escaping InviteURLProtocol.Handler
 ) -> InviteClientFixture {
   InviteURLProtocol.install(handler)
-  let baseURL = URL(string: "https://invite-(UUID().uuidString.lowercased()).test")!
+  let baseURL = URL(string: "https://invite-\(UUID().uuidString.lowercased()).test")!
   let cookieStorage = HTTPCookieStorage.shared
   clearInviteCookies(cookieStorage, for: baseURL)
   let session = SkyjoURLSessionFactory.makeDedicated(

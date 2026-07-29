@@ -176,6 +176,28 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  func testAuthenticatedHomeOpensNativeMultiplayerWithoutWebContent() throws {
+    XCUIDevice.shared.orientation = .portrait
+    let app = XCUIApplication()
+    app.launchArguments = ["--ui-state=authenticated-admin"]
+    app.launch()
+
+    let rooms = app.buttons["home.rooms"]
+    XCTAssertTrue(rooms.waitForExistence(timeout: 8))
+    XCTAssertTrue(rooms.isEnabled)
+    XCTAssertGreaterThanOrEqual(rooms.frame.height, 44)
+    rooms.tap()
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    XCTAssertTrue(app.textFields["rooms.join-code"].exists)
+    XCTAssertTrue(app.buttons["rooms.create"].exists)
+    XCTAssertEqual(app.webViews.count, 0)
+    attachScreenshot(app, name: "ios8-room-join-portrait")
+    try performAccessibilityAudit(on: app)
+  }
+
+  @MainActor
   func testStatsOfflineStateRetriesIntoLoadedHistory() throws {
     XCUIDevice.shared.orientation = .portrait
     let app = XCUIApplication()
@@ -210,7 +232,7 @@ final class SkyjoAppUITests: XCTestCase {
 
     XCTAssertTrue(app.staticTexts["home.welcome"].waitForExistence(timeout: 8))
     XCTAssertTrue(element(in: app, identifier: "home.solo").isEnabled)
-    XCTAssertFalse(app.buttons["home.rooms-disabled"].isEnabled)
+    XCTAssertTrue(app.buttons["home.rooms"].isEnabled)
 
     tapTab("Stats", in: app)
     XCTAssertTrue(element(in: app, identifier: "stats.empty").waitForExistence(timeout: 5))
@@ -456,6 +478,7 @@ final class SkyjoAppUITests: XCTestCase {
     volatileHome.launchArguments = ["--ui-state=solo-launcher-volatile"]
     volatileHome.launch()
     XCTAssertTrue(volatileHome.staticTexts["home.welcome"].waitForExistence(timeout: 8))
+    XCTAssertFalse(volatileHome.buttons["home.rooms-disabled"].isEnabled)
     XCTAssertTrue(
       volatileHome.staticTexts.matching(
         NSPredicate(
@@ -483,6 +506,7 @@ final class SkyjoAppUITests: XCTestCase {
     app.launch()
 
     XCTAssertTrue(app.staticTexts["home.welcome"].waitForExistence(timeout: 8))
+    XCTAssertFalse(app.buttons["home.rooms-disabled"].isEnabled)
     XCTAssertTrue(app.staticTexts["Offline account save"].exists)
     let offlineCopy = app.staticTexts.matching(
       NSPredicate(
@@ -521,6 +545,7 @@ final class SkyjoAppUITests: XCTestCase {
     ]
     cachedAccountApp.launch()
     XCTAssertTrue(cachedAccountApp.staticTexts["home.welcome"].waitForExistence(timeout: 8))
+    XCTAssertFalse(cachedAccountApp.buttons["home.rooms-disabled"].isEnabled)
 
     tapTab("Stats", in: cachedAccountApp)
     let offlineStats = element(

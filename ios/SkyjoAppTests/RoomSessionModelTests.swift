@@ -78,6 +78,82 @@ struct RoomSessionModelTests {
     #expect(!String(reflecting: coordinator.state).contains("untrusted"))
   }
 
+  @Test("Account replacement retires the old host while the latest live invite waits safely")
+  func appInviteRoutingIsGenerationAndAccountFenced() async throws {
+    let accountA = testAccount()
+    let accountB = testAccount(
+      id: UUID(uuidString: "30000000-0000-4000-8000-000000000004")!,
+      displayName: "Guest"
+    )
+    let accountAConnection = ModelRoomConnection()
+    let accountBConnection = ModelRoomConnection()
+    let factory = HostRoomModelFactory(
+      connectionsByAccount: [
+        accountA.id: [accountAConnection],
+        accountB.id: [accountBConnection],
+      ]
+    )
+    let redemption = SuspendedInviteRedemptionSequence()
+    let coordinator = RoomAppCoordinator(
+      inviteHandoff: RoomInviteCoordinator { _ in await redemption.redeem() }
+    ) { account in
+      RoomSessionHost(account: account) { factory.makeModel(for: $0) }
+    }
+
+    await coordinator.synchronize(account: accountA)
+    let retiringHost = try #require(coordinator.sessionHost)
+    await retiringHost.model.start()
+    await accountAConnection.suspendNextDispose()
+
+    let replacement = Task { await coordinator.synchronize(account: accountB) }
+    #expect(await modelEventually {
+      guard coordinator.sessionHost == nil else { return false }
+      return await accountAConnection.disposeIsSuspended()
+    })
+    #expect(!coordinator.isRoomPresented)
+
+    let firstURL = URL(
+      string: "https://skyjo.groundworkrevops.com/invite/first_payload.first_signature"
+    )!
+    let secondURL = URL(
+      string: "https://skyjo.groundworkrevops.com/invite/latest_payload.latest_signature"
+    )!
+    let firstAcceptance = Task { await coordinator.accept(firstURL) }
+    #expect(await modelEventually { await redemption.count() == 1 })
+    let secondAcceptance = Task { await coordinator.accept(secondURL) }
+    #expect(await modelEventually { await redemption.count() == 2 })
+
+    let firstInvite = try RedeemedRoomInvite(
+      roomCode: "ABCDE",
+      expiresAt: 1_784_999_000_000
+    )
+    let latestInvite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    await redemption.resume(request: 2, with: latestInvite)
+    #expect(await secondAcceptance.value)
+    #expect(coordinator.handoffState == .review(latestInvite))
+    await redemption.resume(request: 1, with: firstInvite)
+    #expect(await firstAcceptance.value)
+    #expect(coordinator.handoffState == .review(latestInvite))
+    #expect(retiringHost.model.pendingInviteReview == nil)
+
+    await accountAConnection.resumeDispose()
+    await replacement.value
+    let replacementHost = try #require(coordinator.sessionHost)
+    #expect(replacementHost.model.account.id == accountB.id)
+    #expect(replacementHost.model.pendingInviteReview == latestInvite)
+    #expect(coordinator.handoffState == .idle)
+    #expect(coordinator.isRoomPresented)
+    #expect(retiringHost.model.pendingInviteReview == nil)
+
+    await coordinator.synchronize(account: nil)
+    #expect(coordinator.sessionHost == nil)
+    #expect(!coordinator.isRoomPresented)
+    #expect(coordinator.handoffState == .review(latestInvite))
+  }
+
   @Test("Connection construction failure unwinds and a later create retries")
   func connectionConstructionCanRetry() async throws {
     let connection = ModelRoomConnection()
@@ -313,6 +389,40 @@ struct RoomSessionModelTests {
     await connection.resumeVisibilityUpdate()
 
     #expect(await modelEventually { await connection.visibilityUpdates() == [true, false, true] })
+    await model.stop()
+  }
+
+  @Test("A corrupt saved seat exposes Forget and permits a clean fresh join")
+  func corruptSavedSeatCanBeForgottenAndRejoined() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appending(path: "skyjo-room-model-seat-\(UUID().uuidString)", directoryHint: .isDirectory)
+    let fileURL = root.appending(path: "seat.json", directoryHint: .notDirectory)
+    try FileManager.default.createDirectory(
+      at: root,
+      withIntermediateDirectories: true,
+      attributes: nil
+    )
+    try Data("not-json".utf8).write(to: fileURL, options: [.atomic])
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let connection = ModelRoomConnection()
+    let store = FileRoomSeatRecoveryStore(fileURL: fileURL)
+    let model = makeModel(connection: connection, seatStore: store)
+
+    await model.start()
+    #expect(model.banner?.title == "Saved room unavailable")
+    #expect(model.canForgetSavedSeat)
+    #expect(FileManager.default.fileExists(atPath: fileURL.path))
+
+    await model.forgetSavedSeat()
+    #expect(!FileManager.default.fileExists(atPath: fileURL.path))
+    #expect(model.banner == nil)
+
+    model.joinCode = "A1B2C"
+    await model.join()
+    #expect(await connection.admissions() == [
+      .join(code: "A1B2C", displayName: "Host", playerID: nil),
+    ])
     await model.stop()
   }
 
@@ -814,6 +924,69 @@ struct RoomSessionModelTests {
     await model.stop()
   }
 
+  @Test("Room-scoped presentation survives ordinary updates and clears at room boundaries")
+  func roomBoundariesDismissOnlyStaleTransientPresentation() async throws {
+    let connection = ModelRoomConnection()
+    let model = RoomSessionModel(
+      account: testAccount(),
+      environment: RoomSessionEnvironment(
+        makeConnection: { connection },
+        createInvite: { roomCode in
+          NativeRoomInvite(
+            roomCode: roomCode,
+            url: URL(string: "https://skyjo.groundworkrevops.com/invite/redacted")!,
+            expiresAt: 1_784_999_100_000
+          )
+        },
+        seatStore: RecordingSeatStore(),
+        nowMilliseconds: { 1_784_998_800_000 }
+      )
+    )
+    let roomNine = try await authoritativeFixture(
+      revision: 9,
+      variant: .scoring(allReady: false)
+    )
+    let roomTen = try await authoritativeFixture(
+      revision: 10,
+      variant: .scoring(allReady: true)
+    )
+    let replacementRoom = try await authoritativeFixture(
+      revision: 11,
+      variant: .scoring(allReady: false),
+      roomCode: "KLMNO"
+    )
+
+    await model.start()
+    await connection.emit(.status(connectedStatus(revision: 9)))
+    await connection.emit(.snapshot(roomNine))
+    #expect(await modelEventually { model.snapshot?.revision == 9 })
+    model.isChatPresented = true
+    model.isRoomOptionsPresented = true
+    model.isScorePresented = true
+    await model.createShareInvite()
+    assertRoomScopedPresentation(model, isPresented: true)
+
+    await connection.emit(.status(connectedStatus(revision: 10)))
+    await connection.emit(.snapshot(roomTen))
+    #expect(await modelEventually { model.snapshot?.revision == 10 })
+    assertRoomScopedPresentation(model, isPresented: true)
+
+    await connection.emit(.status(connectedStatus(revision: 11)))
+    await connection.emit(.snapshot(replacementRoom))
+    #expect(await modelEventually { model.room?.code == "KLMNO" })
+    assertRoomScopedPresentation(model, isPresented: false)
+
+    model.isChatPresented = true
+    model.isRoomOptionsPresented = true
+    model.isScorePresented = true
+    await model.createShareInvite()
+    assertRoomScopedPresentation(model, isPresented: true)
+    await connection.emit(.notice(.seatRemoved(roomCode: "KLMNO")))
+    #expect(await modelEventually { model.room == nil })
+    assertRoomScopedPresentation(model, isPresented: false)
+    await model.stop()
+  }
+
   @Test("Terminal seat cleanup blocks a new admission until the clear finishes")
   func terminalCleanupSerializesNextAdmission() async throws {
     let connection = ModelRoomConnection()
@@ -975,6 +1148,23 @@ private actor InviteRedemptionProbe {
   }
 
   func count() -> Int { redemptionCount }
+}
+
+private actor SuspendedInviteRedemptionSequence {
+  private var redemptionCount = 0
+  private var continuations: [Int: CheckedContinuation<RedeemedRoomInvite, Never>] = [:]
+
+  func redeem() async -> RedeemedRoomInvite {
+    redemptionCount += 1
+    let request = redemptionCount
+    return await withCheckedContinuation { continuations[request] = $0 }
+  }
+
+  func count() -> Int { redemptionCount }
+
+  func resume(request: Int, with invite: RedeemedRoomInvite) {
+    continuations.removeValue(forKey: request)?.resume(returning: invite)
+  }
 }
 
 private actor SuspendedInviteFactory {
@@ -1503,6 +1693,17 @@ private func idleStatus() -> RoomConnectionStatus {
     hasPendingCommand: false,
     revision: nil
   )
+}
+
+@MainActor
+private func assertRoomScopedPresentation(
+  _ model: RoomSessionModel,
+  isPresented: Bool
+) {
+  #expect(model.isChatPresented == isPresented)
+  #expect(model.isRoomOptionsPresented == isPresented)
+  #expect(model.isScorePresented == isPresented)
+  #expect((model.shareInvite != nil) == isPresented)
 }
 
 @MainActor
