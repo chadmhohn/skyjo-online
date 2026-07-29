@@ -40,7 +40,7 @@ Run the focused native-solo UI gate used by `iOS / UI & Accessibility` with:
 ./scripts/ios-build-test.sh --ui-accessibility
 ```
 
-UI/accessibility mode needs no backend, account, or credential. It discovers a standard iPhone, large iPhone, and iPad on the newest installed simulator runtime, builds once without signing, then exercises the solo launcher, replacement review, setup, table, scoring, settings, recovery, and accessibility states across phone portrait, phone landscape, iPad portrait, and iPad landscape. The ignored per-run artifact directory retains sanitized logs and each `.xcresult`, including keep-always screenshots, whether a matrix entry passes or fails.
+UI/accessibility mode needs no backend, account, or credential. It discovers a standard iPhone, large iPhone, and iPad on the newest installed simulator runtime, builds once without signing, then exercises the solo launcher, replacement review, setup, table, scoring, settings, recovery, and accessibility states across phone portrait, phone landscape, iPad portrait, and iPad landscape. The command above runs the complete matrix locally. CI sets the validated harness-only `SKYJO_IOS_UI_ACCESSIBILITY_ROLE` to one of `standard-phone`, `large-phone`, `ipad-portrait`, or `ipad-landscape` so those entries run in parallel behind the stable aggregate check. The ignored per-run artifact directory retains sanitized logs and each `.xcresult`, including keep-always screenshots, whether a matrix entry passes or fails.
 
 Verify the portable schemas and deterministic fixture corpus separately:
 

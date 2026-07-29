@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -737,6 +738,7 @@ describe('v0.3.2 workflow governance', () => {
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
     const [
       ci,
+      uiAccessibilityHarness,
       nightly,
       installer,
       load,
@@ -751,6 +753,7 @@ describe('v0.3.2 workflow governance', () => {
       securityAddendum
     ] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'ios-ui-accessibility-test.sh'), 'utf8'),
       fs.readFile(path.join(root, '.github', 'workflows', 'nightly-certification.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'install-k6.sh'), 'utf8'),
       fs.readFile(path.join(root, 'tests', 'load', 'skyjo-realtime.k6.js'), 'utf8'),
@@ -778,10 +781,45 @@ describe('v0.3.2 workflow governance', () => {
     expect(ci).toMatch(/ios-ui-accessibility:\s*\n\s*name: iOS \/ UI & Accessibility/);
     const iosBuildSection = ci.match(/\n {2}ios-build:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     const iosNetworkingSection = ci.match(/\n {2}ios-networking-contracts:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
+    const iosUiRoleSection = ci.match(/\n {2}ios-ui-accessibility-role:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
+    const iosUiAggregateSection = ci.match(/\n {2}ios-ui-accessibility:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     expect(iosNetworkingSection).toMatch(/fetch-depth: 0/);
     expect(iosNetworkingSection).toMatch(/npm exec -- playwright install chromium/);
     expect(iosNetworkingSection).toMatch(/\.\/scripts\/ios-build-test\.sh --networking-contracts/);
     expect(iosBuildSection).not.toMatch(/playwright install chromium/);
+    expect(iosUiRoleSection).toMatch(/name: iOS \/ UI & Accessibility \(\$\{\{ matrix\.role \}\}\)/);
+    expect(iosUiRoleSection).toMatch(
+      /role:\s*\n\s*- standard-phone\s*\n\s*- large-phone\s*\n\s*- ipad-portrait\s*\n\s*- ipad-landscape/
+    );
+    expect(iosUiRoleSection).toMatch(/SKYJO_IOS_UI_ACCESSIBILITY_ROLE: \$\{\{ matrix\.role \}\}/);
+    expect(iosUiRoleSection).toMatch(
+      /name: ios-ui-accessibility-\$\{\{ matrix\.role \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/
+    );
+    expect(iosUiAggregateSection).toMatch(/if: \$\{\{ always\(\) \}\}/);
+    expect(iosUiAggregateSection).toMatch(/needs: ios-ui-accessibility-role/);
+    expect(iosUiAggregateSection).toMatch(
+      /ROLE_JOBS_RESULT: \$\{\{ needs\.ios-ui-accessibility-role\.result \}\}/
+    );
+    expect(uiAccessibilityHarness).toContain(
+      '""|standard-phone|large-phone|ipad-portrait|ipad-landscape) ;;'
+    );
+    expect(uiAccessibilityHarness).toContain('for udid in "${active_udids[@]}"; do');
+    expect(uiAccessibilityHarness).toContain(
+      'printf \'Selected UI accessibility role: %s\\n\' "${selected_role:-full-matrix}"'
+    );
+    const invalidUiRole = spawnSync(
+      'bash',
+      [path.join(root, 'scripts', 'ios-ui-accessibility-test.sh')],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, SKYJO_IOS_UI_ACCESSIBILITY_ROLE: 'full-matrix' }
+      }
+    );
+    expect(invalidUiRole.status).toBe(1);
+    expect(invalidUiRole.stderr).toContain(
+      'SKYJO_IOS_UI_ACCESSIBILITY_ROLE must be one of standard-phone, large-phone, ipad-portrait, or ipad-landscape.'
+    );
     expect(ci).toMatch(/load-recovery:\s*\n\s*name: CI \/ Load & Recovery/);
     const loadRecoverySection = ci.match(/\n {2}load-recovery:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     expect(loadRecoverySection).toContain('test-results/certification');

@@ -13,6 +13,7 @@ project_path="$repo_root/ios/SkyjoNative.xcodeproj"
 artifacts_root="${SKYJO_IOS_ARTIFACTS_DIR:-$repo_root/ios/Artifacts}"
 run_key="${GITHUB_RUN_ID:-local-$$}"
 run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
+selected_role="${SKYJO_IOS_UI_ACCESSIBILITY_ROLE:-}"
 
 if [[ "$#" -ne 0 ]]; then
   printf 'ERROR: Usage: ./scripts/ios-ui-accessibility-test.sh\n' >&2
@@ -22,6 +23,13 @@ if [[ ! "$run_key" =~ ^(local-[0-9]+|[0-9]+)$ || ! "$run_attempt" =~ ^[1-9][0-9]
   printf 'ERROR: Invalid iOS artifact run identity.\n' >&2
   exit 1
 fi
+case "$selected_role" in
+  ""|standard-phone|large-phone|ipad-portrait|ipad-landscape) ;;
+  *)
+    printf 'ERROR: SKYJO_IOS_UI_ACCESSIBILITY_ROLE must be one of standard-phone, large-phone, ipad-portrait, or ipad-landscape.\n' >&2
+    exit 1
+    ;;
+esac
 
 evidence_dir="$artifacts_root/UIAccessibility-$run_key-$run_attempt"
 derived_data="$artifacts_root/UIAccessibilityDerivedData-$run_key-$run_attempt"
@@ -29,6 +37,8 @@ matrix_file="$evidence_dir/simulator-matrix.tsv"
 toolchain_log="$evidence_dir/toolchain.log"
 build_log="$evidence_dir/build-for-testing.log"
 mkdir -p "$evidence_dir"
+printf 'Selected UI accessibility role: %s\n' "${selected_role:-full-matrix}" \
+  > "$evidence_dir/role-selection.log"
 if [[ -e "$derived_data" ]]; then
   printf 'ERROR: Refusing to reuse existing derived data: %s\n' "$derived_data" >&2
   exit 1
@@ -207,6 +217,27 @@ done < "$matrix_file"
   exit 1
 }
 
+active_udids=()
+build_udid=""
+case "$selected_role" in
+  "")
+    active_udids=("$standard_udid" "$large_udid" "$ipad_udid")
+    build_udid="$standard_udid"
+    ;;
+  standard-phone)
+    active_udids=("$standard_udid")
+    build_udid="$standard_udid"
+    ;;
+  large-phone)
+    active_udids=("$large_udid")
+    build_udid="$large_udid"
+    ;;
+  ipad-portrait|ipad-landscape)
+    active_udids=("$ipad_udid")
+    build_udid="$ipad_udid"
+    ;;
+esac
+
 host_arch="$(uname -m)"
 [[ "$host_arch" == "arm64" || "$host_arch" == "x86_64" ]] || {
   printf 'ERROR: Unsupported simulator host architecture: %s\n' "$host_arch" >&2
@@ -224,7 +255,7 @@ xcrun --sdk iphonesimulator clang \
   -lAccessibility \
   -o "$accessibility_helper"
 
-for udid in "$standard_udid" "$large_udid" "$ipad_udid"; do
+for udid in "${active_udids[@]}"; do
   xcrun simctl boot "$udid" >/dev/null 2>&1 || true
   xcrun simctl bootstatus "$udid" -b
   xcrun simctl uninstall "$udid" com.groundworkrevops.skyjo >/dev/null 2>&1 || true
@@ -251,7 +282,9 @@ for udid in "$standard_udid" "$large_udid" "$ipad_udid"; do
   ui_reduce_motion_states+=("$reduce_motion_state")
   ui_differentiate_states+=("$differentiate_state")
   ui_matrix_marker_states+=("$matrix_marker_state")
-  if [[ "$udid" == "$standard_udid" || "$udid" == "$ipad_udid" ]]; then
+  if [[ -z "$selected_role" && \
+        ( "$udid" == "$standard_udid" || "$udid" == "$ipad_udid" ) ]] || \
+     [[ "$selected_role" == "standard-phone" || "$selected_role" == "ipad-landscape" ]]; then
     # A long-lived iOS/iPadOS simulator can accept XCTest's device rotation
     # while retaining a stale portrait interface. Preserve its state above,
     # then cold boot each landscape destination before measuring geometry.
@@ -296,7 +329,7 @@ set +e
   -scheme SkyjoNative \
   -testPlan SkyjoCI \
   -configuration Debug \
-  -destination "platform=iOS Simulator,id=$standard_udid" \
+  -destination "platform=iOS Simulator,id=$build_udid" \
   -destination-timeout 120 \
   -derivedDataPath "$derived_data" \
   -parallel-testing-enabled NO \
@@ -430,9 +463,25 @@ run_matrix_entry() {
   fi
 }
 
-run_matrix_entry standard-phone "$standard_udid" 18 "${standard_tests[@]}"
-run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
-run_matrix_entry ipad-portrait "$ipad_udid" 5 "${ipad_portrait_tests[@]}"
-run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
+case "$selected_role" in
+  "")
+    run_matrix_entry standard-phone "$standard_udid" 18 "${standard_tests[@]}"
+    run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
+    run_matrix_entry ipad-portrait "$ipad_udid" 5 "${ipad_portrait_tests[@]}"
+    run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
+    ;;
+  standard-phone)
+    run_matrix_entry standard-phone "$standard_udid" 18 "${standard_tests[@]}"
+    ;;
+  large-phone)
+    run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
+    ;;
+  ipad-portrait)
+    run_matrix_entry ipad-portrait "$ipad_udid" 5 "${ipad_portrait_tests[@]}"
+    ;;
+  ipad-landscape)
+    run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
+    ;;
+esac
 
 exit "$matrix_status"
