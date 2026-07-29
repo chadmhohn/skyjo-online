@@ -714,6 +714,10 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testRoomIPadLandscapeKeepsAuthoritativeContentContained() throws {
+    try XCTSkipUnless(
+      UIDevice.current.userInterfaceIdiom == .pad,
+      "Requires the dedicated iPad landscape destination."
+    )
     let app = launchRoomFixture("active", orientation: .landscapeLeft)
     defer {
       app.terminate()
