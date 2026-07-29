@@ -50,9 +50,14 @@ public enum RoomConnectionNotice: Equatable, Sendable, CustomStringConvertible,
   case invalidServerResponse
   case synchronizationTimedOut
   case transportInterrupted
-  case freshAdmissionInterrupted
+  case freshAdmissionInterrupted(admissionAttemptID: UUID)
   case commandRejected(code: String, message: String, matchedAction: RoomCommandAction?)
-  case admissionRejected(code: String, message: String, usedSavedSeat: Bool)
+  case admissionRejected(
+    code: String,
+    message: String,
+    usedSavedSeat: Bool,
+    admissionAttemptID: UUID
+  )
   case commandResynchronized(reason: RoomResyncReason)
   case resetRecoveryPersistenceFailed
   case roomResetByHost(roomCode: String?)
@@ -65,11 +70,12 @@ public enum RoomConnectionNotice: Equatable, Sendable, CustomStringConvertible,
     case .invalidServerResponse: return "RoomConnectionNotice.invalidServerResponse"
     case .synchronizationTimedOut: return "RoomConnectionNotice.synchronizationTimedOut"
     case .transportInterrupted: return "RoomConnectionNotice.transportInterrupted"
-    case .freshAdmissionInterrupted: return "RoomConnectionNotice.freshAdmissionInterrupted"
+    case .freshAdmissionInterrupted:
+      return "RoomConnectionNotice.freshAdmissionInterrupted(admissionAttemptID: <redacted>)"
     case .commandRejected(let code, _, let matchedAction):
       return "RoomConnectionNotice.commandRejected(code: \(code), message: <redacted>, matchedPendingAction: \(matchedAction != nil))"
-    case .admissionRejected(let code, _, let usedSavedSeat):
-      return "RoomConnectionNotice.admissionRejected(code: \(code), message: <redacted>, usedSavedSeat: \(usedSavedSeat))"
+    case .admissionRejected(let code, _, let usedSavedSeat, _):
+      return "RoomConnectionNotice.admissionRejected(code: \(code), message: <redacted>, usedSavedSeat: \(usedSavedSeat), admissionAttemptID: <redacted>)"
     case .commandResynchronized(let reason):
       return "RoomConnectionNotice.commandResynchronized(reason: \(reason.rawValue))"
     case .resetRecoveryPersistenceFailed:
@@ -182,6 +188,7 @@ public actor RoomConnection {
   private let confirmedAccount: ConfirmedRoomAccount
 
   private var admission: RoomAdmission?
+  private var admissionAttemptID: UUID?
   private var admissionWasAttempted = false
   private var attempt = 0
   private var commandPreparationInProgress = false
@@ -268,6 +275,11 @@ public actor RoomConnection {
 
   @discardableResult
   public func recoverPersistedReset() async throws -> Bool {
+    try await recoverPersistedReset(admissionAttemptID: UUID())
+  }
+
+  @discardableResult
+  public func recoverPersistedReset(admissionAttemptID: UUID) async throws -> Bool {
     guard !disconnectCleanupInProgress else {
       throw RoomConnectionError.commandUnavailable
     }
@@ -294,6 +306,7 @@ public actor RoomConnection {
       )
     )
     if admission == savedAdmission, (currentSocket != nil || reconnectTask != nil) {
+      self.admissionAttemptID = admissionAttemptID
       return true
     }
     lifecycleEpoch &+= 1
@@ -305,6 +318,7 @@ public actor RoomConnection {
       quarantineAuthoritativeState()
     }
     admission = savedAdmission
+    self.admissionAttemptID = admissionAttemptID
     admissionWasAttempted = false
     attempt = 0
     if online {
@@ -316,6 +330,10 @@ public actor RoomConnection {
   }
 
   public func connect(_ nextAdmission: RoomAdmission) async throws {
+    try await connect(nextAdmission, admissionAttemptID: UUID())
+  }
+
+  public func connect(_ nextAdmission: RoomAdmission, admissionAttemptID: UUID) async throws {
     _ = try RealtimeFrameCodec.encodeAdmission(nextAdmission)
     guard admissionDisplayName(nextAdmission) == confirmedAccount.displayName,
           admissionResetRecovery(nextAdmission) == nil
@@ -336,6 +354,7 @@ public actor RoomConnection {
     cancelReconnect()
     clearPendingCommand()
     admission = nextAdmission
+    self.admissionAttemptID = admissionAttemptID
     admissionWasAttempted = false
     attempt = 0
     lastAcceptedRevision = nil
@@ -346,7 +365,11 @@ public actor RoomConnection {
       transition(to: .error)
       throw RoomConnectionError.resetRecoveryPersistenceFailed
     }
-    guard lifecycleEpoch == operationEpoch, !disposed, admission == nextAdmission else { return }
+    guard lifecycleEpoch == operationEpoch,
+          !disposed,
+          admission == nextAdmission,
+          self.admissionAttemptID == admissionAttemptID
+    else { return }
     if online {
       await openSocket(recovering: false)
     } else {
@@ -355,6 +378,10 @@ public actor RoomConnection {
   }
 
   public func recover(_ savedAdmission: RoomAdmission) async throws {
+    try await recover(savedAdmission, admissionAttemptID: UUID())
+  }
+
+  public func recover(_ savedAdmission: RoomAdmission, admissionAttemptID: UUID) async throws {
     _ = try RealtimeFrameCodec.encodeAdmission(savedAdmission)
     guard isRecoverable(savedAdmission),
           admissionDisplayName(savedAdmission) == confirmedAccount.displayName
@@ -365,6 +392,7 @@ public actor RoomConnection {
       throw RoomConnectionError.commandUnavailable
     }
     if admission == savedAdmission, (currentSocket != nil || reconnectTask != nil) {
+      self.admissionAttemptID = admissionAttemptID
       return
     }
     lifecycleEpoch &+= 1
@@ -386,6 +414,7 @@ public actor RoomConnection {
       latestAuthoritativeSnapshot = nil
     }
     admission = savedAdmission
+    self.admissionAttemptID = admissionAttemptID
     admissionWasAttempted = false
     attempt = 0
     let cleared = await drainPersistedRecoveryClears()
@@ -394,7 +423,11 @@ public actor RoomConnection {
       transition(to: .error)
       throw RoomConnectionError.resetRecoveryPersistenceFailed
     }
-    guard lifecycleEpoch == operationEpoch, !disposed, admission == savedAdmission else { return }
+    guard lifecycleEpoch == operationEpoch,
+          !disposed,
+          admission == savedAdmission,
+          self.admissionAttemptID == admissionAttemptID
+    else { return }
     if online {
       scheduleReconnect()
     } else {
@@ -564,11 +597,17 @@ public actor RoomConnection {
       // A create or first-time join may already have reached the server, but there
       // is no server-issued seat identity until the first personalized snapshot.
       // Never replay that ambiguous admission after an offline transition.
+      let interruptedAdmissionAttemptID = admissionAttemptID
       admission = nil
+      admissionAttemptID = nil
       admissionWasAttempted = false
       quarantineAuthoritativeState()
       transition(to: .error)
-      publish(.notice(.freshAdmissionInterrupted))
+      if let interruptedAdmissionAttemptID {
+        publish(.notice(.freshAdmissionInterrupted(
+          admissionAttemptID: interruptedAdmissionAttemptID
+        )))
+      }
     } else if admission == nil {
       transition(to: .idle)
     }
@@ -592,6 +631,7 @@ public actor RoomConnection {
     cancelReconnect()
     clearPendingCommand()
     admission = nil
+    admissionAttemptID = nil
     admissionWasAttempted = false
     lastAcceptedRevision = nil
     latestAuthoritativeSnapshot = nil
@@ -637,6 +677,7 @@ public actor RoomConnection {
     cancelReconnect()
     clearPendingCommand()
     admission = nil
+    admissionAttemptID = nil
     retireCurrentSocket(code: 1_000, reason: "Room connection disposed")
     for continuation in continuations.values { continuation.finish() }
     continuations.removeAll()
@@ -683,12 +724,17 @@ public actor RoomConnection {
     do {
       socket = try environment.makeSocket(request)
     } catch {
-      if recovering && isRecoverable(admission) {
+      if isRecoverable(admission) {
         scheduleReconnect()
       } else {
         if self.admission != nil {
-          publish(.notice(.freshAdmissionInterrupted))
+          if let interruptedAdmissionAttemptID = admissionAttemptID {
+            publish(.notice(.freshAdmissionInterrupted(
+              admissionAttemptID: interruptedAdmissionAttemptID
+            )))
+          }
           self.admission = nil
+          admissionAttemptID = nil
           admissionWasAttempted = false
         }
         transition(to: .error)
@@ -780,6 +826,7 @@ public actor RoomConnection {
       }
       clearPendingCommand()
       admission = nil
+      admissionAttemptID = nil
       quarantineAuthoritativeState()
       cancelReconnect()
       retireCurrentSocket(code: 1_002, reason: "Protocol upgrade required")
@@ -914,6 +961,7 @@ public actor RoomConnection {
       lifecycleEpoch &+= 1
       clearPendingCommand()
       admission = nil
+      admissionAttemptID = nil
       lastAcceptedRevision = nil
       latestAuthoritativeSnapshot = nil
       cancelReconnect()
@@ -936,6 +984,7 @@ public actor RoomConnection {
       }
       clearPendingCommand()
       admission = nil
+      admissionAttemptID = nil
       quarantineAuthoritativeState()
       cancelReconnect()
       retireCurrentSocket(code: 1_000, reason: "Room reset by host")
@@ -954,6 +1003,7 @@ public actor RoomConnection {
       }
       clearPendingCommand()
       admission = nil
+      admissionAttemptID = nil
       quarantineAuthoritativeState()
       cancelReconnect()
       retireCurrentSocket(code: 1_000, reason: "Room seat removed")
@@ -964,6 +1014,7 @@ public actor RoomConnection {
     }
 
     let admissionRejected = synchronizedGeneration != socketGeneration
+    let rejectedAdmissionAttemptID = admissionRejected ? admissionAttemptID : nil
     var recoveryCommandIDToClear: UUID?
     var matchedPendingAction: RoomCommandAction?
     if let pendingCommand, frame.commandID == pendingCommand.commandID {
@@ -995,16 +1046,20 @@ public actor RoomConnection {
       lifecycleEpoch &+= 1
       clearPendingCommand()
       admission = nil
+      admissionAttemptID = nil
       quarantineAuthoritativeState()
       retireCurrentSocket(code: 1_000, reason: "Room admission rejected")
       transition(to: .error)
     }
-    if admissionRejected {
+    if admissionRejected, let rejectedAdmissionAttemptID {
       publish(.notice(.admissionRejected(
         code: frame.code,
         message: frame.message,
-        usedSavedSeat: usedSavedSeat
+        usedSavedSeat: usedSavedSeat,
+        admissionAttemptID: rejectedAdmissionAttemptID
       )))
+    } else if admissionRejected {
+      publish(.notice(.invalidServerResponse))
     } else {
       publish(.notice(.commandRejected(
         code: frame.code,
@@ -1184,15 +1239,22 @@ public actor RoomConnection {
   private func synchronizationTimedOut(socketGeneration: UInt64) async {
     guard isCurrent(socketGeneration), synchronizedGeneration != socketGeneration else { return }
     let canRecover = isRecoverable(admission)
-    let freshAdmissionWasInterrupted = admission != nil && !canRecover
-    publish(.notice(
-      freshAdmissionWasInterrupted ? .freshAdmissionInterrupted : .synchronizationTimedOut
-    ))
+    let interruptedAdmissionAttemptID = admission != nil && !canRecover
+      ? admissionAttemptID
+      : nil
+    if let interruptedAdmissionAttemptID {
+      publish(.notice(.freshAdmissionInterrupted(
+        admissionAttemptID: interruptedAdmissionAttemptID
+      )))
+    } else {
+      publish(.notice(.synchronizationTimedOut))
+    }
     retireCurrentSocket(code: 4_001, reason: "Room synchronization timed out")
     if canRecover {
       scheduleReconnect()
     } else {
       admission = nil
+      admissionAttemptID = nil
       admissionWasAttempted = false
       transition(to: .error)
     }
@@ -1201,15 +1263,22 @@ public actor RoomConnection {
   private func failClosedInvalidFrame(socketGeneration: UInt64) async {
     guard isCurrent(socketGeneration) else { return }
     let canRecover = isRecoverable(admission)
-    let freshAdmissionWasInterrupted = admission != nil && !canRecover
-    publish(.notice(
-      freshAdmissionWasInterrupted ? .freshAdmissionInterrupted : .invalidServerResponse
-    ))
+    let interruptedAdmissionAttemptID = admission != nil && !canRecover
+      ? admissionAttemptID
+      : nil
+    if let interruptedAdmissionAttemptID {
+      publish(.notice(.freshAdmissionInterrupted(
+        admissionAttemptID: interruptedAdmissionAttemptID
+      )))
+    } else {
+      publish(.notice(.invalidServerResponse))
+    }
     retireCurrentSocket(code: 1_002, reason: "Invalid server response")
     if canRecover {
       scheduleReconnect()
     } else {
       admission = nil
+      admissionAttemptID = nil
       admissionWasAttempted = false
       transition(to: .error)
     }
@@ -1218,12 +1287,18 @@ public actor RoomConnection {
   private func handleTransportEnd(socketGeneration: UInt64, shouldNotify: Bool) async {
     guard isCurrent(socketGeneration) else { return }
     let canRecover = isRecoverable(admission)
-    let freshAdmissionWasInterrupted = admission != nil && !canRecover
+    let interruptedAdmissionAttemptID = admission != nil && !canRecover
+      ? admissionAttemptID
+      : nil
     if shouldNotify {
-      if freshAdmissionWasInterrupted {
+      if let interruptedAdmissionAttemptID {
         // The connectivity transition owns the eventual fail-closed notice while
         // offline so the user is not first told that an impossible replay exists.
-        if online { publish(.notice(.freshAdmissionInterrupted)) }
+        if online {
+          publish(.notice(.freshAdmissionInterrupted(
+            admissionAttemptID: interruptedAdmissionAttemptID
+          )))
+        }
       } else {
         publish(.notice(.transportInterrupted))
       }
@@ -1235,6 +1310,7 @@ public actor RoomConnection {
       scheduleReconnect()
     } else {
       admission = nil
+      admissionAttemptID = nil
       admissionWasAttempted = false
       transition(to: .error)
     }

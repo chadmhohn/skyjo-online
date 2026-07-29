@@ -46,15 +46,29 @@ struct RoomBanner: Equatable, Identifiable {
 protocol RoomSessionConnection: Sendable {
   func events() async -> AsyncStream<RoomConnectionEvent>
   func currentAuthoritativeSnapshot() async -> AuthoritativeRoomSnapshot?
-  func recoverPersistedReset() async throws -> Bool
-  func connect(_ admission: RoomAdmission) async throws
-  func recover(_ admission: RoomAdmission) async throws
+  func recoverPersistedReset(admissionAttemptID: UUID) async throws -> Bool
+  func connect(_ admission: RoomAdmission, admissionAttemptID: UUID) async throws
+  func recover(_ admission: RoomAdmission, admissionAttemptID: UUID) async throws
   func send(_ action: RoomCommandAction) async throws -> UUID
   func setVisible(_ visible: Bool) async
   func resume() async
   func disconnect() async throws
   func discardPersistedResetRecovery() async throws
   func dispose() async
+}
+
+extension RoomSessionConnection {
+  func recoverPersistedReset() async throws -> Bool {
+    try await recoverPersistedReset(admissionAttemptID: UUID())
+  }
+
+  func connect(_ admission: RoomAdmission) async throws {
+    try await connect(admission, admissionAttemptID: UUID())
+  }
+
+  func recover(_ admission: RoomAdmission) async throws {
+    try await recover(admission, admissionAttemptID: UUID())
+  }
 }
 
 extension RoomConnection: RoomSessionConnection {
@@ -312,6 +326,12 @@ final class RoomSessionModel {
   private var recoveryGeneration: UInt64 = 0
   private var activeAdmissionOperationID: UUID?
   private var activeAdmissionRecoveryGeneration: UInt64?
+  private var currentAdmissionAttemptID: UUID?
+  private var supersededAdmissionAttemptID: UUID?
+  private var inFlightAdmissionOperationIDs: Set<UUID> = []
+  private var retirementDepth = 0
+  @ObservationIgnored
+  private var admissionOperationWaiters: [CheckedContinuation<Void, Never>] = []
   private var resetRecoveryInitiated = false
   private var resetRecoveryCleanupRequired = false
   private var resetRecoveryCleanupVerified = false
@@ -520,12 +540,14 @@ final class RoomSessionModel {
   }
 
   func start() async {
-    guard !started else { return }
+    guard !started, retirementDepth == 0 else { return }
     lifecycleGeneration &+= 1
     let generation = lifecycleGeneration
     let automaticRecoveryGeneration = recoveryGeneration
     connectionStatus = Self.idleConnectionStatus
     savedSeatKnownAbsent = false
+    currentAdmissionAttemptID = nil
+    supersededAdmissionAttemptID = nil
     resetRecoveryInitiated = false
     resetRecoveryCleanupVerified = false
     isResetRecoveryCleanupInProgress = false
@@ -576,8 +598,12 @@ final class RoomSessionModel {
         await self?.consume(event, generation: generation)
       }
     }
+    let persistedResetAdmissionAttemptID = UUID()
+    currentAdmissionAttemptID = persistedResetAdmissionAttemptID
     do {
-      let recoveredPersistedReset = try await nextConnection.recoverPersistedReset()
+      let recoveredPersistedReset = try await nextConnection.recoverPersistedReset(
+        admissionAttemptID: persistedResetAdmissionAttemptID
+      )
       guard lifecycleGeneration == generation, started else { return }
       // A successful read verifies that an earlier undecodable/unavailable
       // recovery is no longer unresolved. An actual recovered command remains
@@ -597,8 +623,14 @@ final class RoomSessionModel {
         resetRecoveryInitiated = true
         return
       }
+      if currentAdmissionAttemptID == persistedResetAdmissionAttemptID {
+        currentAdmissionAttemptID = nil
+      }
     } catch {
       guard lifecycleGeneration == generation, started else { return }
+      if currentAdmissionAttemptID == persistedResetAdmissionAttemptID {
+        currentAdmissionAttemptID = nil
+      }
       requireResetRecoveryCleanup()
       banner = RoomBanner(
         title: "Room reset recovery unavailable",
@@ -616,6 +648,7 @@ final class RoomSessionModel {
           pendingInviteReview == nil
     else { return }
     var recoveringRoomCode: String?
+    var recoveringAdmissionAttemptID: UUID?
     do {
       if let saved = try await environment.seatStore.load(accountID: account.id) {
         guard lifecycleGeneration == generation,
@@ -630,12 +663,16 @@ final class RoomSessionModel {
         acceptsSeatPersistence = false
         awaitsFreshAdmissionSnapshot = true
         expectedFreshAdmissionRoomCode = saved.roomCode
+        let admissionAttemptID = UUID()
+        recoveringAdmissionAttemptID = admissionAttemptID
+        currentAdmissionAttemptID = admissionAttemptID
         try await nextConnection.recover(
           .join(
             code: saved.roomCode,
             displayName: account.displayName,
             playerID: saved.playerID
-          )
+          ),
+          admissionAttemptID: admissionAttemptID
         )
       } else {
         guard lifecycleGeneration == generation,
@@ -659,6 +696,10 @@ final class RoomSessionModel {
         awaitsFreshAdmissionSnapshot = false
         expectedFreshAdmissionRoomCode = nil
       }
+      if let recoveringAdmissionAttemptID,
+         currentAdmissionAttemptID == recoveringAdmissionAttemptID {
+        currentAdmissionAttemptID = nil
+      }
       banner = RoomBanner(
         title: "Saved room unavailable",
         message: "Your saved seat could not be restored. You can create or join a room again.",
@@ -668,6 +709,8 @@ final class RoomSessionModel {
   }
 
   func stop() async {
+    retirementDepth += 1
+    defer { retirementDepth -= 1 }
     lifecycleGeneration &+= 1
     recoveryGeneration &+= 1
     started = false
@@ -677,6 +720,8 @@ final class RoomSessionModel {
     acceptsSeatPersistence = false
     awaitsFreshAdmissionSnapshot = false
     expectedFreshAdmissionRoomCode = nil
+    currentAdmissionAttemptID = nil
+    supersededAdmissionAttemptID = nil
     routingClearRoomCode = nil
     bufferedSnapshotDuringRoutingClear = nil
     inviteSupersededAdmission = false
@@ -695,6 +740,7 @@ final class RoomSessionModel {
     pendingTerminalAction = nil
     invalidateShareInvite()
     if let retiredConnection { await retiredConnection.dispose() }
+    await waitForAdmissionOperations()
     await waitForResetRecoveryCleanup()
     isAdmissionOperationPending = false
     activeAdmissionOperationID = nil
@@ -719,6 +765,8 @@ final class RoomSessionModel {
       acceptsSeatPersistence = false
       awaitsFreshAdmissionSnapshot = false
       expectedFreshAdmissionRoomCode = nil
+      supersededAdmissionAttemptID = currentAdmissionAttemptID
+      currentAdmissionAttemptID = nil
       inviteSupersededAdmission = true
       supersededAdmissionSnapshot = nil
     }
@@ -746,6 +794,7 @@ final class RoomSessionModel {
     let generation = lifecycleGeneration
     let supersededConnection = connection
     let bufferedSnapshot = supersededAdmissionSnapshot
+    let bufferedAdmissionAttemptID = supersededAdmissionAttemptID
     activeAdmissionOperationID = nil
     activeAdmissionRecoveryGeneration = nil
     isAdmissionOperationPending = false
@@ -765,8 +814,10 @@ final class RoomSessionModel {
     else { return }
     inviteSupersededAdmission = false
     supersededAdmissionSnapshot = nil
+    supersededAdmissionAttemptID = nil
 
     if let authoritativeSnapshot {
+      currentAdmissionAttemptID = bufferedAdmissionAttemptID
       acceptsSeatPersistence = true
       await consume(.snapshot(authoritativeSnapshot), generation: generation)
       return
@@ -836,6 +887,7 @@ final class RoomSessionModel {
     ) {
       inviteSupersededAdmission = false
       supersededAdmissionSnapshot = nil
+      supersededAdmissionAttemptID = nil
       pendingInviteReview = nil
     }
   }
@@ -849,15 +901,18 @@ final class RoomSessionModel {
     defer { finishAdmissionOperation(operationID) }
     guard await prepareConnection(), admissionOperationIsCurrent(operationID) else { return }
     guard await clearRoutingForFreshAdmission(operationID) else { return }
-    replaceVisibleSession(awaitingRoomCode: nil)
+    replaceVisibleSession(awaitingRoomCode: nil, admissionAttemptID: operationID)
     do {
       guard let connection else { return }
-      try await connection.connect(.create(displayName: account.displayName))
+      try await connection.connect(
+        .create(displayName: account.displayName),
+        admissionAttemptID: operationID
+      )
       guard admissionOperationIsCurrent(operationID) else { return }
       pendingInviteReview = nil
     } catch {
       guard admissionOperationIsCurrent(operationID) else { return }
-      showFreshAdmissionRetry()
+      showFreshAdmissionRetry(admissionAttemptID: operationID)
     }
   }
 
@@ -880,21 +935,25 @@ final class RoomSessionModel {
     else { return false }
     guard await clearRoutingForFreshAdmission(operationID) else { return false }
     do {
-      replaceVisibleSession(awaitingRoomCode: cleanedCode)
+      replaceVisibleSession(
+        awaitingRoomCode: cleanedCode,
+        admissionAttemptID: operationID
+      )
       guard let connection else { return false }
       try await connection.connect(
         .join(
           code: cleanedCode,
           displayName: account.displayName,
           playerID: nil
-        )
+        ),
+        admissionAttemptID: operationID
       )
       guard admissionOperationIsCurrent(operationID) else { return false }
       pendingInviteReview = nil
       return true
     } catch {
       guard admissionOperationIsCurrent(operationID) else { return false }
-      showFreshAdmissionRetry()
+      showFreshAdmissionRetry(admissionAttemptID: operationID)
       return false
     }
   }
@@ -927,12 +986,14 @@ final class RoomSessionModel {
       acceptsSeatPersistence = false
       awaitsFreshAdmissionSnapshot = true
       expectedFreshAdmissionRoomCode = saved.roomCode
+      currentAdmissionAttemptID = operationID
       try await connection.recover(
         .join(
           code: saved.roomCode,
           displayName: account.displayName,
           playerID: saved.playerID
-        )
+        ),
+        admissionAttemptID: operationID
       )
     } catch {
       guard admissionOperationIsCurrent(operationID) else { return }
@@ -941,6 +1002,9 @@ final class RoomSessionModel {
         acceptsSeatPersistence = false
         awaitsFreshAdmissionSnapshot = false
         expectedFreshAdmissionRoomCode = nil
+      }
+      if currentAdmissionAttemptID == operationID {
+        currentAdmissionAttemptID = nil
       }
       showCommandError(error)
     }
@@ -1235,10 +1299,14 @@ final class RoomSessionModel {
     return true
   }
 
-  private func replaceVisibleSession(awaitingRoomCode: String?) {
+  private func replaceVisibleSession(
+    awaitingRoomCode: String?,
+    admissionAttemptID: UUID
+  ) {
     acceptsSeatPersistence = false
     awaitsFreshAdmissionSnapshot = true
     expectedFreshAdmissionRoomCode = awaitingRoomCode
+    currentAdmissionAttemptID = admissionAttemptID
     snapshot = nil
     pendingTerminalAction = nil
     banner = nil
@@ -1248,7 +1316,8 @@ final class RoomSessionModel {
   }
 
   private func beginAdmissionOperation() -> UUID? {
-    guard activeAdmissionOperationID == nil,
+    guard retirementDepth == 0,
+          activeAdmissionOperationID == nil,
           !isAdmissionOperationPending,
           !isPreparingConnection,
           !isSeatCleanupPending
@@ -1257,6 +1326,7 @@ final class RoomSessionModel {
     let operationID = UUID()
     activeAdmissionOperationID = operationID
     activeAdmissionRecoveryGeneration = recoveryGeneration
+    inFlightAdmissionOperationIDs.insert(operationID)
     isAdmissionOperationPending = true
     return operationID
   }
@@ -1268,10 +1338,22 @@ final class RoomSessionModel {
   }
 
   private func finishAdmissionOperation(_ operationID: UUID) {
-    guard activeAdmissionOperationID == operationID else { return }
-    activeAdmissionOperationID = nil
-    activeAdmissionRecoveryGeneration = nil
-    isAdmissionOperationPending = false
+    let wasInFlight = inFlightAdmissionOperationIDs.remove(operationID) != nil
+    if activeAdmissionOperationID == operationID {
+      activeAdmissionOperationID = nil
+      activeAdmissionRecoveryGeneration = nil
+      isAdmissionOperationPending = false
+    }
+    if wasInFlight, inFlightAdmissionOperationIDs.isEmpty {
+      let waiters = admissionOperationWaiters
+      admissionOperationWaiters.removeAll()
+      for waiter in waiters { waiter.resume() }
+    }
+  }
+
+  private func waitForAdmissionOperations() async {
+    guard !inFlightAdmissionOperationIDs.isEmpty else { return }
+    await withCheckedContinuation { admissionOperationWaiters.append($0) }
   }
 
   private func waitForResetRecoveryCleanup() async {
@@ -1314,11 +1396,13 @@ final class RoomSessionModel {
     resetRecoveryInitiated = false
     awaitsFreshAdmissionSnapshot = false
     expectedFreshAdmissionRoomCode = nil
+    currentAdmissionAttemptID = nil
     routingClearOperationID = nil
     routingClearRoomCode = nil
     bufferedSnapshotDuringRoutingClear = nil
     inviteSupersededAdmission = false
     supersededAdmissionSnapshot = nil
+    supersededAdmissionAttemptID = nil
   }
 
   private func clearRoutingForFreshAdmission(_ operationID: UUID) async -> Bool {
@@ -1346,7 +1430,6 @@ final class RoomSessionModel {
       return false
     }
     guard admissionOperationIsCurrent(operationID) else {
-      savedSeatKnownAbsent = true
       await restoreRoutingAfterCanceledClear(
         operationID: operationID,
         generation: generation,
@@ -1397,6 +1480,7 @@ final class RoomSessionModel {
         acceptsSeatPersistence = false
         awaitsFreshAdmissionSnapshot = false
         expectedFreshAdmissionRoomCode = nil
+        currentAdmissionAttemptID = nil
       }
     }
     resetRecoveryCleanupRequired = true
@@ -1537,7 +1621,9 @@ final class RoomSessionModel {
         message: Self.safeCommandMessage(code: code),
         tone: .warning
       )
-    case .admissionRejected(let code, _, let usedSavedSeat):
+    case .admissionRejected(let code, _, let usedSavedSeat, let admissionAttemptID):
+      guard currentAdmissionAttemptID == admissionAttemptID else { return }
+      currentAdmissionAttemptID = nil
       pendingTerminalAction = nil
       if !usedSavedSeat {
         acceptsSeatPersistence = false
@@ -1622,8 +1708,8 @@ final class RoomSessionModel {
         message: "Check the connection and retry your saved seat.",
         tone: .warning
       )
-    case .freshAdmissionInterrupted:
-      showFreshAdmissionRetry()
+    case .freshAdmissionInterrupted(let admissionAttemptID):
+      showFreshAdmissionRetry(admissionAttemptID: admissionAttemptID)
     case .transportInterrupted:
       banner = RoomBanner(
         title: "Connection interrupted",
@@ -1718,7 +1804,9 @@ final class RoomSessionModel {
     )
   }
 
-  private func showFreshAdmissionRetry() {
+  private func showFreshAdmissionRetry(admissionAttemptID: UUID) {
+    guard currentAdmissionAttemptID == admissionAttemptID else { return }
+    currentAdmissionAttemptID = nil
     acceptsSeatPersistence = false
     awaitsFreshAdmissionSnapshot = false
     expectedFreshAdmissionRoomCode = nil

@@ -221,6 +221,7 @@ private struct NativeRootView: View {
         await model.synchronizeLocalSolo(dependencies.solo)
         _ = await dependencies.solo.applyUITestState(arguments: ProcessInfo.processInfo.arguments)
         if RoomUITestFixtureMode.launchMode(arguments: arguments) != nil,
+           !arguments.contains("--ui-room-manual-navigation"),
            let account = model.user {
           await rooms.presentRooms(for: account)
         } else if arguments.contains("--ui-open-room-invite") {

@@ -8,6 +8,8 @@ import SkyjoNetworking
 /// behavior. No room snapshot is injected directly into `RoomSessionModel`.
 enum RoomUITestFixtureMode: String, Sendable {
   case admission
+  case recoveryUnavailable = "recovery-unavailable"
+  case cleanupRequired = "cleanup-required"
   case waiting
   case active
   case scoring
@@ -22,9 +24,13 @@ enum RoomUITestFixtureMode: String, Sendable {
     return Self(rawValue: String(argument.dropFirst("--ui-room-fixture=".count)))
   }
 
-  var startsWaiting: Bool { self == .admission || self == .waiting }
+  var startsWaiting: Bool {
+    self == .admission || self == .cleanupRequired || self == .waiting
+  }
   var startsScoring: Bool { self == .scoring }
-  var startsWithSavedSeat: Bool { self != .admission }
+  var startsWithSavedSeat: Bool {
+    self != .admission && self != .cleanupRequired
+  }
 }
 
 @MainActor
@@ -102,9 +108,11 @@ private enum RoomUITestFixtureError: Error {
   case unavailable
 }
 
-/// Adapts only the deterministic offline state; every other event comes directly
-/// from the production connection actor. The first authoritative table is yielded
-/// before network availability is withdrawn, preserving the read-only-table contract.
+/// Adapts deterministic connection-local failure states while every server-shaped
+/// fixture still enters through the production connection actor and strict codec.
+/// Offline yields the authoritative table before withdrawing availability. Cleanup
+/// failure suppresses the validated table and connection status, then exposes the
+/// same persistence-failure notice the production connection publishes.
 private actor RoomUITestFixtureConnection: RoomSessionConnection {
   private let base: RoomConnection
   private let mode: RoomUITestFixtureMode
@@ -117,11 +125,27 @@ private actor RoomUITestFixtureConnection: RoomSessionConnection {
   func events() async -> AsyncStream<RoomConnectionEvent> {
     let source = await base.events()
     let shouldBecomeOffline = mode == .offline
+    let shouldRequireCleanup = mode == .cleanupRequired
     return AsyncStream(bufferingPolicy: .bufferingNewest(8)) { continuation in
       let forwardingTask = Task {
         var hasDeliveredOfflineSnapshot = false
+        var hasDeliveredCleanupNotice = false
         for await event in source {
           guard !Task.isCancelled else { break }
+          if shouldRequireCleanup {
+            switch event {
+            case .status:
+              continue
+            case .snapshot:
+              if !hasDeliveredCleanupNotice {
+                hasDeliveredCleanupNotice = true
+                continuation.yield(.notice(.resetRecoveryPersistenceFailed))
+              }
+              continue
+            case .notice:
+              break
+            }
+          }
           continuation.yield(event)
           if shouldBecomeOffline,
              !hasDeliveredOfflineSnapshot,
@@ -140,16 +164,19 @@ private actor RoomUITestFixtureConnection: RoomSessionConnection {
     await base.snapshot()
   }
 
-  func recoverPersistedReset() async throws -> Bool {
-    try await base.recoverPersistedReset()
+  func recoverPersistedReset(admissionAttemptID: UUID) async throws -> Bool {
+    try await base.recoverPersistedReset(admissionAttemptID: admissionAttemptID)
   }
 
-  func connect(_ admission: RoomAdmission) async throws {
-    try await base.connect(admission)
+  func connect(_ admission: RoomAdmission, admissionAttemptID: UUID) async throws {
+    try await base.connect(admission, admissionAttemptID: admissionAttemptID)
   }
 
-  func recover(_ admission: RoomAdmission) async throws {
-    try await base.recover(admission)
+  func recover(_ admission: RoomAdmission, admissionAttemptID: UUID) async throws {
+    guard mode != .recoveryUnavailable else {
+      throw RoomUITestFixtureError.unavailable
+    }
+    try await base.recover(admission, admissionAttemptID: admissionAttemptID)
   }
 
   func send(_ action: RoomCommandAction) async throws -> UUID {

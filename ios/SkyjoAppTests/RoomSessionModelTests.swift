@@ -663,6 +663,81 @@ struct RoomSessionModelTests {
     await model.stop()
   }
 
+  @Test("Stale admission terminal notices cannot erase a newer invite admission")
+  func staleAdmissionNoticesAreAttemptScoped() async throws {
+    enum NoticeKind {
+      case interrupted
+      case rejected
+    }
+
+    let invite = try RedeemedRoomInvite(
+      roomCode: "FGHIJ",
+      expiresAt: 1_784_999_100_000
+    )
+    let targetRoom = try await authoritativeFixture(
+      revision: 8,
+      variant: .waiting,
+      roomCode: invite.roomCode
+    )
+
+    for noticeKind in [NoticeKind.interrupted, .rejected] {
+      let connection = ModelRoomConnection()
+      let seatStore = RecordingSeatStore()
+      let model = makeModel(connection: connection, seatStore: seatStore)
+
+      await model.start()
+      await connection.suspendNextConnect()
+      let oldJoin = Task { await model.join(code: "ABCDE") }
+      #expect(await modelEventually { await connection.connectIsSuspended() })
+      let oldAttemptIDs = await connection.admissionAttemptIDs()
+      let oldAttemptID = try #require(oldAttemptIDs.first)
+
+      model.applyInvite(invite)
+      await connection.resumeConnect()
+      #expect(!(await oldJoin.value))
+
+      await connection.suspendNextConnect()
+      let switchTask = Task { await model.acceptInviteAndJoin() }
+      #expect(await modelEventually { await connection.connectIsSuspended() })
+      let attemptIDs = await connection.admissionAttemptIDs()
+      #expect(attemptIDs.count == 2)
+      let targetAttemptID = try #require(attemptIDs.last)
+      #expect(targetAttemptID != oldAttemptID)
+
+      let staleNotice: RoomConnectionNotice = switch noticeKind {
+      case .interrupted:
+        .freshAdmissionInterrupted(admissionAttemptID: oldAttemptID)
+      case .rejected:
+        .admissionRejected(
+          code: "room-not-found",
+          message: "Retired admission detail.",
+          usedSavedSeat: false,
+          admissionAttemptID: oldAttemptID
+        )
+      }
+      await connection.emit(.notice(staleNotice))
+      await connection.emit(.status(RoomConnectionStatus(
+        phase: .connecting,
+        retryInMilliseconds: nil,
+        synchronized: false,
+        hasPendingCommand: false,
+        revision: nil
+      )))
+      #expect(await modelEventually { model.connectionStatus.phase == .connecting })
+      #expect(model.banner?.title != "Room not confirmed")
+      #expect(model.banner?.title != "Room admission not accepted")
+
+      await connection.resumeConnect()
+      await switchTask.value
+      await connection.emit(.status(connectedStatus(revision: targetRoom.revision)))
+      await connection.emit(.snapshot(targetRoom))
+      #expect(await modelEventually { model.room?.code == invite.roomCode })
+      #expect(await modelEventually { await seatStore.record()?.roomCode == invite.roomCode })
+      #expect(model.pendingInviteReview == nil)
+      await model.stop()
+    }
+  }
+
   @Test("Canceling an invite restores the authoritative admission it superseded")
   func cancelInviteRestoresSupersededAdmission() async throws {
     let connection = ModelRoomConnection()
@@ -908,6 +983,97 @@ struct RoomSessionModelTests {
     await model.stop()
   }
 
+  @Test("Saved-seat actions distinguish confirmed absence, recovery failure, and cleanup")
+  func savedSeatAndCleanupActionVisibilityIsDeterministic() async throws {
+    let noSeatConnection = ModelRoomConnection()
+    let noSeatModel = makeModel(connection: noSeatConnection)
+
+    await noSeatModel.start()
+    #expect(await noSeatConnection.persistedResetAttemptIDs().count == 1)
+    #expect(noSeatModel.savedSeatKnownAbsent)
+    #expect(!noSeatModel.shouldShowRetrySavedSeat)
+    #expect(!noSeatModel.shouldShowForgetSavedSeat)
+    #expect(!noSeatModel.canRetrySavedSeat)
+    #expect(!noSeatModel.canForgetSavedSeat)
+    await noSeatModel.stop()
+
+    let seededConnection = ModelRoomConnection()
+    await seededConnection.failRecovery(.connectionUnavailable)
+    let seededStore = RecordingSeatStore()
+    let account = testAccount()
+    try await seededStore.save(RoomSeatRecoveryRecord(
+      accountID: account.id,
+      roomCode: "ABCDE",
+      playerID: "seat-old"
+    ))
+    let seededModel = makeModel(connection: seededConnection, seatStore: seededStore)
+
+    await seededModel.start()
+    #expect(seededModel.banner?.title == "Saved room unavailable")
+    #expect(!seededModel.savedSeatKnownAbsent)
+    #expect(seededModel.shouldShowRetrySavedSeat)
+    #expect(seededModel.shouldShowForgetSavedSeat)
+    #expect(seededModel.canRetrySavedSeat)
+    #expect(seededModel.canForgetSavedSeat)
+    await seededModel.stop()
+
+    let rejectedConnection = ModelRoomConnection()
+    let rejectedStore = RecordingSeatStore()
+    try await rejectedStore.save(RoomSeatRecoveryRecord(
+      accountID: account.id,
+      roomCode: "ABCDE",
+      playerID: "seat-old"
+    ))
+    let rejectedModel = makeModel(
+      connection: rejectedConnection,
+      seatStore: rejectedStore
+    )
+
+    await rejectedModel.start()
+    let rejectedAttemptID = try #require(
+      await rejectedConnection.admissionAttemptIDs().last
+    )
+    await rejectedConnection.emit(.notice(.admissionRejected(
+      code: "room-not-found",
+      message: "Sensitive server detail.",
+      usedSavedSeat: true,
+      admissionAttemptID: rejectedAttemptID
+    )))
+    #expect(await modelEventually {
+      rejectedModel.banner?.title == "Saved seat unavailable"
+    })
+    #expect(await rejectedStore.record() == nil)
+    #expect(rejectedModel.savedSeatKnownAbsent)
+    #expect(!rejectedModel.shouldShowRetrySavedSeat)
+    #expect(!rejectedModel.shouldShowForgetSavedSeat)
+    await rejectedModel.stop()
+
+    let cleanupConnection = ModelRoomConnection()
+    let cleanupModel = makeModel(connection: cleanupConnection)
+    await cleanupModel.start()
+    #expect(cleanupModel.savedSeatKnownAbsent)
+
+    await cleanupConnection.emit(.notice(.resetRecoveryPersistenceFailed))
+    #expect(await modelEventually {
+      cleanupModel.banner?.title == "Room reset cleanup needed"
+    })
+    #expect(!cleanupModel.shouldShowRetrySavedSeat)
+    #expect(cleanupModel.shouldShowForgetSavedSeat)
+    #expect(!cleanupModel.canRetrySavedSeat)
+    #expect(cleanupModel.canForgetSavedSeat)
+    #expect(!cleanupModel.canSubmitAdmission)
+
+    await cleanupModel.forgetSavedSeat()
+    #expect(cleanupModel.banner == nil)
+    #expect(cleanupModel.savedSeatKnownAbsent)
+    #expect(!cleanupModel.shouldShowRetrySavedSeat)
+    #expect(!cleanupModel.shouldShowForgetSavedSeat)
+    #expect(!cleanupModel.canRetrySavedSeat)
+    #expect(!cleanupModel.canForgetSavedSeat)
+    #expect(cleanupModel.canSubmitAdmission)
+    await cleanupModel.stop()
+  }
+
   @Test("A command never mutates the board before a later authoritative snapshot")
   func boardAdvancesOnlyFromSnapshots() async throws {
     let connection = ModelRoomConnection()
@@ -937,12 +1103,14 @@ struct RoomSessionModelTests {
   }
 
   @Test("Connection, pending, offline, and resync UI state surfaces within 500 milliseconds")
-  func realtimeStatusLatencyIsBounded() async {
+  func realtimeStatusLatencyIsBounded() async throws {
     let connection = ModelRoomConnection()
     let model = makeModel(connection: connection)
     let clock = ContinuousClock()
 
     await model.start()
+    await model.createRoom()
+    let admissionAttemptID = try #require(await connection.admissionAttemptIDs().last)
 
     var startedAt = clock.now
     await connection.emit(.status(RoomConnectionStatus(
@@ -972,7 +1140,9 @@ struct RoomSessionModelTests {
     #expect(startedAt.duration(to: clock.now) < .milliseconds(500))
 
     startedAt = clock.now
-    await connection.emit(.notice(.freshAdmissionInterrupted))
+    await connection.emit(.notice(.freshAdmissionInterrupted(
+      admissionAttemptID: admissionAttemptID
+    )))
     #expect(await modelEventually(attempts: 200) { model.banner?.title == "Room not confirmed" })
     #expect(model.banner?.message == "Skyjo could not confirm that room. Create or join again.")
     #expect(model.savedSeatKnownAbsent)
@@ -1916,6 +2086,86 @@ struct RoomSessionModelTests {
     await host.stop()
   }
 
+  @Test("An A to B to A switch drains an older suspended routing clear")
+  func accountSwitchABADrainsRetiredAdmissionCleanup() async throws {
+    let accountA = testAccount()
+    let accountB = testAccount(
+      id: UUID(uuidString: "30000000-0000-4000-8000-000000000004")!,
+      displayName: "Guest"
+    )
+    let firstAConnection = ModelRoomConnection()
+    let secondAConnection = ModelRoomConnection()
+    let bConnection = ModelRoomConnection()
+    let seatStore = SuspendedSeatClearStore()
+    let oldSeat = try RoomSeatRecoveryRecord(
+      accountID: accountA.id,
+      roomCode: "ABCDE",
+      playerID: "seat-old"
+    )
+    await seatStore.save(oldSeat)
+    let factory = HostRoomModelFactory(
+      connectionsByAccount: [
+        accountA.id: [firstAConnection, secondAConnection],
+        accountB.id: [bConnection],
+      ],
+      sharedSeatStore: seatStore
+    )
+    let host = RoomSessionHost(account: accountA) { factory.makeModel(for: $0) }
+    let retiringModel = host.model
+
+    await retiringModel.start()
+    #expect(await firstAConnection.admissions() == [
+      .join(code: oldSeat.roomCode, displayName: accountA.displayName, playerID: oldSeat.playerID),
+    ])
+    let oldAdmission = Task { await retiringModel.join(code: "FGHIJ") }
+    #expect(await modelEventually { await seatStore.clearIsSuspended() })
+
+    let switchToBCompletion = ModelCompletionProbe()
+    let switchToB = Task {
+      await host.synchronize(account: accountB)
+      await switchToBCompletion.markComplete()
+    }
+    #expect(await modelEventually { await firstAConnection.disposed() })
+
+    let switchToACompletion = ModelCompletionProbe()
+    let switchToA = Task {
+      await host.synchronize(account: accountA)
+      await switchToACompletion.markComplete()
+    }
+    #expect(!(await modelEventually(attempts: 25) {
+      await switchToACompletion.isComplete()
+    }))
+    #expect(!(await switchToBCompletion.isComplete()))
+    #expect(host.model === retiringModel)
+
+    await seatStore.resumeClear()
+    #expect(!(await oldAdmission.value))
+    await switchToB.value
+    await switchToA.value
+    #expect(await switchToACompletion.isComplete())
+
+    let freshModel = host.model
+    #expect(freshModel !== retiringModel)
+    #expect(freshModel.account.id == accountA.id)
+    let newerSeat = try RoomSeatRecoveryRecord(
+      accountID: accountA.id,
+      roomCode: "KLMNO",
+      playerID: "seat-new"
+    )
+    await seatStore.save(newerSeat)
+    await freshModel.start()
+
+    #expect(await secondAConnection.admissions() == [
+      .join(
+        code: newerSeat.roomCode,
+        displayName: accountA.displayName,
+        playerID: newerSeat.playerID
+      ),
+    ])
+    #expect(await seatStore.record() == newerSeat)
+    await host.stop()
+  }
+
   private func makeModel(
     connection: ModelRoomConnection,
     seatStore: any RoomSeatRecoveryStore = RecordingSeatStore(),
@@ -2020,6 +2270,8 @@ private actor ModelRoomConnection: RoomSessionConnection {
   private let resetRecoveryStore: (any RoomResetRecoveryStore)?
   private let resetRecoveryAccountID: UUID?
   private var receivedAdmissions: [RoomAdmission] = []
+  private var receivedAdmissionAttemptIDs: [UUID] = []
+  private var persistedResetAdmissionAttemptIDs: [UUID] = []
   private var receivedActions: [RoomCommandAction] = []
   private var receivedVisibilityUpdates: [Bool] = []
   private var receivedResumeCount = 0
@@ -2028,6 +2280,7 @@ private actor ModelRoomConnection: RoomSessionConnection {
   private var delayedEvents: [RoomConnectionEvent] = []
   private var isDisposed = false
   private var persistedResetFailure: ModelTestError?
+  private var recoveryFailure: ModelTestError?
   private var disconnectFailure: ModelTestError?
   private var discardFailure: ModelTestError?
   private var disconnectCalls = 0
@@ -2060,12 +2313,14 @@ private actor ModelRoomConnection: RoomSessionConnection {
     authoritativeSnapshotReads += 1
     return latestAuthoritativeSnapshot
   }
-  func recoverPersistedReset() throws -> Bool {
+  func recoverPersistedReset(admissionAttemptID: UUID) throws -> Bool {
+    persistedResetAdmissionAttemptIDs.append(admissionAttemptID)
     if let persistedResetFailure { throw persistedResetFailure }
     return false
   }
 
-  func connect(_ admission: RoomAdmission) async {
+  func connect(_ admission: RoomAdmission, admissionAttemptID: UUID) async {
+    receivedAdmissionAttemptIDs.append(admissionAttemptID)
     receivedAdmissions.append(admission)
     latestAuthoritativeSnapshot = nil
     guard shouldSuspendNextConnect else { return }
@@ -2073,8 +2328,10 @@ private actor ModelRoomConnection: RoomSessionConnection {
     await withCheckedContinuation { suspendedConnectContinuation = $0 }
   }
 
-  func recover(_ admission: RoomAdmission) {
+  func recover(_ admission: RoomAdmission, admissionAttemptID: UUID) throws {
+    receivedAdmissionAttemptIDs.append(admissionAttemptID)
     receivedAdmissions.append(admission)
+    if let recoveryFailure { throw recoveryFailure }
   }
 
   func send(_ action: RoomCommandAction) throws -> UUID {
@@ -2147,12 +2404,15 @@ private actor ModelRoomConnection: RoomSessionConnection {
   }
 
   func admissions() -> [RoomAdmission] { receivedAdmissions }
+  func admissionAttemptIDs() -> [UUID] { receivedAdmissionAttemptIDs }
+  func persistedResetAttemptIDs() -> [UUID] { persistedResetAdmissionAttemptIDs }
   func actions() -> [RoomCommandAction] { receivedActions }
   func visibilityUpdates() -> [Bool] { receivedVisibilityUpdates }
   func resumeCount() -> Int { receivedResumeCount }
   func disposed() -> Bool { isDisposed }
 
   func failPersistedResetRecovery(_ error: ModelTestError?) { persistedResetFailure = error }
+  func failRecovery(_ error: ModelTestError?) { recoveryFailure = error }
   func failDisconnect(_ error: ModelTestError?) { disconnectFailure = error }
   func failDisconnectWithDelayedResetRecoveryNotice() {
     disconnectFailure = .seatCleanupUnavailable
@@ -2224,9 +2484,14 @@ private final class ModelConnectionProvider: @unchecked Sendable {
 @MainActor
 private final class HostRoomModelFactory: @unchecked Sendable {
   private var connectionsByAccount: [UUID: [ModelRoomConnection]]
+  private let sharedSeatStore: (any RoomSeatRecoveryStore)?
 
-  init(connectionsByAccount: [UUID: [ModelRoomConnection]]) {
+  init(
+    connectionsByAccount: [UUID: [ModelRoomConnection]],
+    sharedSeatStore: (any RoomSeatRecoveryStore)? = nil
+  ) {
     self.connectionsByAccount = connectionsByAccount
+    self.sharedSeatStore = sharedSeatStore
   }
 
   func makeModel(for account: AccountUser) -> RoomSessionModel {
@@ -2240,7 +2505,7 @@ private final class HostRoomModelFactory: @unchecked Sendable {
       environment: RoomSessionEnvironment(
         makeConnection: { connection },
         createInvite: { _ in throw ModelTestError.inviteUnavailable },
-        seatStore: RecordingSeatStore(),
+        seatStore: sharedSeatStore ?? RecordingSeatStore(),
         nowMilliseconds: { 1_784_998_800_000 }
       )
     )

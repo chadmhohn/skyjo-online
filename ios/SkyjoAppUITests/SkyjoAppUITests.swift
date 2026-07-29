@@ -177,10 +177,11 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testAuthenticatedHomeOpensNativeMultiplayerWithoutWebContent() throws {
-    XCUIDevice.shared.orientation = .portrait
-    let app = XCUIApplication()
-    app.launchArguments = ["--ui-state=authenticated-admin"]
-    app.launch()
+    let app = launchRoomFixture(
+      "admission",
+      additionalArguments: ["--ui-room-manual-navigation"]
+    )
+    defer { app.terminate() }
 
     let rooms = app.buttons["home.rooms"]
     XCTAssertTrue(rooms.waitForExistence(timeout: 8))
@@ -191,13 +192,49 @@ final class SkyjoAppUITests: XCTestCase {
     let joinScreen = element(in: app, identifier: "rooms.join-screen")
     XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
     XCTAssertTrue(app.textFields["rooms.join-code"].exists)
-    XCTAssertTrue(app.buttons["rooms.create"].exists)
+    let create = app.buttons["rooms.create"]
+    XCTAssertTrue(create.exists)
     XCTAssertEqual(app.webViews.count, 0)
 
+    let admissionReady = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"),
+      object: create
+    )
+    XCTAssertEqual(XCTWaiter.wait(for: [admissionReady], timeout: 5), .completed)
+    XCTAssertFalse(app.buttons["rooms.retry-seat"].exists)
+    XCTAssertFalse(app.buttons["rooms.forget-seat"].exists)
+
+    attachScreenshot(app, name: "ios8-room-join-portrait")
+    try performAccessibilityAudit(on: app)
+  }
+
+  @MainActor
+  func testSeededSavedSeatRecoveryControlsRequireDestructiveConfirmation() throws {
+    let app = launchRoomFixture(
+      "recovery-unavailable",
+      additionalArguments: ["--ui-room-manual-navigation"]
+    )
+    defer { app.terminate() }
+
+    let rooms = app.buttons["home.rooms"]
+    XCTAssertTrue(rooms.waitForExistence(timeout: 8))
+    XCTAssertTrue(rooms.isEnabled)
+    rooms.tap()
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    XCTAssertTrue(app.staticTexts["Saved room unavailable"].waitForExistence(timeout: 5))
+
+    let retrySavedSeat = app.buttons["rooms.retry-seat"]
     let forgetSavedSeat = app.buttons["rooms.forget-seat"]
+    XCTAssertTrue(retrySavedSeat.waitForExistence(timeout: 5))
     XCTAssertTrue(forgetSavedSeat.waitForExistence(timeout: 5))
+    XCTAssertTrue(retrySavedSeat.isEnabled)
+    XCTAssertTrue(forgetSavedSeat.isEnabled)
     XCTAssertTrue(forgetSavedSeat.isHittable)
+    XCTAssertGreaterThanOrEqual(forgetSavedSeat.frame.height, 44)
     forgetSavedSeat.tap()
+
     let confirmation = app.alerts["Forget saved seat?"]
     XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
     XCTAssertTrue(confirmation.buttons["Forget Saved Seat"].exists)
@@ -212,9 +249,55 @@ final class SkyjoAppUITests: XCTestCase {
     )
     confirmation.buttons["Cancel"].tap()
     XCTAssertTrue(joinScreen.waitForExistence(timeout: 5))
+    XCTAssertTrue(retrySavedSeat.exists)
+    XCTAssertTrue(forgetSavedSeat.exists)
+  }
 
-    attachScreenshot(app, name: "ios8-room-join-portrait")
-    try performAccessibilityAudit(on: app)
+  @MainActor
+  func testNoSeatCleanupRequirementExposesOnlyConfirmedForget() throws {
+    let app = launchRoomFixture(
+      "cleanup-required",
+      additionalArguments: ["--ui-room-manual-navigation"]
+    )
+    defer { app.terminate() }
+
+    let rooms = app.buttons["home.rooms"]
+    XCTAssertTrue(rooms.waitForExistence(timeout: 8))
+    rooms.tap()
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    let create = app.buttons["rooms.create"]
+    let admissionReady = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"),
+      object: create
+    )
+    XCTAssertEqual(XCTWaiter.wait(for: [admissionReady], timeout: 5), .completed)
+    XCTAssertFalse(app.buttons["rooms.retry-seat"].exists)
+    XCTAssertFalse(app.buttons["rooms.forget-seat"].exists)
+
+    create.tap()
+    XCTAssertTrue(app.staticTexts["Room reset cleanup needed"].waitForExistence(timeout: 8))
+    let forgetSavedSeat = app.buttons["rooms.forget-seat"]
+    XCTAssertTrue(forgetSavedSeat.waitForExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["rooms.retry-seat"].exists)
+    XCTAssertFalse(create.isEnabled)
+    forgetSavedSeat.tap()
+
+    let confirmation = app.alerts["Forget saved seat?"]
+    XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+    confirmation.buttons["Forget Saved Seat"].tap()
+
+    let cleanupCompleted = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"),
+      object: create
+    )
+    XCTAssertEqual(XCTWaiter.wait(for: [cleanupCompleted], timeout: 8), .completed)
+    XCTAssertFalse(app.buttons["rooms.retry-seat"].exists)
+    XCTAssertFalse(app.buttons["rooms.forget-seat"].exists)
+    XCTAssertTrue(joinScreen.exists)
+
+    attachScreenshot(app, name: "ios8-room-cleanup-required-cleared")
   }
 
   @MainActor

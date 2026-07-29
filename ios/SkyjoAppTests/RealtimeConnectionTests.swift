@@ -1122,7 +1122,16 @@ struct RoomConnectionStateMachineTests {
       commandIDs: [],
       resetRecoveryStore: admissionStore
     )
-    #expect(try await admission.recoverPersistedReset())
+    let admissionAttemptID = UUID(
+      uuidString: "40000000-0000-4000-8000-000000000064"
+    )!
+    let admissionNotices = RoomConnectionNoticeRecorder()
+    let admissionObservation = Task {
+      for await event in await admission.events() { await admissionNotices.record(event) }
+    }
+    #expect(try await admission.recoverPersistedReset(
+      admissionAttemptID: admissionAttemptID
+    ))
     #expect(await eventually { await admissionSleeper.hasPending(milliseconds: 500) })
     #expect(await admissionSleeper.release(milliseconds: 500))
     #expect(await eventually { await admissionSocket.sentTexts().count == 1 })
@@ -1132,11 +1141,30 @@ struct RoomConnectionStateMachineTests {
     #expect(await admission.status().revision == nil)
     #expect(await admission.recoveryAdmission() == nil)
     #expect(await eventually { await admissionStore.load(accountID: accountID) == nil })
+    #expect(await eventually {
+      await admissionNotices.contains(.admissionRejected(
+        code: "stale-room",
+        message: "Sensitive detail.",
+        usedSavedSeat: true,
+        admissionAttemptID: admissionAttemptID
+      ))
+    })
     #expect(!String(reflecting: RoomConnectionNotice.admissionRejected(
       code: "stale-room",
       message: "Sensitive detail.",
-      usedSavedSeat: true
+      usedSavedSeat: true,
+      admissionAttemptID: admissionAttemptID
     )).contains("Sensitive detail"))
+    #expect(!String(reflecting: RoomConnectionNotice.admissionRejected(
+      code: "stale-room",
+      message: "Sensitive detail.",
+      usedSavedSeat: true,
+      admissionAttemptID: admissionAttemptID
+    )).contains(admissionAttemptID.uuidString))
+    #expect(!String(reflecting: RoomConnectionNotice.freshAdmissionInterrupted(
+      admissionAttemptID: admissionAttemptID
+    )).contains(admissionAttemptID.uuidString))
+    admissionObservation.cancel()
     await admission.dispose()
   }
 
@@ -1232,7 +1260,13 @@ struct RoomConnectionStateMachineTests {
       for await event in await connection.events() { await notices.record(event) }
     }
 
-    try await connection.connect(.create(displayName: "Host"))
+    let admissionAttemptID = UUID(
+      uuidString: "40000000-0000-4000-8000-000000000065"
+    )!
+    try await connection.connect(
+      .create(displayName: "Host"),
+      admissionAttemptID: admissionAttemptID
+    )
     #expect(await eventually { await firstSocket.sentTexts().count == 1 })
     await connection.setNetworkAvailable(false)
     #expect(await connection.status().phase == .offline)
@@ -1240,7 +1274,11 @@ struct RoomConnectionStateMachineTests {
     await connection.setNetworkAvailable(true)
     #expect(await connection.status().phase == .error)
     #expect(await retrySocket.sentTexts().isEmpty)
-    #expect(await eventually { await notices.contains(.freshAdmissionInterrupted) })
+    #expect(await eventually {
+      await notices.contains(.freshAdmissionInterrupted(
+        admissionAttemptID: admissionAttemptID
+      ))
+    })
 
     try await connection.connect(.create(displayName: "Host"))
     #expect(await eventually { await retrySocket.sentTexts().count == 1 })
@@ -1268,7 +1306,10 @@ struct RoomConnectionStateMachineTests {
       playerID: nil
     )
 
-    try await connection.connect(admission)
+    let admissionAttemptID = UUID(
+      uuidString: "40000000-0000-4000-8000-000000000066"
+    )!
+    try await connection.connect(admission, admissionAttemptID: admissionAttemptID)
     #expect(await eventually { await firstSocket.sentTexts().count == 1 })
     await connection.setNetworkAvailable(false)
     #expect(await connection.status().phase == .offline)
@@ -1276,7 +1317,11 @@ struct RoomConnectionStateMachineTests {
     await connection.setNetworkAvailable(true)
     #expect(await connection.status().phase == .error)
     #expect(await retrySocket.sentTexts().isEmpty)
-    #expect(await eventually { await notices.contains(.freshAdmissionInterrupted) })
+    #expect(await eventually {
+      await notices.contains(.freshAdmissionInterrupted(
+        admissionAttemptID: admissionAttemptID
+      ))
+    })
 
     try await connection.connect(admission)
     #expect(await eventually { await retrySocket.sentTexts().count == 1 })
@@ -1299,6 +1344,45 @@ struct RoomConnectionStateMachineTests {
         )
       }
     }
+  }
+
+  @Test("A saved-seat join retries when the initial socket factory call fails")
+  func recoverableJoinRetriesSocketFactoryFailure() async throws {
+    let retrySocket = FakeRoomWebSocket()
+    let sleeper = ControlledSleeper()
+    let connection = try makeTestConnection(
+      factory: FakeSocketFactory([retrySocket], failuresBeforeSockets: 1),
+      sleeper: sleeper,
+      commandIDs: []
+    )
+    let notices = RoomConnectionNoticeRecorder()
+    let observation = Task {
+      for await event in await connection.events() { await notices.record(event) }
+    }
+    let admission = RoomAdmission.join(
+      code: "ABCDE",
+      displayName: "Host",
+      playerID: "10000000-0000-4000-8000-000000000001"
+    )
+    let admissionAttemptID = UUID(
+      uuidString: "40000000-0000-4000-8000-000000000067"
+    )!
+
+    try await connection.connect(admission, admissionAttemptID: admissionAttemptID)
+
+    #expect(await eventually { await connection.status().phase == .reconnecting })
+    #expect(await connection.recoveryAdmission() == admission)
+    #expect(!(await notices.contains(.freshAdmissionInterrupted(
+      admissionAttemptID: admissionAttemptID
+    ))))
+    #expect(await eventually { await sleeper.hasPending(milliseconds: 500) })
+    #expect(await sleeper.release(milliseconds: 500))
+    #expect(await eventually { await retrySocket.sentTexts().count == 1 })
+    let expectedAdmission = try RealtimeFrameCodec.encodeAdmission(admission)
+    #expect((await retrySocket.sentTexts()).first == expectedAdmission)
+
+    observation.cancel()
+    await connection.dispose()
   }
 
   @Test("Visibility is explicit and the public event stream stays bounded for slow consumers")
@@ -2012,8 +2096,9 @@ private func assertFreshAdmissionFailureRequiresExplicitRetry(
   let observation = Task {
     for await event in events { await notices.record(event) }
   }
+  let admissionAttemptID = UUID()
 
-  try await connection.connect(admission)
+  try await connection.connect(admission, admissionAttemptID: admissionAttemptID)
   switch failure {
   case .socketCreation:
     break
@@ -2031,7 +2116,11 @@ private func assertFreshAdmissionFailureRequiresExplicitRetry(
 
   #expect(await eventually { await connection.status().phase == .error })
   #expect(await connection.recoveryAdmission() == nil)
-  #expect(await eventually { await notices.contains(.freshAdmissionInterrupted) })
+  #expect(await eventually {
+    await notices.contains(.freshAdmissionInterrupted(
+      admissionAttemptID: admissionAttemptID
+    ))
+  })
   if let legacyNotice = failure.legacyNotice {
     #expect(!(await notices.contains(legacyNotice)))
   }
