@@ -73,12 +73,27 @@ final class SkyjoAppUITests: XCTestCase {
 
     tapTab("Account", in: app)
     XCTAssertTrue(element(in: app, identifier: "account.screen").waitForExistence(timeout: 5))
-    replaceText(in: app.textFields["account.display-name"], with: "UI Prime")
+    let displayName = app.textFields["account.display-name"]
+    replaceText(in: displayName, with: "UI Prime")
     app.buttons["account.save-profile"].tap()
     XCTAssertTrue(app.staticTexts["account.profile-message"].waitForExistence(timeout: 10))
     XCTAssertEqual(app.staticTexts["account.profile-message"].label, "Profile updated.")
+    displayName.typeText(XCUIKeyboardKey.return.rawValue)
+    XCTAssertEqual(
+      XCTWaiter.wait(
+        for: [
+          XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: app.keyboards.firstMatch
+          ),
+        ],
+        timeout: 5
+      ),
+      .completed,
+      "The profile keyboard should dismiss before navigating to password controls."
+    )
 
-    scrollToElement(app.secureTextFields["account.current-password"], in: app)
+    scrollToElementFullyVisible(app.secureTextFields["account.current-password"], in: app)
     app.secureTextFields["account.current-password"].tap()
     app.secureTextFields["account.current-password"].typeText(originalPassword)
     app.secureTextFields["account.new-password"].tap()
