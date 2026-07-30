@@ -12,11 +12,6 @@ const ACCESSIBILITY_TIMEOUT_MINUTES_BY_TEST = new Map([
   ['testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting', 10],
   ['testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave', 20]
 ]);
-const INVALID_XCUIApplication_FAILURE =
-  'failed: caught error: "Error Domain=com.apple.xcode.xctest.accessibilityAudit Code=-51 ' +
-  '\"Invalid XCUIApplication.\" UserInfo={NSLocalizedDescription=Invalid XCUIApplication.}"';
-const INVALID_ACCESSIBILITY_TARGET_FAILURE =
-  /^failed: caught error: "Error Domain=com\.apple\.accessibilityAudit Code=-902 "Invalid target app ([1-9][0-9]{0,9})" UserInfo=\{NSLocalizedDescription=Invalid target app \1\}"$/;
 
 function fail(message) {
   throw new Error(message);
@@ -125,22 +120,8 @@ export function classifyIOSUIInfrastructureFailure(summary, expectedTestName) {
       testIdentifier: expected.nodeIdentifier
     };
   }
-  if (failure.failureText === INVALID_XCUIApplication_FAILURE) {
-    return {
-      schemaVersion: 1,
-      retryable: true,
-      reason: 'accessibility-audit-invalid-application',
-      testIdentifier: expected.nodeIdentifier
-    };
-  }
-  if (INVALID_ACCESSIBILITY_TARGET_FAILURE.test(failure.failureText)) {
-    return {
-      schemaVersion: 1,
-      retryable: true,
-      reason: 'accessibility-audit-invalid-target',
-      testIdentifier: expected.nodeIdentifier
-    };
-  }
+  // Xcode can emit invalid-application/target audit errors after an app crash
+  // without retaining a crash attachment, so those summaries are not retryable.
   return null;
 }
 

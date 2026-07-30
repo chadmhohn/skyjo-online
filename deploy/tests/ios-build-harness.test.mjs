@@ -556,7 +556,7 @@ test('the isolated portrait retry rejects assertions and fails closed after one 
   );
 });
 
-test('the xcresult classifier allows only exact recurring accessibility infrastructure failures', () => {
+test('the xcresult classifier allows only exact recurring accessibility timeouts', () => {
   const defaultsTest = ipadPortraitTests[0];
   const recoveryTest = ipadPortraitTests[1];
   const timeoutProof = classifyIOSUIInfrastructureFailure(
@@ -581,31 +581,9 @@ test('the xcresult classifier allows only exact recurring accessibility infrastr
       testIdentifier: `SkyjoAppUITests/${recoveryTest}()`
     }
   );
-
-  const invalidApplication =
-    'failed: caught error: "Error Domain=com.apple.xcode.xctest.accessibilityAudit ' +
-    'Code=-51 "Invalid XCUIApplication." UserInfo={NSLocalizedDescription=Invalid XCUIApplication.}"';
-  assert.equal(
-    classifyIOSUIInfrastructureFailure(
-      failedSummary(recoveryTest, invalidApplication),
-      recoveryTest
-    )?.reason,
-    'accessibility-audit-invalid-application'
-  );
-
-  const invalidTarget =
-    'failed: caught error: "Error Domain=com.apple.accessibilityAudit Code=-902 ' +
-    '"Invalid target app 36957" UserInfo={NSLocalizedDescription=Invalid target app 36957}"';
-  const invalidTargetProof = classifyIOSUIInfrastructureFailure(
-    failedSummary(recoveryTest, invalidTarget),
-    recoveryTest
-  );
-  assert.equal(invalidTargetProof?.reason, 'accessibility-audit-invalid-target');
-  const serializedProof = JSON.stringify(invalidTargetProof);
-  assert.doesNotMatch(serializedProof, /36957|Invalid target app|failureText/);
 });
 
-test('the xcresult classifier rejects assertions, broadened signatures, and weaker evidence', () => {
+test('the xcresult classifier rejects app termination signatures and weaker evidence', () => {
   const defaultsTest = ipadPortraitTests[0];
   const recoveryTest = ipadPortraitTests[1];
   assert.equal(
@@ -619,6 +597,28 @@ test('the xcresult classifier rejects assertions, broadened signatures, and weak
     classifyIOSUIInfrastructureFailure(
       failedSummary(defaultsTest, 'Test exceeded execution time allowance of 20 minutes'),
       defaultsTest
+    ),
+    null
+  );
+  assert.equal(
+    classifyIOSUIInfrastructureFailure(
+      failedSummary(
+        recoveryTest,
+        'failed: caught error: "Error Domain=com.apple.xcode.xctest.accessibilityAudit ' +
+          'Code=-51 "Invalid XCUIApplication." UserInfo={NSLocalizedDescription=Invalid XCUIApplication.}"'
+      ),
+      recoveryTest
+    ),
+    null
+  );
+  assert.equal(
+    classifyIOSUIInfrastructureFailure(
+      failedSummary(
+        recoveryTest,
+        'failed: caught error: "Error Domain=com.apple.accessibilityAudit Code=-902 ' +
+          '"Invalid target app 36957" UserInfo={NSLocalizedDescription=Invalid target app 36957}"'
+      ),
+      recoveryTest
     ),
     null
   );
