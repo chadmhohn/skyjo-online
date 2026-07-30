@@ -2016,7 +2016,7 @@ final class SkyjoAppUITests: XCTestCase {
       assertElement(card, isContainedIn: safeArea, tolerance: 2)
     }
     try performFocusedSoloAccessibilityAudits(on: dynamicTypeApp)
-    attachScreenshot(dynamicTypeApp, name: "ios7-solo-table-accessibility-xxxl-drawn")
+    attachScreenScreenshot(name: "ios7-solo-table-accessibility-xxxl-drawn")
     dynamicTypeApp.terminate()
 
     let shortTypeApp = launchSoloFixture(
@@ -2162,7 +2162,7 @@ final class SkyjoAppUITests: XCTestCase {
     assertFrame(shortActionBand.frame, equals: shortActionBandFrame, accuracy: 2)
     assertFrame(shortLocalBoard.frame, equals: shortLocalBoardFrame, accuracy: 2)
     try performFocusedSoloAccessibilityAudits(on: shortTypeApp)
-    attachScreenshot(shortTypeApp, name: "ios7-solo-table-accessibility-xxxl-375x550")
+    attachScreenScreenshot(name: "ios7-solo-table-accessibility-xxxl-375x550")
   }
 
   @MainActor
