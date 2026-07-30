@@ -1155,15 +1155,28 @@ describe('v0.3.3 workflow governance', () => {
     expect(apnsRollbackProof).toContain('if (validatedGracefulStops.has(serverProcess)) return');
     expect(apnsRollbackProof).toContain('serverProcess.exitCode !== null || serverProcess.signalCode !== null');
     expect(apnsRollbackProof).toContain("serverProcess.kill('SIGTERM')");
-    expect(apnsRollbackProof).toContain("serverProcess.once('close', onClose)");
-    expect(apnsRollbackProof).toContain('exit.code !== 0 || exit.signal !== null');
-    expect(apnsRollbackProof).toContain('did not stop within the bounded timeout');
+    expect(apnsRollbackProof).toContain("serverProcess.kill('SIGKILL')");
+    expect(apnsRollbackProof).toContain("serverProcess.once('close', (code, signal) => resolve({ code, signal }))");
+    expect(apnsRollbackProof).toMatch(/exit\.code !== 0 \|\|\s+exit\.signal !== null/);
+    expect(apnsRollbackProof).toContain('could not be reaped during bounded cleanup');
     expect(apnsRollbackProof).toContain('validatedGracefulStops.add(serverProcess)');
+    expect(apnsRollbackProof).toContain("process.on('SIGINT', onSigint)");
+    expect(apnsRollbackProof).toContain("process.on('SIGTERM', onSigterm)");
+    expect(apnsRollbackProof).toContain("process.off('SIGINT', onSigint)");
+    expect(apnsRollbackProof).toContain("process.off('SIGTERM', onSigterm)");
+    expect(apnsRollbackProof).toContain('serverProcesses.map((serverProcess) => stopServer(serverProcess, { requireCleanExit: false }))');
+    expect(apnsRollbackProof).toContain('assertApnsRowsPreserved(apnsRows(copiedDatabase), expectedRows)');
+    expect(apnsRollbackProof).toContain('isDeepStrictEqual(actualRows, expectedRows)');
+    expect(apnsRollbackProof).toContain('detected a row preservation mismatch');
+    expect(apnsRollbackProof).not.toContain('assert.deepEqual(apnsRows(copiedDatabase), expectedRows)');
+    for (const field of ['user_id', 'app_version', 'locale', 'created_at', 'updated_at']) {
+      expect(apnsRollbackProof).toContain(`expectedRows[0].${field}`);
+    }
     const bothValidatedStops = apnsRollbackProof.indexOf(
       'await Promise.all([stopServer(first), stopServer(second)])'
     );
     const postShutdownRowProof = apnsRollbackProof.indexOf(
-      'assert.deepEqual(apnsRows(copiedDatabase), expectedRows)',
+      'assertApnsRowsPreserved(apnsRows(copiedDatabase), expectedRows)',
       bothValidatedStops
     );
     expect(bothValidatedStops).toBeGreaterThan(-1);
