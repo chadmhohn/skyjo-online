@@ -719,6 +719,46 @@ describe('v0.3.3 immutable tag identity', () => {
     packageLockRootVersion: '0.3.3',
     certificationVersion: '0.3.3'
   };
+  const packageDocument = { version: metadata.packageVersion };
+  const packageLock = {
+    version: metadata.packageLockVersion,
+    packages: { '': { version: metadata.packageLockRootVersion } }
+  };
+  const tagObject = 'a'.repeat(40);
+  const commit = 'b'.repeat(40);
+
+  function annotatedTagContents(overrides: { object?: string; type?: string; tag?: string } = {}) {
+    return [
+      `object ${overrides.object ?? commit}`,
+      `type ${overrides.type ?? 'commit'}`,
+      `tag ${overrides.tag ?? metadata.tagName}`,
+      'tagger Release Bot <release@example.com> 1785247200 -0600',
+      '',
+      'Skyjo release',
+      ''
+    ].join('\n');
+  }
+
+  function tagIdentityGit(tagContents: string, checkoutCommit = commit) {
+    const responses = new Map([
+      ['cat-file -t refs/tags/v0.3.3', 'tag\n'],
+      ['rev-parse --verify refs/tags/v0.3.3^{tag}', `${tagObject}\n`],
+      ['rev-parse --verify HEAD^{commit}', `${checkoutCommit}\n`],
+      [`cat-file tag ${tagObject}`, tagContents]
+    ]);
+    return vi.fn(async (arguments_: string[]) => responses.get(arguments_.join(' ')) || '');
+  }
+
+  function verifyTag(runGit: (arguments_: string[]) => Promise<string>) {
+    return verifyReleaseTagIdentity({
+      tagRef: metadata.tagRef,
+      tagName: metadata.tagName,
+      packageDocument,
+      packageLock,
+      certificationVersion: metadata.certificationVersion,
+      runGit
+    });
+  }
 
   it('binds the full tag ref, package, lockfile, and certification versions exactly', () => {
     expect(validateReleaseTagMetadata(metadata)).toBe('v0.3.3');
@@ -735,54 +775,86 @@ describe('v0.3.3 immutable tag identity', () => {
     }
   });
 
-  it('accepts only an annotated tag resolving to the checked-out commit', async () => {
-    const tagObject = 'a'.repeat(40);
-    const commit = 'b'.repeat(40);
-    const responses = new Map([
-      ['cat-file -t refs/tags/v0.3.3', 'tag\n'],
-      ['rev-parse --verify refs/tags/v0.3.3^{tag}', `${tagObject}\n`],
-      ['rev-parse --verify refs/tags/v0.3.3^{commit}', `${commit}\n`],
-      ['rev-parse --verify HEAD^{commit}', `${commit}\n`]
-    ]);
-    const runGit = vi.fn(async (arguments_: string[]) => responses.get(arguments_.join(' ')) || '');
-    await expect(verifyReleaseTagIdentity({
-      tagRef: metadata.tagRef,
-      tagName: metadata.tagName,
-      packageDocument: { version: metadata.packageVersion },
-      packageLock: {
-        version: metadata.packageLockVersion,
-        packages: { '': { version: metadata.packageLockRootVersion } }
-      },
-      certificationVersion: metadata.certificationVersion,
-      runGit
-    })).resolves.toEqual({ expectedTag: 'v0.3.3', tagObject, taggedCommit: commit });
+  it('accepts only an annotated tag object directly naming the checked-out commit', async () => {
+    const runGit = tagIdentityGit(annotatedTagContents());
+    await expect(verifyTag(runGit)).resolves.toEqual({
+      expectedTag: 'v0.3.3',
+      tagObject,
+      taggedCommit: commit
+    });
     expect(runGit).toHaveBeenCalledWith(['rev-parse', '--verify', 'refs/tags/v0.3.3^{tag}']);
+    expect(runGit).toHaveBeenCalledWith(['cat-file', 'tag', tagObject]);
+    expect(runGit).not.toHaveBeenCalledWith([
+      'rev-parse',
+      '--verify',
+      'refs/tags/v0.3.3^{commit}'
+    ]);
   });
 
   it('rejects lightweight tags and commit drift', async () => {
-    const packageDocument = { version: '0.3.3' };
-    const packageLock = { version: '0.3.3', packages: { '': { version: '0.3.3' } } };
-    await expect(verifyReleaseTagIdentity({
-      tagRef: metadata.tagRef,
-      tagName: metadata.tagName,
-      packageDocument,
-      packageLock,
-      runGit: async () => 'commit\n'
-    })).rejects.toThrow(/annotated tag/i);
+    await expect(verifyTag(async () => 'commit\n')).rejects.toThrow(/annotated tag/i);
+    await expect(
+      verifyTag(tagIdentityGit(annotatedTagContents(), 'c'.repeat(40)))
+    ).rejects.toThrow(/checked-out commit/i);
+  });
 
-    const responses = new Map([
-      ['cat-file -t refs/tags/v0.3.3', 'tag\n'],
-      ['rev-parse --verify refs/tags/v0.3.3^{tag}', `${'a'.repeat(40)}\n`],
-      ['rev-parse --verify refs/tags/v0.3.3^{commit}', `${'b'.repeat(40)}\n`],
-      ['rev-parse --verify HEAD^{commit}', `${'c'.repeat(40)}\n`]
+  it('rejects mismatched names, malformed headers, and duplicate reserved headers', async () => {
+    const cases = [
+      {
+        contents: annotatedTagContents({ tag: 'v0.3.2' }),
+        error: /name does not match/i
+      },
+      {
+        contents: annotatedTagContents().replace(`object ${commit}`, `object\t${commit}`),
+        error: /header is malformed/i
+      },
+      {
+        contents: annotatedTagContents().replace(`type commit\n`, ''),
+        error: /header is malformed/i
+      },
+      {
+        contents: annotatedTagContents().replace(
+          `type commit\n`,
+          `object ${'c'.repeat(40)}\ntype commit\n`
+        ),
+        error: /duplicate object header/i
+      },
+      {
+        contents: annotatedTagContents().replace('tag v0.3.3\n', 'type commit\ntag v0.3.3\n'),
+        error: /duplicate type header/i
+      },
+      {
+        contents: annotatedTagContents().replace(
+          'tagger Release Bot',
+          'tag v0.3.3\ntagger Release Bot'
+        ),
+        error: /duplicate tag header/i
+      },
+      {
+        contents: annotatedTagContents().replace('tagger Release Bot', 'unknown Release Bot'),
+        error: /header is malformed/i
+      },
+      {
+        contents: annotatedTagContents().replace('\n\nSkyjo release', '\nSkyjo release'),
+        error: /header is malformed/i
+      }
+    ];
+    for (const { contents, error } of cases) {
+      await expect(verifyTag(tagIdentityGit(contents))).rejects.toThrow(error);
+    }
+  });
+
+  it('rejects nested tag targets without accepting an indirectly peeled commit', async () => {
+    const runGit = tagIdentityGit(annotatedTagContents({
+      object: 'c'.repeat(40),
+      type: 'tag'
+    }));
+    await expect(verifyTag(runGit)).rejects.toThrow(/directly target a commit/i);
+    expect(runGit).not.toHaveBeenCalledWith([
+      'rev-parse',
+      '--verify',
+      'refs/tags/v0.3.3^{commit}'
     ]);
-    await expect(verifyReleaseTagIdentity({
-      tagRef: metadata.tagRef,
-      tagName: metadata.tagName,
-      packageDocument,
-      packageLock,
-      runGit: async (arguments_: string[]) => responses.get(arguments_.join(' ')) || ''
-    })).rejects.toThrow(/checked-out commit/i);
   });
 });
 

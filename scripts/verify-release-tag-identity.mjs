@@ -9,6 +9,8 @@ const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const semanticVersionPattern = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/;
 const fullShaPattern = /^[a-f0-9]{40}$/;
+const tagHeaderPattern = /^([a-z][a-z0-9-]*) ([^\u0000-\u001f\u007f]+)$/;
+const allowedTagHeaders = new Set(['object', 'type', 'tag', 'tagger']);
 
 function exactVersion(value, label) {
   if (typeof value !== 'string' || !semanticVersionPattern.test(value)) {
@@ -47,6 +49,35 @@ async function defaultRunGit(arguments_) {
   return stdout;
 }
 
+function parseAnnotatedTagHeader(contents) {
+  const headerEnd = contents.indexOf('\n\n');
+  if (headerEnd <= 0) throw new Error('Annotated release tag header is malformed.');
+
+  const lines = contents.slice(0, headerEnd).split('\n');
+  const headers = new Map();
+  for (const line of lines) {
+    const match = tagHeaderPattern.exec(line);
+    if (!match || !allowedTagHeaders.has(match[1])) {
+      throw new Error('Annotated release tag header is malformed.');
+    }
+    const [, name, value] = match;
+    if (headers.has(name)) {
+      throw new Error(`Annotated release tag has duplicate ${name} header.`);
+    }
+    headers.set(name, value);
+  }
+
+  if (lines.length < 3 || lines[0].split(' ', 1)[0] !== 'object' ||
+      lines[1].split(' ', 1)[0] !== 'type' || lines[2].split(' ', 1)[0] !== 'tag') {
+    throw new Error('Annotated release tag header is malformed.');
+  }
+  return Object.freeze({
+    object: headers.get('object'),
+    type: headers.get('type'),
+    tag: headers.get('tag')
+  });
+}
+
 export async function verifyReleaseTagIdentity({
   tagRef,
   tagName,
@@ -67,15 +98,25 @@ export async function verifyReleaseTagIdentity({
   if (objectType !== 'tag') throw new Error('Release tag must be an annotated tag object.');
 
   const tagObject = String(await runGit(['rev-parse', '--verify', `${tagRef}^{tag}`])).trim();
-  const taggedCommit = String(await runGit(['rev-parse', '--verify', `${tagRef}^{commit}`])).trim();
   const checkoutCommit = String(await runGit(['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
-  if (!fullShaPattern.test(tagObject) || !fullShaPattern.test(taggedCommit) || !fullShaPattern.test(checkoutCommit)) {
+  if (!fullShaPattern.test(tagObject) || !fullShaPattern.test(checkoutCommit)) {
     throw new Error('Release tag object or commit identity is malformed.');
   }
-  if (taggedCommit !== checkoutCommit) {
-    throw new Error('Release tag does not resolve to the checked-out commit.');
+
+  const tagHeader = parseAnnotatedTagHeader(String(await runGit(['cat-file', 'tag', tagObject])));
+  if (!fullShaPattern.test(tagHeader.object)) {
+    throw new Error('Annotated release tag object header is malformed.');
   }
-  return Object.freeze({ expectedTag, tagObject, taggedCommit });
+  if (tagHeader.type !== 'commit') {
+    throw new Error('Annotated release tag must directly target a commit object.');
+  }
+  if (tagHeader.tag !== expectedTag) {
+    throw new Error('Annotated release tag name does not match the expected release tag.');
+  }
+  if (tagHeader.object !== checkoutCommit) {
+    throw new Error('Release tag does not directly target the checked-out commit.');
+  }
+  return Object.freeze({ expectedTag, tagObject, taggedCommit: tagHeader.object });
 }
 
 async function main() {
