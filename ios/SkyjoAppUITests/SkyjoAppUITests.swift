@@ -56,7 +56,10 @@ final class SkyjoAppUITests: XCTestCase {
     try performAccessibilityAudit(on: app)
 
     XCUIDevice.shared.press(.home)
-    XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+    XCTAssertTrue(
+      waitForBackgroundLifecycleState(app, timeout: 5),
+      "The app should enter the running or suspended background before relaunch."
+    )
     app.terminate()
     app.launch()
     XCTAssertTrue(
@@ -2855,6 +2858,24 @@ final class SkyjoAppUITests: XCTestCase {
       size: size
     )
     return measuredFrame.height
+  }
+
+  @MainActor
+  private func waitForBackgroundLifecycleState(
+    _ app: XCUIApplication,
+    timeout: TimeInterval
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      switch app.state {
+      case .runningBackground, .runningBackgroundSuspended:
+        return true
+      default:
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+      }
+    } while Date() < deadline
+
+    return app.state == .runningBackground || app.state == .runningBackgroundSuspended
   }
 
   @MainActor
