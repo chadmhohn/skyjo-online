@@ -560,6 +560,9 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting() throws {
+    // Xcode 26's multi-pass app-wide audit can exceed XCTest's default budget
+    // when the hosted iPad and phone simulator roles run in parallel.
+    executionTimeAllowance = 1_200
     let app = launchSoloFixture("solo-setup")
 
     let setup = element(in: app, identifier: "solo.setup")
@@ -810,6 +813,9 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards() throws {
+    // Xcode 26's multi-pass app-wide audit can exceed XCTest's default budget
+    // when the hosted iPad and phone simulator roles run in parallel.
+    executionTimeAllowance = 1_200
     let app = launchSoloFixture("solo-table")
 
     let table = element(in: app, identifier: "solo.table.layout.standard")
