@@ -18,6 +18,10 @@ const uiAccessibilityHarnessPath = path.join(
 const ipadPortraitTests = [
   'testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting',
   'testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave',
+  'testSoloSetupRetriesBlockedStatsRecoveryWithoutSave',
+  'testSoloSetupAuditsCorruptStatsRecoveryWithoutSave',
+  'testSoloSetupDiscardsCorruptStatsRecoveryWithoutSave',
+  'testSoloSetupBlockedStatsRecoveryScalesAtAccessibilityXXXL',
   'testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards',
   'testSoloRepresentativeTurnKeepsEveryActionSlotStable',
   'testSoloAccessibilityXXXLRemainsOperable'
@@ -237,12 +241,12 @@ test('a failed child proof does not stop the remaining isolated portrait invocat
     '  mkdir -p "$output_path"',
     '}',
     `tests=(${ipadPortraitTests.map((testName) => `"${testName}"`).join(' ')})`,
-    'run_isolated_ipad_portrait_entry ipad-portrait stub-udid 5 "${tests[@]}"',
-    '[[ "$(wc -l < "$STUB_DIR/invocations")" -eq 5 ]]',
+    `run_isolated_ipad_portrait_entry ipad-portrait stub-udid ${ipadPortraitTests.length} "\${tests[@]}"`,
+    `[[ "$(wc -l < "$STUB_DIR/invocations")" -eq ${ipadPortraitTests.length} ]]`,
     'test_rows="$(awk -F "\\t" \'$1 == "test" && $2 ~ /^[0-9][0-9]$/ { count += 1 } END { print count + 0 }\' "$evidence_dir/ipad-portrait-isolation.tsv")"',
-    '[[ "$test_rows" -eq 5 ]]',
+    `[[ "$test_rows" -eq ${ipadPortraitTests.length} ]]`,
     '[[ "$matrix_status" -eq 1 ]]',
-    'printf "all-five-recorded\\n"'
+    'printf "all-tests-recorded\\n"'
   ].join('\n');
 
   try {
@@ -252,7 +256,7 @@ test('a failed child proof does not stop the remaining isolated portrait invocat
       env: { ...process.env, STUB_DIR: temporaryDirectory }
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal(result.stdout.trim(), 'all-five-recorded');
+    assert.equal(result.stdout.trim(), 'all-tests-recorded');
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
   }
@@ -267,13 +271,13 @@ test('the xcresult verifier proves merged exact IDs and rejects weaker evidence'
   assert.deepEqual(mergedProof, {
     schemaVersion: 1,
     result: 'Passed',
-    expectedTestCount: 5,
+    expectedTestCount: ipadPortraitTests.length,
     testIdentifiers: ipadPortraitTests.map((testName) => `SkyjoAppUITests/${testName}()`),
     deviceConfigurationCount: 1
   });
 
   const skipped = passingSummary(ipadPortraitTests.length);
-  skipped.passedTests = 4;
+  skipped.passedTests = ipadPortraitTests.length - 1;
   skipped.skippedTests = 1;
   assert.throws(
     () => validateIOSUIXCResult(skipped, passingInventory(ipadPortraitTests), ipadPortraitTests),
@@ -293,7 +297,10 @@ test('the xcresult verifier proves merged exact IDs and rejects weaker evidence'
     /did not prove the pinned test/
   );
 
-  const secondDestination = passingSummary(ipadPortraitTests.length, [2, 3]);
+  const secondDestination = passingSummary(
+    ipadPortraitTests.length,
+    [2, ipadPortraitTests.length - 2]
+  );
   secondDestination.devicesAndConfigurations[1].device.deviceId =
     '00000000-0000-4000-8000-000000000002';
   assert.throws(
@@ -306,7 +313,10 @@ test('the xcresult verifier proves merged exact IDs and rejects weaker evidence'
     /one exact destination and test plan/
   );
 
-  const secondConfiguration = passingSummary(ipadPortraitTests.length, [2, 3]);
+  const secondConfiguration = passingSummary(
+    ipadPortraitTests.length,
+    [2, ipadPortraitTests.length - 2]
+  );
   secondConfiguration.devicesAndConfigurations[1].testPlanConfiguration.configurationId = '2';
   assert.throws(
     () =>
@@ -342,7 +352,10 @@ test('the xcresult verifier proves merged exact IDs and rejects weaker evidence'
     /summary and inventory identify different/
   );
 
-  const duplicateMergeCounters = passingSummary(ipadPortraitTests.length, [10]);
+  const duplicateMergeCounters = passingSummary(
+    ipadPortraitTests.length,
+    [ipadPortraitTests.length * 2]
+  );
   assert.throws(
     () =>
       validateIOSUIXCResult(

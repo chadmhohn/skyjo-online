@@ -661,8 +661,8 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave() throws {
-    // Four fixture launches plus repeated AXRuntime audits can exceed XCTest's
-    // default budget when CI schedules several simulators in parallel.
+    // The complete-screen AXRuntime audit can exceed XCTest's default budget
+    // when CI schedules several simulators in parallel.
     executionTimeAllowance = 1_200
     let app = launchSoloFixture("solo-setup-blocked-outbox")
 
@@ -683,15 +683,22 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertGreaterThanOrEqual(retry.frame.height, 44)
     scrollToElementFullyVisible(discard, in: app)
     XCTAssertGreaterThanOrEqual(discard.frame.height, 44)
-    let standardRetryHeight = retry.frame.height
-    let standardDiscardHeight = discard.frame.height
-    let standardRecoveryHeadingHeight = recoveryHeading.frame.height
-    let standardRecoveryMessageHeight = recoveryMessage.frame.height
     attachScreenshot(app, name: "ios7-solo-setup-blocked-outbox")
     try performSoloAccessibilityAudit(
       on: app,
       allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
     )
+    app.terminate()
+  }
+
+  @MainActor
+  func testSoloSetupRetriesBlockedStatsRecoveryWithoutSave() throws {
+    let app = launchSoloFixture("solo-setup-blocked-outbox")
+    let recovery = element(in: app, identifier: "solo.outbox.recovery")
+    let retry = app.buttons["solo.outbox.retry"]
+    XCTAssertTrue(recovery.waitForExistence(timeout: 8))
+    XCTAssertTrue(retry.waitForExistence(timeout: 5))
+    XCTAssertTrue(retry.isEnabled)
     scrollToElementFullyVisible(retry, in: app)
     retry.tap()
     let retryStatus = element(in: app, identifier: "solo.outbox.status")
@@ -706,7 +713,13 @@ final class SkyjoAppUITests: XCTestCase {
     )
     attachScreenshot(app, name: "ios7-solo-setup-blocked-outbox-retried")
     app.terminate()
+  }
 
+  @MainActor
+  func testSoloSetupAuditsCorruptStatsRecoveryWithoutSave() throws {
+    // Keep the corrupt-state AXRuntime probes isolated from the complete
+    // blocked-state audit and from the destructive recovery action.
+    executionTimeAllowance = 1_200
     let corruptApp = launchSoloFixture("solo-setup-corrupt-outbox")
     let corruptRecovery = element(in: corruptApp, identifier: "solo.outbox.recovery")
     XCTAssertTrue(corruptRecovery.waitForExistence(timeout: 8))
@@ -723,7 +736,7 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertGreaterThanOrEqual(corruptDiscard.frame.height, 44)
     XCTAssertGreaterThanOrEqual(corruptDiscard.frame.width, 44)
     attachScreenshot(corruptApp, name: "ios7-solo-setup-corrupt-outbox")
-    // The complete blocked-outbox screen above already owns the broad audit.
+    // The separate complete blocked-outbox test already owns the broad audit.
     // Repeating that Xcode 26 sweep over this corrupt delta can hang AXRuntime
     // for the remainder of the test, so retain the exact focused categories
     // and clipping gate before isolating the destructive action in a relaunch.
@@ -733,7 +746,10 @@ final class SkyjoAppUITests: XCTestCase {
     )
     try performExactTextClippingAudit(on: corruptApp)
     corruptApp.terminate()
+  }
 
+  @MainActor
+  func testSoloSetupDiscardsCorruptStatsRecoveryWithoutSave() throws {
     let actionableCorruptApp = launchSoloFixture("solo-setup-corrupt-outbox")
     let actionableCorruptRecovery = element(
       in: actionableCorruptApp,
@@ -768,6 +784,26 @@ final class SkyjoAppUITests: XCTestCase {
       name: "ios7-solo-setup-corrupt-outbox-discarded"
     )
     actionableCorruptApp.terminate()
+  }
+
+  @MainActor
+  func testSoloSetupBlockedStatsRecoveryScalesAtAccessibilityXXXL() throws {
+    let standardApp = launchSoloFixture("solo-setup-blocked-outbox")
+    let standardRetry = standardApp.buttons["solo.outbox.retry"]
+    let standardDiscard = standardApp.buttons["solo.outbox.discard"]
+    let standardRecoveryHeading = standardApp.staticTexts["solo.outbox.heading"]
+    let standardRecoveryMessage = standardApp.staticTexts["solo.outbox.message"]
+    XCTAssertTrue(standardRetry.waitForExistence(timeout: 5))
+    XCTAssertTrue(standardDiscard.exists)
+    XCTAssertTrue(standardRecoveryHeading.exists)
+    XCTAssertTrue(standardRecoveryMessage.exists)
+    scrollToElementFullyVisible(standardRetry, in: standardApp)
+    scrollToElementFullyVisible(standardDiscard, in: standardApp)
+    let standardRetryHeight = standardRetry.frame.height
+    let standardDiscardHeight = standardDiscard.frame.height
+    let standardRecoveryHeadingHeight = standardRecoveryHeading.frame.height
+    let standardRecoveryMessageHeight = standardRecoveryMessage.frame.height
+    standardApp.terminate()
 
     // Xcode 26 reports the custom button's container as not Dynamic Type aware
     // even though its Text label uses an uncapped relative system font. Prove
