@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.3 - 2026-07-29
+## 0.3.3 - 2026-07-30
 
 - Added the committed, unsigned source foundation for a universal SwiftUI iPhone/iPad app, including its local package graph, configuration boundary, shared scheme/test plan, and macOS CI. This repository candidate does not contain or distribute a signed native app.
 - Added the versioned `contracts/v1` schemas and deterministic fixtures plus additive, stable JSON access-session, account, stats, and invite error contracts used by the native client.

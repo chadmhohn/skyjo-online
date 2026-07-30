@@ -865,12 +865,21 @@ describe('v0.3.3 workflow governance', () => {
       '0001FF',
       '00 01 ff',
       '00 01 FF',
+      '00:01:ff',
+      '00:01:FF',
       'AAH/',
       'AAH_',
       '0,1,255',
       '0, 1, 255',
       '"0":0,"1":1,"2":255'
     ]);
+    expect(sensitiveBinaryLogRepresentations('fbff')).toEqual(expect.arrayContaining([
+      'fb:ff',
+      'FB:FF',
+      '+/8=',
+      '+/8',
+      '-_8'
+    ]));
   });
 
   it('selects a compact standard phone independently from the large-phone entry', () => {
@@ -1116,7 +1125,7 @@ describe('v0.3.3 workflow governance', () => {
     expect(verifier).toMatch(/merge-base',\s*'--is-ancestor',\s*APNS_ROLLBACK_ENVELOPE_SOURCE_SHA/);
     expect(verifier).toContain("packageLock.packages?.['']?.version");
     expect(CERTIFICATION_RELEASE_VERSION).toBe('0.3.3');
-    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-29');
+    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-30');
     expect(APNS_ROLLBACK_ENVELOPE_SOURCE_SHA).toBe('f842937e7515e4f5d854644e5f7929bde5da5312');
     const packageJson = JSON.parse(packageDocument);
     expect(packageJson.version).toBe('0.3.3');
@@ -1141,6 +1150,8 @@ describe('v0.3.3 workflow governance', () => {
     expect(apnsRollbackProof).toContain('expectedRows[0].token_ciphertext_hex');
     expect(apnsRollbackProof).toContain('expectedRows[0].token_fingerprint_hex');
     expect(apnsRollbackProof).toContain("bytes.toString('base64url')");
+    expect(apnsRollbackProof).toContain("standardBase64.replace(/=+$/u, '')");
+    expect(apnsRollbackProof).toContain("join(':')");
     expect(apnsRollbackProof).toContain("decimalBytes.join(',')");
     expect(apnsRollbackProof).toContain('indexedDecimalBytes');
     expect(apnsRollbackProof).toContain('await fs.realpath(process.argv[1])');
@@ -1212,7 +1223,7 @@ describe('v0.3.3 workflow governance', () => {
     expect(promotedTreeNormalization).toBeGreaterThan(promotedMetadataWrite);
     expect(JSON.parse(packageLock).version).toBe('0.3.3');
     expect(JSON.parse(packageLock).packages[''].version).toBe('0.3.3');
-    expect(changelog).toMatch(/^## 0\.3\.3 - 2026-07-29$/m);
+    expect(changelog).toMatch(/^## 0\.3\.3 - 2026-07-30$/m);
     expect(changelog).toContain('source-only native solo launcher and game table');
     expect(changelog).toContain('artifact-only synthetic rollback-proof helper');
     expect(ci).toContain('Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility');

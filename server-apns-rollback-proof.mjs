@@ -69,21 +69,26 @@ export function assertApnsRowsPreserved(actualRows, expectedRows) {
 export function sensitiveBinaryLogRepresentations(hexValue) {
   const bytes = Buffer.from(hexValue, 'hex');
   const spacedHex = hexValue.toLowerCase().match(/../g).join(' ');
+  const colonHex = hexValue.toLowerCase().match(/../g).join(':');
+  const standardBase64 = bytes.toString('base64');
   const decimalBytes = [...bytes].map(String);
   const indexedDecimalBytes = decimalBytes
     .map((value, index) => `"${index}":${value}`)
     .join(',');
-  return [
+  return [...new Set([
     hexValue.toLowerCase(),
     hexValue.toUpperCase(),
     spacedHex,
     spacedHex.toUpperCase(),
-    bytes.toString('base64'),
+    colonHex,
+    colonHex.toUpperCase(),
+    standardBase64,
+    standardBase64.replace(/=+$/u, ''),
     bytes.toString('base64url'),
     decimalBytes.join(','),
     decimalBytes.join(', '),
     indexedDecimalBytes
-  ];
+  ])];
 }
 
 async function availablePort() {
