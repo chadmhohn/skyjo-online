@@ -436,6 +436,12 @@ standard_tests=(
   testSoloLauncherMakesReplacementExplicitAndRecoverable
   testSoloOfflineAccountCopyAndRevalidationAreExplicit
   testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting
+  testSoloSetupAuditsDefaultElementDetectionBeforeWriting
+  testSoloSetupAuditsDefaultHitRegionsBeforeWriting
+  testSoloSetupAuditsDefaultSufficientDescriptionsBeforeWriting
+  testSoloSetupAuditsDefaultDynamicTypeBeforeWriting
+  testSoloSetupAuditsDefaultTextClippingBeforeWriting
+  testSoloSetupAuditsDefaultTraitsBeforeWriting
   testSoloSetupRendersEverySupportedChoice
   testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave
   testSoloSetupAuditsBlockedStatsRecoveryElementDetectionWithoutSave
@@ -469,6 +475,12 @@ large_tests=(
 )
 ipad_portrait_tests=(
   testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting
+  testSoloSetupAuditsDefaultElementDetectionBeforeWriting
+  testSoloSetupAuditsDefaultHitRegionsBeforeWriting
+  testSoloSetupAuditsDefaultSufficientDescriptionsBeforeWriting
+  testSoloSetupAuditsDefaultDynamicTypeBeforeWriting
+  testSoloSetupAuditsDefaultTextClippingBeforeWriting
+  testSoloSetupAuditsDefaultTraitsBeforeWriting
   testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave
   testSoloSetupAuditsBlockedStatsRecoveryElementDetectionWithoutSave
   testSoloSetupAuditsBlockedStatsRecoveryHitRegionsWithoutSave
@@ -487,9 +499,9 @@ ipad_portrait_tests=(
 ipad_landscape_tests=(
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
 )
-[[ "${#standard_tests[@]}" -eq 28 && \
+[[ "${#standard_tests[@]}" -eq 34 && \
    "${#large_tests[@]}" -eq 3 && \
-   "${#ipad_portrait_tests[@]}" -eq 15 && \
+   "${#ipad_portrait_tests[@]}" -eq 21 && \
    "${#ipad_landscape_tests[@]}" -eq 1 ]] || {
   printf 'ERROR: The expected accessibility matrix inventory changed.\n' >&2
   exit 1
@@ -859,20 +871,20 @@ run_isolated_ipad_portrait_entry() {
 
 case "$selected_role" in
   "")
-    run_matrix_entry standard-phone "$standard_udid" 28 "${standard_tests[@]}"
+    run_matrix_entry standard-phone "$standard_udid" 34 "${standard_tests[@]}"
     run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
-    run_matrix_entry ipad-portrait "$ipad_udid" 15 "${ipad_portrait_tests[@]}"
+    run_matrix_entry ipad-portrait "$ipad_udid" 21 "${ipad_portrait_tests[@]}"
     run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
     ;;
   standard-phone)
-    run_matrix_entry standard-phone "$standard_udid" 28 "${standard_tests[@]}"
+    run_matrix_entry standard-phone "$standard_udid" 34 "${standard_tests[@]}"
     ;;
   large-phone)
     run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
     ;;
   ipad-portrait)
     run_isolated_ipad_portrait_entry \
-      ipad-portrait "$ipad_udid" 15 "${ipad_portrait_tests[@]}"
+      ipad-portrait "$ipad_udid" 21 "${ipad_portrait_tests[@]}"
     ;;
   ipad-landscape)
     run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"

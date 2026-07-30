@@ -26,6 +26,12 @@ const uiAccessibilityTestsPath = path.join(
 
 const ipadPortraitTests = [
   'testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting',
+  'testSoloSetupAuditsDefaultElementDetectionBeforeWriting',
+  'testSoloSetupAuditsDefaultHitRegionsBeforeWriting',
+  'testSoloSetupAuditsDefaultSufficientDescriptionsBeforeWriting',
+  'testSoloSetupAuditsDefaultDynamicTypeBeforeWriting',
+  'testSoloSetupAuditsDefaultTextClippingBeforeWriting',
+  'testSoloSetupAuditsDefaultTraitsBeforeWriting',
   'testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave',
   'testSoloSetupAuditsBlockedStatsRecoveryElementDetectionWithoutSave',
   'testSoloSetupAuditsBlockedStatsRecoveryHitRegionsWithoutSave',
@@ -365,8 +371,99 @@ test('the selected iPad portrait role cold-boots and isolates each pinned test',
     selectedRole,
     /""\)[\s\S]*?run_matrix_entry ipad-portrait[\s\S]*?ipad-portrait\)[\s\S]*?run_isolated_ipad_portrait_entry/
   );
-  assert.equal(ipadPortraitTests.length, 15);
+  assert.equal(ipadPortraitTests.length, 21);
   for (const testName of ipadPortraitTests) assert.match(harness, new RegExp(`  ${testName}\\n`));
+});
+
+test('default setup audit categories own separate fail-closed terminal XCTest children', async () => {
+  const harness = await fs.readFile(uiAccessibilityHarnessPath, 'utf8');
+  const uiTests = await fs.readFile(uiAccessibilityTestsPath, 'utf8');
+  const method = (name) => {
+    const match = uiTests.match(
+      new RegExp(`  func ${name}\\(\\) throws \\{[\\s\\S]*?\\n  \\}\\n\\n  @MainActor`)
+    );
+    assert.ok(match, `missing isolated UI test method ${name}`);
+    return match[0];
+  };
+  const auditOwners = [
+    ['testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting', 'contrast'],
+    ['testSoloSetupAuditsDefaultElementDetectionBeforeWriting', 'elementDetection'],
+    ['testSoloSetupAuditsDefaultHitRegionsBeforeWriting', 'hitRegion'],
+    [
+      'testSoloSetupAuditsDefaultSufficientDescriptionsBeforeWriting',
+      'sufficientElementDescription'
+    ],
+    ['testSoloSetupAuditsDefaultDynamicTypeBeforeWriting', 'dynamicType'],
+    ['testSoloSetupAuditsDefaultTextClippingBeforeWriting', 'textClipped'],
+    ['testSoloSetupAuditsDefaultTraitsBeforeWriting', 'trait']
+  ];
+  const phaseAudits = [
+    ['contrast', 'performContrastAccessibilityAudit'],
+    ['elementDetection', 'performElementDetectionAccessibilityAudit'],
+    ['hitRegion', 'performHitRegionAccessibilityAudit'],
+    ['sufficientElementDescription', 'performSufficientElementDescriptionAccessibilityAudit'],
+    ['dynamicType', 'performDynamicTypeAccessibilityAudit'],
+    ['textClipped', 'performExactTextClippingAudit'],
+    ['trait', 'performTraitAccessibilityAudit']
+  ];
+  const standardInventory = harness.match(/standard_tests=\(\n([\s\S]*?)\n\)\nlarge_tests=/);
+  const ipadInventory = harness.match(/ipad_portrait_tests=\(\n([\s\S]*?)\n\)\nipad_landscape_tests=/);
+  assert.ok(standardInventory, 'missing standard-phone inventory');
+  assert.ok(ipadInventory, 'missing iPad-portrait inventory');
+
+  for (const [name, phase] of auditOwners) {
+    const source = method(name);
+    assert.match(standardInventory[1], new RegExp(`  ${name}\\n`));
+    assert.match(ipadInventory[1], new RegExp(`  ${name}\\n`));
+    assert.match(source, new RegExp(`try runSoloSetupDefaultsAudit\\(\\n      \\.${phase},`));
+    for (const [, otherPhase] of auditOwners) {
+      if (otherPhase !== phase) assert.doesNotMatch(source, new RegExp(`\\.${otherPhase},`));
+    }
+  }
+  assert.equal(auditOwners.length, 7);
+
+  const runner = uiTests.match(
+    /  private func runSoloSetupDefaultsAudit\([\s\S]*?\n  \}\n\n  @MainActor/
+  );
+  assert.ok(runner, 'missing default-setup audit runner');
+  for (let index = 0; index < phaseAudits.length; index += 1) {
+    const [phase, ownedAudit] = phaseAudits[index];
+    const start = runner[0].indexOf(`case .${phase}:`);
+    const end = index + 1 < phaseAudits.length
+      ? runner[0].indexOf(`case .${phaseAudits[index + 1][0]}:`)
+      : runner[0].indexOf('    assertAuditTargetRemainsForegroundAndTerminate(');
+    assert.ok(start >= 0 && end > start, `missing exact switch segment for ${phase}`);
+    const segment = runner[0].slice(start, end);
+    assert.match(segment, new RegExp(`try ${ownedAudit}\\(`));
+    for (const [, otherAudit] of phaseAudits) {
+      if (otherAudit !== ownedAudit) assert.doesNotMatch(segment, new RegExp(`try ${otherAudit}\\(`));
+    }
+  }
+  assert.doesNotMatch(runner[0], /performSoloAccessibilityAudit/);
+  assert.match(
+    runner[0],
+    /switch phase[\s\S]*?assertAuditTargetRemainsForegroundAndTerminate\(\n      app,/
+  );
+
+  const fixture = uiTests.match(
+    /  private func launchVerifiedSoloSetupDefaultsAuditFixture\([\s\S]*?\n  \}\n\n  @MainActor/
+  );
+  assert.ok(fixture, 'missing verified default-setup fixture');
+  for (const requiredValue of [
+    'solo.setup',
+    'solo.setup.bot-count',
+    'solo.setup.difficulty',
+    'solo.setup.difficulty-explanation',
+    'solo.setup.start',
+    'solo.setup.opponents-header',
+    'solo.setup.difficulty-header',
+    'Medium',
+    'Balanced decisions and the default for a new player.'
+  ]) {
+    assert.match(fixture[0], new RegExp(requiredValue.replaceAll('.', '\\.')));
+  }
+  assert.match(fixture[0], /XCTAssertGreaterThanOrEqual\(app\.buttons\["solo\.setup\.start"\]\.frame\.height, 44\)/);
+  assert.match(fixture[0], /attachScreenshot\(app, name: screenshotName\)/);
 });
 
 test('blocked-outbox audit categories own separate fail-closed terminal XCTest children', async () => {
@@ -420,7 +517,7 @@ test('blocked-outbox audit categories own separate fail-closed terminal XCTest c
   }
 
   assert.equal(auditOwners.length, 7);
-  assert.match(harness, /"\$\{#standard_tests\[@\]\}" -eq 28/);
+  assert.match(harness, /"\$\{#standard_tests\[@\]\}" -eq 34/);
   const runner = uiTests.match(
     /  private func runBlockedStatsRecoveryAudit\([\s\S]*?\n  \}\n\n  @MainActor/
   );
@@ -679,23 +776,31 @@ test('the isolated portrait retry rejects assertions and fails closed after one 
   );
 });
 
-test('the xcresult classifier allows only the unchanged exact recurring timeout', () => {
-  const defaultsTest = ipadPortraitTests[0];
-  const timeoutProof = classifyIOSUIInfrastructureFailure(
-    failedSummary(defaultsTest, 'Test exceeded execution time allowance of 10 minutes'),
-    defaultsTest
-  );
-  assert.deepEqual(timeoutProof, {
-    schemaVersion: 1,
-    retryable: true,
-    reason: 'accessibility-audit-timeout',
-    testIdentifier: `SkyjoAppUITests/${defaultsTest}()`
-  });
+test('the xcresult classifier rejects every audit timeout after category isolation', () => {
+  const defaultsAuditTests = ipadPortraitTests.slice(0, 7);
+  const blockedAuditTests = ipadPortraitTests.slice(7, 14);
+  assert.equal(defaultsAuditTests.length, 7);
+  assert.equal(blockedAuditTests.length, 7);
+  for (const auditTest of [...defaultsAuditTests, ...blockedAuditTests]) {
+    for (const timeoutMinutes of [10, 20]) {
+      assert.equal(
+        classifyIOSUIInfrastructureFailure(
+          failedSummary(
+            auditTest,
+            `Test exceeded execution time allowance of ${timeoutMinutes} minutes`
+          ),
+          auditTest
+        ),
+        null
+      );
+    }
+  }
 });
 
 test('the xcresult classifier rejects app termination signatures and weaker evidence', () => {
   const defaultsTest = ipadPortraitTests[0];
-  const blockedAuditTests = ipadPortraitTests.slice(1, 8);
+  const defaultsAuditTests = ipadPortraitTests.slice(0, 7);
+  const blockedAuditTests = ipadPortraitTests.slice(7, 14);
   const recoveryTest = blockedAuditTests[0];
   assert.equal(
     classifyIOSUIInfrastructureFailure(
@@ -704,44 +809,28 @@ test('the xcresult classifier rejects app termination signatures and weaker evid
     ),
     null
   );
-  assert.equal(
-    classifyIOSUIInfrastructureFailure(
-      failedSummary(defaultsTest, 'Test exceeded execution time allowance of 20 minutes'),
-      defaultsTest
-    ),
-    null
-  );
+  assert.equal(defaultsAuditTests.length, 7);
   assert.equal(blockedAuditTests.length, 7);
-  for (const blockedAuditTest of blockedAuditTests) {
+  for (const auditTest of [...defaultsAuditTests, ...blockedAuditTests]) {
     assert.equal(
       classifyIOSUIInfrastructureFailure(
         failedSummary(
-          blockedAuditTest,
-          'Test exceeded execution time allowance of 20 minutes'
-        ),
-        blockedAuditTest
-      ),
-      null
-    );
-    assert.equal(
-      classifyIOSUIInfrastructureFailure(
-        failedSummary(
-          blockedAuditTest,
+          auditTest,
           'failed: caught error: "Error Domain=com.apple.xcode.xctest.accessibilityAudit ' +
             'Code=-51 "Invalid XCUIApplication." UserInfo={NSLocalizedDescription=Invalid XCUIApplication.}"'
         ),
-        blockedAuditTest
+        auditTest
       ),
       null
     );
     assert.equal(
       classifyIOSUIInfrastructureFailure(
         failedSummary(
-          blockedAuditTest,
+          auditTest,
           'failed: caught error: "Error Domain=com.apple.accessibilityAudit Code=-902 ' +
             '"Invalid target app 36957" UserInfo={NSLocalizedDescription=Invalid target app 36957}"'
         ),
-        blockedAuditTest
+        auditTest
       ),
       null
     );

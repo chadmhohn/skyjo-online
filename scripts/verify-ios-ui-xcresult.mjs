@@ -8,9 +8,6 @@ const TEST_NAME_PATTERN = /^test[A-Za-z0-9_]+$/;
 const TEST_BUNDLE = 'SkyjoAppUITests';
 const TEST_SUITE = 'SkyjoAppUITests';
 const TEST_URL_PREFIX = 'test://com.apple.xcode/SkyjoNative';
-const ACCESSIBILITY_TIMEOUT_MINUTES_BY_TEST = new Map([
-  ['testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting', 10]
-]);
 
 function fail(message) {
   throw new Error(message);
@@ -106,21 +103,9 @@ export function classifyIOSUIInfrastructureFailure(summary, expectedTestName) {
     fail('The xcresult failure does not identify the requested pinned test.');
   }
 
-  const expectedTimeoutMinutes = ACCESSIBILITY_TIMEOUT_MINUTES_BY_TEST.get(expectedTestName);
-  if (expectedTimeoutMinutes === undefined) return null;
-  if (
-    failure.failureText ===
-      `Test exceeded execution time allowance of ${expectedTimeoutMinutes} minutes`
-  ) {
-    return {
-      schemaVersion: 1,
-      retryable: true,
-      reason: 'accessibility-audit-timeout',
-      testIdentifier: expected.nodeIdentifier
-    };
-  }
-  // Xcode can emit invalid-application/target audit errors after an app crash
-  // without retaining a crash attachment, so those summaries are not retryable.
+  // Every previously grouped audit owner now runs one category per XCTest
+  // child. No timeout, invalid-application, or invalid-target summary is safe
+  // to retry because a second attempt can conceal product or process failure.
   return null;
 }
 

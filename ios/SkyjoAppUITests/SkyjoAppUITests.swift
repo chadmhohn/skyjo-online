@@ -571,37 +571,64 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting() throws {
-    let app = launchSoloFixture("solo-setup")
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .contrast,
+      screenshotName: "ios7-solo-setup-medium-default"
+    )
+  }
 
-    let setup = element(in: app, identifier: "solo.setup")
-    XCTAssertTrue(setup.waitForExistence(timeout: 8))
-    let botCount = element(in: app, identifier: "solo.setup.bot-count")
-    let difficulty = element(in: app, identifier: "solo.setup.difficulty")
-    let explanation = app.staticTexts.matching(
-      identifier: "solo.setup.difficulty-explanation"
-    ).firstMatch
-    XCTAssertTrue(botCount.exists)
-    XCTAssertTrue(difficulty.exists)
-    XCTAssertEqual(difficulty.value as? String, "Medium")
-    XCTAssertEqual(explanation.label, "Balanced decisions and the default for a new player.")
-    XCTAssertTrue(app.staticTexts["Choose from 1 to 7 computer opponents. More opponents create a busier table and a longer round."].exists)
-    XCTAssertTrue(app.staticTexts["Nothing is created or written until you press Start Game and any required replacement is confirmed."].exists)
-    XCTAssertGreaterThanOrEqual(app.buttons["solo.setup.start"].frame.height, 44)
-    for (identifier, label) in [
-      ("solo.setup.opponents-header", "Opponents"),
-      ("solo.setup.difficulty-header", "Difficulty"),
-    ] {
-      let header = element(in: app, identifier: identifier)
-      XCTAssertTrue(header.exists)
-      XCTAssertEqual(header.label, label)
-      XCTAssertGreaterThan(header.frame.width, 0)
-      XCTAssertGreaterThan(header.frame.height, 0)
-      assertElement(header, isContainedIn: setup, tolerance: 2)
-    }
-    attachScreenshot(app, name: "ios7-solo-setup-medium-default")
-    try performSoloAccessibilityAudit(
-      on: app,
-      allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
+  @MainActor
+  func testSoloSetupAuditsDefaultElementDetectionBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .elementDetection,
+      screenshotName: "ios7-solo-setup-medium-default-element-detection"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultHitRegionsBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .hitRegion,
+      screenshotName: "ios7-solo-setup-medium-default-hit-region"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultSufficientDescriptionsBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .sufficientElementDescription,
+      screenshotName: "ios7-solo-setup-medium-default-sufficient-description"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultDynamicTypeBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .dynamicType,
+      screenshotName: "ios7-solo-setup-medium-default-dynamic-type"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultTextClippingBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .textClipped,
+      screenshotName: "ios7-solo-setup-medium-default-text-clipped"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultTraitsBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .trait,
+      screenshotName: "ios7-solo-setup-medium-default-trait"
     )
   }
 
@@ -3010,7 +3037,7 @@ final class SkyjoAppUITests: XCTestCase {
     floatingTab.tap()
   }
 
-  private enum BlockedStatsRecoveryAuditPhase: String {
+  private enum SoloAccessibilityAuditPhase: String {
     case contrast
     case elementDetection = "element-detection"
     case hitRegion = "hit-region"
@@ -3018,6 +3045,71 @@ final class SkyjoAppUITests: XCTestCase {
     case dynamicType = "dynamic-type"
     case textClipped = "text-clipped"
     case trait
+  }
+
+  @MainActor
+  private func launchVerifiedSoloSetupDefaultsAuditFixture(
+    screenshotName: String
+  ) -> XCUIApplication {
+    let app = launchSoloFixture("solo-setup")
+    let setup = element(in: app, identifier: "solo.setup")
+    XCTAssertTrue(setup.waitForExistence(timeout: 8))
+    let botCount = element(in: app, identifier: "solo.setup.bot-count")
+    let difficulty = element(in: app, identifier: "solo.setup.difficulty")
+    let explanation = app.staticTexts.matching(
+      identifier: "solo.setup.difficulty-explanation"
+    ).firstMatch
+    XCTAssertTrue(botCount.exists)
+    XCTAssertTrue(difficulty.exists)
+    XCTAssertEqual(difficulty.value as? String, "Medium")
+    XCTAssertEqual(explanation.label, "Balanced decisions and the default for a new player.")
+    XCTAssertTrue(app.staticTexts["Choose from 1 to 7 computer opponents. More opponents create a busier table and a longer round."].exists)
+    XCTAssertTrue(app.staticTexts["Nothing is created or written until you press Start Game and any required replacement is confirmed."].exists)
+    XCTAssertGreaterThanOrEqual(app.buttons["solo.setup.start"].frame.height, 44)
+    for (identifier, label) in [
+      ("solo.setup.opponents-header", "Opponents"),
+      ("solo.setup.difficulty-header", "Difficulty"),
+    ] {
+      let header = element(in: app, identifier: identifier)
+      XCTAssertTrue(header.exists)
+      XCTAssertEqual(header.label, label)
+      XCTAssertGreaterThan(header.frame.width, 0)
+      XCTAssertGreaterThan(header.frame.height, 0)
+      assertElement(header, isContainedIn: setup, tolerance: 2)
+    }
+    attachScreenshot(app, name: screenshotName)
+    return app
+  }
+
+  @MainActor
+  private func runSoloSetupDefaultsAudit(
+    _ phase: SoloAccessibilityAuditPhase,
+    screenshotName: String
+  ) throws {
+    let app = launchVerifiedSoloSetupDefaultsAuditFixture(screenshotName: screenshotName)
+    switch phase {
+    case .contrast:
+      try performContrastAccessibilityAudit(
+        on: app,
+        allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
+      )
+    case .elementDetection:
+      try performElementDetectionAccessibilityAudit(on: app)
+    case .hitRegion:
+      try performHitRegionAccessibilityAudit(on: app)
+    case .sufficientElementDescription:
+      try performSufficientElementDescriptionAccessibilityAudit(on: app)
+    case .dynamicType:
+      try performDynamicTypeAccessibilityAudit(on: app)
+    case .textClipped:
+      try performExactTextClippingAudit(on: app)
+    case .trait:
+      try performTraitAccessibilityAudit(on: app)
+    }
+    assertAuditTargetRemainsForegroundAndTerminate(
+      app,
+      auditOwner: "default setup \(phase.rawValue) accessibility audit"
+    )
   }
 
   @MainActor
@@ -3048,7 +3140,7 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   private func runBlockedStatsRecoveryAudit(
-    _ phase: BlockedStatsRecoveryAuditPhase,
+    _ phase: SoloAccessibilityAuditPhase,
     screenshotName: String
   ) throws {
     // One cold-booted XCTest child owns exactly one Xcode 26 audit category.
