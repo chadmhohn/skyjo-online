@@ -2,10 +2,14 @@
 
 ## 0.3.3 - 2026-07-29
 
+- Added the committed, unsigned source foundation for a universal SwiftUI iPhone/iPad app, including its local package graph, configuration boundary, shared scheme/test plan, and macOS CI. This repository candidate does not contain or distribute a signed native app.
 - Added the versioned `contracts/v1` schemas and deterministic fixtures plus additive, stable JSON access-session, account, stats, and invite error contracts used by the native client.
-- Hardened protocol-v2 realtime parsing, legacy UTF-16 normalization, and mixed native/PWA compatibility without changing public database schema 2, multiplayer protocol 2, or the cached-PWA v0.3.2 compatibility pin.
+- Ported the solo rules engine, deterministic fixed/Mixed AI, wire models, invariants, and hidden-information redaction to Swift behind cross-language parity fixtures.
+- Added the native access gate, account/profile shell, home navigation, stats views, and their cookie-aware typed HTTP client with stale-session and account-generation guards.
+- Added the actual actor-owned protocol-v2 `RoomConnection`, strict redacted-frame codec, acknowledgement/snapshot convergence, reconnect replay, and account-fenced durable reset recovery. Server parsing, legacy UTF-16 normalization, and mixed native/PWA compatibility are hardened without changing public database schema 2, multiplayer protocol 2, or the cached-PWA v0.3.2 compatibility pin.
+- Added account-partitioned, atomic native solo persistence, autosave recovery, and an idempotent stats outbox with bounded versioned envelopes and explicit failure recovery.
 - Added the source-only native solo launcher and game table with explicit replacement, 1-7-bot fixed/Mixed setup, account-partitioned restore and stats recovery, accessible phone/iPad layouts, persisted feedback settings, and provenance-checked audio. Shared Swift/TypeScript opening guidance is now viewer-neutral without changing its schema or protocol.
-- Added a direct public Apple association document and rate-limited, pre-access-gate native invite redemption while preserving signed browser invites, install codes, account login, and room-membership enforcement.
+- Added a direct public Apple association document and rate-limited, pre-access-gate native invite redemption while preserving signed browser invites, install codes, account login, and room-membership enforcement. Native universal-link consumption and multiplayer room UI remain owned by #188/PR #209 and are not part of v0.3.3.
 - Froze and validated the optional APNs device-storage rollback envelope without creating or using its table. Added a controller-compatible, artifact-only synthetic rollback-proof helper with strict exact-SHA CLI binding and validated clean shutdown; normal server startup never imports it. This candidate is only the first release in the required two-promotion rollback-anchor sequence; merge or tag preparation alone does not complete that production gate.
 
 ## 0.3.2 - 2026-07-27
