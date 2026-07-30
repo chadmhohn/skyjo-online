@@ -239,7 +239,7 @@ test('a failed child proof does not stop the remaining isolated portrait invocat
     `tests=(${ipadPortraitTests.map((testName) => `"${testName}"`).join(' ')})`,
     'run_isolated_ipad_portrait_entry ipad-portrait stub-udid 5 "${tests[@]}"',
     '[[ "$(wc -l < "$STUB_DIR/invocations")" -eq 5 ]]',
-    'test_rows="$(awk -F "\\t" \'$1 == "test" { count += 1 } END { print count + 0 }\' "$evidence_dir/ipad-portrait-isolation.tsv")"',
+    'test_rows="$(awk -F "\\t" \'$1 == "test" && $2 ~ /^[0-9][0-9]$/ { count += 1 } END { print count + 0 }\' "$evidence_dir/ipad-portrait-isolation.tsv")"',
     '[[ "$test_rows" -eq 5 ]]',
     '[[ "$matrix_status" -eq 1 ]]',
     'printf "all-five-recorded\\n"'
