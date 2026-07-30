@@ -2,6 +2,12 @@ import UIKit
 import XCTest
 
 final class SkyjoAppUITests: XCTestCase {
+  private struct VerifiedAttributedTextClippingExpectation {
+    let label: String
+    let textStyle: UIFont.TextStyle
+    let contentSizeCategory: UIContentSizeCategory
+  }
+
   private let accessFixture = "skyjo-ios-contract-access-v1"
   private let soloSetupContrastHeaderIdentifiers: Set<String> = [
     "solo.setup.opponents-header",
@@ -1633,8 +1639,8 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloAccessibilityAdaptationsAreActive() throws {
-    // This acceptance test deliberately launches 18 isolated fixtures so each
-    // lazy settings row begins a fresh application-wide accessibility audit.
+    // This acceptance test deliberately launches 20 fixtures, including 18
+    // isolated row probes with fresh application-wide accessibility audits.
     // Keep the per-test budget explicit and below the owning CI job timeout.
     executionTimeAllowance = 2_400
     try XCTSkipUnless(
@@ -1715,6 +1721,14 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElementFullyVisible(currentDifficulty, in: adaptationApp)
     let standardOpponentsHeight = currentOpponents.frame.height
     let standardDifficultyHeight = currentDifficulty.frame.height
+    let latestMoveLog = element(
+      in: adaptationApp,
+      identifier: "solo.settings.move-log.0"
+    )
+    scrollToElementFullyVisible(latestMoveLog, in: adaptationApp)
+    XCTAssertEqual(latestMoveLog.label, "You revealed an opening card.")
+    XCTAssertEqual(latestMoveLog.elementType, .staticText)
+    XCTAssertGreaterThan(latestMoveLog.frame.height, 0)
     let openingMoveLog = element(
       in: adaptationApp,
       identifier: "solo.settings.move-log.1"
@@ -1722,6 +1736,7 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElementFullyVisible(openingMoveLog, in: adaptationApp)
     XCTAssertEqual(openingMoveLog.label, "You: reveal 2 cards.")
     XCTAssertFalse(openingMoveLog.label.contains("You chooses"))
+    XCTAssertEqual(openingMoveLog.elementType, .staticText)
     XCTAssertGreaterThan(openingMoveLog.frame.height, 0)
     let completeSettingsRows: [(
       identifier: String,
@@ -1729,6 +1744,12 @@ final class SkyjoAppUITests: XCTestCase {
       textStyle: UIFont.TextStyle,
       minimumLargeHeightIncrease: CGFloat
     )] = [
+      (
+        "solo.settings.move-log.0",
+        "You: reveal 2 cards.",
+        .body,
+        8
+      ),
       (
         "solo.settings.music-explanation",
         "Music defaults off and remains unavailable until an original or licensed track is approved. Sound effects use the bundled CC0 card cues.",
@@ -1784,6 +1805,7 @@ final class SkyjoAppUITests: XCTestCase {
     ])
     let maximumKnownFormArtifactCount = 8
     let expectedSettingsRows: Set<String> = [
+      "solo.settings.move-log.0",
       "solo.settings.music-explanation",
       "solo.settings.accessibility-explanation",
       "solo.settings.new-game",
@@ -1793,7 +1815,7 @@ final class SkyjoAppUITests: XCTestCase {
       "solo.settings.rules-round-end",
       "solo.settings.rules-scoring",
     ]
-    XCTAssertEqual(completeSettingsRows.count, 8)
+    XCTAssertEqual(completeSettingsRows.count, 9)
     XCTAssertEqual(Set(completeSettingsRows.map(\.identifier)), expectedSettingsRows)
     let soundEffects = adaptationApp.switches["solo.settings.sound"]
     scrollToElementFullyVisible(
@@ -2706,6 +2728,8 @@ final class SkyjoAppUITests: XCTestCase {
       XCTAssertTrue(row.isHittable)
       XCTAssertGreaterThanOrEqual(row.frame.width, 44)
       XCTAssertGreaterThanOrEqual(row.frame.height, 44)
+    } else {
+      XCTAssertEqual(row.elementType, .staticText)
     }
 
     let measuredFrame = row.frame
@@ -2735,8 +2759,17 @@ final class SkyjoAppUITests: XCTestCase {
       rowApp,
       name: "ios7-solo-settings-\(size.lowercased())-\(identifier)"
     )
+    let verifiedAttributedRows = [
+      "solo.settings.move-log.0": VerifiedAttributedTextClippingExpectation(
+        label: "You: reveal 2 cards.",
+        textStyle: .body,
+        contentSizeCategory: contentSizeCategory
+      ),
+    ]
     let signatures = try exactTextClippingSignatures(
       on: rowApp,
+      verifiedAttributedRows: verifiedAttributedRows,
+      maximumVerifiedAttributedOccurrences: 1,
       allowedUnattributedSignatures: allowedUnattributedTextClippingSignatures,
       maximumAllowedUnattributedOccurrences: maximumAllowedUnattributedTextClippingOccurrences
     )
@@ -2900,9 +2933,12 @@ final class SkyjoAppUITests: XCTestCase {
   @MainActor
   private func exactTextClippingSignatures(
     on app: XCUIApplication,
+    verifiedAttributedRows: [String: VerifiedAttributedTextClippingExpectation] = [:],
+    maximumVerifiedAttributedOccurrences: Int = 0,
     allowedUnattributedSignatures: Set<String> = [],
     maximumAllowedUnattributedOccurrences: Int = 0
   ) throws -> [String] {
+    var verifiedAttributedTextClippingSignatures: [String] = []
     var unattributedTextClippingSignatures: [String] = []
     try app.performAccessibilityAudit(for: .textClipped) { issue in
       guard let element = issue.element else {
@@ -2911,8 +2947,45 @@ final class SkyjoAppUITests: XCTestCase {
         )
         return true
       }
+      let identifier = element.identifier
+      let label = element.label
+      let elementType = element.elementType
+      let frame = element.frame
+      if let expectation = verifiedAttributedRows[identifier],
+         label == expectation.label,
+         elementType == .staticText,
+         frame.minX.isFinite,
+         frame.minY.isFinite,
+         frame.width.isFinite,
+         frame.height.isFinite,
+         frame.width > 0,
+         frame.height > 0
+      {
+        let textTraits = UITraitCollection(
+          preferredContentSizeCategory: expectation.contentSizeCategory
+        )
+        let expectedFont = UIFont.preferredFont(
+          forTextStyle: expectation.textStyle,
+          compatibleWith: textTraits
+        )
+        let idealTextBounds = (label as NSString).boundingRect(
+          with: CGSize(width: frame.width, height: .greatestFiniteMagnitude),
+          options: [.usesLineFragmentOrigin, .usesFontLeading],
+          attributes: [.font: expectedFont],
+          context: nil
+        )
+        let idealTextHeight = ceil(idealTextBounds.height)
+        if idealTextBounds.width <= frame.width + 1,
+           idealTextHeight <= frame.height + 1
+        {
+          verifiedAttributedTextClippingSignatures.append(
+            "\(issue.auditType.rawValue)|\(issue.compactDescription)|\(issue.detailedDescription)|verified-attributed|id=\(identifier)|label=\(label)|frame=\(frame)|type=\(elementType.rawValue)|font=\(expectedFont.pointSize)|ideal-height=\(idealTextHeight)"
+          )
+          return true
+        }
+      }
       XCTFail(
-        "Unexpected clipped text: id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue)"
+        "Unexpected clipped text: id=\(identifier), label=\(label), frame=\(frame), type=\(elementType.rawValue)"
       )
       return true
     }
@@ -2929,7 +3002,12 @@ final class SkyjoAppUITests: XCTestCase {
       maximumAllowedUnattributedOccurrences,
       "Too many known element-less clipped-text artifacts: \(signatures.count)"
     )
-    return signatures
+    XCTAssertLessThanOrEqual(
+      verifiedAttributedTextClippingSignatures.count,
+      maximumVerifiedAttributedOccurrences,
+      "Too many verified attributed clipped-text findings: \(verifiedAttributedTextClippingSignatures.count)"
+    )
+    return verifiedAttributedTextClippingSignatures.sorted() + signatures
   }
 
   @MainActor
@@ -3168,6 +3246,7 @@ final class SkyjoAppUITests: XCTestCase {
     )
     let containmentViewport = visibleViewport.insetBy(dx: -2, dy: -2)
     let markerIdentifiers = [
+      "solo.settings.move-log.0",
       "solo.settings.feedback-header",
       "solo.settings.sound",
       "solo.settings.haptics",
