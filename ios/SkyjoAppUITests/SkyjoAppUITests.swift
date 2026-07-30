@@ -235,7 +235,9 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(element(in: app, identifier: "account.admin-link").exists)
     scrollToElement(app.staticTexts["account.deletion-gate"], in: app)
     XCTAssertTrue(app.staticTexts["account.deletion-gate"].exists)
-    XCTAssertTrue(element(in: app, identifier: "account.deletion-link").exists)
+    let deletionLink = element(in: app, identifier: "account.deletion-link")
+    scrollToElementFullyVisible(deletionLink, in: app)
+    XCTAssertTrue(deletionLink.exists)
     attachScreenshot(app, name: "ios5-account-admin-deletion-portrait")
     let recoveryFooter = element(in: app, identifier: "account.recovery-footer")
     scrollToElementFullyVisible(recoveryFooter, in: app)
@@ -1062,21 +1064,6 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(draw.isEnabled)
     XCTAssertTrue(discard.isEnabled)
     XCTAssertEqual(guidance.label, "Take the visible discard or draw a blind card.")
-    assertAccessibilityTraversal(
-      [
-        "solo.table.round",
-        "solo.action.draw",
-        "solo.board.header.local.human",
-        "solo.board.header.opponent.ai-1",
-      ],
-      in: app
-    )
-    assertAccessibilityTraversal(
-      ["solo.board.header.local.human"] + (1...3).flatMap { row in
-        (1...4).map { column in "solo.card.local.human.r\(row).c\(column)" }
-      },
-      in: app
-    )
     let originalDrawFrame = draw.frame
     let originalDiscardFrame = discard.frame
     let originalGuidanceFrame = guidance.frame
@@ -1175,6 +1162,31 @@ final class SkyjoAppUITests: XCTestCase {
       )
     )
     attachScreenshot(privateDrawApp, name: "ios7-solo-ai-private-draw-redacted")
+    privateDrawApp.terminate()
+
+    // Preserve the exact initial human-turn traversal proof in a fresh fixture
+    // after every non-idempotent interaction. Hosted Xcode can spend more than
+    // two minutes materializing these hierarchy walks; no synthesized UI event
+    // follows this AX-heavy evidence capture in the launched app.
+    let traversalApp = launchSoloFixture("solo-turn")
+    let traversalGuidance = element(in: traversalApp, identifier: "solo.action.guidance")
+    XCTAssertTrue(traversalGuidance.waitForExistence(timeout: 8))
+    XCTAssertEqual(traversalGuidance.label, "Take the visible discard or draw a blind card.")
+    assertAccessibilityTraversal(
+      [
+        "solo.table.round",
+        "solo.action.draw",
+        "solo.board.header.local.human",
+        "solo.board.header.opponent.ai-1",
+      ],
+      in: traversalApp
+    )
+    assertAccessibilityTraversal(
+      ["solo.board.header.local.human"] + (1...3).flatMap { row in
+        (1...4).map { column in "solo.card.local.human.r\(row).c\(column)" }
+      },
+      in: traversalApp
+    )
   }
 
   @MainActor
@@ -1361,22 +1373,33 @@ final class SkyjoAppUITests: XCTestCase {
   @MainActor
   func testSoloAccessibilityXXXLNarrowLandscapeRemainsAnchored() throws {
     defer { XCUIDevice.shared.orientation = .portrait }
+    let accessibilityArguments = [
+      "--ui-solo-geometry=667x375",
+      "-UIPreferredContentSizeCategoryName",
+      "UICTContentSizeCategoryAccessibilityXXXL",
+    ]
     let app = launchSoloFixture(
       "solo-turn",
       orientation: .landscapeLeft,
-      additionalArguments: [
-        "--ui-solo-geometry=667x375",
-        "-UIPreferredContentSizeCategoryName",
-        "UICTContentSizeCategoryAccessibilityXXXL",
-      ]
+      additionalArguments: accessibilityArguments
     )
     waitForSettledOrientation(app, landscape: true)
+    assertAccessibilityLandscapeStatusDismissal(in: app)
     assertAnchoredSoloTurnLayout(
       in: app,
       layoutIdentifier: "solo.table.layout.accessibility-landscape",
       maximumSize: CGSize(width: 667, height: 375),
       screenshotName: "ios7-solo-table-accessibility-xxxl-landscape-667x375"
     )
+    app.terminate()
+
+    let statusApp = launchSoloFixture(
+      "solo-turn",
+      orientation: .landscapeLeft,
+      additionalArguments: accessibilityArguments
+    )
+    waitForSettledOrientation(statusApp, landscape: true)
+    assertAccessibilityLandscapeStatusContent(in: statusApp)
   }
 
   @MainActor
@@ -2375,85 +2398,6 @@ final class SkyjoAppUITests: XCTestCase {
       XCTAssertEqual(localHeader.label, "You")
       XCTAssertTrue((localHeader.value as? String)?.contains("Visible player: You") == true)
       XCTAssertTrue((localHeader.value as? String)?.contains("visible score") == true)
-
-      XCTAssertEqual(guidance.elementType, .button)
-      XCTAssertTrue(guidance.isHittable)
-      guidance.tap()
-      let disclosure = element(in: app, identifier: "solo.accessibility-table-status")
-      XCTAssertTrue(disclosure.waitForExistence(timeout: 8))
-      XCTAssertTrue(app.navigationBars["Table Status"].exists)
-      let fullRound = element(
-        in: app,
-        identifier: "solo.accessibility-table-status.round"
-      )
-      let fullTurnState = element(
-        in: app,
-        identifier: "solo.accessibility-table-status.turn-state"
-      )
-      let fullGuidance = element(
-        in: app,
-        identifier: "solo.accessibility-table-status.guidance"
-      )
-      let fullDeck = element(in: app, identifier: "solo.accessibility-table-status.deck")
-      let fullDiscard = element(
-        in: app,
-        identifier: "solo.accessibility-table-status.discard"
-      )
-      XCTAssertEqual(fullRound.label, "Round 1")
-      XCTAssertEqual(fullTurnState.label, "Your turn")
-      XCTAssertEqual(fullGuidance.label, "Take the visible discard or draw a blind card.")
-      XCTAssertTrue(fullDeck.label.hasPrefix("Deck:"))
-      XCTAssertTrue(fullDiscard.label.hasPrefix("Discard top:"))
-      XCTAssertGreaterThan(
-        fullRound.frame.height,
-        round.frame.height,
-        "The disclosure must render the requested Accessibility XXXL system font."
-      )
-      XCTAssertGreaterThanOrEqual(fullGuidance.frame.height, 44)
-      XCTAssertEqual(
-        app.descendants(matching: .any).matching(
-          NSPredicate(
-            format: "identifier BEGINSWITH %@",
-            "solo.accessibility-table-status.player."
-          )
-        ).count,
-        4
-      )
-      let disclosedCards = app.descendants(matching: .any).matching(
-        NSPredicate(
-          format: "identifier BEGINSWITH %@",
-          "solo.accessibility-table-status.card."
-        )
-      ).allElementsBoundByIndex
-      XCTAssertEqual(disclosedCards.count, 48)
-      let redactedCards = disclosedCards.filter {
-        $0.label.localizedCaseInsensitiveContains("face down")
-      }
-      XCTAssertFalse(redactedCards.isEmpty)
-      for card in redactedCards {
-        XCTAssertNotNil(
-          card.label.range(
-            of: #"^Row [1-3], column [1-4]: face down$"#,
-            options: .regularExpression
-          ),
-          "The large-text board summary must expose only position and face-down state: \(card.label)"
-        )
-      }
-      attachScreenshot(app, name: "ios7-solo-table-status-accessibility-xxxl")
-      app.buttons["solo.accessibility-table-status.done"].tap()
-      XCTAssertEqual(
-        XCTWaiter.wait(
-          for: [
-            XCTNSPredicateExpectation(
-              predicate: NSPredicate(format: "exists == false"),
-              object: disclosure
-            ),
-          ],
-          timeout: 5
-        ),
-        .completed
-      )
-      XCTAssertTrue(layout.waitForExistence(timeout: 5))
     }
 
     let localCards = app.descendants(matching: .any).matching(
@@ -2522,6 +2466,118 @@ final class SkyjoAppUITests: XCTestCase {
       assertElement(card, isContainedIn: layout, tolerance: 2)
     }
     attachScreenshot(app, name: screenshotName)
+  }
+
+  @MainActor
+  private func assertAccessibilityLandscapeStatusDismissal(in app: XCUIApplication) {
+    let layout = element(in: app, identifier: "solo.table.layout.accessibility-landscape")
+    let guidance = element(in: app, identifier: "solo.action.guidance")
+    XCTAssertTrue(layout.waitForExistence(timeout: 8))
+    XCTAssertTrue(guidance.waitForExistence(timeout: 8))
+    XCTAssertEqual(guidance.elementType, .button)
+    XCTAssertTrue(guidance.isHittable)
+    XCTAssertEqual(guidance.label, "Take the visible discard or draw a blind card.")
+
+    guidance.tap()
+    let disclosure = element(in: app, identifier: "solo.accessibility-table-status")
+    XCTAssertTrue(disclosure.waitForExistence(timeout: 8))
+    XCTAssertTrue(app.navigationBars["Table Status"].exists)
+    let done = app.buttons["solo.accessibility-table-status.done"]
+    XCTAssertTrue(done.waitForExistence(timeout: 5))
+    done.tap()
+    XCTAssertEqual(
+      XCTWaiter.wait(
+        for: [
+          XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: disclosure
+          ),
+        ],
+        timeout: 5
+      ),
+      .completed
+    )
+    XCTAssertTrue(layout.waitForExistence(timeout: 5))
+  }
+
+  @MainActor
+  private func assertAccessibilityLandscapeStatusContent(in app: XCUIApplication) {
+    let layout = element(in: app, identifier: "solo.table.layout.accessibility-landscape")
+    let round = element(in: app, identifier: "solo.table.round")
+    let guidance = element(in: app, identifier: "solo.action.guidance")
+    XCTAssertTrue(layout.waitForExistence(timeout: 8))
+    XCTAssertTrue(guidance.waitForExistence(timeout: 8))
+    XCTAssertEqual(guidance.elementType, .button)
+    XCTAssertTrue(guidance.isHittable)
+    XCTAssertEqual(guidance.label, "Take the visible discard or draw a blind card.")
+    let compactRoundHeight = round.frame.height
+
+    guidance.tap()
+    let disclosure = element(in: app, identifier: "solo.accessibility-table-status")
+    XCTAssertTrue(disclosure.waitForExistence(timeout: 8))
+    XCTAssertTrue(app.navigationBars["Table Status"].exists)
+
+    let fullRound = element(
+      in: app,
+      identifier: "solo.accessibility-table-status.round"
+    )
+    let fullTurnState = element(
+      in: app,
+      identifier: "solo.accessibility-table-status.turn-state"
+    )
+    let fullGuidance = element(
+      in: app,
+      identifier: "solo.accessibility-table-status.guidance"
+    )
+    let fullDeck = element(in: app, identifier: "solo.accessibility-table-status.deck")
+    let fullDiscard = element(
+      in: app,
+      identifier: "solo.accessibility-table-status.discard"
+    )
+    XCTAssertEqual(fullRound.label, "Round 1")
+    XCTAssertEqual(fullTurnState.label, "Your turn")
+    XCTAssertEqual(fullGuidance.label, "Take the visible discard or draw a blind card.")
+    XCTAssertTrue(fullDeck.label.hasPrefix("Deck:"))
+    XCTAssertTrue(fullDiscard.label.hasPrefix("Discard top:"))
+    XCTAssertGreaterThan(
+      fullRound.frame.height,
+      compactRoundHeight,
+      "The disclosure must render the requested Accessibility XXXL system font."
+    )
+    XCTAssertGreaterThanOrEqual(fullGuidance.frame.height, 44)
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(
+        NSPredicate(
+          format: "identifier BEGINSWITH %@",
+          "solo.accessibility-table-status.player."
+        )
+      ).count,
+      4
+    )
+    let disclosedCards = app.descendants(matching: .any).matching(
+      NSPredicate(
+        format: "identifier BEGINSWITH %@",
+        "solo.accessibility-table-status.card."
+      )
+    ).allElementsBoundByIndex
+    XCTAssertEqual(disclosedCards.count, 48)
+    let redactedCards = disclosedCards.filter {
+      $0.label.localizedCaseInsensitiveContains("face down")
+    }
+    XCTAssertFalse(redactedCards.isEmpty)
+    for card in redactedCards {
+      XCTAssertNotNil(
+        card.label.range(
+          of: #"^Row [1-3], column [1-4]: face down$"#,
+          options: .regularExpression
+        ),
+        "The large-text board summary must expose only position and face-down state: \(card.label)"
+      )
+    }
+    // This full 48-card hierarchy walk is terminal evidence. Hosted Xcode can
+    // drop a synthesized event after the enumeration even when it reaches the
+    // correct coordinate, so no later UI interaction depends on this AX state.
+    attachScreenshot(app, name: "ios7-solo-table-status-accessibility-xxxl")
   }
 
   @MainActor
@@ -2670,10 +2726,12 @@ final class SkyjoAppUITests: XCTestCase {
     file: StaticString = #filePath,
     line: UInt = #line
   ) {
-    let elements = app.descendants(matching: .any).allElementsBoundByIndex
+    let orderedIdentifiers = app.descendants(matching: .any)
+      .allElementsBoundByIndex
+      .map(\.identifier)
     var priorIndex = -1
     for identifier in identifiers {
-      guard let index = elements.firstIndex(where: { $0.identifier == identifier }) else {
+      guard let index = orderedIdentifiers.firstIndex(of: identifier) else {
         XCTFail("Missing accessibility element \(identifier)", file: file, line: line)
         return
       }
@@ -3116,6 +3174,17 @@ final class SkyjoAppUITests: XCTestCase {
         let headerFrame = header.frame
         let auditedFrame = element.frame
         let setupFrame = setup.frame.insetBy(dx: -2, dy: -2)
+        // The first Form section begins exactly at the navigation/content
+        // boundary. The generic audit viewport deliberately starts two points
+        // below that boundary, so restore only those same two points here; the
+        // exact header identity, setup containment, full-width geometry, and
+        // frame equality below still fail closed for a visible glyph finding.
+        let setupHeaderVisibilityFrame = CGRect(
+          x: visibleContentFrame.minX,
+          y: visibleContentFrame.minY - 2,
+          width: visibleContentFrame.width,
+          height: visibleContentFrame.height + 2
+        )
         // The identified variant must also prove the iPad Form's full-width
         // wrapper geometry; a finding attributed to the visible glyph bounds
         // remains fatal even when its identifier and label are allowlisted.
@@ -3134,8 +3203,8 @@ final class SkyjoAppUITests: XCTestCase {
           && headerFrame.height > 0
           && auditedFrame.width > 0
           && auditedFrame.height > 0
-          && visibleContentFrame.contains(headerFrame)
-          && visibleContentFrame.contains(auditedFrame)
+          && setupHeaderVisibilityFrame.contains(headerFrame)
+          && setupHeaderVisibilityFrame.contains(auditedFrame)
           && setupFrame.contains(headerFrame)
           && setupFrame.contains(auditedFrame)
           && framesMatch
