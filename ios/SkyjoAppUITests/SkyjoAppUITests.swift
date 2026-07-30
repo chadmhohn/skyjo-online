@@ -2967,17 +2967,16 @@ final class SkyjoAppUITests: XCTestCase {
         "solo.setup.opponents-header": "Opponents",
         "solo.setup.difficulty-header": "Difficulty",
       ]
-      // Xcode 26 intermittently audits the transparent, full-width SwiftUI
-      // Section wrapper on iPad. AXRuntime may expose that same wrapper either
-      // without an identifier or with the visible header's identifier. Accept
-      // only the two explicitly allowlisted headers after the queried element
-      // proves the label, type, frame, visibility, and setup containment.
-      let isVerifiedSetupHeaderArtifact: Bool = {
-        guard element.elementType == .staticText,
+      // Xcode 26 intermittently attributes the transparent, full-width SwiftUI
+      // Section wrapper instead of its identifier-bearing header on iPad. Only
+      // accept that empty-ID duplicate when the exact visible header proves it
+      // refers to the same rendered content.
+      let isVerifiedSetupHeaderWrapper: Bool = {
+        guard element.identifier.isEmpty,
+              element.elementType == .staticText,
               let verifiedHeader = setupHeaderLabelsByIdentifier.first(where: {
                 allowedContrastElementIdentifiers.contains($0.key)
                   && $0.value == element.label
-                  && (element.identifier.isEmpty || element.identifier == $0.key)
               })
         else {
           return false
@@ -2988,21 +2987,13 @@ final class SkyjoAppUITests: XCTestCase {
         let headerFrame = header.frame
         let auditedFrame = element.frame
         let setupFrame = setup.frame.insetBy(dx: -2, dy: -2)
-        let framesMatch = element.identifier == verifiedHeader.key
-          ? headerFrame == auditedFrame
-          : (headerFrame == auditedFrame || headerFrame.intersects(auditedFrame))
-        return header.identifier == verifiedHeader.key
-          && header.label == verifiedHeader.value
+        return header.label == verifiedHeader.value
           && header.elementType == element.elementType
           && headerFrame.width > 0
           && headerFrame.height > 0
-          && auditedFrame.width > 0
-          && auditedFrame.height > 0
           && visibleContentFrame.contains(headerFrame)
-          && visibleContentFrame.contains(auditedFrame)
           && setupFrame.contains(headerFrame)
-          && setupFrame.contains(auditedFrame)
-          && framesMatch
+          && (headerFrame == auditedFrame || headerFrame.intersects(auditedFrame))
       }()
       // A List keeps its first section header and row alive while they scroll
       // beneath SwiftUI's translucent navigation material. Xcode can sample
@@ -3032,7 +3023,7 @@ final class SkyjoAppUITests: XCTestCase {
       if !isDisabledControl
           && !isObscuredByTabBar
           && !isIndependentlyAuditedOffscreenCopy
-          && !isVerifiedSetupHeaderArtifact
+          && !isVerifiedSetupHeaderWrapper
           && !isSettingsCopyBehindNavigationMaterial
           && !isOffscreenOpponentHeaderChild {
         let localBoard = self.element(in: app, identifier: "solo.board.local.human")
