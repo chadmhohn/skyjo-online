@@ -9,8 +9,7 @@ const TEST_BUNDLE = 'SkyjoAppUITests';
 const TEST_SUITE = 'SkyjoAppUITests';
 const TEST_URL_PREFIX = 'test://com.apple.xcode/SkyjoNative';
 const ACCESSIBILITY_TIMEOUT_MINUTES_BY_TEST = new Map([
-  ['testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting', 10],
-  ['testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave', 20]
+  ['testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting', 10]
 ]);
 
 function fail(message) {

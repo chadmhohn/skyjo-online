@@ -672,34 +672,65 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave() throws {
-    // The complete-screen AXRuntime audit can exceed XCTest's default budget
-    // when CI schedules several simulators in parallel.
     executionTimeAllowance = 1_200
-    let app = launchSoloFixture("solo-setup-blocked-outbox")
-
-    XCTAssertTrue(element(in: app, identifier: "solo.setup").waitForExistence(timeout: 8))
-    let recovery = element(in: app, identifier: "solo.outbox.recovery")
-    XCTAssertTrue(recovery.exists)
-    let retry = app.buttons["solo.outbox.retry"]
-    let discard = app.buttons["solo.outbox.discard"]
-    let recoveryHeading = app.staticTexts["solo.outbox.heading"]
-    let recoveryMessage = app.staticTexts["solo.outbox.message"]
-    XCTAssertTrue(retry.waitForExistence(timeout: 5))
-    XCTAssertTrue(discard.exists)
-    XCTAssertTrue(recoveryHeading.exists)
-    XCTAssertTrue(recoveryMessage.exists)
-    XCTAssertTrue(retry.isEnabled)
-    XCTAssertTrue(discard.isEnabled)
-    scrollToElementFullyVisible(retry, in: app)
-    XCTAssertGreaterThanOrEqual(retry.frame.height, 44)
-    scrollToElementFullyVisible(discard, in: app)
-    XCTAssertGreaterThanOrEqual(discard.frame.height, 44)
-    attachScreenshot(app, name: "ios7-solo-setup-blocked-outbox")
-    try performSoloAccessibilityAudit(
-      on: app,
-      allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
+    try runBlockedStatsRecoveryAudit(
+      .contrast,
+      screenshotName: "ios7-solo-setup-blocked-outbox"
     )
-    app.terminate()
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryElementDetectionWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .elementDetection,
+      screenshotName: "ios7-solo-setup-blocked-outbox-element-detection"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryHitRegionsWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .hitRegion,
+      screenshotName: "ios7-solo-setup-blocked-outbox-hit-region"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoverySufficientDescriptionsWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .sufficientElementDescription,
+      screenshotName: "ios7-solo-setup-blocked-outbox-sufficient-description"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryDynamicTypeWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .dynamicType,
+      screenshotName: "ios7-solo-setup-blocked-outbox-dynamic-type"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryTextClippingWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .textClipped,
+      screenshotName: "ios7-solo-setup-blocked-outbox-text-clipped"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryTraitsWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .trait,
+      screenshotName: "ios7-solo-setup-blocked-outbox-trait"
+    )
   }
 
   @MainActor
@@ -756,7 +787,10 @@ final class SkyjoAppUITests: XCTestCase {
       allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
     )
     try performExactTextClippingAudit(on: corruptApp)
-    corruptApp.terminate()
+    assertAuditTargetRemainsForegroundAndTerminate(
+      corruptApp,
+      auditOwner: "corrupt recovery accessibility audits"
+    )
   }
 
   @MainActor
@@ -2976,6 +3010,89 @@ final class SkyjoAppUITests: XCTestCase {
     floatingTab.tap()
   }
 
+  private enum BlockedStatsRecoveryAuditPhase: String {
+    case contrast
+    case elementDetection = "element-detection"
+    case hitRegion = "hit-region"
+    case sufficientElementDescription = "sufficient-element-description"
+    case dynamicType = "dynamic-type"
+    case textClipped = "text-clipped"
+    case trait
+  }
+
+  @MainActor
+  private func launchVerifiedBlockedStatsRecoveryAuditFixture(
+    screenshotName: String
+  ) -> XCUIApplication {
+    let app = launchSoloFixture("solo-setup-blocked-outbox")
+    XCTAssertTrue(element(in: app, identifier: "solo.setup").waitForExistence(timeout: 8))
+    let recovery = element(in: app, identifier: "solo.outbox.recovery")
+    XCTAssertTrue(recovery.exists)
+    let retry = app.buttons["solo.outbox.retry"]
+    let discard = app.buttons["solo.outbox.discard"]
+    let recoveryHeading = app.staticTexts["solo.outbox.heading"]
+    let recoveryMessage = app.staticTexts["solo.outbox.message"]
+    XCTAssertTrue(retry.waitForExistence(timeout: 5))
+    XCTAssertTrue(discard.exists)
+    XCTAssertTrue(recoveryHeading.exists)
+    XCTAssertTrue(recoveryMessage.exists)
+    XCTAssertTrue(retry.isEnabled)
+    XCTAssertTrue(discard.isEnabled)
+    scrollToElementFullyVisible(retry, in: app)
+    XCTAssertGreaterThanOrEqual(retry.frame.height, 44)
+    scrollToElementFullyVisible(discard, in: app)
+    XCTAssertGreaterThanOrEqual(discard.frame.height, 44)
+    attachScreenshot(app, name: screenshotName)
+    return app
+  }
+
+  @MainActor
+  private func runBlockedStatsRecoveryAudit(
+    _ phase: BlockedStatsRecoveryAuditPhase,
+    screenshotName: String
+  ) throws {
+    // One cold-booted XCTest child owns exactly one Xcode 26 audit category.
+    // This avoids both cross-category AXRuntime accumulation and a false green
+    // when an audit returns after simulator pressure has killed its target.
+    let app = launchVerifiedBlockedStatsRecoveryAuditFixture(screenshotName: screenshotName)
+    switch phase {
+    case .contrast:
+      try performContrastAccessibilityAudit(
+        on: app,
+        allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
+      )
+    case .elementDetection:
+      try performElementDetectionAccessibilityAudit(on: app)
+    case .hitRegion:
+      try performHitRegionAccessibilityAudit(on: app)
+    case .sufficientElementDescription:
+      try performSufficientElementDescriptionAccessibilityAudit(on: app)
+    case .dynamicType:
+      try performDynamicTypeAccessibilityAudit(on: app)
+    case .textClipped:
+      try performExactTextClippingAudit(on: app)
+    case .trait:
+      try performTraitAccessibilityAudit(on: app)
+    }
+    assertAuditTargetRemainsForegroundAndTerminate(
+      app,
+      auditOwner: "blocked recovery \(phase.rawValue) accessibility audit"
+    )
+  }
+
+  @MainActor
+  private func assertAuditTargetRemainsForegroundAndTerminate(
+    _ app: XCUIApplication,
+    auditOwner: String
+  ) {
+    XCTAssertEqual(
+      app.state,
+      .runningForeground,
+      "\(auditOwner) must leave the target app alive and foreground"
+    )
+    app.terminate()
+  }
+
   @MainActor
   private func performAccessibilityAudit(
     on app: XCUIApplication,
@@ -2989,16 +3106,31 @@ final class SkyjoAppUITests: XCTestCase {
     // Type false positive for text that demonstrably scales. The navigation-
     // shell test relaunches at accessibility XXXL and asserts the complete
     // labels and layout directly; all other audit categories remain enforced.
-    try app.performAccessibilityAudit(
-      for: .all.subtracting(
-        .contrast.union(.dynamicType).union(.hitRegion).union(.textClipped)
-      )
-    )
+    try performGeneralAccessibilityAudit(on: app)
     try performExactTextClippingAudit(
       on: app,
       allowedUnattributedSignatures: allowedUnattributedTextClippingSignatures,
       maximumAllowedUnattributedOccurrences: maximumAllowedUnattributedTextClippingOccurrences
     )
+    try performHitRegionAccessibilityAudit(on: app)
+  }
+
+  @MainActor
+  private func performGeneralAccessibilityAudit(on app: XCUIApplication) throws {
+    try app.performAccessibilityAudit(
+      for: .all.subtracting(
+        .contrast.union(.dynamicType).union(.hitRegion).union(.textClipped)
+      )
+    )
+  }
+
+  @MainActor
+  private func performElementDetectionAccessibilityAudit(on app: XCUIApplication) throws {
+    try app.performAccessibilityAudit(for: .elementDetection)
+  }
+
+  @MainActor
+  private func performHitRegionAccessibilityAudit(on app: XCUIApplication) throws {
     try app.performAccessibilityAudit(for: .hitRegion) { issue in
       // Xcode 26 can retain the menu backing the intentionally hidden drawn-card
       // slot while it sweeps the hierarchy. That stale node (plus an
@@ -3008,6 +3140,18 @@ final class SkyjoAppUITests: XCTestCase {
       return element.identifier == "solo.action.drawn-choice"
         && !element.isHittable
     }
+  }
+
+  @MainActor
+  private func performSufficientElementDescriptionAccessibilityAudit(
+    on app: XCUIApplication
+  ) throws {
+    try app.performAccessibilityAudit(for: .sufficientElementDescription)
+  }
+
+  @MainActor
+  private func performTraitAccessibilityAudit(on app: XCUIApplication) throws {
+    try app.performAccessibilityAudit(for: .trait)
   }
 
   @MainActor
@@ -3120,6 +3264,20 @@ final class SkyjoAppUITests: XCTestCase {
       on: app,
       allowedUnattributedTextClippingSignatures: allowedUnattributedTextClippingSignatures,
       maximumAllowedUnattributedTextClippingOccurrences: maximumAllowedUnattributedTextClippingOccurrences
+    )
+  }
+
+  @MainActor
+  private func performContrastAccessibilityAudit(
+    on app: XCUIApplication,
+    allowedOffscreenContrastLabels: Set<String> = [],
+    allowedContrastElementIdentifiers: Set<String> = []
+  ) throws {
+    try performFocusedSoloAccessibilityAudits(
+      on: app,
+      enforceDynamicType: false,
+      allowedOffscreenContrastLabels: allowedOffscreenContrastLabels,
+      allowedContrastElementIdentifiers: allowedContrastElementIdentifiers
     )
   }
 
@@ -3285,43 +3443,48 @@ final class SkyjoAppUITests: XCTestCase {
       return true
     }
     if enforceDynamicType {
-      var unexpectedDynamicTypeFindings: [String] = []
-      try app.performAccessibilityAudit(for: .dynamicType) { issue in
-        // Focused tests measure these exact SwiftUI labels and recovery button
-        // containers at Accessibility XXXL. Xcode 26 nevertheless flags them
-        // after their frames prove they scale. The settings Done item is the
-        // standard SwiftUI toolbar control; its container stays 36 points high,
-        // so the test instead verifies its explicit relative-font label remains
-        // complete, hittable, and at least 44 points wide. Keep every exemption
-        // identifier-exact; all other Dynamic Type findings remain enforced.
-        guard let element = issue.element else { return true }
-        let verifiedContainerIdentifiers = [
-          "solo.outbox.retry",
-          "solo.outbox.discard",
-          "solo.outbox.heading",
-          "solo.outbox.message",
-          "solo.settings.current-opponents",
-          "solo.settings.current-opponents.label",
-          "solo.settings.current-opponents.value",
-          "solo.settings.current-difficulty",
-          "solo.settings.current-difficulty.label",
-          "solo.settings.current-difficulty.value",
-          "solo.settings.new-game",
-          "solo.settings.done",
-        ]
-        if verifiedContainerIdentifiers.contains(element.identifier) {
-          return true
-        }
-        unexpectedDynamicTypeFindings.append(
-          "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue)"
-        )
+      try performDynamicTypeAccessibilityAudit(on: app)
+    }
+  }
+
+  @MainActor
+  private func performDynamicTypeAccessibilityAudit(on app: XCUIApplication) throws {
+    var unexpectedDynamicTypeFindings: [String] = []
+    try app.performAccessibilityAudit(for: .dynamicType) { issue in
+      // Focused tests measure these exact SwiftUI labels and recovery button
+      // containers at Accessibility XXXL. Xcode 26 nevertheless flags them
+      // after their frames prove they scale. The settings Done item is the
+      // standard SwiftUI toolbar control; its container stays 36 points high,
+      // so the test instead verifies its explicit relative-font label remains
+      // complete, hittable, and at least 44 points wide. Keep every exemption
+      // identifier-exact; all other Dynamic Type findings remain enforced.
+      guard let element = issue.element else { return true }
+      let verifiedContainerIdentifiers = [
+        "solo.outbox.retry",
+        "solo.outbox.discard",
+        "solo.outbox.heading",
+        "solo.outbox.message",
+        "solo.settings.current-opponents",
+        "solo.settings.current-opponents.label",
+        "solo.settings.current-opponents.value",
+        "solo.settings.current-difficulty",
+        "solo.settings.current-difficulty.label",
+        "solo.settings.current-difficulty.value",
+        "solo.settings.new-game",
+        "solo.settings.done",
+      ]
+      if verifiedContainerIdentifiers.contains(element.identifier) {
         return true
       }
-      if !unexpectedDynamicTypeFindings.isEmpty {
-        XCTFail(
-          "Unexpected Dynamic Type findings:\n\(unexpectedDynamicTypeFindings.joined(separator: "\n"))"
-        )
-      }
+      unexpectedDynamicTypeFindings.append(
+        "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue)"
+      )
+      return true
+    }
+    if !unexpectedDynamicTypeFindings.isEmpty {
+      XCTFail(
+        "Unexpected Dynamic Type findings:\n\(unexpectedDynamicTypeFindings.joined(separator: "\n"))"
+      )
     }
   }
 
