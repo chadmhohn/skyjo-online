@@ -40,6 +40,10 @@ import {
   validateReleaseTagMetadata,
   verifyReleaseTagIdentity
 } from '../../../scripts/verify-release-tag-identity.mjs';
+import {
+  runApnsRollbackProof,
+  sensitiveBinaryLogRepresentations
+} from '../../../server-apns-rollback-proof.mjs';
 import { MULTIPLAYER_PROTOCOL_VERSION, type GameCommand } from '../../../src/protocolV2';
 import {
   createPropagationArrivalTracker,
@@ -783,6 +787,20 @@ describe('v0.3.3 immutable tag identity', () => {
 });
 
 describe('v0.3.3 workflow governance', () => {
+  it('enumerates common text and JSON renderings of sensitive binary storage', () => {
+    expect(sensitiveBinaryLogRepresentations('0001ff')).toEqual([
+      '0001ff',
+      '0001FF',
+      '00 01 ff',
+      '00 01 FF',
+      'AAH/',
+      'AAH_',
+      '0,1,255',
+      '0, 1, 255',
+      '"0":0,"1":1,"2":255'
+    ]);
+  });
+
   it('selects a compact standard phone independently from the large-phone entry', () => {
     type SimulatorMatrixEntry = {
       role: 'standard-phone' | 'large-phone' | 'ipad';
@@ -816,6 +834,68 @@ describe('v0.3.3 workflow governance', () => {
     );
   });
 
+  it('rejects missing or malformed APNs rollback proof identity before synthetic work', async () => {
+    await expect(runApnsRollbackProof()).rejects.toThrow('exact lowercase 40-character release SHA');
+    await expect(runApnsRollbackProof({ expectedReleaseSha: 'A'.repeat(40) })).rejects.toThrow(
+      'exact lowercase 40-character release SHA'
+    );
+
+    const helperPath = path.join(root, 'server-apns-rollback-proof.mjs');
+    const invalidArguments = [
+      [],
+      ['--expected-release-sha', 'A'.repeat(40)],
+      ['--expected-release-sha', 'a'.repeat(40), 'extra'],
+      ['--wrong-option', 'a'.repeat(40)]
+    ];
+    for (const args of invalidArguments) {
+      const result = spawnSync(process.execPath, [helperPath, ...args], {
+        cwd: root,
+        encoding: 'utf8',
+        env: {},
+        timeout: 5_000,
+        maxBuffer: 64 * 1024
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.signal).toBeNull();
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain(
+        'Usage: server-apns-rollback-proof.mjs --expected-release-sha <lowercase-40-sha>'
+      );
+      expect(result.stderr).not.toContain('APNS-ROW-MUST-NEVER-REACH-LOGS');
+    }
+
+    const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-apns-proof-symlink-'));
+    try {
+      const helperSymlink = path.join(temporaryDirectory, 'server-apns-rollback-proof.mjs');
+      await fs.symlink(helperPath, helperSymlink);
+      const symlinkResult = spawnSync(process.execPath, [helperSymlink], {
+        cwd: root,
+        encoding: 'utf8',
+        env: {},
+        timeout: 5_000,
+        maxBuffer: 64 * 1024
+      });
+      expect(symlinkResult.status).not.toBe(0);
+      expect(symlinkResult.signal).toBeNull();
+      expect(symlinkResult.stdout).toBe('');
+      expect(symlinkResult.stderr).toContain(
+        'Usage: server-apns-rollback-proof.mjs --expected-release-sha <lowercase-40-sha>'
+      );
+    } finally {
+      await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    }
+
+    const wrapperResult = spawnSync(
+      process.execPath,
+      [path.join(root, 'scripts', 'smoke-apns-rollback-compatibility.mjs'), '--expected-release-sha', 'a'.repeat(40)],
+      { cwd: root, encoding: 'utf8', env: {}, timeout: 5_000, maxBuffer: 64 * 1024 }
+    );
+    expect(wrapperResult.status).not.toBe(0);
+    expect(wrapperResult.signal).toBeNull();
+    expect(wrapperResult.stdout).toBe('');
+    expect(wrapperResult.stderr).toContain('Usage: smoke-apns-rollback-compatibility.mjs');
+  });
+
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
     const [
       ci,
@@ -828,11 +908,17 @@ describe('v0.3.3 workflow governance', () => {
       realtime,
       verifier,
       apnsRollbackSmoke,
+      apnsRollbackProof,
+      artifactIntegration,
+      releaseController,
+      serverEntrypoint,
       packageDocument,
       packageLock,
       changelog,
       certificationAddendum,
-      securityAddendum
+      securityAddendum,
+      deploymentChecklist,
+      immutableDeployment
     ] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'ios-ui-accessibility-test.sh'), 'utf8'),
@@ -844,11 +930,17 @@ describe('v0.3.3 workflow governance', () => {
       fs.readFile(path.join(root, 'src', 'serverRealtime.ts'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'verify-v030-release.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'smoke-apns-rollback-compatibility.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'server-apns-rollback-proof.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'test-runtime-artifact-integration.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'deploy', 'release-controller.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'server.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
       fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8'),
       fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.3-certification.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.3-security.md'), 'utf8')
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.3-security.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'deployment-smoke-checklist.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'immutable-deployment.md'), 'utf8')
     ]);
     expect(REQUIRED_CHECKS).toContain('CI / Load & Recovery');
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'CI / Load & Recovery')).toHaveLength(1);
@@ -963,17 +1055,86 @@ describe('v0.3.3 workflow governance', () => {
     );
     expect(packageJson.scripts['smoke:delivery']).toContain('npm run smoke:apns-rollback');
     expect(packageJson.scripts['smoke:release']).toContain('npm run smoke:delivery');
-    expect(apnsRollbackSmoke).toContain('logs.includes(sensitiveCanary)');
-    expect(apnsRollbackSmoke).toContain('diagnostics withheld');
-    expect(apnsRollbackSmoke).not.toMatch(/console\.(?:error|log)\(logs\)/);
+    expect(apnsRollbackSmoke).toContain('process.argv.slice(2).length !== 0');
+    expect(apnsRollbackSmoke).toContain("loadReleaseIdentity(path.join(projectRoot, 'dist')");
+    expect(apnsRollbackSmoke).toContain('allowDevelopment: false');
+    expect(apnsRollbackSmoke).toContain('requireFullSha: true');
+    expect(apnsRollbackSmoke).toContain('runApnsRollbackProof({ expectedReleaseSha: releaseIdentity.releaseSha })');
+    expect(apnsRollbackSmoke).not.toContain('sensitiveCanary');
+    expect(apnsRollbackSmoke).not.toContain("'--expected-release-sha'");
+    expect(apnsRollbackProof).toContain('const leakedLogNeedles = new Set()');
+    expect(apnsRollbackProof).toContain("logScanTails.get(stream) || ''");
+    expect(apnsRollbackProof).toContain('combined.includes(needle)');
+    expect(apnsRollbackProof).toContain('maxSensitiveLogNeedleLength - 1');
+    expect(apnsRollbackProof).toContain('expectedRows[0].token_ciphertext_hex');
+    expect(apnsRollbackProof).toContain('expectedRows[0].token_fingerprint_hex');
+    expect(apnsRollbackProof).toContain("bytes.toString('base64url')");
+    expect(apnsRollbackProof).toContain("decimalBytes.join(',')");
+    expect(apnsRollbackProof).toContain('indexedDecimalBytes');
+    expect(apnsRollbackProof).toContain('await fs.realpath(process.argv[1])');
+    expect(apnsRollbackProof).toContain('assert.equal(leakedLogNeedles.size, 0');
+    expect(apnsRollbackProof).toContain('APNs rollback proof server diagnostics withheld (${logByteCount} bytes)');
+    expect(apnsRollbackProof).toContain('diagnostics withheld');
+    expect(apnsRollbackProof).toContain('argv.length !== 2');
+    expect(apnsRollbackProof).toContain("argv[0] !== '--expected-release-sha'");
+    expect(apnsRollbackProof).toContain('const releaseSha = validateExpectedReleaseSha(expectedReleaseSha)');
+    expect(apnsRollbackProof).toContain("fetch(`${baseUrl}/version`");
+    expect(apnsRollbackProof).toContain('assert.equal(version.releaseSha, releaseSha)');
+    expect(apnsRollbackProof).toContain('if (validatedGracefulStops.has(serverProcess)) return');
+    expect(apnsRollbackProof).toContain('serverProcess.exitCode !== null || serverProcess.signalCode !== null');
+    expect(apnsRollbackProof).toContain("serverProcess.kill('SIGTERM')");
+    expect(apnsRollbackProof).toContain("serverProcess.once('close', onClose)");
+    expect(apnsRollbackProof).toContain('exit.code !== 0 || exit.signal !== null');
+    expect(apnsRollbackProof).toContain('did not stop within the bounded timeout');
+    expect(apnsRollbackProof).toContain('validatedGracefulStops.add(serverProcess)');
+    const bothValidatedStops = apnsRollbackProof.indexOf(
+      'await Promise.all([stopServer(first), stopServer(second)])'
+    );
+    const postShutdownRowProof = apnsRollbackProof.indexOf(
+      'assert.deepEqual(apnsRows(copiedDatabase), expectedRows)',
+      bothValidatedStops
+    );
+    expect(bothValidatedStops).toBeGreaterThan(-1);
+    expect(postShutdownRowProof).toBeGreaterThan(bothValidatedStops);
+    expect(apnsRollbackProof).toContain('proof passed for ${releaseSha}');
+    expect(apnsRollbackProof).not.toMatch(/console\.(?:error|log)\(logs\)/);
+    expect(serverEntrypoint).not.toContain('server-apns-rollback-proof');
+    expect(artifactIntegration).toContain("path.join(projectRoot, 'release', expectedNames.archiveName)");
+    expect(artifactIntegration).toContain('verifyRuntimeArtifact({');
+    expect(artifactIntegration).toContain('[published.archivePath, first.archivePath, second.archivePath]');
+    expect(artifactIntegration).toContain('[published.checksumPath, first.checksumPath, second.checksumPath]');
+    expect(artifactIntegration).toContain('[publishedSbomPath, first.sbomPath, second.sbomPath]');
+    expect(artifactIntegration).toContain("'--extract', '--gzip', '--file', published.archivePath");
+    expect(artifactIntegration).toContain("'server-apns-rollback-proof.mjs'");
+    expect(artifactIntegration).toContain("controllerContract.entries.has('scripts/smoke-apns-rollback-compatibility.mjs')");
+    expect(artifactIntegration).toContain('stdout: apnsProofOutput, stderr: apnsProofError');
+    expect(artifactIntegration).toContain('`APNs rollback envelope proof passed for ${releaseSha}:');
+    expect(artifactIntegration).toContain("assert.equal(apnsProofError, ''");
+    expect(artifactIntegration).toContain('process.stdout.write(apnsProofOutput)');
+    expect(artifactIntegration).toContain("'--expected-release-sha'");
+    expect(artifactIntegration).toContain('env: { TMPDIR: temporaryRoot }');
+    expect(artifactIntegration).toContain('Packaged server diagnostics withheld');
+    expect(artifactIntegration).not.toMatch(/console\.error\(logs\)/);
+    const promotedMetadataTagAssignment = releaseController.indexOf('metadata.tag = parsed.tag;');
+    const promotedMetadataWrite = releaseController.indexOf(
+      "await fsp.writeFile(resolveWithin(incoming, '.skyjo-deployment.json'), `${JSON.stringify(metadata)}\\n`, { mode: 0o444 });"
+    );
+    const promotedTreeNormalization = releaseController.indexOf(
+      "await run('/usr/bin/chmod', ['--recursive', 'u=rwX,go=rX', incoming]);"
+    );
+    expect(promotedMetadataTagAssignment).toBeGreaterThan(-1);
+    expect(promotedMetadataWrite).toBeGreaterThan(promotedMetadataTagAssignment);
+    expect(promotedTreeNormalization).toBeGreaterThan(promotedMetadataWrite);
     expect(JSON.parse(packageLock).version).toBe('0.3.3');
     expect(JSON.parse(packageLock).packages[''].version).toBe('0.3.3');
     expect(changelog).toMatch(/^## 0\.3\.3 - 2026-07-29$/m);
     expect(changelog).toContain('source-only native solo launcher and game table');
+    expect(changelog).toContain('artifact-only synthetic rollback-proof helper');
     expect(ci).toContain('Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility');
     expect(certificationAddendum).toContain('not byte-equivalent to `v0.3.2`');
     expect(certificationAddendum).toContain('immutable cached-PWA v0.3.2 validator pin');
     expect(certificationAddendum).toContain('four-role UI/accessibility matrix');
+    expect(certificationAddendum).toContain('normal `server.mjs` startup never imports it');
     expect(certificationAddendum).toContain('explicit approval in the current conversation naming both exact tag `v0.3.3` and exact `CERT_SHA`');
     expect(certificationAddendum).toContain('`previous` resolves to the exact immutable `v0.3.3` tag');
     expect(certificationAddendum).toContain('keep issue #203 open and #204 blocked');
@@ -982,11 +1143,30 @@ describe('v0.3.3 workflow governance', () => {
     expect(certificationAddendum).toContain('--production-base-url https://skyjo.groundworkrevops.com');
     expect(certificationAddendum).toContain('published release back through GitHub');
     expect(certificationAddendum).toContain('every SHA-256 sidecar');
+    expect(certificationAddendum).toContain('/srv/skyjo-online/previous');
+    expect(certificationAddendum).toContain('set -eu');
+    expect(certificationAddendum).toContain("/usr/bin/stat -c '%a' \"$resolved_previous/.skyjo-deployment.json\")\" = '644'");
+    expect(certificationAddendum).not.toContain("/usr/bin/stat -c '%a' \"$resolved_previous/.skyjo-deployment.json\")\" = '444'");
+    expect(certificationAddendum).toContain('/usr/bin/cmp -s - "$resolved_previous/.skyjo-deployment.json"');
+    expect(certificationAddendum).toContain("controller's `releaseSha`, `artifactSha256`, `tag` key order and single final LF");
+    expect(certificationAddendum).toContain('/usr/bin/sudo -u skyjo-canary /usr/bin/env -i TMPDIR=/var/tmp');
+    expect(certificationAddendum).toContain('"$resolved_previous/server-apns-rollback-proof.mjs"');
+    expect(certificationAddendum).toContain('--expected-release-sha "$V033_SHA"');
+    expect(certificationAddendum).toContain('does not read the production environment or state');
     expect(certificationAddendum).not.toContain('physical `PASS V0.3 IOS`');
     expect(securityAddendum).toContain('Production dependencies remain unchanged');
     expect(securityAddendum).toContain('does not create or use `apns_devices`');
     expect(securityAddendum).toContain('bound to the current authorized account');
     expect(securityAddendum).toContain('general autonomy is insufficient');
     expect(securityAddendum).toContain('CodeQL does not run automatically on tag pushes');
+    expect(securityAddendum).toContain('artifact-only certification helper');
+    expect(securityAddendum).toContain('Normal `server.mjs` startup never imports it');
+    expect(securityAddendum).toContain('requires both servers to exit cleanly after SIGTERM');
+    expect(deploymentChecklist).toContain('exact uploaded archive, checksum, and SBOM equal both deterministic rebuilds');
+    expect(deploymentChecklist).toContain('root-owned mode-`0644` `.skyjo-deployment.json` exact bytes');
+    expect(deploymentChecklist).toContain('run its artifact-carried proof helper as `skyjo-canary` under `env -i`');
+    expect(immutableDeployment).toContain('invokes the helper\'s strict direct CLI with its required expected SHA');
+    expect(immutableDeployment).toContain('root-owned mode-`0644` deployment metadata bytes');
+    expect(immutableDeployment).toContain('literal installed-`previous` proof');
   });
 });
