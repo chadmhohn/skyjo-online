@@ -198,6 +198,7 @@
       "ios/SkyjoAppTests/SoloFeatureModelTests.swift",
       "ios/SkyjoAppUITests/SkyjoAppUITests.swift",
       "scripts/ios-ui-accessibility-test.sh",
+      "scripts/verify-ios-ui-xcresult.mjs",
       "scripts/select-ios-ui-simulators.mjs"
     ],
     "visualReference": [
