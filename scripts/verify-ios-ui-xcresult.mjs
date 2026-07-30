@@ -198,15 +198,38 @@ export function validateIOSUIXCResult(summary, inventory, expectedTestNames) {
 }
 
 function readBoundedJSON(filePath, label) {
+  let descriptor;
   try {
-    const stats = fs.statSync(filePath);
-    if (!stats.isFile() || stats.size <= 0 || stats.size > MAX_RESULT_JSON_BYTES) {
+    descriptor = fs.openSync(
+      filePath,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW
+    );
+    if (!fs.fstatSync(descriptor).isFile()) {
       fail(`${label} JSON is missing or outside the allowed size.`);
     }
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+
+    const boundedContents = Buffer.allocUnsafe(MAX_RESULT_JSON_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < boundedContents.length) {
+      const readCount = fs.readSync(
+        descriptor,
+        boundedContents,
+        bytesRead,
+        boundedContents.length - bytesRead,
+        null
+      );
+      if (readCount === 0) break;
+      bytesRead += readCount;
+    }
+    if (bytesRead === 0 || bytesRead > MAX_RESULT_JSON_BYTES) {
+      fail(`${label} JSON is missing or outside the allowed size.`);
+    }
+    return JSON.parse(boundedContents.toString('utf8', 0, bytesRead));
   } catch (error) {
     if (error instanceof Error && error.message.startsWith(label)) throw error;
     fail(`Unable to read ${label} JSON.`);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
   }
 }
 

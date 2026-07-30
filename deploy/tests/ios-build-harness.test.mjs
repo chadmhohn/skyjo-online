@@ -202,7 +202,8 @@ test('a failed child proof does not stop the remaining isolated portrait invocat
     'project_path="$STUB_DIR/project"',
     'derived_data="$STUB_DIR/derived"',
     'solo_suite="SkyjoAppUITests/SkyjoAppUITests"',
-    'xcode_environment=()',
+    'stub_environment() { "$@"; }',
+    'xcode_environment=(stub_environment)',
     'mkdir -p "$evidence_dir"',
     'sanitize_output() { /bin/cat; }',
     'cold_boot_and_prepare_simulator() { return 0; }',
@@ -351,4 +352,20 @@ test('the xcresult verifier proves merged exact IDs and rejects weaker evidence'
       ),
     /one exact destination and test plan/
   );
+});
+
+test('the xcresult verifier reads each bounded JSON input through one descriptor', async () => {
+  const verifier = await fs.readFile(
+    path.join(repositoryRoot, 'scripts', 'verify-ios-ui-xcresult.mjs'),
+    'utf8'
+  );
+  const boundedReader =
+    verifier.match(/function readBoundedJSON\(filePath, label\) \{[\s\S]*?\n\}/)?.[0] || '';
+
+  assert.match(boundedReader, /fs\.openSync\(/);
+  assert.match(boundedReader, /fs\.fstatSync\(descriptor\)/);
+  assert.match(boundedReader, /fs\.readSync\([\s\S]*?descriptor/);
+  assert.match(boundedReader, /MAX_RESULT_JSON_BYTES \+ 1/);
+  assert.match(boundedReader, /fs\.closeSync\(descriptor\)/);
+  assert.doesNotMatch(boundedReader, /fs\.statSync\(|fs\.readFileSync\(/);
 });
