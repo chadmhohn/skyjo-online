@@ -159,6 +159,31 @@ cold_boot_and_prepare_simulator() {
   apply_simulator_accessibility "$udid"
 }
 
+reset_simulator_after_infrastructure_failure() {
+  local udid="$1"
+  local selected_udid=""
+  local selected=0
+
+  for selected_udid in "${ui_udids[@]}"; do
+    if [[ "$selected_udid" == "$udid" ]]; then
+      selected=1
+    fi
+  done
+  if [[ "$selected" -ne 1 ]]; then
+    printf 'ERROR: Refusing to reset an unselected simulator.\n' >&2
+    return 1
+  fi
+
+  xcrun simctl shutdown "$udid" >/dev/null 2>&1 || true
+  if [[ "${GITHUB_ACTIONS:-}" == "true" && \
+        "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]]; then
+    # The exact selected simulator is ephemeral on a GitHub-hosted runner.
+    # Erasing it releases stale Accessibility audit state before the normal
+    # cold-boot path reapplies and verifies every required adaptation.
+    xcrun simctl erase "$udid" || return 1
+  fi
+}
+
 restore_simulator_accessibility() {
   local index=""
   local udid=""
@@ -411,8 +436,20 @@ standard_tests=(
   testSoloLauncherMakesReplacementExplicitAndRecoverable
   testSoloOfflineAccountCopyAndRevalidationAreExplicit
   testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting
+  testSoloSetupAuditsDefaultElementDetectionBeforeWriting
+  testSoloSetupAuditsDefaultHitRegionsBeforeWriting
+  testSoloSetupAuditsDefaultSufficientDescriptionsBeforeWriting
+  testSoloSetupAuditsDefaultDynamicTypeBeforeWriting
+  testSoloSetupAuditsDefaultTextClippingBeforeWriting
+  testSoloSetupAuditsDefaultTraitsBeforeWriting
   testSoloSetupRendersEverySupportedChoice
   testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryElementDetectionWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryHitRegionsWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoverySufficientDescriptionsWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryDynamicTypeWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryTextClippingWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryTraitsWithoutSave
   testSoloSetupRetriesBlockedStatsRecoveryWithoutSave
   testSoloSetupAuditsCorruptStatsRecoveryWithoutSave
   testSoloSetupDiscardsCorruptStatsRecoveryWithoutSave
@@ -438,7 +475,19 @@ large_tests=(
 )
 ipad_portrait_tests=(
   testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting
+  testSoloSetupAuditsDefaultElementDetectionBeforeWriting
+  testSoloSetupAuditsDefaultHitRegionsBeforeWriting
+  testSoloSetupAuditsDefaultSufficientDescriptionsBeforeWriting
+  testSoloSetupAuditsDefaultDynamicTypeBeforeWriting
+  testSoloSetupAuditsDefaultTextClippingBeforeWriting
+  testSoloSetupAuditsDefaultTraitsBeforeWriting
   testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryElementDetectionWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryHitRegionsWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoverySufficientDescriptionsWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryDynamicTypeWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryTextClippingWithoutSave
+  testSoloSetupAuditsBlockedStatsRecoveryTraitsWithoutSave
   testSoloSetupRetriesBlockedStatsRecoveryWithoutSave
   testSoloSetupAuditsCorruptStatsRecoveryWithoutSave
   testSoloSetupDiscardsCorruptStatsRecoveryWithoutSave
@@ -450,9 +499,9 @@ ipad_portrait_tests=(
 ipad_landscape_tests=(
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
 )
-[[ "${#standard_tests[@]}" -eq 22 && \
+[[ "${#standard_tests[@]}" -eq 34 && \
    "${#large_tests[@]}" -eq 3 && \
-   "${#ipad_portrait_tests[@]}" -eq 9 && \
+   "${#ipad_portrait_tests[@]}" -eq 21 && \
    "${#ipad_landscape_tests[@]}" -eq 1 ]] || {
   printf 'ERROR: The expected accessibility matrix inventory changed.\n' >&2
   exit 1
@@ -549,6 +598,24 @@ verify_result_bundle() (
   fi
 )
 
+classify_infrastructure_failure() (
+  local summary_log="$1"
+  local classification_log="$2"
+  local test_name="$3"
+  local classification_status=1
+  local -a classification_pipeline_status=()
+
+  set +e
+  node "$result_verifier" \
+    --classify-infrastructure-failure "$summary_log" "$test_name" \
+    2>&1 | sanitize_output | tee "$classification_log"
+  classification_pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  select_pipeline_status "${classification_pipeline_status[@]}"
+  classification_status="$selected_pipeline_status"
+  return "$classification_status"
+)
+
 run_matrix_entry() {
   local role="$1"
   local udid="$2"
@@ -620,83 +687,146 @@ run_isolated_ipad_portrait_entry() {
     return 0
   fi
   mkdir -p "$children_dir"
-  printf 'schema-version\t1\nrole\t%s\nexpected-test-count\t%s\n' \
+  printf 'schema-version\t2\nrole\t%s\nexpected-test-count\t%s\n' \
     "$role" "$expected_count" > "$isolation_manifest"
-  printf 'test\tordinal\tidentifier\tpreparation-status\txcodebuild-status\tproof-status\n' \
+  printf 'attempt\tordinal\tidentifier\tattempt-number\tpreparation-status\txcodebuild-status\tproof-status\tclassification-status\treset-status\taccepted\n' \
+    >> "$isolation_manifest"
+  printf 'test\tordinal\tidentifier\tfinal-status\taccepted-attempt\n' \
     >> "$isolation_manifest"
 
   for test_name in "$@"; do
     ordinal=$((ordinal + 1))
     local ordinal_key=""
-    local child_key=""
-    local child_result_bundle=""
-    local child_test_log=""
-    local child_summary_log=""
-    local child_tests_log=""
-    local child_proof_log=""
-    local preparation_status=1
-    local status=1
-    local proof_status=1
-    local -a arguments=()
-    local -a child_pipeline_status=()
+    local attempt_number=1
+    local run_another_attempt=1
+    local accepted_attempt=0
+    local final_status=1
 
     printf -v ordinal_key '%02d' "$ordinal"
-    child_key="$ordinal_key-$test_name"
-    child_result_bundle="$children_dir/$child_key.xcresult"
-    child_test_log="$children_dir/$child_key.log"
-    child_summary_log="$children_dir/$child_key-summary.log"
-    child_tests_log="$children_dir/$child_key-tests.log"
-    child_proof_log="$children_dir/$child_key-proof.json"
-    arguments=(
-      test-without-building
-      -quiet
-      -project "$project_path"
-      -scheme SkyjoNative
-      -testPlan SkyjoCI
-      -configuration Debug
-      -destination "platform=iOS Simulator,id=$udid"
-      -destination-timeout 120
-      -derivedDataPath "$derived_data"
-      -resultBundlePath "$child_result_bundle"
-      -parallel-testing-enabled NO
-      "-only-testing:$solo_suite/$test_name"
-      CODE_SIGNING_ALLOWED=NO
-    )
+    while [[ "$run_another_attempt" -eq 1 ]]; do
+      local attempt_suffix=""
+      local child_key=""
+      local child_result_bundle=""
+      local child_test_log=""
+      local child_summary_log=""
+      local child_tests_log=""
+      local child_proof_log=""
+      local classification_log=""
+      local preparation_status=1
+      local status=1
+      local proof_status=1
+      local classification_status="-"
+      local reset_status="-"
+      local accepted=0
+      local retry_eligible=0
+      local -a arguments=()
+      local -a child_pipeline_status=()
 
-    set +e
-    cold_boot_and_prepare_simulator "$udid"
-    preparation_status=$?
-    set -e
-    record_matrix_status "$preparation_status"
+      run_another_attempt=0
+      if [[ "$attempt_number" -eq 2 ]]; then
+        attempt_suffix="-retry-02"
+      fi
+      child_key="$ordinal_key-$test_name$attempt_suffix"
+      child_result_bundle="$children_dir/$child_key.xcresult"
+      child_test_log="$children_dir/$child_key.log"
+      child_summary_log="$children_dir/$child_key-summary.log"
+      child_tests_log="$children_dir/$child_key-tests.log"
+      child_proof_log="$children_dir/$child_key-proof.json"
+      classification_log="$children_dir/$child_key-infrastructure-classification.json"
+      arguments=(
+        test-without-building
+        -quiet
+        -project "$project_path"
+        -scheme SkyjoNative
+        -testPlan SkyjoCI
+        -configuration Debug
+        -destination "platform=iOS Simulator,id=$udid"
+        -destination-timeout 120
+        -derivedDataPath "$derived_data"
+        -resultBundlePath "$child_result_bundle"
+        -parallel-testing-enabled NO
+        "-only-testing:$solo_suite/$test_name"
+        CODE_SIGNING_ALLOWED=NO
+      )
 
-    # Always run every pinned child invocation so a failed test still leaves a
-    # complete nine-entry evidence manifest for diagnosis.
-    set +e
-    "${xcode_environment[@]}" xcodebuild "${arguments[@]}" \
-      2>&1 | sanitize_output | tee "$child_test_log"
-    child_pipeline_status=("${PIPESTATUS[@]}")
-    set -e
-    select_pipeline_status "${child_pipeline_status[@]}"
-    status="$selected_pipeline_status"
-    record_matrix_status "$status"
-    if [[ -e "$child_result_bundle" ]]; then
-      child_result_bundles+=("$child_result_bundle")
-    fi
+      set +e
+      cold_boot_and_prepare_simulator "$udid"
+      preparation_status=$?
+      set -e
 
-    set +e
-    verify_result_bundle \
-      "$role/$test_name" \
-      "$child_result_bundle" \
-      "$child_summary_log" \
-      "$child_tests_log" \
-      "$child_proof_log" \
-      1 \
-      "$test_name"
-    proof_status=$?
-    set -e
-    record_matrix_status "$proof_status"
-    printf 'test\t%s\t%s\t%s\t%s\t%s\n' \
-      "$ordinal_key" "$test_name" "$preparation_status" "$status" "$proof_status" \
+      # Always run every pinned child invocation so a failed test still leaves
+      # a complete evidence manifest for diagnosis. Only an exact classified
+      # infrastructure failure can add one second invocation for that child.
+      set +e
+      "${xcode_environment[@]}" xcodebuild "${arguments[@]}" \
+        2>&1 | sanitize_output | tee "$child_test_log"
+      child_pipeline_status=("${PIPESTATUS[@]}")
+      set -e
+      select_pipeline_status "${child_pipeline_status[@]}"
+      status="$selected_pipeline_status"
+
+      set +e
+      verify_result_bundle \
+        "$role/$test_name" \
+        "$child_result_bundle" \
+        "$child_summary_log" \
+        "$child_tests_log" \
+        "$child_proof_log" \
+        1 \
+        "$test_name"
+      proof_status=$?
+      set -e
+
+      if [[ "$preparation_status" -eq 0 && "$status" -eq 0 && \
+            "$proof_status" -eq 0 ]]; then
+        accepted=1
+        accepted_attempt="$attempt_number"
+        final_status=0
+        child_result_bundles+=("$child_result_bundle")
+      elif [[ "$attempt_number" -eq 1 && "$preparation_status" -eq 0 && \
+              "$status" -eq 65 && "$proof_status" -ne 0 ]]; then
+        set +e
+        classify_infrastructure_failure \
+          "$child_summary_log" "$classification_log" "$test_name"
+        classification_status=$?
+        set -e
+        if [[ "$classification_status" -eq 0 ]]; then
+          retry_eligible=1
+          set +e
+          reset_simulator_after_infrastructure_failure "$udid"
+          reset_status=$?
+          set -e
+          if [[ "$reset_status" -eq 0 ]]; then
+            run_another_attempt=1
+          else
+            record_matrix_status "$reset_status"
+          fi
+        fi
+      fi
+
+      if [[ "$accepted" -ne 1 && "$run_another_attempt" -ne 1 && \
+            "$retry_eligible" -ne 1 ]]; then
+        record_matrix_status "$preparation_status"
+        record_matrix_status "$status"
+        record_matrix_status "$proof_status"
+        if [[ "$classification_status" != "-" ]]; then
+          record_matrix_status "$classification_status"
+        fi
+      elif [[ "$accepted" -ne 1 && "$attempt_number" -eq 2 ]]; then
+        record_matrix_status "$preparation_status"
+        record_matrix_status "$status"
+        record_matrix_status "$proof_status"
+      fi
+
+      printf 'attempt\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$ordinal_key" "$test_name" "$attempt_number" "$preparation_status" \
+        "$status" "$proof_status" "$classification_status" "$reset_status" "$accepted" \
+        >> "$isolation_manifest"
+      attempt_number=$((attempt_number + 1))
+    done
+
+    printf 'test\t%s\t%s\t%s\t%s\n' \
+      "$ordinal_key" "$test_name" "$final_status" "$accepted_attempt" \
       >> "$isolation_manifest"
   done
 
@@ -741,20 +871,20 @@ run_isolated_ipad_portrait_entry() {
 
 case "$selected_role" in
   "")
-    run_matrix_entry standard-phone "$standard_udid" 22 "${standard_tests[@]}"
+    run_matrix_entry standard-phone "$standard_udid" 34 "${standard_tests[@]}"
     run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
-    run_matrix_entry ipad-portrait "$ipad_udid" 9 "${ipad_portrait_tests[@]}"
+    run_matrix_entry ipad-portrait "$ipad_udid" 21 "${ipad_portrait_tests[@]}"
     run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
     ;;
   standard-phone)
-    run_matrix_entry standard-phone "$standard_udid" 22 "${standard_tests[@]}"
+    run_matrix_entry standard-phone "$standard_udid" 34 "${standard_tests[@]}"
     ;;
   large-phone)
     run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
     ;;
   ipad-portrait)
     run_isolated_ipad_portrait_entry \
-      ipad-portrait "$ipad_udid" 9 "${ipad_portrait_tests[@]}"
+      ipad-portrait "$ipad_udid" 21 "${ipad_portrait_tests[@]}"
     ;;
   ipad-landscape)
     run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"

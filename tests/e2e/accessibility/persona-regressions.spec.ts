@@ -1156,7 +1156,9 @@ test('non-mobile WebKit keyboard and wheel input match the mobile build', async 
   skyjoServer
 }, testInfo) => {
   test.skip(!testInfo.project.name.startsWith('webkit'), 'WebKit mobile does not expose mouse wheel input.');
-  test.setTimeout(75_000);
+  // Hosted WebKit can spend more than 75 seconds creating the second context
+  // and exercising both viewport geometries even when every assertion passes.
+  test.setTimeout(120_000);
   await installSeededBrowserRuntime(page, 84);
   await page.goto(`${skyjoServer.baseURL}/single-player`);
   const primaryStylesheets = await stylesheetHrefs(page);

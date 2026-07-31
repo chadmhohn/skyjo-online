@@ -56,7 +56,10 @@ final class SkyjoAppUITests: XCTestCase {
     try performAccessibilityAudit(on: app)
 
     XCUIDevice.shared.press(.home)
-    XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+    XCTAssertTrue(
+      waitForBackgroundLifecycleState(app, timeout: 5),
+      "The app should enter the running or suspended background before relaunch."
+    )
     app.terminate()
     app.launch()
     XCTAssertTrue(
@@ -70,12 +73,27 @@ final class SkyjoAppUITests: XCTestCase {
 
     tapTab("Account", in: app)
     XCTAssertTrue(element(in: app, identifier: "account.screen").waitForExistence(timeout: 5))
-    replaceText(in: app.textFields["account.display-name"], with: "UI Prime")
+    let displayName = app.textFields["account.display-name"]
+    replaceText(in: displayName, with: "UI Prime")
     app.buttons["account.save-profile"].tap()
     XCTAssertTrue(app.staticTexts["account.profile-message"].waitForExistence(timeout: 10))
     XCTAssertEqual(app.staticTexts["account.profile-message"].label, "Profile updated.")
+    displayName.typeText(XCUIKeyboardKey.return.rawValue)
+    XCTAssertEqual(
+      XCTWaiter.wait(
+        for: [
+          XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: app.keyboards.firstMatch
+          ),
+        ],
+        timeout: 5
+      ),
+      .completed,
+      "The profile keyboard should dismiss before navigating to password controls."
+    )
 
-    scrollToElement(app.secureTextFields["account.current-password"], in: app)
+    scrollToElementFullyVisible(app.secureTextFields["account.current-password"], in: app)
     app.secureTextFields["account.current-password"].tap()
     app.secureTextFields["account.current-password"].typeText(originalPassword)
     app.secureTextFields["account.new-password"].tap()
@@ -568,37 +586,64 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting() throws {
-    let app = launchSoloFixture("solo-setup")
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .contrast,
+      screenshotName: "ios7-solo-setup-medium-default"
+    )
+  }
 
-    let setup = element(in: app, identifier: "solo.setup")
-    XCTAssertTrue(setup.waitForExistence(timeout: 8))
-    let botCount = element(in: app, identifier: "solo.setup.bot-count")
-    let difficulty = element(in: app, identifier: "solo.setup.difficulty")
-    let explanation = app.staticTexts.matching(
-      identifier: "solo.setup.difficulty-explanation"
-    ).firstMatch
-    XCTAssertTrue(botCount.exists)
-    XCTAssertTrue(difficulty.exists)
-    XCTAssertEqual(difficulty.value as? String, "Medium")
-    XCTAssertEqual(explanation.label, "Balanced decisions and the default for a new player.")
-    XCTAssertTrue(app.staticTexts["Choose from 1 to 7 computer opponents. More opponents create a busier table and a longer round."].exists)
-    XCTAssertTrue(app.staticTexts["Nothing is created or written until you press Start Game and any required replacement is confirmed."].exists)
-    XCTAssertGreaterThanOrEqual(app.buttons["solo.setup.start"].frame.height, 44)
-    for (identifier, label) in [
-      ("solo.setup.opponents-header", "Opponents"),
-      ("solo.setup.difficulty-header", "Difficulty"),
-    ] {
-      let header = element(in: app, identifier: identifier)
-      XCTAssertTrue(header.exists)
-      XCTAssertEqual(header.label, label)
-      XCTAssertGreaterThan(header.frame.width, 0)
-      XCTAssertGreaterThan(header.frame.height, 0)
-      assertElement(header, isContainedIn: setup, tolerance: 2)
-    }
-    attachScreenshot(app, name: "ios7-solo-setup-medium-default")
-    try performSoloAccessibilityAudit(
-      on: app,
-      allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
+  @MainActor
+  func testSoloSetupAuditsDefaultElementDetectionBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .elementDetection,
+      screenshotName: "ios7-solo-setup-medium-default-element-detection"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultHitRegionsBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .hitRegion,
+      screenshotName: "ios7-solo-setup-medium-default-hit-region"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultSufficientDescriptionsBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .sufficientElementDescription,
+      screenshotName: "ios7-solo-setup-medium-default-sufficient-description"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultDynamicTypeBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .dynamicType,
+      screenshotName: "ios7-solo-setup-medium-default-dynamic-type"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultTextClippingBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .textClipped,
+      screenshotName: "ios7-solo-setup-medium-default-text-clipped"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsDefaultTraitsBeforeWriting() throws {
+    executionTimeAllowance = 1_200
+    try runSoloSetupDefaultsAudit(
+      .trait,
+      screenshotName: "ios7-solo-setup-medium-default-trait"
     )
   }
 
@@ -669,34 +714,65 @@ final class SkyjoAppUITests: XCTestCase {
 
   @MainActor
   func testSoloSetupSurfacesBlockedStatsRecoveryWithoutSave() throws {
-    // The complete-screen AXRuntime audit can exceed XCTest's default budget
-    // when CI schedules several simulators in parallel.
     executionTimeAllowance = 1_200
-    let app = launchSoloFixture("solo-setup-blocked-outbox")
-
-    XCTAssertTrue(element(in: app, identifier: "solo.setup").waitForExistence(timeout: 8))
-    let recovery = element(in: app, identifier: "solo.outbox.recovery")
-    XCTAssertTrue(recovery.exists)
-    let retry = app.buttons["solo.outbox.retry"]
-    let discard = app.buttons["solo.outbox.discard"]
-    let recoveryHeading = app.staticTexts["solo.outbox.heading"]
-    let recoveryMessage = app.staticTexts["solo.outbox.message"]
-    XCTAssertTrue(retry.waitForExistence(timeout: 5))
-    XCTAssertTrue(discard.exists)
-    XCTAssertTrue(recoveryHeading.exists)
-    XCTAssertTrue(recoveryMessage.exists)
-    XCTAssertTrue(retry.isEnabled)
-    XCTAssertTrue(discard.isEnabled)
-    scrollToElementFullyVisible(retry, in: app)
-    XCTAssertGreaterThanOrEqual(retry.frame.height, 44)
-    scrollToElementFullyVisible(discard, in: app)
-    XCTAssertGreaterThanOrEqual(discard.frame.height, 44)
-    attachScreenshot(app, name: "ios7-solo-setup-blocked-outbox")
-    try performSoloAccessibilityAudit(
-      on: app,
-      allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
+    try runBlockedStatsRecoveryAudit(
+      .contrast,
+      screenshotName: "ios7-solo-setup-blocked-outbox"
     )
-    app.terminate()
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryElementDetectionWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .elementDetection,
+      screenshotName: "ios7-solo-setup-blocked-outbox-element-detection"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryHitRegionsWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .hitRegion,
+      screenshotName: "ios7-solo-setup-blocked-outbox-hit-region"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoverySufficientDescriptionsWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .sufficientElementDescription,
+      screenshotName: "ios7-solo-setup-blocked-outbox-sufficient-description"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryDynamicTypeWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .dynamicType,
+      screenshotName: "ios7-solo-setup-blocked-outbox-dynamic-type"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryTextClippingWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .textClipped,
+      screenshotName: "ios7-solo-setup-blocked-outbox-text-clipped"
+    )
+  }
+
+  @MainActor
+  func testSoloSetupAuditsBlockedStatsRecoveryTraitsWithoutSave() throws {
+    executionTimeAllowance = 1_200
+    try runBlockedStatsRecoveryAudit(
+      .trait,
+      screenshotName: "ios7-solo-setup-blocked-outbox-trait"
+    )
   }
 
   @MainActor
@@ -753,7 +829,10 @@ final class SkyjoAppUITests: XCTestCase {
       allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
     )
     try performExactTextClippingAudit(on: corruptApp)
-    corruptApp.terminate()
+    assertAuditTargetRemainsForegroundAndTerminate(
+      corruptApp,
+      auditOwner: "corrupt recovery accessibility audits"
+    )
   }
 
   @MainActor
@@ -1001,6 +1080,10 @@ final class SkyjoAppUITests: XCTestCase {
     assertElement(revealedValue, isContainedIn: firstCard, tolerance: 2)
     attachScreenshot(app, name: "ios7-solo-phone-table")
     try performSoloAccessibilityAudit(on: app)
+    assertAuditTargetRemainsForegroundAndTerminate(
+      app,
+      auditOwner: "solo table composite accessibility audits"
+    )
   }
 
   @MainActor
@@ -2858,6 +2941,24 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  private func waitForBackgroundLifecycleState(
+    _ app: XCUIApplication,
+    timeout: TimeInterval
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+      switch app.state {
+      case .runningBackground, .runningBackgroundSuspended:
+        return true
+      default:
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+      }
+    } while Date() < deadline
+
+    return app.state == .runningBackground || app.state == .runningBackgroundSuspended
+  }
+
+  @MainActor
   private func attachScreenshot(_ app: XCUIApplication, name: String) {
     let attachment = XCTAttachment(screenshot: app.screenshot())
     attachment.name = name
@@ -2955,6 +3056,154 @@ final class SkyjoAppUITests: XCTestCase {
     floatingTab.tap()
   }
 
+  private enum SoloAccessibilityAuditPhase: String {
+    case contrast
+    case elementDetection = "element-detection"
+    case hitRegion = "hit-region"
+    case sufficientElementDescription = "sufficient-element-description"
+    case dynamicType = "dynamic-type"
+    case textClipped = "text-clipped"
+    case trait
+  }
+
+  @MainActor
+  private func launchVerifiedSoloSetupDefaultsAuditFixture(
+    screenshotName: String
+  ) -> XCUIApplication {
+    let app = launchSoloFixture("solo-setup")
+    let setup = element(in: app, identifier: "solo.setup")
+    XCTAssertTrue(setup.waitForExistence(timeout: 8))
+    let botCount = element(in: app, identifier: "solo.setup.bot-count")
+    let difficulty = element(in: app, identifier: "solo.setup.difficulty")
+    let explanation = app.staticTexts.matching(
+      identifier: "solo.setup.difficulty-explanation"
+    ).firstMatch
+    XCTAssertTrue(botCount.exists)
+    XCTAssertTrue(difficulty.exists)
+    XCTAssertEqual(difficulty.value as? String, "Medium")
+    XCTAssertEqual(explanation.label, "Balanced decisions and the default for a new player.")
+    XCTAssertTrue(app.staticTexts["Choose from 1 to 7 computer opponents. More opponents create a busier table and a longer round."].exists)
+    XCTAssertTrue(app.staticTexts["Nothing is created or written until you press Start Game and any required replacement is confirmed."].exists)
+    XCTAssertGreaterThanOrEqual(app.buttons["solo.setup.start"].frame.height, 44)
+    for (identifier, label) in [
+      ("solo.setup.opponents-header", "Opponents"),
+      ("solo.setup.difficulty-header", "Difficulty"),
+    ] {
+      let header = element(in: app, identifier: identifier)
+      XCTAssertTrue(header.exists)
+      XCTAssertEqual(header.label, label)
+      XCTAssertGreaterThan(header.frame.width, 0)
+      XCTAssertGreaterThan(header.frame.height, 0)
+      assertElement(header, isContainedIn: setup, tolerance: 2)
+    }
+    attachScreenshot(app, name: screenshotName)
+    return app
+  }
+
+  @MainActor
+  private func runSoloSetupDefaultsAudit(
+    _ phase: SoloAccessibilityAuditPhase,
+    screenshotName: String
+  ) throws {
+    let app = launchVerifiedSoloSetupDefaultsAuditFixture(screenshotName: screenshotName)
+    switch phase {
+    case .contrast:
+      try performContrastAccessibilityAudit(
+        on: app,
+        allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
+      )
+    case .elementDetection:
+      try performElementDetectionAccessibilityAudit(on: app)
+    case .hitRegion:
+      try performHitRegionAccessibilityAudit(on: app)
+    case .sufficientElementDescription:
+      try performSufficientElementDescriptionAccessibilityAudit(on: app)
+    case .dynamicType:
+      try performDynamicTypeAccessibilityAudit(on: app)
+    case .textClipped:
+      try performExactTextClippingAudit(on: app)
+    case .trait:
+      try performTraitAccessibilityAudit(on: app)
+    }
+    assertAuditTargetRemainsForegroundAndTerminate(
+      app,
+      auditOwner: "default setup \(phase.rawValue) accessibility audit"
+    )
+  }
+
+  @MainActor
+  private func launchVerifiedBlockedStatsRecoveryAuditFixture(
+    screenshotName: String
+  ) -> XCUIApplication {
+    let app = launchSoloFixture("solo-setup-blocked-outbox")
+    XCTAssertTrue(element(in: app, identifier: "solo.setup").waitForExistence(timeout: 8))
+    let recovery = element(in: app, identifier: "solo.outbox.recovery")
+    XCTAssertTrue(recovery.exists)
+    let retry = app.buttons["solo.outbox.retry"]
+    let discard = app.buttons["solo.outbox.discard"]
+    let recoveryHeading = app.staticTexts["solo.outbox.heading"]
+    let recoveryMessage = app.staticTexts["solo.outbox.message"]
+    XCTAssertTrue(retry.waitForExistence(timeout: 5))
+    XCTAssertTrue(discard.exists)
+    XCTAssertTrue(recoveryHeading.exists)
+    XCTAssertTrue(recoveryMessage.exists)
+    XCTAssertTrue(retry.isEnabled)
+    XCTAssertTrue(discard.isEnabled)
+    scrollToElementFullyVisible(retry, in: app)
+    XCTAssertGreaterThanOrEqual(retry.frame.height, 44)
+    scrollToElementFullyVisible(discard, in: app)
+    XCTAssertGreaterThanOrEqual(discard.frame.height, 44)
+    attachScreenshot(app, name: screenshotName)
+    return app
+  }
+
+  @MainActor
+  private func runBlockedStatsRecoveryAudit(
+    _ phase: SoloAccessibilityAuditPhase,
+    screenshotName: String
+  ) throws {
+    // One cold-booted XCTest child owns exactly one Xcode 26 audit category.
+    // This avoids both cross-category AXRuntime accumulation and a false green
+    // when an audit returns after simulator pressure has killed its target.
+    let app = launchVerifiedBlockedStatsRecoveryAuditFixture(screenshotName: screenshotName)
+    switch phase {
+    case .contrast:
+      try performContrastAccessibilityAudit(
+        on: app,
+        allowedContrastElementIdentifiers: soloSetupContrastHeaderIdentifiers
+      )
+    case .elementDetection:
+      try performElementDetectionAccessibilityAudit(on: app)
+    case .hitRegion:
+      try performHitRegionAccessibilityAudit(on: app)
+    case .sufficientElementDescription:
+      try performSufficientElementDescriptionAccessibilityAudit(on: app)
+    case .dynamicType:
+      try performDynamicTypeAccessibilityAudit(on: app)
+    case .textClipped:
+      try performExactTextClippingAudit(on: app)
+    case .trait:
+      try performTraitAccessibilityAudit(on: app)
+    }
+    assertAuditTargetRemainsForegroundAndTerminate(
+      app,
+      auditOwner: "blocked recovery \(phase.rawValue) accessibility audit"
+    )
+  }
+
+  @MainActor
+  private func assertAuditTargetRemainsForegroundAndTerminate(
+    _ app: XCUIApplication,
+    auditOwner: String
+  ) {
+    XCTAssertEqual(
+      app.state,
+      .runningForeground,
+      "\(auditOwner) must leave the target app alive and foreground"
+    )
+    app.terminate()
+  }
+
   @MainActor
   private func performAccessibilityAudit(
     on app: XCUIApplication,
@@ -2968,16 +3217,31 @@ final class SkyjoAppUITests: XCTestCase {
     // Type false positive for text that demonstrably scales. The navigation-
     // shell test relaunches at accessibility XXXL and asserts the complete
     // labels and layout directly; all other audit categories remain enforced.
-    try app.performAccessibilityAudit(
-      for: .all.subtracting(
-        .contrast.union(.dynamicType).union(.hitRegion).union(.textClipped)
-      )
-    )
+    try performGeneralAccessibilityAudit(on: app)
     try performExactTextClippingAudit(
       on: app,
       allowedUnattributedSignatures: allowedUnattributedTextClippingSignatures,
       maximumAllowedUnattributedOccurrences: maximumAllowedUnattributedTextClippingOccurrences
     )
+    try performHitRegionAccessibilityAudit(on: app)
+  }
+
+  @MainActor
+  private func performGeneralAccessibilityAudit(on app: XCUIApplication) throws {
+    try app.performAccessibilityAudit(
+      for: .all.subtracting(
+        .contrast.union(.dynamicType).union(.hitRegion).union(.textClipped)
+      )
+    )
+  }
+
+  @MainActor
+  private func performElementDetectionAccessibilityAudit(on app: XCUIApplication) throws {
+    try app.performAccessibilityAudit(for: .elementDetection)
+  }
+
+  @MainActor
+  private func performHitRegionAccessibilityAudit(on app: XCUIApplication) throws {
     try app.performAccessibilityAudit(for: .hitRegion) { issue in
       // Xcode 26 can retain the menu backing the intentionally hidden drawn-card
       // slot while it sweeps the hierarchy. That stale node (plus an
@@ -2987,6 +3251,18 @@ final class SkyjoAppUITests: XCTestCase {
       return element.identifier == "solo.action.drawn-choice"
         && !element.isHittable
     }
+  }
+
+  @MainActor
+  private func performSufficientElementDescriptionAccessibilityAudit(
+    on app: XCUIApplication
+  ) throws {
+    try app.performAccessibilityAudit(for: .sufficientElementDescription)
+  }
+
+  @MainActor
+  private func performTraitAccessibilityAudit(on app: XCUIApplication) throws {
+    try app.performAccessibilityAudit(for: .trait)
   }
 
   @MainActor
@@ -3103,77 +3379,176 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  private func performContrastAccessibilityAudit(
+    on app: XCUIApplication,
+    allowedOffscreenContrastLabels: Set<String> = [],
+    allowedContrastElementIdentifiers: Set<String> = []
+  ) throws {
+    try performFocusedSoloAccessibilityAudits(
+      on: app,
+      enforceDynamicType: false,
+      allowedOffscreenContrastLabels: allowedOffscreenContrastLabels,
+      allowedContrastElementIdentifiers: allowedContrastElementIdentifiers
+    )
+  }
+
+  @MainActor
   private func performFocusedSoloAccessibilityAudits(
     on app: XCUIApplication,
     enforceDynamicType: Bool = true,
     allowedOffscreenContrastLabels: Set<String> = [],
     allowedContrastElementIdentifiers: Set<String> = []
   ) throws {
+    // The contrast callback runs while Xcode owns AXRuntime's audit traversal.
+    // Re-entering XCUIApplication from that callback can block a hosted XCTest
+    // child indefinitely. Capture the stable scene once before the sweep so
+    // every finding is evaluated against immutable values.
+    let appFrame = app.frame
+    let disabledControlFrames = [
+      app.buttons["solo.action.draw"],
+      app.buttons["solo.action.discard"],
+      app.switches["solo.settings.music"],
+    ].compactMap { control -> CGRect? in
+      guard control.exists, !control.isEnabled else { return nil }
+      return control.frame
+    }
+    let tabBar = app.tabBars.firstMatch
+    let tabBarFrame = tabBar.exists ? tabBar.frame : nil
+    let navigationBar = app.navigationBars.firstMatch
+    let navigationBarFrame = navigationBar.exists ? navigationBar.frame : nil
+    let visibleContentTop = navigationBarFrame.map { $0.maxY + 4 } ?? appFrame.minY + 4
+    let visibleContentBottom = tabBarFrame.map { $0.minY - 16 } ?? appFrame.maxY - 4
+    let visibleContentFrame = CGRect(
+      x: appFrame.minX,
+      y: visibleContentTop,
+      width: appFrame.width,
+      height: max(0, visibleContentBottom - visibleContentTop)
+    ).insetBy(dx: -2, dy: -2)
+    let setupHeaderLabelsByIdentifier = [
+      "solo.setup.opponents-header": "Opponents",
+      "solo.setup.difficulty-header": "Difficulty",
+    ]
+    var setupFrame: CGRect? = nil
+    var setupHeaderSnapshots: [(
+      expectedIdentifier: String,
+      expectedLabel: String,
+      identifier: String,
+      label: String,
+      isStaticText: Bool,
+      frame: CGRect
+    )] = []
+    let needsSetupHeaderSnapshots = setupHeaderLabelsByIdentifier.keys.contains {
+      allowedContrastElementIdentifiers.contains($0)
+    }
+    if needsSetupHeaderSnapshots {
+      let setup = self.element(in: app, identifier: "solo.setup")
+      setupFrame = setup.exists ? setup.frame.insetBy(dx: -2, dy: -2) : nil
+      for (identifier, label) in setupHeaderLabelsByIdentifier
+      where allowedContrastElementIdentifiers.contains(identifier) {
+        let header = self.element(in: app, identifier: identifier)
+        if header.exists {
+          setupHeaderSnapshots.append(
+            (
+              expectedIdentifier: identifier,
+              expectedLabel: label,
+              identifier: header.identifier,
+              label: header.label,
+              isStaticText: header.elementType == .staticText,
+              frame: header.frame
+            )
+          )
+        }
+      }
+    }
+    let settingsNavigationBar = app.navigationBars["Game Settings"]
+    let settingsNavigationBarFrame = settingsNavigationBar.exists
+      ? settingsNavigationBar.frame
+      : nil
+    let opponentScroll = self.element(in: app, identifier: "solo.opponents.scroll")
+    let opponentScrollFrame = opponentScroll.exists ? opponentScroll.frame : nil
+    var opponentHeaderFrames: [(identifier: String, frame: CGRect)] = []
+    if opponentScrollFrame != nil {
+      let expectedHeaderIdentifiers = Set(
+        (1...7).map { "solo.board.header.opponent.ai-\($0)" }
+      )
+      let headers = app.descendants(matching: .any).matching(
+        NSPredicate(
+          format: "identifier BEGINSWITH %@",
+          "solo.board.header.opponent.ai-"
+        )
+      ).allElementsBoundByIndex
+      var capturedHeaderIdentifiers: Set<String> = []
+      for header in headers {
+        let identifier = header.identifier
+        let frame = header.frame
+        guard expectedHeaderIdentifiers.contains(identifier),
+              capturedHeaderIdentifiers.insert(identifier).inserted,
+              frame.minX.isFinite,
+              frame.minY.isFinite,
+              frame.width.isFinite,
+              frame.height.isFinite,
+              frame.width > 0,
+              frame.height > 0
+        else {
+          continue
+        }
+        opponentHeaderFrames.append((identifier: identifier, frame: frame))
+      }
+    }
+    var localBoardFrame: CGRect? = nil
+    if opponentScrollFrame != nil {
+      let localBoard = self.element(in: app, identifier: "solo.board.local.human")
+      localBoardFrame = localBoard.exists ? localBoard.frame : nil
+    }
+    let settingsNavigationState = settingsNavigationBarFrame != nil ? "present" : "absent"
+    let opponentScrollState = opponentScrollFrame.map(String.init(describing:)) ?? "absent"
+    let localBoardState = localBoardFrame.map(String.init(describing:)) ?? "absent"
+    let opponentHeaderState = opponentHeaderFrames
+      .map { "\($0.identifier)=\($0.frame)" }
+      .joined(separator: ", ")
+
     try app.performAccessibilityAudit(for: .contrast) { issue in
       guard let element = issue.element else {
         XCTFail("Unexpected unattributed contrast finding")
         return true
       }
-      let disabledControls = [
-        app.buttons["solo.action.draw"],
-        app.buttons["solo.action.discard"],
-        app.switches["solo.settings.music"],
-      ]
-      let isDisabledControl = disabledControls.contains { control in
-        control.exists && !control.isEnabled && control.frame.intersects(element.frame)
+      let elementIdentifier = element.identifier
+      let elementLabel = element.label
+      let elementFrame = element.frame
+      let elementType = element.elementType
+      let isDisabledControl = disabledControlFrames.contains { frame in
+        frame.intersects(elementFrame)
       }
-      let tabBar = app.tabBars.firstMatch
       // iOS 26 draws the floating tab bar's material shadow above the frame
       // exposed to XCTest. Limit the framework-artifact allowance to that
       // measured 12-point system-chrome fringe; in-content findings stay fatal.
-      let isObscuredByTabBar: Bool
-      if tabBar.exists {
-        let tabBarShadowFrame = tabBar.frame.insetBy(dx: 0, dy: -12)
-        isObscuredByTabBar = element.frame.intersects(tabBarShadowFrame)
-      } else {
-        isObscuredByTabBar = false
-      }
-      let navigationBar = app.navigationBars.firstMatch
-      let visibleContentTop = navigationBar.exists
-        ? navigationBar.frame.maxY + 4
-        : app.frame.minY + 4
-      let visibleContentBottom = tabBar.exists
-        ? tabBar.frame.minY - 16
-        : app.frame.maxY - 4
-      let visibleContentFrame = CGRect(
-        x: app.frame.minX,
-        y: visibleContentTop,
-        width: app.frame.width,
-        height: max(0, visibleContentBottom - visibleContentTop)
-      ).insetBy(dx: -2, dy: -2)
+      let isObscuredByTabBar = tabBarFrame.map { frame in
+        elementFrame.intersects(frame.insetBy(dx: 0, dy: -12))
+      } ?? false
       let isIndependentlyAuditedOffscreenCopy =
-        allowedOffscreenContrastLabels.contains(element.label)
-          && !visibleContentFrame.contains(element.frame)
-      let setupHeaderLabelsByIdentifier = [
-        "solo.setup.opponents-header": "Opponents",
-        "solo.setup.difficulty-header": "Difficulty",
-      ]
+        allowedOffscreenContrastLabels.contains(elementLabel)
+          && !visibleContentFrame.contains(elementFrame)
       // Xcode 26 intermittently audits the transparent, full-width SwiftUI
       // Section wrapper on iPad. AXRuntime may expose that same wrapper either
       // without an identifier or with the visible header's identifier. Accept
       // only the two explicitly allowlisted headers after the queried element
       // proves the label, type, frame, visibility, and setup containment.
       let isVerifiedSetupHeaderArtifact: Bool = {
-        guard element.elementType == .staticText,
-              let verifiedHeader = setupHeaderLabelsByIdentifier.first(where: {
-                allowedContrastElementIdentifiers.contains($0.key)
-                  && $0.value == element.label
-                  && (element.identifier.isEmpty || element.identifier == $0.key)
+        guard elementType == .staticText,
+              let setupFrame,
+              let verifiedHeader = setupHeaderSnapshots.first(where: {
+                allowedContrastElementIdentifiers.contains($0.expectedIdentifier)
+                  && $0.expectedLabel == elementLabel
+                  && (
+                    elementIdentifier.isEmpty
+                      || elementIdentifier == $0.expectedIdentifier
+                  )
               })
         else {
           return false
         }
-        let header = self.element(in: app, identifier: verifiedHeader.key)
-        let setup = self.element(in: app, identifier: "solo.setup")
-        guard header.exists, setup.exists else { return false }
-        let headerFrame = header.frame
-        let auditedFrame = element.frame
-        let setupFrame = setup.frame.insetBy(dx: -2, dy: -2)
+        let headerFrame = verifiedHeader.frame
+        let auditedFrame = elementFrame
         // The first Form section begins exactly at the navigation/content
         // boundary. The generic audit viewport deliberately starts two points
         // below that boundary, so restore only those same two points here; the
@@ -3188,17 +3563,18 @@ final class SkyjoAppUITests: XCTestCase {
         // The identified variant must also prove the iPad Form's full-width
         // wrapper geometry; a finding attributed to the visible glyph bounds
         // remains fatal even when its identifier and label are allowlisted.
-        let isIdentifiedFullWidthWrapper = element.identifier == verifiedHeader.key
+        let isIdentifiedFullWidthWrapper = elementIdentifier
+          == verifiedHeader.expectedIdentifier
           && visibleContentFrame.width >= 704
           && auditedFrame.width >= visibleContentFrame.width - 44
           && abs(auditedFrame.midX - visibleContentFrame.midX) <= 2
           && headerFrame == auditedFrame
-        let framesMatch = element.identifier == verifiedHeader.key
+        let framesMatch = elementIdentifier == verifiedHeader.expectedIdentifier
           ? isIdentifiedFullWidthWrapper
           : (headerFrame == auditedFrame || headerFrame.intersects(auditedFrame))
-        return header.identifier == verifiedHeader.key
-          && header.label == verifiedHeader.value
-          && header.elementType == element.elementType
+        return verifiedHeader.identifier == verifiedHeader.expectedIdentifier
+          && verifiedHeader.label == verifiedHeader.expectedLabel
+          && verifiedHeader.isStaticText
           && headerFrame.width > 0
           && headerFrame.height > 0
           && auditedFrame.width > 0
@@ -3214,93 +3590,79 @@ final class SkyjoAppUITests: XCTestCase {
       // that intentionally blurred copy for contrast; scope the allowance to
       // content fully contained by the measured navigation frame while retaining
       // enforcement for the title and Done control rendered by that chrome.
-      let settingsNavigationBar = app.navigationBars["Game Settings"]
-      let isSettingsCopyBehindNavigationMaterial = settingsNavigationBar.exists
-        && settingsNavigationBar.frame.contains(element.frame)
-        && !element.isHittable
-        && element.identifier == "solo.settings.feedback-header"
-      let opponentScroll = self.element(in: app, identifier: "solo.opponents.scroll")
-      let opponentHeaders = (1...7).map {
-        self.element(in: app, identifier: "solo.board.header.opponent.ai-\($0)")
-      }
+      let isSettingsCopyBehindNavigationMaterial =
+        elementIdentifier == "solo.settings.feedback-header"
+          && (settingsNavigationBarFrame.map { $0.contains(elementFrame) } ?? false)
+          && !element.isHittable
       // Xcode 26 walks the nested opponent scroller and can then audit a text
       // child from the next header even when its parent is entirely outside the
       // viewport. Scope this allowance to that exact offscreen parent/child
       // relationship; every visible or partially visible opponent header
       // remains enforced.
-      let isOffscreenOpponentHeaderChild = opponentScroll.exists
-        && opponentHeaders.contains { header in
-          header.exists
-            && header.frame.intersects(element.frame)
-            && !opponentScroll.frame.intersects(header.frame)
+      let isOffscreenOpponentHeaderChild = opponentScrollFrame.map { scrollFrame in
+        opponentHeaderFrames.contains { header in
+          header.frame.intersects(elementFrame)
+            && !scrollFrame.intersects(header.frame)
         }
+      } ?? false
       if !isDisabledControl
           && !isObscuredByTabBar
           && !isIndependentlyAuditedOffscreenCopy
           && !isVerifiedSetupHeaderArtifact
           && !isSettingsCopyBehindNavigationMaterial
           && !isOffscreenOpponentHeaderChild {
-        let localBoard = self.element(in: app, identifier: "solo.board.local.human")
-        let opponentHeaderFrames = opponentHeaders
-          .filter(\.exists)
-          .map { "\($0.identifier)=\($0.frame)" }
-          .joined(separator: ", ")
         // Do not ask a missing navigation-bar query for its frame while
         // reporting an unrelated screen's audit issue. XCTest treats that as a
         // second snapshot failure and hides the original contrast diagnostic.
-        let settingsNavigationState = settingsNavigationBar.exists
-          ? "present"
-          : "absent"
-        let opponentScrollState = opponentScroll.exists
-          ? "\(opponentScroll.frame)"
-          : "absent"
-        let localBoardState = localBoard.exists
-          ? "\(localBoard.frame)"
-          : "absent"
         XCTFail(
-          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), localBoard=\(localBoardState), opponentHeaders=[\(opponentHeaderFrames)]"
+          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(elementIdentifier), label=\(elementLabel), frame=\(elementFrame), type=\(elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), localBoard=\(localBoardState), opponentHeaders=[\(opponentHeaderState)]"
         )
       }
       return true
     }
     if enforceDynamicType {
-      var unexpectedDynamicTypeFindings: [String] = []
-      try app.performAccessibilityAudit(for: .dynamicType) { issue in
-        // Focused tests measure these exact SwiftUI labels and recovery button
-        // containers at Accessibility XXXL. Xcode 26 nevertheless flags them
-        // after their frames prove they scale. The settings Done item is the
-        // standard SwiftUI toolbar control; its container stays 36 points high,
-        // so the test instead verifies its explicit relative-font label remains
-        // complete, hittable, and at least 44 points wide. Keep every exemption
-        // identifier-exact; all other Dynamic Type findings remain enforced.
-        guard let element = issue.element else { return true }
-        let verifiedContainerIdentifiers = [
-          "solo.outbox.retry",
-          "solo.outbox.discard",
-          "solo.outbox.heading",
-          "solo.outbox.message",
-          "solo.settings.current-opponents",
-          "solo.settings.current-opponents.label",
-          "solo.settings.current-opponents.value",
-          "solo.settings.current-difficulty",
-          "solo.settings.current-difficulty.label",
-          "solo.settings.current-difficulty.value",
-          "solo.settings.new-game",
-          "solo.settings.done",
-        ]
-        if verifiedContainerIdentifiers.contains(element.identifier) {
-          return true
-        }
-        unexpectedDynamicTypeFindings.append(
-          "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue)"
-        )
+      try performDynamicTypeAccessibilityAudit(on: app)
+    }
+  }
+
+  @MainActor
+  private func performDynamicTypeAccessibilityAudit(on app: XCUIApplication) throws {
+    var unexpectedDynamicTypeFindings: [String] = []
+    try app.performAccessibilityAudit(for: .dynamicType) { issue in
+      // Focused tests measure these exact SwiftUI labels and recovery button
+      // containers at Accessibility XXXL. Xcode 26 nevertheless flags them
+      // after their frames prove they scale. The settings Done item is the
+      // standard SwiftUI toolbar control; its container stays 36 points high,
+      // so the test instead verifies its explicit relative-font label remains
+      // complete, hittable, and at least 44 points wide. Keep every exemption
+      // identifier-exact; all other Dynamic Type findings remain enforced.
+      guard let element = issue.element else { return true }
+      let verifiedContainerIdentifiers = [
+        "solo.outbox.retry",
+        "solo.outbox.discard",
+        "solo.outbox.heading",
+        "solo.outbox.message",
+        "solo.settings.current-opponents",
+        "solo.settings.current-opponents.label",
+        "solo.settings.current-opponents.value",
+        "solo.settings.current-difficulty",
+        "solo.settings.current-difficulty.label",
+        "solo.settings.current-difficulty.value",
+        "solo.settings.new-game",
+        "solo.settings.done",
+      ]
+      if verifiedContainerIdentifiers.contains(element.identifier) {
         return true
       }
-      if !unexpectedDynamicTypeFindings.isEmpty {
-        XCTFail(
-          "Unexpected Dynamic Type findings:\n\(unexpectedDynamicTypeFindings.joined(separator: "\n"))"
-        )
-      }
+      unexpectedDynamicTypeFindings.append(
+        "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue)"
+      )
+      return true
+    }
+    if !unexpectedDynamicTypeFindings.isEmpty {
+      XCTFail(
+        "Unexpected Dynamic Type findings:\n\(unexpectedDynamicTypeFindings.joined(separator: "\n"))"
+      )
     }
   }
 

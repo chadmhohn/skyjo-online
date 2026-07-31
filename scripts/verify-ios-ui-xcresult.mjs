@@ -39,6 +39,76 @@ function expectedTestIdentity(testName) {
   };
 }
 
+function validateExpectedTestName(testName) {
+  if (typeof testName !== 'string' || !TEST_NAME_PATTERN.test(testName)) {
+    fail('Expected UI test name must be a pinned XCTest identifier.');
+  }
+}
+
+export function classifyIOSUIInfrastructureFailure(summary, expectedTestName) {
+  validateExpectedTestName(expectedTestName);
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) {
+    fail('The xcresult summary is invalid.');
+  }
+
+  if (
+    summary.result !== 'Failed' ||
+    requireNonnegativeInteger(summary.totalTestCount, 'summary.totalTestCount') !== 1 ||
+    requireNonnegativeInteger(summary.passedTests, 'summary.passedTests') !== 0 ||
+    requireNonnegativeInteger(summary.failedTests, 'summary.failedTests') !== 1 ||
+    requireNonnegativeInteger(summary.skippedTests, 'summary.skippedTests') !== 0 ||
+    requireNonnegativeInteger(summary.expectedFailures, 'summary.expectedFailures') !== 0 ||
+    !Array.isArray(summary.testFailures) ||
+    summary.testFailures.length !== 1
+  ) {
+    fail('The xcresult summary does not prove one exact failed test.');
+  }
+
+  const configurations = summary.devicesAndConfigurations;
+  if (!Array.isArray(configurations) || configurations.length !== 1) {
+    fail('The xcresult summary does not prove one exact failed destination.');
+  }
+  const configuration = configurations[0];
+  if (
+    !configuration ||
+    typeof configuration !== 'object' ||
+    Array.isArray(configuration) ||
+    requireNonnegativeInteger(configuration.passedTests, 'configuration.passedTests') !== 0 ||
+    requireNonnegativeInteger(configuration.failedTests, 'configuration.failedTests') !== 1 ||
+    requireNonnegativeInteger(configuration.skippedTests, 'configuration.skippedTests') !== 0 ||
+    requireNonnegativeInteger(configuration.expectedFailures, 'configuration.expectedFailures') !== 0 ||
+    typeof configuration.device?.deviceId !== 'string' ||
+    configuration.device.deviceId.length === 0 ||
+    configuration.device.platform !== 'iOS Simulator' ||
+    typeof configuration.testPlanConfiguration?.configurationId !== 'string' ||
+    configuration.testPlanConfiguration.configurationId.length === 0 ||
+    configuration.testPlanConfiguration.configurationName !== 'CI'
+  ) {
+    fail('The xcresult summary does not identify one failed CI simulator destination.');
+  }
+
+  const expected = expectedTestIdentity(expectedTestName);
+  const failure = summary.testFailures[0];
+  if (
+    !failure ||
+    typeof failure !== 'object' ||
+    Array.isArray(failure) ||
+    failure.targetName !== TEST_BUNDLE ||
+    failure.testIdentifier !== 1 ||
+    failure.testName !== expected.name ||
+    failure.testIdentifierString !== expected.nodeIdentifier ||
+    failure.testIdentifierURL !== expected.nodeIdentifierURL ||
+    typeof failure.failureText !== 'string'
+  ) {
+    fail('The xcresult failure does not identify the requested pinned test.');
+  }
+
+  // Every previously grouped audit owner now runs one category per XCTest
+  // child. No timeout, invalid-application, or invalid-target summary is safe
+  // to retry because a second attempt can conceal product or process failure.
+  return null;
+}
+
 export function validateIOSUIXCResult(summary, inventory, expectedTestNames) {
   if (!Array.isArray(expectedTestNames) || expectedTestNames.length === 0) {
     fail('At least one expected UI test is required.');
@@ -234,7 +304,24 @@ function readBoundedJSON(filePath, label) {
 }
 
 function main() {
-  const [summaryPath, inventoryPath, ...expectedTestNames] = process.argv.slice(2);
+  const arguments_ = process.argv.slice(2);
+  if (arguments_[0] === '--classify-infrastructure-failure') {
+    const [, summaryPath, expectedTestName, ...unexpectedArguments] = arguments_;
+    if (!summaryPath || !expectedTestName || unexpectedArguments.length !== 0) {
+      fail(
+        'Usage: node scripts/verify-ios-ui-xcresult.mjs --classify-infrastructure-failure <summary.json> <test-name>'
+      );
+    }
+    const proof = classifyIOSUIInfrastructureFailure(
+      readBoundedJSON(summaryPath, 'summary'),
+      expectedTestName
+    );
+    if (!proof) fail('The xcresult failure is not an allowlisted accessibility infrastructure failure.');
+    process.stdout.write(`${JSON.stringify(proof, null, 2)}\n`);
+    return;
+  }
+
+  const [summaryPath, inventoryPath, ...expectedTestNames] = arguments_;
   if (!summaryPath || !inventoryPath || expectedTestNames.length === 0) {
     fail(
       'Usage: node scripts/verify-ios-ui-xcresult.mjs <summary.json> <tests.json> <test-name> [...]'
