@@ -1239,6 +1239,16 @@ describe('v0.3.3 workflow governance', () => {
     expect(certificationAddendum).toContain('`previous` resolves to the exact immutable `v0.3.3` tag');
     expect(certificationAddendum).toContain('keep issue #203 open and #204 blocked');
     expect(certificationAddendum).toContain('CodeQL does not run automatically on tag pushes');
+    expect(certificationAddendum).toContain('--name "skyjo-build-$CERT_SHA"');
+    expect(certificationAddendum).toContain(
+      '--name "certification-$CERT_SHA-$TAG_RUN_ID-$TAG_RUN_ATTEMPT"'
+    );
+    expect(certificationAddendum).toMatch(
+      /--name "skyjo-build-\$CERT_SHA" \\\n\s+--dir \./
+    );
+    expect(certificationAddendum).toMatch(
+      /--name "certification-\$CERT_SHA-\$TAG_RUN_ID-\$TAG_RUN_ATTEMPT" \\\n\s+--dir test-results/
+    );
     expect(certificationAddendum).toContain('--tag v0.3.3');
     expect(certificationAddendum).toContain('--production-base-url https://skyjo.groundworkrevops.com');
     expect(certificationAddendum).toContain('published release back through GitHub');
