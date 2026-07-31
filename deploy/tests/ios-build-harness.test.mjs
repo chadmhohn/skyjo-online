@@ -23,6 +23,14 @@ const uiAccessibilityTestsPath = path.join(
   'SkyjoAppUITests',
   'SkyjoAppUITests.swift'
 );
+const soloViewsPath = path.join(
+  repositoryRoot,
+  'ios',
+  'SkyjoApp',
+  'Features',
+  'Solo',
+  'SoloViews.swift'
+);
 
 const ipadPortraitTests = [
   'testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting',
@@ -576,8 +584,9 @@ test('blocked-outbox audit categories own separate fail-closed terminal XCTest c
   assert.doesNotMatch(corruptOwner, /corruptApp\.terminate\(\)/);
 });
 
-test('contrast audit snapshots app state before entering AXRuntime', async () => {
+test('contrast audit snapshots app state and never exempts disabled controls', async () => {
   const uiTests = await fs.readFile(uiAccessibilityTestsPath, 'utf8');
+  const soloViews = await fs.readFile(soloViewsPath, 'utf8');
   const focusedAudit = uiTests.match(
     /  private func performFocusedSoloAccessibilityAudits\([\s\S]*?\n  \}\n\n  @MainActor/
   );
@@ -597,27 +606,59 @@ test('contrast audit snapshots app state before entering AXRuntime', async () =>
 
   for (const exactSnapshot of [
     /let appFrame = app\.frame/,
-    /app\.buttons\["solo\.action\.draw"\]/,
-    /app\.buttons\["solo\.action\.discard"\]/,
-    /app\.switches\["solo\.settings\.music"\]/,
     /let tabBarFrame = tabBar\.exists \? tabBar\.frame : nil/,
     /let navigationBarFrame = navigationBar\.exists \? navigationBar\.frame : nil/,
     /"solo\.setup\.opponents-header": "Opponents"/,
     /"solo\.setup\.difficulty-header": "Difficulty"/,
     /app\.navigationBars\["Game Settings"\]/,
     /"solo\.opponents\.scroll"/,
-    /\(1\.\.\.7\)\.map \{ "solo\.board\.header\.opponent\.ai-/,
-    /"solo\.board\.local\.human"/
+    /\(1\.\.\.7\)\.map \{ "solo\.board\.header\.opponent\.ai-/
   ]) {
     assert.match(snapshotSetup, exactSnapshot);
   }
   assert.doesNotMatch(callbackBody, /\bapp\.|self\.element\(in:\s*app/);
+  for (const forbiddenDisabledAllowance of [
+    'disabledControlFrames',
+    'isDisabledControl',
+    'disabledMusicControlFrame'
+  ]) {
+    assert.doesNotMatch(
+      focusedAudit[0],
+      new RegExp(forbiddenDisabledAllowance),
+      `${forbiddenDisabledAllowance} must not exempt contrast findings`
+    );
+  }
+  assert.doesNotMatch(
+    focusedAudit[0],
+    /\.isEnabled/,
+    'contrast handling must not infer or exempt disabled state'
+  );
+  for (const disabledControlIdentifier of [
+    'solo.action.draw',
+    'solo.action.discard',
+    'solo.settings.music'
+  ]) {
+    assert.doesNotMatch(
+      focusedAudit[0],
+      new RegExp(disabledControlIdentifier.replaceAll('.', '\\.')),
+      `${disabledControlIdentifier} must not participate in contrast handling`
+    );
+  }
+  assert.equal(
+    callbackBody.match(/\breturn true\b/g)?.length,
+    2,
+    'the callback may return only after an unattributed XCTFail and its exact allowance check'
+  );
   assert.match(
     callbackBody,
     /let isOffscreenOpponentHeaderChild = opponentScrollFrame\.map[\s\S]*?opponentHeaderFrames\.contains/
   );
+  assert.doesNotMatch(
+    focusedAudit[0],
+    /solo\.board\.local\.human|localBoardFrame|localBoardState/,
+    'contrast diagnostics must not re-query the local board before AXRuntime begins its audit'
+  );
   for (const exactAllowance of [
-    'isDisabledControl',
     'isObscuredByTabBar',
     'isIndependentlyAuditedOffscreenCopy',
     'isVerifiedSetupHeaderArtifact',
@@ -626,11 +667,50 @@ test('contrast audit snapshots app state before entering AXRuntime', async () =>
   ]) {
     assert.match(callbackBody, new RegExp(`!${exactAllowance}`));
   }
+  assert.match(
+    callbackBody,
+    /if !isObscuredByTabBar\n          && !isIndependentlyAuditedOffscreenCopy\n          && !isVerifiedSetupHeaderArtifact\n          && !isSettingsCopyBehindNavigationMaterial\n          && !isOffscreenOpponentHeaderChild \{[\s\S]*?XCTFail\(/
+  );
+  const sourceButtonStyle = soloViews.match(
+    /private struct SoloSourceButtonStyle: ButtonStyle \{[\s\S]*?\n\}/
+  );
+  assert.ok(sourceButtonStyle, 'missing contrast-safe source button style');
+  assert.match(sourceButtonStyle[0], /@Environment\(\\\.isEnabled\)/);
+  assert.match(sourceButtonStyle[0], /\.foregroundStyle\(Color\.primary\)/);
+  assert.match(sourceButtonStyle[0], /Image\(systemName: "lock\.fill"\)/);
+  assert.match(sourceButtonStyle[0], /\.accessibilityHidden\(true\)/);
+  assert.doesNotMatch(sourceButtonStyle[0], /\.environment\(\\\.isEnabled,/);
+  const drawSlot = soloViews.match(
+    /  private func drawSlot\([\s\S]*?\n  \}\n\n  private func discardSlot/
+  );
+  const discardSlot = soloViews.match(
+    /  private func discardSlot\([\s\S]*?\n  \}\n\n  @ViewBuilder\n  private func drawnSlot/
+  );
+  assert.ok(drawSlot, 'missing draw source slot');
+  assert.ok(discardSlot, 'missing discard source slot');
+  assert.match(
+    drawSlot[0],
+    /\.buttonStyle\(SoloSourceButtonStyle\(\)\)\n      \.disabled\(!canChooseSource\)\n      \.allowsHitTesting\(canChooseSource\)/
+  );
+  assert.match(
+    discardSlot[0],
+    /\.buttonStyle\(SoloSourceButtonStyle\(\)\)\n      \.disabled\(!canUseDiscardAction\)\n      \.allowsHitTesting\(canUseDiscardAction\)/
+  );
 
   const tableOwner = uiTests.match(
     /  func testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards\(\) throws \{[\s\S]*?\n  \}\n\n  @MainActor/
   );
   assert.ok(tableOwner, 'missing solo-table composite audit owner');
+  assert.match(tableOwner[0], /XCTAssertFalse\(draw\.isEnabled\)/);
+  assert.match(tableOwner[0], /XCTAssertFalse\(discard\.isEnabled\)/);
+  assert.match(
+    tableOwner[0],
+    /XCTAssertEqual\(app\.switches\["solo\.settings\.music"\]\.elementType, \.switch\)/
+  );
+  assert.match(
+    tableOwner[0],
+    /XCTAssertFalse\(app\.switches\["solo\.settings\.music"\]\.isEnabled\)/
+  );
   assert.match(
     tableOwner[0],
     /try performSoloAccessibilityAudit\(on: app\)[\s\S]*?assertAuditTargetRemainsForegroundAndTerminate\(/
