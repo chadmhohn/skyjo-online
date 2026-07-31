@@ -954,6 +954,8 @@ final class SkyjoAppUITests: XCTestCase {
     let guest = element(in: app, identifier: "solo.table.guest")
     XCTAssertTrue(draw.exists)
     XCTAssertTrue(discard.exists)
+    XCTAssertFalse(draw.isEnabled)
+    XCTAssertFalse(discard.isEnabled)
     XCTAssertTrue(guest.exists)
     XCTAssertEqual(guest.label, "Guest game. Completed games are not added to account stats.")
     XCTAssertGreaterThanOrEqual(draw.frame.height, 44)
@@ -1000,6 +1002,7 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(app.navigationBars["Game Settings"].waitForExistence(timeout: 8))
     XCTAssertTrue(app.switches["solo.settings.sound"].isEnabled)
     XCTAssertTrue(app.switches["solo.settings.haptics"].isEnabled)
+    XCTAssertEqual(app.switches["solo.settings.music"].elementType, .switch)
     XCTAssertFalse(app.switches["solo.settings.music"].isEnabled)
     XCTAssertEqual(app.switches["solo.settings.music"].value as? String, "0")
     app.buttons["Done"].tap()
@@ -3210,13 +3213,10 @@ final class SkyjoAppUITests: XCTestCase {
     allowedUnattributedTextClippingSignatures: Set<String> = [],
     maximumAllowedUnattributedTextClippingOccurrences: Int = 0
   ) throws {
-    // XCTest currently reports system-dimmed inactive SwiftUI controls as
-    // contrast failures even though inactive controls are exempt. Their
-    // disabled semantics and high-contrast custom treatment are asserted
-    // separately. Xcode 26 also reports a SwiftUI AccessibilityNode Dynamic
-    // Type false positive for text that demonstrably scales. The navigation-
-    // shell test relaunches at accessibility XXXL and asserts the complete
-    // labels and layout directly; all other audit categories remain enforced.
+    // Xcode 26 reports a SwiftUI AccessibilityNode Dynamic Type false positive
+    // for text that demonstrably scales. The navigation-shell test relaunches
+    // at accessibility XXXL and asserts the complete labels and layout directly;
+    // all other audit categories remain enforced.
     try performGeneralAccessibilityAudit(on: app)
     try performExactTextClippingAudit(
       on: app,
@@ -3404,14 +3404,6 @@ final class SkyjoAppUITests: XCTestCase {
     // child indefinitely. Capture the stable scene once before the sweep so
     // every finding is evaluated against immutable values.
     let appFrame = app.frame
-    let disabledControlFrames = [
-      app.buttons["solo.action.draw"],
-      app.buttons["solo.action.discard"],
-      app.switches["solo.settings.music"],
-    ].compactMap { control -> CGRect? in
-      guard control.exists, !control.isEnabled else { return nil }
-      return control.frame
-    }
     let tabBar = app.tabBars.firstMatch
     let tabBarFrame = tabBar.exists ? tabBar.frame : nil
     let navigationBar = app.navigationBars.firstMatch
@@ -3513,15 +3505,6 @@ final class SkyjoAppUITests: XCTestCase {
         return true
       }
       let elementFrame = element.frame
-      let isDisabledControl = disabledControlFrames.contains { frame in
-        frame.intersects(elementFrame)
-      }
-      // These exact controls were proven disabled before AXRuntime started its
-      // traversal. Return after the single frame read so known disabled-control
-      // findings cannot accumulate more live accessibility-element queries.
-      if isDisabledControl {
-        return true
-      }
       let elementIdentifier = element.identifier
       let elementLabel = element.label
       let elementType = element.elementType
