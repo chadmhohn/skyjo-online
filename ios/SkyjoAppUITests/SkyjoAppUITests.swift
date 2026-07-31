@@ -1080,6 +1080,10 @@ final class SkyjoAppUITests: XCTestCase {
     assertElement(revealedValue, isContainedIn: firstCard, tolerance: 2)
     attachScreenshot(app, name: "ios7-solo-phone-table")
     try performSoloAccessibilityAudit(on: app)
+    assertAuditTargetRemainsForegroundAndTerminate(
+      app,
+      auditOwner: "solo table composite accessibility audits"
+    )
   }
 
   @MainActor
@@ -3395,71 +3399,156 @@ final class SkyjoAppUITests: XCTestCase {
     allowedOffscreenContrastLabels: Set<String> = [],
     allowedContrastElementIdentifiers: Set<String> = []
   ) throws {
+    // The contrast callback runs while Xcode owns AXRuntime's audit traversal.
+    // Re-entering XCUIApplication from that callback can block a hosted XCTest
+    // child indefinitely. Capture the stable scene once before the sweep so
+    // every finding is evaluated against immutable values.
+    let appFrame = app.frame
+    let disabledControlFrames = [
+      app.buttons["solo.action.draw"],
+      app.buttons["solo.action.discard"],
+      app.switches["solo.settings.music"],
+    ].compactMap { control -> CGRect? in
+      guard control.exists, !control.isEnabled else { return nil }
+      return control.frame
+    }
+    let tabBar = app.tabBars.firstMatch
+    let tabBarFrame = tabBar.exists ? tabBar.frame : nil
+    let navigationBar = app.navigationBars.firstMatch
+    let navigationBarFrame = navigationBar.exists ? navigationBar.frame : nil
+    let visibleContentTop = navigationBarFrame.map { $0.maxY + 4 } ?? appFrame.minY + 4
+    let visibleContentBottom = tabBarFrame.map { $0.minY - 16 } ?? appFrame.maxY - 4
+    let visibleContentFrame = CGRect(
+      x: appFrame.minX,
+      y: visibleContentTop,
+      width: appFrame.width,
+      height: max(0, visibleContentBottom - visibleContentTop)
+    ).insetBy(dx: -2, dy: -2)
+    let setupHeaderLabelsByIdentifier = [
+      "solo.setup.opponents-header": "Opponents",
+      "solo.setup.difficulty-header": "Difficulty",
+    ]
+    var setupFrame: CGRect? = nil
+    var setupHeaderSnapshots: [(
+      expectedIdentifier: String,
+      expectedLabel: String,
+      identifier: String,
+      label: String,
+      isStaticText: Bool,
+      frame: CGRect
+    )] = []
+    let needsSetupHeaderSnapshots = setupHeaderLabelsByIdentifier.keys.contains {
+      allowedContrastElementIdentifiers.contains($0)
+    }
+    if needsSetupHeaderSnapshots {
+      let setup = self.element(in: app, identifier: "solo.setup")
+      setupFrame = setup.exists ? setup.frame.insetBy(dx: -2, dy: -2) : nil
+      for (identifier, label) in setupHeaderLabelsByIdentifier
+      where allowedContrastElementIdentifiers.contains(identifier) {
+        let header = self.element(in: app, identifier: identifier)
+        if header.exists {
+          setupHeaderSnapshots.append(
+            (
+              expectedIdentifier: identifier,
+              expectedLabel: label,
+              identifier: header.identifier,
+              label: header.label,
+              isStaticText: header.elementType == .staticText,
+              frame: header.frame
+            )
+          )
+        }
+      }
+    }
+    let settingsNavigationBar = app.navigationBars["Game Settings"]
+    let settingsNavigationBarFrame = settingsNavigationBar.exists
+      ? settingsNavigationBar.frame
+      : nil
+    let opponentScroll = self.element(in: app, identifier: "solo.opponents.scroll")
+    let opponentScrollFrame = opponentScroll.exists ? opponentScroll.frame : nil
+    var opponentHeaderFrames: [(identifier: String, frame: CGRect)] = []
+    if opponentScrollFrame != nil {
+      let expectedHeaderIdentifiers = Set(
+        (1...7).map { "solo.board.header.opponent.ai-\($0)" }
+      )
+      let headers = app.descendants(matching: .any).matching(
+        NSPredicate(
+          format: "identifier BEGINSWITH %@",
+          "solo.board.header.opponent.ai-"
+        )
+      ).allElementsBoundByIndex
+      var capturedHeaderIdentifiers: Set<String> = []
+      for header in headers {
+        let identifier = header.identifier
+        let frame = header.frame
+        guard expectedHeaderIdentifiers.contains(identifier),
+              capturedHeaderIdentifiers.insert(identifier).inserted,
+              frame.minX.isFinite,
+              frame.minY.isFinite,
+              frame.width.isFinite,
+              frame.height.isFinite,
+              frame.width > 0,
+              frame.height > 0
+        else {
+          continue
+        }
+        opponentHeaderFrames.append((identifier: identifier, frame: frame))
+      }
+    }
+    var localBoardFrame: CGRect? = nil
+    if opponentScrollFrame != nil {
+      let localBoard = self.element(in: app, identifier: "solo.board.local.human")
+      localBoardFrame = localBoard.exists ? localBoard.frame : nil
+    }
+    let settingsNavigationState = settingsNavigationBarFrame != nil ? "present" : "absent"
+    let opponentScrollState = opponentScrollFrame.map(String.init(describing:)) ?? "absent"
+    let localBoardState = localBoardFrame.map(String.init(describing:)) ?? "absent"
+    let opponentHeaderState = opponentHeaderFrames
+      .map { "\($0.identifier)=\($0.frame)" }
+      .joined(separator: ", ")
+
     try app.performAccessibilityAudit(for: .contrast) { issue in
       guard let element = issue.element else {
         XCTFail("Unexpected unattributed contrast finding")
         return true
       }
-      let disabledControls = [
-        app.buttons["solo.action.draw"],
-        app.buttons["solo.action.discard"],
-        app.switches["solo.settings.music"],
-      ]
-      let isDisabledControl = disabledControls.contains { control in
-        control.exists && !control.isEnabled && control.frame.intersects(element.frame)
+      let elementIdentifier = element.identifier
+      let elementLabel = element.label
+      let elementFrame = element.frame
+      let elementType = element.elementType
+      let isDisabledControl = disabledControlFrames.contains { frame in
+        frame.intersects(elementFrame)
       }
-      let tabBar = app.tabBars.firstMatch
       // iOS 26 draws the floating tab bar's material shadow above the frame
       // exposed to XCTest. Limit the framework-artifact allowance to that
       // measured 12-point system-chrome fringe; in-content findings stay fatal.
-      let isObscuredByTabBar: Bool
-      if tabBar.exists {
-        let tabBarShadowFrame = tabBar.frame.insetBy(dx: 0, dy: -12)
-        isObscuredByTabBar = element.frame.intersects(tabBarShadowFrame)
-      } else {
-        isObscuredByTabBar = false
-      }
-      let navigationBar = app.navigationBars.firstMatch
-      let visibleContentTop = navigationBar.exists
-        ? navigationBar.frame.maxY + 4
-        : app.frame.minY + 4
-      let visibleContentBottom = tabBar.exists
-        ? tabBar.frame.minY - 16
-        : app.frame.maxY - 4
-      let visibleContentFrame = CGRect(
-        x: app.frame.minX,
-        y: visibleContentTop,
-        width: app.frame.width,
-        height: max(0, visibleContentBottom - visibleContentTop)
-      ).insetBy(dx: -2, dy: -2)
+      let isObscuredByTabBar = tabBarFrame.map { frame in
+        elementFrame.intersects(frame.insetBy(dx: 0, dy: -12))
+      } ?? false
       let isIndependentlyAuditedOffscreenCopy =
-        allowedOffscreenContrastLabels.contains(element.label)
-          && !visibleContentFrame.contains(element.frame)
-      let setupHeaderLabelsByIdentifier = [
-        "solo.setup.opponents-header": "Opponents",
-        "solo.setup.difficulty-header": "Difficulty",
-      ]
+        allowedOffscreenContrastLabels.contains(elementLabel)
+          && !visibleContentFrame.contains(elementFrame)
       // Xcode 26 intermittently audits the transparent, full-width SwiftUI
       // Section wrapper on iPad. AXRuntime may expose that same wrapper either
       // without an identifier or with the visible header's identifier. Accept
       // only the two explicitly allowlisted headers after the queried element
       // proves the label, type, frame, visibility, and setup containment.
       let isVerifiedSetupHeaderArtifact: Bool = {
-        guard element.elementType == .staticText,
-              let verifiedHeader = setupHeaderLabelsByIdentifier.first(where: {
-                allowedContrastElementIdentifiers.contains($0.key)
-                  && $0.value == element.label
-                  && (element.identifier.isEmpty || element.identifier == $0.key)
+        guard elementType == .staticText,
+              let setupFrame,
+              let verifiedHeader = setupHeaderSnapshots.first(where: {
+                allowedContrastElementIdentifiers.contains($0.expectedIdentifier)
+                  && $0.expectedLabel == elementLabel
+                  && (
+                    elementIdentifier.isEmpty
+                      || elementIdentifier == $0.expectedIdentifier
+                  )
               })
         else {
           return false
         }
-        let header = self.element(in: app, identifier: verifiedHeader.key)
-        let setup = self.element(in: app, identifier: "solo.setup")
-        guard header.exists, setup.exists else { return false }
-        let headerFrame = header.frame
-        let auditedFrame = element.frame
-        let setupFrame = setup.frame.insetBy(dx: -2, dy: -2)
+        let headerFrame = verifiedHeader.frame
+        let auditedFrame = elementFrame
         // The first Form section begins exactly at the navigation/content
         // boundary. The generic audit viewport deliberately starts two points
         // below that boundary, so restore only those same two points here; the
@@ -3474,17 +3563,18 @@ final class SkyjoAppUITests: XCTestCase {
         // The identified variant must also prove the iPad Form's full-width
         // wrapper geometry; a finding attributed to the visible glyph bounds
         // remains fatal even when its identifier and label are allowlisted.
-        let isIdentifiedFullWidthWrapper = element.identifier == verifiedHeader.key
+        let isIdentifiedFullWidthWrapper = elementIdentifier
+          == verifiedHeader.expectedIdentifier
           && visibleContentFrame.width >= 704
           && auditedFrame.width >= visibleContentFrame.width - 44
           && abs(auditedFrame.midX - visibleContentFrame.midX) <= 2
           && headerFrame == auditedFrame
-        let framesMatch = element.identifier == verifiedHeader.key
+        let framesMatch = elementIdentifier == verifiedHeader.expectedIdentifier
           ? isIdentifiedFullWidthWrapper
           : (headerFrame == auditedFrame || headerFrame.intersects(auditedFrame))
-        return header.identifier == verifiedHeader.key
-          && header.label == verifiedHeader.value
-          && header.elementType == element.elementType
+        return verifiedHeader.identifier == verifiedHeader.expectedIdentifier
+          && verifiedHeader.label == verifiedHeader.expectedLabel
+          && verifiedHeader.isStaticText
           && headerFrame.width > 0
           && headerFrame.height > 0
           && auditedFrame.width > 0
@@ -3500,51 +3590,32 @@ final class SkyjoAppUITests: XCTestCase {
       // that intentionally blurred copy for contrast; scope the allowance to
       // content fully contained by the measured navigation frame while retaining
       // enforcement for the title and Done control rendered by that chrome.
-      let settingsNavigationBar = app.navigationBars["Game Settings"]
-      let isSettingsCopyBehindNavigationMaterial = settingsNavigationBar.exists
-        && settingsNavigationBar.frame.contains(element.frame)
-        && !element.isHittable
-        && element.identifier == "solo.settings.feedback-header"
-      let opponentScroll = self.element(in: app, identifier: "solo.opponents.scroll")
-      let opponentHeaders = (1...7).map {
-        self.element(in: app, identifier: "solo.board.header.opponent.ai-\($0)")
-      }
+      let isSettingsCopyBehindNavigationMaterial =
+        elementIdentifier == "solo.settings.feedback-header"
+          && (settingsNavigationBarFrame.map { $0.contains(elementFrame) } ?? false)
+          && !element.isHittable
       // Xcode 26 walks the nested opponent scroller and can then audit a text
       // child from the next header even when its parent is entirely outside the
       // viewport. Scope this allowance to that exact offscreen parent/child
       // relationship; every visible or partially visible opponent header
       // remains enforced.
-      let isOffscreenOpponentHeaderChild = opponentScroll.exists
-        && opponentHeaders.contains { header in
-          header.exists
-            && header.frame.intersects(element.frame)
-            && !opponentScroll.frame.intersects(header.frame)
+      let isOffscreenOpponentHeaderChild = opponentScrollFrame.map { scrollFrame in
+        opponentHeaderFrames.contains { header in
+          header.frame.intersects(elementFrame)
+            && !scrollFrame.intersects(header.frame)
         }
+      } ?? false
       if !isDisabledControl
           && !isObscuredByTabBar
           && !isIndependentlyAuditedOffscreenCopy
           && !isVerifiedSetupHeaderArtifact
           && !isSettingsCopyBehindNavigationMaterial
           && !isOffscreenOpponentHeaderChild {
-        let localBoard = self.element(in: app, identifier: "solo.board.local.human")
-        let opponentHeaderFrames = opponentHeaders
-          .filter(\.exists)
-          .map { "\($0.identifier)=\($0.frame)" }
-          .joined(separator: ", ")
         // Do not ask a missing navigation-bar query for its frame while
         // reporting an unrelated screen's audit issue. XCTest treats that as a
         // second snapshot failure and hides the original contrast diagnostic.
-        let settingsNavigationState = settingsNavigationBar.exists
-          ? "present"
-          : "absent"
-        let opponentScrollState = opponentScroll.exists
-          ? "\(opponentScroll.frame)"
-          : "absent"
-        let localBoardState = localBoard.exists
-          ? "\(localBoard.frame)"
-          : "absent"
         XCTFail(
-          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), localBoard=\(localBoardState), opponentHeaders=[\(opponentHeaderFrames)]"
+          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(elementIdentifier), label=\(elementLabel), frame=\(elementFrame), type=\(elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), localBoard=\(localBoardState), opponentHeaders=[\(opponentHeaderState)]"
         )
       }
       return true

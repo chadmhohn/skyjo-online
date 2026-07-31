@@ -576,6 +576,67 @@ test('blocked-outbox audit categories own separate fail-closed terminal XCTest c
   assert.doesNotMatch(corruptOwner, /corruptApp\.terminate\(\)/);
 });
 
+test('contrast audit snapshots app state before entering AXRuntime', async () => {
+  const uiTests = await fs.readFile(uiAccessibilityTestsPath, 'utf8');
+  const focusedAudit = uiTests.match(
+    /  private func performFocusedSoloAccessibilityAudits\([\s\S]*?\n  \}\n\n  @MainActor/
+  );
+  assert.ok(focusedAudit, 'missing focused solo accessibility audit');
+
+  const auditCall = 'try app.performAccessibilityAudit(for: .contrast) { issue in';
+  const auditStart = focusedAudit[0].indexOf(auditCall);
+  assert.ok(auditStart > 0, 'missing contrast accessibility audit');
+  const snapshotSetup = focusedAudit[0].slice(0, auditStart);
+  const callbackStart = auditStart + auditCall.length;
+  const callbackEnd = focusedAudit[0].indexOf(
+    '\n    }\n    if enforceDynamicType',
+    callbackStart
+  );
+  assert.ok(callbackEnd > callbackStart, 'missing contrast callback boundary');
+  const callbackBody = focusedAudit[0].slice(callbackStart, callbackEnd);
+
+  for (const exactSnapshot of [
+    /let appFrame = app\.frame/,
+    /app\.buttons\["solo\.action\.draw"\]/,
+    /app\.buttons\["solo\.action\.discard"\]/,
+    /app\.switches\["solo\.settings\.music"\]/,
+    /let tabBarFrame = tabBar\.exists \? tabBar\.frame : nil/,
+    /let navigationBarFrame = navigationBar\.exists \? navigationBar\.frame : nil/,
+    /"solo\.setup\.opponents-header": "Opponents"/,
+    /"solo\.setup\.difficulty-header": "Difficulty"/,
+    /app\.navigationBars\["Game Settings"\]/,
+    /"solo\.opponents\.scroll"/,
+    /\(1\.\.\.7\)\.map \{ "solo\.board\.header\.opponent\.ai-/,
+    /"solo\.board\.local\.human"/
+  ]) {
+    assert.match(snapshotSetup, exactSnapshot);
+  }
+  assert.doesNotMatch(callbackBody, /\bapp\.|self\.element\(in:\s*app/);
+  assert.match(
+    callbackBody,
+    /let isOffscreenOpponentHeaderChild = opponentScrollFrame\.map[\s\S]*?opponentHeaderFrames\.contains/
+  );
+  for (const exactAllowance of [
+    'isDisabledControl',
+    'isObscuredByTabBar',
+    'isIndependentlyAuditedOffscreenCopy',
+    'isVerifiedSetupHeaderArtifact',
+    'isSettingsCopyBehindNavigationMaterial',
+    'isOffscreenOpponentHeaderChild'
+  ]) {
+    assert.match(callbackBody, new RegExp(`!${exactAllowance}`));
+  }
+
+  const tableOwner = uiTests.match(
+    /  func testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards\(\) throws \{[\s\S]*?\n  \}\n\n  @MainActor/
+  );
+  assert.ok(tableOwner, 'missing solo-table composite audit owner');
+  assert.match(
+    tableOwner[0],
+    /try performSoloAccessibilityAudit\(on: app\)[\s\S]*?assertAuditTargetRemainsForegroundAndTerminate\(/
+  );
+});
+
 test('the infrastructure reset erases only the exact selected GitHub-hosted simulator', async () => {
   const harness = await fs.readFile(uiAccessibilityHarnessPath, 'utf8');
   const resetFunction = extractBashFunction(
