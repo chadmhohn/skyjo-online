@@ -1,3 +1,4 @@
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,7 @@ import {
   normalizeArchivePath,
   parseTarArchive,
   pruneForbiddenRuntimePaths,
+  readBoundedRegularFile,
   REQUIRED_ARCHIVE_FILES,
   validateRuntimeEntries,
   verifyRuntimeArtifact
@@ -256,14 +258,18 @@ describe('runtime artifact safety contract', () => {
   });
 
   test('allows only compiled output, production dependencies, metadata, and exact runtime scripts', () => {
+    expect(REQUIRED_ARCHIVE_FILES).toContain('server-apns-rollback-proof.mjs');
+    expect(REQUIRED_ARCHIVE_FILES).not.toContain('scripts/smoke-apns-rollback-compatibility.mjs');
     expect(isAllowedRuntimePath('./dist/assets/app.js')).toBe(true);
     expect(isAllowedRuntimePath('node_modules/ws/index.js')).toBe(true);
     expect(isAllowedRuntimePath('server-game-state-validation.mjs')).toBe(true);
+    expect(isAllowedRuntimePath('server-apns-rollback-proof.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-invite-codes.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-room-invites.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-push.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-unicode.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-unicode.d.mts')).toBe(false);
+    expect(isAllowedRuntimePath('scripts/smoke-apns-rollback-compatibility.mjs')).toBe(false);
     expect(isAllowedRuntimePath('scripts/smoke-deployed.mjs')).toBe(true);
     expect(isAllowedRuntimePath('scripts/smoke-chat.mjs')).toBe(false);
     expect(isAllowedRuntimePath('src/game.ts')).toBe(false);
@@ -330,6 +336,7 @@ describe('runtime artifact safety contract', () => {
   test('validates the complete allowlisted runtime and byte-identical release identities', () => {
     const result = validateRuntimeEntries(fixtureEntries(), releaseSha);
     expect(result.releaseIdentity.releaseSha).toBe(releaseSha);
+    expect(result.files.has('server-apns-rollback-proof.mjs')).toBe(true);
     expect(result.files.has('server-game-state-validation.mjs')).toBe(true);
     expect(result.files.has('server-invite-codes.mjs')).toBe(true);
     expect(result.files.has('server-room-invites.mjs')).toBe(true);
@@ -456,6 +463,10 @@ describe('runtime artifact safety contract', () => {
     expect(() => validateRuntimeEntries(disallowed, releaseSha)).toThrow('not allowlisted');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server.mjs'), releaseSha)).toThrow('missing required');
     expect(() => validateRuntimeEntries(
+      fixtureEntries().filter((entry) => entry.rawPath !== 'server-apns-rollback-proof.mjs'),
+      releaseSha
+    )).toThrow('missing required');
+    expect(() => validateRuntimeEntries(
       fixtureEntries().filter((entry) => entry.rawPath !== 'server-game-state-validation.mjs'),
       releaseSha
     )).toThrow('missing required');
@@ -576,6 +587,92 @@ describe('runtime artifact safety contract', () => {
     expect(() => parseTarArchive(createTar(tooMany))).toThrow('too many entries');
     expect(() => validateRuntimeEntries(Array(MAX_ARCHIVE_ENTRIES + 1).fill(empty), releaseSha)).toThrow('invalid entry count');
   });
+
+  test.skipIf(typeof fsConstants.O_NOFOLLOW !== 'number')(
+    'captures a bounded regular file through exactly one O_NOFOLLOW descriptor',
+    async () => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-bounded-file-test-'));
+      const filePath = path.join(directory, 'published.cdx.json');
+      try {
+        await fs.writeFile(filePath, 'published sbom');
+        const openSpy = vi.spyOn(fs, 'open');
+        const captured = await readBoundedRegularFile(filePath, {
+          label: 'Published runtime SBOM',
+          maxBytes: 64
+        });
+        expect(captured.equals(Buffer.from('published sbom'))).toBe(true);
+        expect(openSpy).toHaveBeenCalledTimes(1);
+        expect(Number(openSpy.mock.calls[0][1]) & fsConstants.O_NOFOLLOW).toBe(fsConstants.O_NOFOLLOW);
+      } finally {
+        vi.restoreAllMocks();
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test.skipIf(typeof fsConstants.O_NOFOLLOW !== 'number')(
+    'rejects linked, non-file, empty, and oversized bounded-file inputs',
+    async () => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-bounded-file-input-test-'));
+      const targetPath = path.join(directory, 'target.json');
+      const linkedPath = path.join(directory, 'linked.json');
+      const emptyPath = path.join(directory, 'empty.json');
+      const oversizedPath = path.join(directory, 'oversized.json');
+      try {
+        await fs.writeFile(targetPath, '{}');
+        await fs.symlink(path.basename(targetPath), linkedPath, 'file');
+        await fs.writeFile(emptyPath, '');
+        await fs.writeFile(oversizedPath, 'oversized');
+        await expect(readBoundedRegularFile(linkedPath, { label: 'Published runtime SBOM' }))
+          .rejects.toThrow('cannot be a symbolic link');
+        await expect(readBoundedRegularFile(directory, { label: 'Published runtime SBOM' }))
+          .rejects.toThrow('must be a regular file');
+        await expect(readBoundedRegularFile(emptyPath, { label: 'Published runtime SBOM' }))
+          .rejects.toThrow('size is outside the allowed range');
+        await expect(readBoundedRegularFile(oversizedPath, { label: 'Published runtime SBOM', maxBytes: 4 }))
+          .rejects.toThrow('size is outside the allowed range');
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test.skipIf(typeof fsConstants.O_NOFOLLOW !== 'number')(
+    'fails closed when the bounded pathname is replaced during its descriptor read',
+    async () => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-bounded-file-swap-test-'));
+      const filePath = path.join(directory, 'published.cdx.json');
+      const replacementPath = path.join(directory, 'replacement.cdx.json');
+      try {
+        await fs.writeFile(filePath, 'trusted sbom');
+        await fs.writeFile(replacementPath, 'untrusted replacement');
+        const originalOpen = fs.open.bind(fs);
+        let replaced = false;
+        vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          const handle = await originalOpen(...args);
+          if (path.resolve(String(args[0])) === filePath) {
+            const originalReadFile = handle.readFile.bind(handle);
+            vi.spyOn(handle, 'readFile').mockImplementationOnce(async () => {
+              const data = await originalReadFile();
+              await fs.rename(filePath, `${filePath}.opened`);
+              await fs.copyFile(replacementPath, filePath);
+              replaced = true;
+              return data;
+            });
+          }
+          return handle;
+        });
+        await expect(readBoundedRegularFile(filePath, {
+          label: 'Published runtime SBOM',
+          maxBytes: 64
+        })).rejects.toThrow('changed during validation');
+        expect(replaced).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   test('rejects a compressed artifact above its measured-runtime ceiling before reading it', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-artifact-limit-test-'));

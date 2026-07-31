@@ -31,6 +31,8 @@ Use this as the concise release checklist. The trust model, bootstrap commands, 
 - [ ] Production stopped gracefully and flushed rooms before the backward-compatible migration.
 - [ ] `previous` and `current` changed atomically, and the hardened service started as `skyjo` using `/opt/skyjo-online/node/bin/node`.
 - [ ] If this is the APNs envelope release, record its immutable tag/SHA after production verification; do not claim #203 operationally complete until a later healthy promotion makes that exact tag `previous`.
+- [ ] The envelope tag's `CI / Runtime Artifact` result proves the exact uploaded archive, checksum, and SBOM equal both deterministic rebuilds and that the extracted upload subject passes `server-apns-rollback-proof.mjs --expected-release-sha <exact-sha>` with one exact SHA-bound success line.
+- [ ] If establishing the APNs rollback floor, resolve `/srv/skyjo-online/previous` to the recorded envelope SHA, require its root-owned mode-`0644` `.skyjo-deployment.json` exact bytes (ordered SHA, artifact digest, tag, and one final LF) to match that tested upload subject, and run its artifact-carried proof helper as `skyjo-canary` under `env -i` with synthetic temporary state only. Record the bounded SHA-bound success result; never read production secrets/state or restart production for this proof.
 - [ ] If `apns_devices` may exist, both copied-state proof and the selected `previous` release accept only the frozen exact envelope and preserve representative encrypted rows byte-for-byte. The rollback target is not older than the recorded envelope tag.
 
 ## Local production proof

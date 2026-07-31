@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  APNS_ROLLBACK_ENVELOPE_SOURCE_SHA,
   CERTIFICATION_LIMITS,
   CERTIFICATION_PERSONA_PROFILES,
   CERTIFICATION_RELEASE_DATE,
@@ -35,6 +36,14 @@ import {
 } from '../../../scripts/certification-lib.mjs';
 import { REQUIRED_CHECKS } from '../../../scripts/github-governance-lib.mjs';
 import { selectSimulatorMatrix } from '../../../scripts/select-ios-ui-simulators.mjs';
+import {
+  validateReleaseTagMetadata,
+  verifyReleaseTagIdentity
+} from '../../../scripts/verify-release-tag-identity.mjs';
+import {
+  runApnsRollbackProof,
+  sensitiveBinaryLogRepresentations
+} from '../../../server-apns-rollback-proof.mjs';
 import { MULTIPLAYER_PROTOCOL_VERSION, type GameCommand } from '../../../src/protocolV2';
 import {
   createPropagationArrivalTracker,
@@ -300,7 +309,7 @@ describe('recovery RPO measurement', () => {
   });
 });
 
-describe('v0.3.2 certification evidence', () => {
+describe('v0.3.3 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     const commandId = '00000000-0000-4000-8000-000000000001';
     const sentCommand = (action: GameCommand, expectedRevision: number, nextCommandId = commandId) => ({
@@ -701,7 +710,178 @@ describe('v0.3.2 certification evidence', () => {
   });
 });
 
-describe('v0.3.2 workflow governance', () => {
+describe('v0.3.3 immutable tag identity', () => {
+  const metadata = {
+    tagRef: 'refs/tags/v0.3.3',
+    tagName: 'v0.3.3',
+    packageVersion: '0.3.3',
+    packageLockVersion: '0.3.3',
+    packageLockRootVersion: '0.3.3',
+    certificationVersion: '0.3.3'
+  };
+  const packageDocument = { version: metadata.packageVersion };
+  const packageLock = {
+    version: metadata.packageLockVersion,
+    packages: { '': { version: metadata.packageLockRootVersion } }
+  };
+  const tagObject = 'a'.repeat(40);
+  const commit = 'b'.repeat(40);
+
+  function annotatedTagContents(overrides: { object?: string; type?: string; tag?: string } = {}) {
+    return [
+      `object ${overrides.object ?? commit}`,
+      `type ${overrides.type ?? 'commit'}`,
+      `tag ${overrides.tag ?? metadata.tagName}`,
+      'tagger Release Bot <release@example.com> 1785247200 -0600',
+      '',
+      'Skyjo release',
+      ''
+    ].join('\n');
+  }
+
+  function tagIdentityGit(tagContents: string, checkoutCommit = commit) {
+    const responses = new Map([
+      ['cat-file -t refs/tags/v0.3.3', 'tag\n'],
+      ['rev-parse --verify refs/tags/v0.3.3^{tag}', `${tagObject}\n`],
+      ['rev-parse --verify HEAD^{commit}', `${checkoutCommit}\n`],
+      [`cat-file tag ${tagObject}`, tagContents]
+    ]);
+    return vi.fn(async (arguments_: string[]) => responses.get(arguments_.join(' ')) || '');
+  }
+
+  function verifyTag(runGit: (arguments_: string[]) => Promise<string>) {
+    return verifyReleaseTagIdentity({
+      tagRef: metadata.tagRef,
+      tagName: metadata.tagName,
+      packageDocument,
+      packageLock,
+      certificationVersion: metadata.certificationVersion,
+      runGit
+    });
+  }
+
+  it('binds the full tag ref, package, lockfile, and certification versions exactly', () => {
+    expect(validateReleaseTagMetadata(metadata)).toBe('v0.3.3');
+    for (const changed of [
+      { tagRef: 'refs/tags/v0.3.2', tagName: 'v0.3.2' },
+      { tagRef: 'refs/tags/v0.3.3-extra' },
+      { tagName: 'v0.3.2' },
+      { packageVersion: '0.3.2' },
+      { packageLockVersion: '0.3.2' },
+      { packageLockRootVersion: '0.3.2' },
+      { certificationVersion: '0.3.2' }
+    ]) {
+      expect(() => validateReleaseTagMetadata({ ...metadata, ...changed })).toThrow(/release|version|tag/i);
+    }
+  });
+
+  it('accepts only an annotated tag object directly naming the checked-out commit', async () => {
+    const runGit = tagIdentityGit(annotatedTagContents());
+    await expect(verifyTag(runGit)).resolves.toEqual({
+      expectedTag: 'v0.3.3',
+      tagObject,
+      taggedCommit: commit
+    });
+    expect(runGit).toHaveBeenCalledWith(['rev-parse', '--verify', 'refs/tags/v0.3.3^{tag}']);
+    expect(runGit).toHaveBeenCalledWith(['cat-file', 'tag', tagObject]);
+    expect(runGit).not.toHaveBeenCalledWith([
+      'rev-parse',
+      '--verify',
+      'refs/tags/v0.3.3^{commit}'
+    ]);
+  });
+
+  it('rejects lightweight tags and commit drift', async () => {
+    await expect(verifyTag(async () => 'commit\n')).rejects.toThrow(/annotated tag/i);
+    await expect(
+      verifyTag(tagIdentityGit(annotatedTagContents(), 'c'.repeat(40)))
+    ).rejects.toThrow(/checked-out commit/i);
+  });
+
+  it('rejects mismatched names, malformed headers, and duplicate reserved headers', async () => {
+    const cases = [
+      {
+        contents: annotatedTagContents({ tag: 'v0.3.2' }),
+        error: /name does not match/i
+      },
+      {
+        contents: annotatedTagContents().replace(`object ${commit}`, `object\t${commit}`),
+        error: /header is malformed/i
+      },
+      {
+        contents: annotatedTagContents().replace(`type commit\n`, ''),
+        error: /header is malformed/i
+      },
+      {
+        contents: annotatedTagContents().replace(
+          `type commit\n`,
+          `object ${'c'.repeat(40)}\ntype commit\n`
+        ),
+        error: /duplicate object header/i
+      },
+      {
+        contents: annotatedTagContents().replace('tag v0.3.3\n', 'type commit\ntag v0.3.3\n'),
+        error: /duplicate type header/i
+      },
+      {
+        contents: annotatedTagContents().replace(
+          'tagger Release Bot',
+          'tag v0.3.3\ntagger Release Bot'
+        ),
+        error: /duplicate tag header/i
+      },
+      {
+        contents: annotatedTagContents().replace('tagger Release Bot', 'unknown Release Bot'),
+        error: /header is malformed/i
+      },
+      {
+        contents: annotatedTagContents().replace('\n\nSkyjo release', '\nSkyjo release'),
+        error: /header is malformed/i
+      }
+    ];
+    for (const { contents, error } of cases) {
+      await expect(verifyTag(tagIdentityGit(contents))).rejects.toThrow(error);
+    }
+  });
+
+  it('rejects nested tag targets without accepting an indirectly peeled commit', async () => {
+    const runGit = tagIdentityGit(annotatedTagContents({
+      object: 'c'.repeat(40),
+      type: 'tag'
+    }));
+    await expect(verifyTag(runGit)).rejects.toThrow(/directly target a commit/i);
+    expect(runGit).not.toHaveBeenCalledWith([
+      'rev-parse',
+      '--verify',
+      'refs/tags/v0.3.3^{commit}'
+    ]);
+  });
+});
+
+describe('v0.3.3 workflow governance', () => {
+  it('enumerates common text and JSON renderings of sensitive binary storage', () => {
+    expect(sensitiveBinaryLogRepresentations('0001ff')).toEqual([
+      '0001ff',
+      '0001FF',
+      '00 01 ff',
+      '00 01 FF',
+      '00:01:ff',
+      '00:01:FF',
+      'AAH/',
+      'AAH_',
+      '0,1,255',
+      '0, 1, 255',
+      '"0":0,"1":1,"2":255'
+    ]);
+    expect(sensitiveBinaryLogRepresentations('fbff')).toEqual(expect.arrayContaining([
+      'fb:ff',
+      'FB:FF',
+      '+/8=',
+      '+/8',
+      '-_8'
+    ]));
+  });
+
   it('selects a compact standard phone independently from the large-phone entry', () => {
     type SimulatorMatrixEntry = {
       role: 'standard-phone' | 'large-phone' | 'ipad';
@@ -735,10 +915,73 @@ describe('v0.3.2 workflow governance', () => {
     );
   });
 
+  it('rejects missing or malformed APNs rollback proof identity before synthetic work', async () => {
+    await expect(runApnsRollbackProof()).rejects.toThrow('exact lowercase 40-character release SHA');
+    await expect(runApnsRollbackProof({ expectedReleaseSha: 'A'.repeat(40) })).rejects.toThrow(
+      'exact lowercase 40-character release SHA'
+    );
+
+    const helperPath = path.join(root, 'server-apns-rollback-proof.mjs');
+    const invalidArguments = [
+      [],
+      ['--expected-release-sha', 'A'.repeat(40)],
+      ['--expected-release-sha', 'a'.repeat(40), 'extra'],
+      ['--wrong-option', 'a'.repeat(40)]
+    ];
+    for (const args of invalidArguments) {
+      const result = spawnSync(process.execPath, [helperPath, ...args], {
+        cwd: root,
+        encoding: 'utf8',
+        env: {},
+        timeout: 5_000,
+        maxBuffer: 64 * 1024
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.signal).toBeNull();
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain(
+        'Usage: server-apns-rollback-proof.mjs --expected-release-sha <lowercase-40-sha>'
+      );
+      expect(result.stderr).not.toContain('APNS-ROW-MUST-NEVER-REACH-LOGS');
+    }
+
+    const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-apns-proof-symlink-'));
+    try {
+      const helperSymlink = path.join(temporaryDirectory, 'server-apns-rollback-proof.mjs');
+      await fs.symlink(helperPath, helperSymlink);
+      const symlinkResult = spawnSync(process.execPath, [helperSymlink], {
+        cwd: root,
+        encoding: 'utf8',
+        env: {},
+        timeout: 5_000,
+        maxBuffer: 64 * 1024
+      });
+      expect(symlinkResult.status).not.toBe(0);
+      expect(symlinkResult.signal).toBeNull();
+      expect(symlinkResult.stdout).toBe('');
+      expect(symlinkResult.stderr).toContain(
+        'Usage: server-apns-rollback-proof.mjs --expected-release-sha <lowercase-40-sha>'
+      );
+    } finally {
+      await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    }
+
+    const wrapperResult = spawnSync(
+      process.execPath,
+      [path.join(root, 'scripts', 'smoke-apns-rollback-compatibility.mjs'), '--expected-release-sha', 'a'.repeat(40)],
+      { cwd: root, encoding: 'utf8', env: {}, timeout: 5_000, maxBuffer: 64 * 1024 }
+    );
+    expect(wrapperResult.status).not.toBe(0);
+    expect(wrapperResult.signal).toBeNull();
+    expect(wrapperResult.stdout).toBe('');
+    expect(wrapperResult.stderr).toContain('Usage: smoke-apns-rollback-compatibility.mjs');
+  });
+
   it('requires the exact load gate and preserves pinned, least-privilege workflow execution', async () => {
     const [
       ci,
       uiAccessibilityHarness,
+      codeql,
       nightly,
       installer,
       load,
@@ -746,14 +989,21 @@ describe('v0.3.2 workflow governance', () => {
       realtime,
       verifier,
       apnsRollbackSmoke,
+      apnsRollbackProof,
+      artifactIntegration,
+      releaseController,
+      serverEntrypoint,
       packageDocument,
       packageLock,
       changelog,
       certificationAddendum,
-      securityAddendum
+      securityAddendum,
+      deploymentChecklist,
+      immutableDeployment
     ] = await Promise.all([
       fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'ios-ui-accessibility-test.sh'), 'utf8'),
+      fs.readFile(path.join(root, '.github', 'workflows', 'codeql.yml'), 'utf8'),
       fs.readFile(path.join(root, '.github', 'workflows', 'nightly-certification.yml'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'install-k6.sh'), 'utf8'),
       fs.readFile(path.join(root, 'tests', 'load', 'skyjo-realtime.k6.js'), 'utf8'),
@@ -761,11 +1011,17 @@ describe('v0.3.2 workflow governance', () => {
       fs.readFile(path.join(root, 'src', 'serverRealtime.ts'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'verify-v030-release.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'scripts', 'smoke-apns-rollback-compatibility.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'server-apns-rollback-proof.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'scripts', 'test-runtime-artifact-integration.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'deploy', 'release-controller.mjs'), 'utf8'),
+      fs.readFile(path.join(root, 'server.mjs'), 'utf8'),
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
       fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.2-certification.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.2-security.md'), 'utf8')
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.3-certification.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.3-security.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'deployment-smoke-checklist.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'immutable-deployment.md'), 'utf8')
     ]);
     expect(REQUIRED_CHECKS).toContain('CI / Load & Recovery');
     expect(REQUIRED_CHECKS.filter((check: string) => check === 'CI / Load & Recovery')).toHaveLength(1);
@@ -829,6 +1085,10 @@ describe('v0.3.2 workflow governance', () => {
     expect(nightly).not.toMatch(/playwright-report|test-results\/playwright|test-results\/server/);
     expect(ci).toMatch(/release-canary:[\s\S]*?needs:[\s\S]*?- load-recovery/);
     expect(ci).toMatch(/pull_request:[\s\S]*push:[\s\S]*tags:[\s\S]*v\*/);
+    expect(ci).toMatch(/Check out repository[\s\S]*?fetch-depth: 0/);
+    expect(ci).toContain('Bind annotated tag to package and certification identity');
+    expect(ci).toContain('node scripts/verify-release-tag-identity.mjs "$GITHUB_REF" "$GITHUB_REF_NAME"');
+    expect(codeql).not.toMatch(/push:[\s\S]*?tags:/);
     expect(nightly).toMatch(/schedule:[\s\S]*cron:/);
     expect(nightly).toMatch(/workflow_dispatch:/);
     expect(nightly).toMatch(/npm run certify:automated/);
@@ -862,9 +1122,13 @@ describe('v0.3.2 workflow governance', () => {
     expect(verifier).toMatch(/assertRssStageEvidenceMatchesCertification\(evidence, rssEvidence\)/);
     expect(verifier).toMatch(/readVerifiedRecoveryTraceEvidence/);
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
-    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-27');
+    expect(verifier).toMatch(/merge-base',\s*'--is-ancestor',\s*APNS_ROLLBACK_ENVELOPE_SOURCE_SHA/);
+    expect(verifier).toContain("packageLock.packages?.['']?.version");
+    expect(CERTIFICATION_RELEASE_VERSION).toBe('0.3.3');
+    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-07-30');
+    expect(APNS_ROLLBACK_ENVELOPE_SOURCE_SHA).toBe('f842937e7515e4f5d854644e5f7929bde5da5312');
     const packageJson = JSON.parse(packageDocument);
-    expect(packageJson.version).toBe('0.3.2');
+    expect(packageJson.version).toBe('0.3.3');
     expect(packageJson.scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
     expect(packageJson.scripts['test:e2e:certification']).toContain('--retries=0');
     expect(packageJson.scripts['smoke:apns-rollback']).toBe(
@@ -872,16 +1136,147 @@ describe('v0.3.2 workflow governance', () => {
     );
     expect(packageJson.scripts['smoke:delivery']).toContain('npm run smoke:apns-rollback');
     expect(packageJson.scripts['smoke:release']).toContain('npm run smoke:delivery');
-    expect(apnsRollbackSmoke).toContain('logs.includes(sensitiveCanary)');
-    expect(apnsRollbackSmoke).toContain('diagnostics withheld');
-    expect(apnsRollbackSmoke).not.toMatch(/console\.(?:error|log)\(logs\)/);
-    expect(JSON.parse(packageLock).version).toBe('0.3.2');
-    expect(changelog).toMatch(/^## 0\.3\.2 - 2026-07-27$/m);
-    expect(certificationAddendum).toContain('physical `PASS V0.3 IOS`');
-    expect(certificationAddendum).toContain('complete automated CI and CodeQL matrix');
-    expect(certificationAddendum).toContain('byte-equivalence proof');
-    expect(certificationAddendum).toContain('`v0.3.0` and `v0.3.1` remain immutable and unpublished');
-    expect(securityAddendum).toContain('Browser resource type is deliberately not an authorization boundary');
-    expect(securityAddendum).toContain('`/cdn-cgi/rum?`');
+    expect(apnsRollbackSmoke).toContain('process.argv.slice(2).length !== 0');
+    expect(apnsRollbackSmoke).toContain("loadReleaseIdentity(path.join(projectRoot, 'dist')");
+    expect(apnsRollbackSmoke).toContain('allowDevelopment: false');
+    expect(apnsRollbackSmoke).toContain('requireFullSha: true');
+    expect(apnsRollbackSmoke).toContain('runApnsRollbackProof({ expectedReleaseSha: releaseIdentity.releaseSha })');
+    expect(apnsRollbackSmoke).not.toContain('sensitiveCanary');
+    expect(apnsRollbackSmoke).not.toContain("'--expected-release-sha'");
+    expect(apnsRollbackProof).toContain('const leakedLogNeedles = new Set()');
+    expect(apnsRollbackProof).toContain("logScanTails.get(stream) || ''");
+    expect(apnsRollbackProof).toContain('combined.includes(needle)');
+    expect(apnsRollbackProof).toContain('maxSensitiveLogNeedleLength - 1');
+    expect(apnsRollbackProof).toContain('expectedRows[0].token_ciphertext_hex');
+    expect(apnsRollbackProof).toContain('expectedRows[0].token_fingerprint_hex');
+    expect(apnsRollbackProof).toContain("bytes.toString('base64url')");
+    expect(apnsRollbackProof).toContain("standardBase64.replace(/=+$/u, '')");
+    expect(apnsRollbackProof).toContain("join(':')");
+    expect(apnsRollbackProof).toContain("decimalBytes.join(',')");
+    expect(apnsRollbackProof).toContain('indexedDecimalBytes');
+    expect(apnsRollbackProof).toContain('await fs.realpath(process.argv[1])');
+    expect(apnsRollbackProof).toContain('assert.equal(leakedLogNeedles.size, 0');
+    expect(apnsRollbackProof).toContain('APNs rollback proof server diagnostics withheld (${logByteCount} bytes)');
+    expect(apnsRollbackProof).toContain('diagnostics withheld');
+    expect(apnsRollbackProof).toContain('argv.length !== 2');
+    expect(apnsRollbackProof).toContain("argv[0] !== '--expected-release-sha'");
+    expect(apnsRollbackProof).toContain('const releaseSha = validateExpectedReleaseSha(expectedReleaseSha)');
+    expect(apnsRollbackProof).toContain("fetch(`${baseUrl}/version`");
+    expect(apnsRollbackProof).toContain('assert.equal(version.releaseSha, releaseSha)');
+    expect(apnsRollbackProof).toContain('if (validatedGracefulStops.has(serverProcess)) return');
+    expect(apnsRollbackProof).toContain('serverProcess.exitCode !== null || serverProcess.signalCode !== null');
+    expect(apnsRollbackProof).toContain("serverProcess.kill('SIGTERM')");
+    expect(apnsRollbackProof).toContain("serverProcess.kill('SIGKILL')");
+    expect(apnsRollbackProof).toContain("serverProcess.once('close', (code, signal) => resolve({ code, signal }))");
+    expect(apnsRollbackProof).toMatch(/exit\.code !== 0 \|\|\s+exit\.signal !== null/);
+    expect(apnsRollbackProof).toContain('could not be reaped during bounded cleanup');
+    expect(apnsRollbackProof).toContain('validatedGracefulStops.add(serverProcess)');
+    expect(apnsRollbackProof).toContain("process.on('SIGINT', onSigint)");
+    expect(apnsRollbackProof).toContain("process.on('SIGTERM', onSigterm)");
+    expect(apnsRollbackProof).toContain("process.off('SIGINT', onSigint)");
+    expect(apnsRollbackProof).toContain("process.off('SIGTERM', onSigterm)");
+    expect(apnsRollbackProof).toContain('serverProcesses.map((serverProcess) => stopServer(serverProcess, { requireCleanExit: false }))');
+    expect(apnsRollbackProof).toContain('assertApnsRowsPreserved(apnsRows(copiedDatabase), expectedRows)');
+    expect(apnsRollbackProof).toContain('isDeepStrictEqual(actualRows, expectedRows)');
+    expect(apnsRollbackProof).toContain('detected a row preservation mismatch');
+    expect(apnsRollbackProof).not.toContain('assert.deepEqual(apnsRows(copiedDatabase), expectedRows)');
+    for (const field of ['user_id', 'app_version', 'locale', 'created_at', 'updated_at']) {
+      expect(apnsRollbackProof).toContain(`expectedRows[0].${field}`);
+    }
+    const bothValidatedStops = apnsRollbackProof.indexOf(
+      'await Promise.all([stopServer(first), stopServer(second)])'
+    );
+    const postShutdownRowProof = apnsRollbackProof.indexOf(
+      'assertApnsRowsPreserved(apnsRows(copiedDatabase), expectedRows)',
+      bothValidatedStops
+    );
+    expect(bothValidatedStops).toBeGreaterThan(-1);
+    expect(postShutdownRowProof).toBeGreaterThan(bothValidatedStops);
+    expect(apnsRollbackProof).toContain('proof passed for ${releaseSha}');
+    expect(apnsRollbackProof).not.toMatch(/console\.(?:error|log)\(logs\)/);
+    expect(serverEntrypoint).not.toContain('server-apns-rollback-proof');
+    expect(artifactIntegration).toContain("path.join(projectRoot, 'release', expectedNames.archiveName)");
+    expect(artifactIntegration).toContain('verifyRuntimeArtifact({');
+    expect(artifactIntegration).toContain('[published.archivePath, first.archivePath, second.archivePath]');
+    expect(artifactIntegration).toContain('[published.checksumPath, first.checksumPath, second.checksumPath]');
+    expect(artifactIntegration).toContain('readBoundedRegularFile(publishedSbomPath');
+    expect(artifactIntegration).toContain('maxBytes: MAX_FILE_BYTES');
+    expect(artifactIntegration).toContain('[publishedSbomData, firstSbomData, secondSbomData]');
+    expect(artifactIntegration).not.toContain('fs.lstat(publishedSbomPath)');
+    expect(artifactIntegration).not.toContain('fs.readFile(publishedSbomPath)');
+    expect(artifactIntegration).toContain("'--extract', '--gzip', '--file', published.archivePath");
+    expect(artifactIntegration).toContain("'server-apns-rollback-proof.mjs'");
+    expect(artifactIntegration).toContain("controllerContract.entries.has('scripts/smoke-apns-rollback-compatibility.mjs')");
+    expect(artifactIntegration).toContain('stdout: apnsProofOutput, stderr: apnsProofError');
+    expect(artifactIntegration).toContain('`APNs rollback envelope proof passed for ${releaseSha}:');
+    expect(artifactIntegration).toContain("assert.equal(apnsProofError, ''");
+    expect(artifactIntegration).toContain('process.stdout.write(apnsProofOutput)');
+    expect(artifactIntegration).toContain("'--expected-release-sha'");
+    expect(artifactIntegration).toContain('env: { TMPDIR: temporaryRoot }');
+    expect(artifactIntegration).toContain('Packaged server diagnostics withheld');
+    expect(artifactIntegration).not.toMatch(/console\.error\(logs\)/);
+    const promotedMetadataTagAssignment = releaseController.indexOf('metadata.tag = parsed.tag;');
+    const promotedMetadataWrite = releaseController.indexOf(
+      "await fsp.writeFile(resolveWithin(incoming, '.skyjo-deployment.json'), `${JSON.stringify(metadata)}\\n`, { mode: 0o444 });"
+    );
+    const promotedTreeNormalization = releaseController.indexOf(
+      "await run('/usr/bin/chmod', ['--recursive', 'u=rwX,go=rX', incoming]);"
+    );
+    expect(promotedMetadataTagAssignment).toBeGreaterThan(-1);
+    expect(promotedMetadataWrite).toBeGreaterThan(promotedMetadataTagAssignment);
+    expect(promotedTreeNormalization).toBeGreaterThan(promotedMetadataWrite);
+    expect(JSON.parse(packageLock).version).toBe('0.3.3');
+    expect(JSON.parse(packageLock).packages[''].version).toBe('0.3.3');
+    expect(changelog).toMatch(/^## 0\.3\.3 - 2026-07-30$/m);
+    expect(changelog).toContain('source-only native solo launcher and game table');
+    expect(changelog).toContain('artifact-only synthetic rollback-proof helper');
+    expect(ci).toContain('Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility');
+    expect(certificationAddendum).toContain('not byte-equivalent to `v0.3.2`');
+    expect(certificationAddendum).toContain('immutable cached-PWA v0.3.2 validator pin');
+    expect(certificationAddendum).toContain('four-role UI/accessibility matrix');
+    expect(certificationAddendum).toContain('normal `server.mjs` startup never imports it');
+    expect(certificationAddendum).toContain('explicit approval in the current conversation naming both exact tag `v0.3.3` and exact `CERT_SHA`');
+    expect(certificationAddendum).toContain('`previous` resolves to the exact immutable `v0.3.3` tag');
+    expect(certificationAddendum).toContain('keep issue #203 open and #204 blocked');
+    expect(certificationAddendum).toContain('CodeQL does not run automatically on tag pushes');
+    expect(certificationAddendum).toContain('--name "skyjo-build-$CERT_SHA"');
+    expect(certificationAddendum).toContain(
+      '--name "certification-$CERT_SHA-$TAG_RUN_ID-$TAG_RUN_ATTEMPT"'
+    );
+    expect(certificationAddendum).toMatch(
+      /--name "skyjo-build-\$CERT_SHA" \\\n\s+--dir \./
+    );
+    expect(certificationAddendum).toMatch(
+      /--name "certification-\$CERT_SHA-\$TAG_RUN_ID-\$TAG_RUN_ATTEMPT" \\\n\s+--dir test-results/
+    );
+    expect(certificationAddendum).toContain('--tag v0.3.3');
+    expect(certificationAddendum).toContain('--production-base-url https://skyjo.groundworkrevops.com');
+    expect(certificationAddendum).toContain('published release back through GitHub');
+    expect(certificationAddendum).toContain('every SHA-256 sidecar');
+    expect(certificationAddendum).toContain('/srv/skyjo-online/previous');
+    expect(certificationAddendum).toContain('set -eu');
+    expect(certificationAddendum).toContain("/usr/bin/stat -c '%a' \"$resolved_previous/.skyjo-deployment.json\")\" = '644'");
+    expect(certificationAddendum).not.toContain("/usr/bin/stat -c '%a' \"$resolved_previous/.skyjo-deployment.json\")\" = '444'");
+    expect(certificationAddendum).toContain('/usr/bin/cmp -s - "$resolved_previous/.skyjo-deployment.json"');
+    expect(certificationAddendum).toContain("controller's `releaseSha`, `artifactSha256`, `tag` key order and single final LF");
+    expect(certificationAddendum).toContain('/usr/bin/sudo -u skyjo-canary /usr/bin/env -i TMPDIR=/var/tmp');
+    expect(certificationAddendum).toContain('"$resolved_previous/server-apns-rollback-proof.mjs"');
+    expect(certificationAddendum).toContain('--expected-release-sha "$V033_SHA"');
+    expect(certificationAddendum).toContain('does not read the production environment or state');
+    expect(certificationAddendum).not.toContain('physical `PASS V0.3 IOS`');
+    expect(securityAddendum).toContain('Production dependencies remain unchanged');
+    expect(securityAddendum).toContain('does not create or use `apns_devices`');
+    expect(securityAddendum).toContain('bound to the current authorized account');
+    expect(securityAddendum).toContain('general autonomy is insufficient');
+    expect(securityAddendum).toContain('CodeQL does not run automatically on tag pushes');
+    expect(securityAddendum).toContain('artifact-only certification helper');
+    expect(securityAddendum).toContain('Normal `server.mjs` startup never imports it');
+    expect(securityAddendum).toContain('requires both servers to exit cleanly after SIGTERM');
+    expect(deploymentChecklist).toContain('exact uploaded archive, checksum, and SBOM equal both deterministic rebuilds');
+    expect(deploymentChecklist).toContain('root-owned mode-`0644` `.skyjo-deployment.json` exact bytes');
+    expect(deploymentChecklist).toContain('run its artifact-carried proof helper as `skyjo-canary` under `env -i`');
+    expect(immutableDeployment).toContain('invokes the helper\'s strict direct CLI with its required expected SHA');
+    expect(immutableDeployment).toContain('root-owned mode-`0644` deployment metadata bytes');
+    expect(immutableDeployment).toContain('literal installed-`previous` proof');
   });
 });

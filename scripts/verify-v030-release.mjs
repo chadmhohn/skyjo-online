@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
+  APNS_ROLLBACK_ENVELOPE_SOURCE_SHA,
   CERTIFICATION_RELEASE_DATE,
   CERTIFICATION_RELEASE_VERSION,
   assertAiBenchmarkMatchesCertification,
@@ -98,6 +99,16 @@ async function main() {
   if (checkoutOutput.trim().toLowerCase() !== options.releaseSha) {
     throw new Error(`The checked-out source does not match the certified ${releaseTag} commit.`);
   }
+  try {
+    await execFileAsync('git', [
+      'merge-base',
+      '--is-ancestor',
+      APNS_ROLLBACK_ENVELOPE_SOURCE_SHA,
+      options.releaseSha
+    ], { cwd: root, encoding: 'utf8' });
+  } catch {
+    throw new Error(`${releaseTag} does not contain the frozen APNs rollback envelope.`);
+  }
   const [
     { evidence, digest },
     { evidence: aiBenchmarkEvidence, digest: aiBenchmarkDigest },
@@ -128,6 +139,13 @@ async function main() {
   const packageDocument = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
   if (packageDocument.version !== CERTIFICATION_RELEASE_VERSION) {
     throw new Error(`package.json does not identify ${releaseTag}.`);
+  }
+  const packageLock = JSON.parse(await fs.readFile(path.join(root, 'package-lock.json'), 'utf8'));
+  if (
+    packageLock.version !== CERTIFICATION_RELEASE_VERSION ||
+    packageLock.packages?.['']?.version !== CERTIFICATION_RELEASE_VERSION
+  ) {
+    throw new Error(`package-lock.json does not identify ${releaseTag}.`);
   }
   const changelog = await fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8');
   if (!changelog.split(/\r?\n/).includes(releaseChangelogHeading)) {
