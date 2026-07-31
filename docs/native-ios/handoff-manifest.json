@@ -142,6 +142,7 @@
     ],
     "apnsRollbackEnvelope": [
       "server-account-store.mjs",
+      "server-apns-rollback-proof.mjs",
       "server-state-backup.mjs",
       "scripts/smoke-apns-rollback-compatibility.mjs",
       "tests/unit/data/migrations.test.ts",

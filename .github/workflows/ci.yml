@@ -102,6 +102,10 @@ jobs:
           node-version-file: .node-version
           cache: npm
 
+      - name: Bind annotated tag to package and certification identity
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/verify-release-tag-identity.mjs "$GITHUB_REF" "$GITHUB_REF_NAME"
+
       - name: Validate native iOS issue orchestration logic
         run: node scripts/reconcile-native-ios-issues.mjs --self-test
 
@@ -609,7 +613,7 @@ jobs:
         run: |
           npm run benchmark:ai:verify -- \
             --source-sha "${{ needs.quality.outputs.source-sha }}" \
-            --release-version 0.3.2 \
+            --release-version 0.3.3 \
             --strategy-version 1
 
       - name: Install pinned Chromium and k6

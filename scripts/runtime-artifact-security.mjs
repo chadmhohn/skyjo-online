@@ -35,6 +35,7 @@ export const RUNTIME_ROOT_FILES = Object.freeze([
   'package-lock.json',
   'package.json',
   'server-account-store.mjs',
+  'server-apns-rollback-proof.mjs',
   'server-game-state-validation.mjs',
   'server-invite-codes.mjs',
   'server-persistence-health.mjs',
@@ -147,6 +148,42 @@ async function readStableFile(openedFile, label) {
   const afterRead = await openedFile.handle.stat({ bigint: true });
   assertStableFile(beforeRead, afterRead, label);
   return { data, stat: afterRead };
+}
+
+export async function readBoundedRegularFile(filePath, {
+  label = 'File',
+  maxBytes = MAX_FILE_BYTES
+} = {}) {
+  if (typeof fsConstants.O_NOFOLLOW !== 'number') {
+    throw new Error(`${label} cannot be securely opened because O_NOFOLLOW is unavailable.`);
+  }
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error(`${label} maximum size is invalid.`);
+  }
+
+  const resolved = path.resolve(filePath);
+  let openedFile;
+  try {
+    openedFile = await openStableRegularFile(resolved, label);
+    if (openedFile.stat.size <= 0n || openedFile.stat.size > BigInt(maxBytes)) {
+      throw new Error(`${label} size is outside the allowed range.`);
+    }
+    const captured = await readStableFile(openedFile, label);
+    if (BigInt(captured.data.length) !== captured.stat.size) {
+      throw new Error(`${label} changed during validation.`);
+    }
+    const pathnameStat = await fs.lstat(resolved, { bigint: true });
+    if (pathnameStat.isSymbolicLink()) {
+      throw new Error(`${label} changed during validation.`);
+    }
+    assertStableFile(captured.stat, pathnameStat, label);
+    return captured.data;
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`${label} changed during validation.`);
+    throw error;
+  } finally {
+    await openedFile?.handle.close();
+  }
 }
 
 async function assertPathStillReferencesFile(filePath, expectedStat, label) {
