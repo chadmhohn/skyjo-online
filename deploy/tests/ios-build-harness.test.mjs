@@ -612,12 +612,31 @@ test('contrast audit snapshots app state before entering AXRuntime', async () =>
     assert.match(snapshotSetup, exactSnapshot);
   }
   assert.doesNotMatch(callbackBody, /\bapp\.|self\.element\(in:\s*app/);
+  const elementFrameRead = callbackBody.indexOf('let elementFrame = element.frame');
+  const disabledControlReturn = callbackBody.indexOf(
+    'if isDisabledControl {\n        return true\n      }'
+  );
+  assert.ok(elementFrameRead >= 0, 'missing one-frame disabled-control proof');
+  assert.ok(
+    disabledControlReturn > elementFrameRead,
+    'disabled-control short-circuit must follow the issue frame read'
+  );
+  for (const deferredElementRead of [
+    'let elementIdentifier = element.identifier',
+    'let elementLabel = element.label',
+    'let elementType = element.elementType',
+    '!element.isHittable'
+  ]) {
+    assert.ok(
+      callbackBody.indexOf(deferredElementRead) > disabledControlReturn,
+      `${deferredElementRead} must remain after the disabled-control short-circuit`
+    );
+  }
   assert.match(
     callbackBody,
     /let isOffscreenOpponentHeaderChild = opponentScrollFrame\.map[\s\S]*?opponentHeaderFrames\.contains/
   );
   for (const exactAllowance of [
-    'isDisabledControl',
     'isObscuredByTabBar',
     'isIndependentlyAuditedOffscreenCopy',
     'isVerifiedSetupHeaderArtifact',

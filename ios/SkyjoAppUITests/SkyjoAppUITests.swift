@@ -3512,13 +3512,19 @@ final class SkyjoAppUITests: XCTestCase {
         XCTFail("Unexpected unattributed contrast finding")
         return true
       }
-      let elementIdentifier = element.identifier
-      let elementLabel = element.label
       let elementFrame = element.frame
-      let elementType = element.elementType
       let isDisabledControl = disabledControlFrames.contains { frame in
         frame.intersects(elementFrame)
       }
+      // These exact controls were proven disabled before AXRuntime started its
+      // traversal. Return after the single frame read so known disabled-control
+      // findings cannot accumulate more live accessibility-element queries.
+      if isDisabledControl {
+        return true
+      }
+      let elementIdentifier = element.identifier
+      let elementLabel = element.label
+      let elementType = element.elementType
       // iOS 26 draws the floating tab bar's material shadow above the frame
       // exposed to XCTest. Limit the framework-artifact allowance to that
       // measured 12-point system-chrome fringe; in-content findings stay fatal.
@@ -3605,8 +3611,7 @@ final class SkyjoAppUITests: XCTestCase {
             && !scrollFrame.intersects(header.frame)
         }
       } ?? false
-      if !isDisabledControl
-          && !isObscuredByTabBar
+      if !isObscuredByTabBar
           && !isIndependentlyAuditedOffscreenCopy
           && !isVerifiedSetupHeaderArtifact
           && !isSettingsCopyBehindNavigationMaterial
