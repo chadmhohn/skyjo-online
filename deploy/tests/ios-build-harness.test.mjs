@@ -612,8 +612,7 @@ test('contrast audit snapshots app state and never exempts disabled controls', a
     /"solo\.setup\.difficulty-header": "Difficulty"/,
     /app\.navigationBars\["Game Settings"\]/,
     /"solo\.opponents\.scroll"/,
-    /\(1\.\.\.7\)\.map \{ "solo\.board\.header\.opponent\.ai-/,
-    /"solo\.board\.local\.human"/
+    /\(1\.\.\.7\)\.map \{ "solo\.board\.header\.opponent\.ai-/
   ]) {
     assert.match(snapshotSetup, exactSnapshot);
   }
@@ -653,6 +652,11 @@ test('contrast audit snapshots app state and never exempts disabled controls', a
   assert.match(
     callbackBody,
     /let isOffscreenOpponentHeaderChild = opponentScrollFrame\.map[\s\S]*?opponentHeaderFrames\.contains/
+  );
+  assert.doesNotMatch(
+    focusedAudit[0],
+    /solo\.board\.local\.human|localBoardFrame|localBoardState/,
+    'contrast diagnostics must not re-query the local board before AXRuntime begins its audit'
   );
   for (const exactAllowance of [
     'isObscuredByTabBar',

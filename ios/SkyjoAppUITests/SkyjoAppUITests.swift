@@ -3487,14 +3487,8 @@ final class SkyjoAppUITests: XCTestCase {
         opponentHeaderFrames.append((identifier: identifier, frame: frame))
       }
     }
-    var localBoardFrame: CGRect? = nil
-    if opponentScrollFrame != nil {
-      let localBoard = self.element(in: app, identifier: "solo.board.local.human")
-      localBoardFrame = localBoard.exists ? localBoard.frame : nil
-    }
     let settingsNavigationState = settingsNavigationBarFrame != nil ? "present" : "absent"
     let opponentScrollState = opponentScrollFrame.map(String.init(describing:)) ?? "absent"
-    let localBoardState = localBoardFrame.map(String.init(describing:)) ?? "absent"
     let opponentHeaderState = opponentHeaderFrames
       .map { "\($0.identifier)=\($0.frame)" }
       .joined(separator: ", ")
@@ -3603,7 +3597,7 @@ final class SkyjoAppUITests: XCTestCase {
         // reporting an unrelated screen's audit issue. XCTest treats that as a
         // second snapshot failure and hides the original contrast diagnostic.
         XCTFail(
-          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(elementIdentifier), label=\(elementLabel), frame=\(elementFrame), type=\(elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), localBoard=\(localBoardState), opponentHeaders=[\(opponentHeaderState)]"
+          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(elementIdentifier), label=\(elementLabel), frame=\(elementFrame), type=\(elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), opponentHeaders=[\(opponentHeaderState)]"
         )
       }
       return true
