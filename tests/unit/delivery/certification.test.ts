@@ -1199,7 +1199,11 @@ describe('v0.3.3 workflow governance', () => {
     expect(artifactIntegration).toContain('verifyRuntimeArtifact({');
     expect(artifactIntegration).toContain('[published.archivePath, first.archivePath, second.archivePath]');
     expect(artifactIntegration).toContain('[published.checksumPath, first.checksumPath, second.checksumPath]');
-    expect(artifactIntegration).toContain('[publishedSbomPath, first.sbomPath, second.sbomPath]');
+    expect(artifactIntegration).toContain('readBoundedRegularFile(publishedSbomPath');
+    expect(artifactIntegration).toContain('maxBytes: MAX_FILE_BYTES');
+    expect(artifactIntegration).toContain('[publishedSbomData, firstSbomData, secondSbomData]');
+    expect(artifactIntegration).not.toContain('fs.lstat(publishedSbomPath)');
+    expect(artifactIntegration).not.toContain('fs.readFile(publishedSbomPath)');
     expect(artifactIntegration).toContain("'--extract', '--gzip', '--file', published.archivePath");
     expect(artifactIntegration).toContain("'server-apns-rollback-proof.mjs'");
     expect(artifactIntegration).toContain("controllerContract.entries.has('scripts/smoke-apns-rollback-compatibility.mjs')");

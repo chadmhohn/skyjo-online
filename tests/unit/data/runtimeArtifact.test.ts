@@ -1,3 +1,4 @@
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,7 @@ import {
   normalizeArchivePath,
   parseTarArchive,
   pruneForbiddenRuntimePaths,
+  readBoundedRegularFile,
   REQUIRED_ARCHIVE_FILES,
   validateRuntimeEntries,
   verifyRuntimeArtifact
@@ -585,6 +587,92 @@ describe('runtime artifact safety contract', () => {
     expect(() => parseTarArchive(createTar(tooMany))).toThrow('too many entries');
     expect(() => validateRuntimeEntries(Array(MAX_ARCHIVE_ENTRIES + 1).fill(empty), releaseSha)).toThrow('invalid entry count');
   });
+
+  test.skipIf(typeof fsConstants.O_NOFOLLOW !== 'number')(
+    'captures a bounded regular file through exactly one O_NOFOLLOW descriptor',
+    async () => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-bounded-file-test-'));
+      const filePath = path.join(directory, 'published.cdx.json');
+      try {
+        await fs.writeFile(filePath, 'published sbom');
+        const openSpy = vi.spyOn(fs, 'open');
+        const captured = await readBoundedRegularFile(filePath, {
+          label: 'Published runtime SBOM',
+          maxBytes: 64
+        });
+        expect(captured.equals(Buffer.from('published sbom'))).toBe(true);
+        expect(openSpy).toHaveBeenCalledTimes(1);
+        expect(Number(openSpy.mock.calls[0][1]) & fsConstants.O_NOFOLLOW).toBe(fsConstants.O_NOFOLLOW);
+      } finally {
+        vi.restoreAllMocks();
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test.skipIf(typeof fsConstants.O_NOFOLLOW !== 'number')(
+    'rejects linked, non-file, empty, and oversized bounded-file inputs',
+    async () => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-bounded-file-input-test-'));
+      const targetPath = path.join(directory, 'target.json');
+      const linkedPath = path.join(directory, 'linked.json');
+      const emptyPath = path.join(directory, 'empty.json');
+      const oversizedPath = path.join(directory, 'oversized.json');
+      try {
+        await fs.writeFile(targetPath, '{}');
+        await fs.symlink(path.basename(targetPath), linkedPath, 'file');
+        await fs.writeFile(emptyPath, '');
+        await fs.writeFile(oversizedPath, 'oversized');
+        await expect(readBoundedRegularFile(linkedPath, { label: 'Published runtime SBOM' }))
+          .rejects.toThrow('cannot be a symbolic link');
+        await expect(readBoundedRegularFile(directory, { label: 'Published runtime SBOM' }))
+          .rejects.toThrow('must be a regular file');
+        await expect(readBoundedRegularFile(emptyPath, { label: 'Published runtime SBOM' }))
+          .rejects.toThrow('size is outside the allowed range');
+        await expect(readBoundedRegularFile(oversizedPath, { label: 'Published runtime SBOM', maxBytes: 4 }))
+          .rejects.toThrow('size is outside the allowed range');
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test.skipIf(typeof fsConstants.O_NOFOLLOW !== 'number')(
+    'fails closed when the bounded pathname is replaced during its descriptor read',
+    async () => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-bounded-file-swap-test-'));
+      const filePath = path.join(directory, 'published.cdx.json');
+      const replacementPath = path.join(directory, 'replacement.cdx.json');
+      try {
+        await fs.writeFile(filePath, 'trusted sbom');
+        await fs.writeFile(replacementPath, 'untrusted replacement');
+        const originalOpen = fs.open.bind(fs);
+        let replaced = false;
+        vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          const handle = await originalOpen(...args);
+          if (path.resolve(String(args[0])) === filePath) {
+            const originalReadFile = handle.readFile.bind(handle);
+            vi.spyOn(handle, 'readFile').mockImplementationOnce(async () => {
+              const data = await originalReadFile();
+              await fs.rename(filePath, `${filePath}.opened`);
+              await fs.copyFile(replacementPath, filePath);
+              replaced = true;
+              return data;
+            });
+          }
+          return handle;
+        });
+        await expect(readBoundedRegularFile(filePath, {
+          label: 'Published runtime SBOM',
+          maxBytes: 64
+        })).rejects.toThrow('changed during validation');
+        expect(replaced).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   test('rejects a compressed artifact above its measured-runtime ceiling before reading it', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-artifact-limit-test-'));

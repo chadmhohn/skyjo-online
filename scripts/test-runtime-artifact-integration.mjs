@@ -13,6 +13,8 @@ import {
 import {
   artifactNames,
   buildRuntimeArtifact,
+  MAX_FILE_BYTES,
+  readBoundedRegularFile,
   verifyRuntimeArtifact
 } from './runtime-artifact-lib.mjs';
 
@@ -68,6 +70,10 @@ async function stopChild(child) {
 
 async function assertFilesEqual(paths, label) {
   const files = await Promise.all(paths.map((filePath) => fs.readFile(filePath)));
+  assertBuffersEqual(files, label);
+}
+
+function assertBuffersEqual(files, label) {
   for (const [index, file] of files.slice(1).entries()) {
     assert.ok(files[0].equals(file), `${label} differs from deterministic rebuild ${index + 1}.`);
   }
@@ -100,11 +106,10 @@ try {
     checksumPath: publishedChecksumPath,
     expectedReleaseSha: releaseSha
   });
-  const publishedSbomStat = await fs.lstat(publishedSbomPath);
-  assert.ok(
-    publishedSbomStat.isFile() && !publishedSbomStat.isSymbolicLink(),
-    'Published runtime SBOM must be a regular file.'
-  );
+  const publishedSbomData = await readBoundedRegularFile(publishedSbomPath, {
+    label: 'Published runtime SBOM',
+    maxBytes: MAX_FILE_BYTES
+  });
   const first = await buildRuntimeArtifact({ projectRoot, outputDirectory: firstDirectory, releaseSha });
   const [{ stdout: namesOutput }, { stdout: verboseOutput }] = await Promise.all([
     execFileAsync('tar', ['--gzip', '--list', '--file', published.archivePath], { maxBuffer: 4 * 1024 * 1024 }),
@@ -166,10 +171,11 @@ try {
     [published.checksumPath, first.checksumPath, second.checksumPath],
     'Published runtime archive checksum'
   );
-  await assertFilesEqual(
-    [publishedSbomPath, first.sbomPath, second.sbomPath],
-    'Published runtime SBOM'
-  );
+  const [firstSbomData, secondSbomData] = await Promise.all([
+    fs.readFile(first.sbomPath),
+    fs.readFile(second.sbomPath)
+  ]);
+  assertBuffersEqual([publishedSbomData, firstSbomData, secondSbomData], 'Published runtime SBOM');
   assert.equal(published.sha256, first.sha256, 'Published runtime digest differs from its deterministic rebuild.');
   assert.equal(first.sha256, second.sha256, 'Runtime artifact hashes differ across identical package builds.');
   assert.equal(published.packages, first.packages, 'Published runtime package inventory differs from its deterministic rebuild.');
@@ -180,11 +186,8 @@ try {
     '--extract', '--gzip', '--file', published.archivePath, '--directory', extractedDirectory,
     '--no-same-owner', '--no-same-permissions'
   ]);
-  const [externalSbom, packagedSbom] = await Promise.all([
-    fs.readFile(publishedSbomPath),
-    fs.readFile(path.join(extractedDirectory, 'skyjo-runtime.cdx.json'))
-  ]);
-  assert.ok(externalSbom.equals(packagedSbom), 'Published external SBOM differs from the exact packaged SBOM.');
+  const packagedSbom = await fs.readFile(path.join(extractedDirectory, 'skyjo-runtime.cdx.json'));
+  assert.ok(publishedSbomData.equals(packagedSbom), 'Published external SBOM differs from the exact packaged SBOM.');
   const { stdout: apnsProofOutput, stderr: apnsProofError } = await execFileAsync(process.execPath, [
     'server-apns-rollback-proof.mjs',
     '--expected-release-sha',
