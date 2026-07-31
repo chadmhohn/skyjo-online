@@ -954,6 +954,8 @@ final class SkyjoAppUITests: XCTestCase {
     let guest = element(in: app, identifier: "solo.table.guest")
     XCTAssertTrue(draw.exists)
     XCTAssertTrue(discard.exists)
+    XCTAssertFalse(draw.isEnabled)
+    XCTAssertFalse(discard.isEnabled)
     XCTAssertTrue(guest.exists)
     XCTAssertEqual(guest.label, "Guest game. Completed games are not added to account stats.")
     XCTAssertGreaterThanOrEqual(draw.frame.height, 44)
@@ -1000,6 +1002,7 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(app.navigationBars["Game Settings"].waitForExistence(timeout: 8))
     XCTAssertTrue(app.switches["solo.settings.sound"].isEnabled)
     XCTAssertTrue(app.switches["solo.settings.haptics"].isEnabled)
+    XCTAssertEqual(app.switches["solo.settings.music"].elementType, .switch)
     XCTAssertFalse(app.switches["solo.settings.music"].isEnabled)
     XCTAssertEqual(app.switches["solo.settings.music"].value as? String, "0")
     app.buttons["Done"].tap()
@@ -3210,13 +3213,10 @@ final class SkyjoAppUITests: XCTestCase {
     allowedUnattributedTextClippingSignatures: Set<String> = [],
     maximumAllowedUnattributedTextClippingOccurrences: Int = 0
   ) throws {
-    // XCTest currently reports system-dimmed inactive SwiftUI controls as
-    // contrast failures even though inactive controls are exempt. Their
-    // disabled semantics and high-contrast custom treatment are asserted
-    // separately. Xcode 26 also reports a SwiftUI AccessibilityNode Dynamic
-    // Type false positive for text that demonstrably scales. The navigation-
-    // shell test relaunches at accessibility XXXL and asserts the complete
-    // labels and layout directly; all other audit categories remain enforced.
+    // Xcode 26 reports a SwiftUI AccessibilityNode Dynamic Type false positive
+    // for text that demonstrably scales. The navigation-shell test relaunches
+    // at accessibility XXXL and asserts the complete labels and layout directly;
+    // all other audit categories remain enforced.
     try performGeneralAccessibilityAudit(on: app)
     try performExactTextClippingAudit(
       on: app,
@@ -3404,14 +3404,6 @@ final class SkyjoAppUITests: XCTestCase {
     // child indefinitely. Capture the stable scene once before the sweep so
     // every finding is evaluated against immutable values.
     let appFrame = app.frame
-    let disabledControlFrames = [
-      app.buttons["solo.action.draw"],
-      app.buttons["solo.action.discard"],
-      app.switches["solo.settings.music"],
-    ].compactMap { control -> CGRect? in
-      guard control.exists, !control.isEnabled else { return nil }
-      return control.frame
-    }
     let tabBar = app.tabBars.firstMatch
     let tabBarFrame = tabBar.exists ? tabBar.frame : nil
     let navigationBar = app.navigationBars.firstMatch
@@ -3495,14 +3487,8 @@ final class SkyjoAppUITests: XCTestCase {
         opponentHeaderFrames.append((identifier: identifier, frame: frame))
       }
     }
-    var localBoardFrame: CGRect? = nil
-    if opponentScrollFrame != nil {
-      let localBoard = self.element(in: app, identifier: "solo.board.local.human")
-      localBoardFrame = localBoard.exists ? localBoard.frame : nil
-    }
     let settingsNavigationState = settingsNavigationBarFrame != nil ? "present" : "absent"
     let opponentScrollState = opponentScrollFrame.map(String.init(describing:)) ?? "absent"
-    let localBoardState = localBoardFrame.map(String.init(describing:)) ?? "absent"
     let opponentHeaderState = opponentHeaderFrames
       .map { "\($0.identifier)=\($0.frame)" }
       .joined(separator: ", ")
@@ -3512,13 +3498,10 @@ final class SkyjoAppUITests: XCTestCase {
         XCTFail("Unexpected unattributed contrast finding")
         return true
       }
+      let elementFrame = element.frame
       let elementIdentifier = element.identifier
       let elementLabel = element.label
-      let elementFrame = element.frame
       let elementType = element.elementType
-      let isDisabledControl = disabledControlFrames.contains { frame in
-        frame.intersects(elementFrame)
-      }
       // iOS 26 draws the floating tab bar's material shadow above the frame
       // exposed to XCTest. Limit the framework-artifact allowance to that
       // measured 12-point system-chrome fringe; in-content findings stay fatal.
@@ -3605,8 +3588,7 @@ final class SkyjoAppUITests: XCTestCase {
             && !scrollFrame.intersects(header.frame)
         }
       } ?? false
-      if !isDisabledControl
-          && !isObscuredByTabBar
+      if !isObscuredByTabBar
           && !isIndependentlyAuditedOffscreenCopy
           && !isVerifiedSetupHeaderArtifact
           && !isSettingsCopyBehindNavigationMaterial
@@ -3615,7 +3597,7 @@ final class SkyjoAppUITests: XCTestCase {
         // reporting an unrelated screen's audit issue. XCTest treats that as a
         // second snapshot failure and hides the original contrast diagnostic.
         XCTFail(
-          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(elementIdentifier), label=\(elementLabel), frame=\(elementFrame), type=\(elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), localBoard=\(localBoardState), opponentHeaders=[\(opponentHeaderState)]"
+          "Unexpected contrast finding: compact=\(issue.compactDescription), detail=\(issue.detailedDescription), id=\(elementIdentifier), label=\(elementLabel), frame=\(elementFrame), type=\(elementType.rawValue), settingsNavigation=\(settingsNavigationState), opponentScroll=\(opponentScrollState), opponentHeaders=[\(opponentHeaderState)]"
         )
       }
       return true

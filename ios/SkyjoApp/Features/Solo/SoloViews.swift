@@ -1011,7 +1011,7 @@ private struct SoloGameView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityHidden(true)
       }
-      .buttonStyle(.plain)
+      .buttonStyle(SoloSourceButtonStyle())
       .disabled(!canChooseSource)
       .allowsHitTesting(canChooseSource)
       .accessibilityLabel("Draw blind")
@@ -1054,7 +1054,7 @@ private struct SoloGameView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityHidden(true)
       }
-      .buttonStyle(.plain)
+      .buttonStyle(SoloSourceButtonStyle())
       .disabled(!canUseDiscardAction)
       .allowsHitTesting(canUseDiscardAction)
       .accessibilityLabel(
@@ -1877,6 +1877,26 @@ private struct SoloSecondaryButtonStyle: ButtonStyle {
           )
       }
       .opacity(configuration.isPressed ? 0.78 : 1)
+  }
+}
+
+private struct SoloSourceButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .foregroundStyle(Color.primary)
+      .contentShape(Rectangle())
+      .overlay(alignment: .topTrailing) {
+        if !isEnabled {
+          Image(systemName: "lock.fill")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(Color.primary)
+            .padding(6)
+            .accessibilityHidden(true)
+        }
+      }
+      .opacity(configuration.isPressed && isEnabled ? 0.78 : 1)
   }
 }
 
