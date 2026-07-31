@@ -1699,14 +1699,18 @@ test('deferred update and minimized round summary share the fixed phone edge wit
     await expect.poll(() => restore.evaluate((element) => element.style.bottom)).toBe('var(--u)');
     await expect(updateBanner).toContainText('Game protected');
 
-    const geometry = await page.evaluate(() => {
-      const required = (selector: string) => {
-        const element = document.querySelector<HTMLElement>(selector);
+    const geometry = await updateBanner.evaluate((banner) => {
+      if (!banner.isConnected || !banner.matches('[data-testid="pwa-update-banner"]')) {
+        throw new Error('Update banner detached before geometry capture.');
+      }
+      const required = (selector: string, root: ParentNode = document) => {
+        const element = root.querySelector<HTMLElement>(selector);
         if (!element) throw new Error(`Missing ${selector}`);
         return element;
       };
       const restoreButton = required('[data-testid="round-summary-restore"]');
-      const banner = required('[data-testid="pwa-update-banner"]');
+      const deferred = required('.skyjo-update-deferred', banner);
+      const strong = required('strong', banner);
       const bannerContent = Array.from(banner.querySelectorAll<HTMLElement>('strong, .skyjo-update-deferred'))
         .filter((element) => getComputedStyle(element).display !== 'none');
       const restoreRect = restoreButton.getBoundingClientRect();
@@ -1727,12 +1731,12 @@ test('deferred update and minimized round summary share the fixed phone edge wit
           document.documentElement.scrollHeight <= document.documentElement.clientHeight + 1 &&
           document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
         noOverlap: restoreRect.bottom <= bannerRect.top + 1,
-        protectedFontSize: Number.parseFloat(getComputedStyle(required('.skyjo-update-deferred')).fontSize),
+        protectedFontSize: Number.parseFloat(getComputedStyle(deferred).fontSize),
         restoreHeight: restoreRect.height,
         restoreInViewport: inViewport(restoreRect),
         restoreWidth: restoreRect.width,
         rootFontSize: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
-        strongFontSize: Number.parseFloat(getComputedStyle(required('.skyjo-update-banner strong')).fontSize)
+        strongFontSize: Number.parseFloat(getComputedStyle(strong).fontSize)
       };
     });
     expect(geometry).toMatchObject({
