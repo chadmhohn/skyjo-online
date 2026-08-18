@@ -24,6 +24,8 @@ The stable clean-clone command dynamically selects an iPhone on the newest avail
 ./scripts/ios-build-test.sh
 ```
 
+CI uses `./scripts/ios-build-test.sh --build-unit-tests` for the bounded build lane because the dedicated UI/accessibility jobs already run the full XCUITest matrix. The argument-free command above remains the complete local build-and-test entrypoint.
+
 The script verifies the Release API origin, builds a clean unsigned device archive for resource inspection, and builds an ad-hoc Xcode-signed Release simulator app whose executable entitlements are audited in every architecture. It installs locked Node dependencies when needed, builds `server-dist`, and launches the real `server.mjs` on a dynamic loopback port with a fixed non-secret access fixture, generated test-only session/invite secrets, and temporary SQLite/room files. It passes only bounded nonsecret loopback/test-mode values to the simulator, performs one unsigned `xcodebuild test`, proves the native two-cookie access/account flow and account/stats requests against that server, terminates the exact child, and deletes the validated temporary state/raw log. Its exit finalizer scans raw evidence for generated secrets and stages only verified sanitized files into the exact ignored directory CI may upload under `ios/Artifacts/`. Credentials and CI tokens never enter the `xcodebuild` environment.
 
 Run the focused access/networking gate used by `iOS / Networking Contracts` with:

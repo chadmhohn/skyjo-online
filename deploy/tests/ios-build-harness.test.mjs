@@ -295,6 +295,25 @@ test('networking mode launches a credential-isolated PWA bridge and current prod
   assert.doesNotMatch(harness, /Started isolated mixed PWA driver[^\n]*\$pwa_driver_control_(?:port|url)/);
 });
 
+test('the bounded hosted build runs unit tests while dedicated jobs retain UI coverage', async () => {
+  const harness = await fs.readFile(harnessPath, 'utf8');
+  const workflow = await fs.readFile(
+    path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
+    'utf8'
+  );
+
+  assert.match(
+    workflow,
+    /Build and test unsigned simulator app[\s\S]*?\.\/scripts\/ios-build-test\.sh --build-unit-tests/
+  );
+  assert.match(harness, /--build-unit-tests\)\n\s+test_scope="unit"/);
+  assert.match(
+    harness,
+    /if \[\[ "\$test_scope" == "unit" \]\]; then\n\s+xcode_test_arguments\+=\("-only-testing:SkyjoAppTests"\)/
+  );
+  assert.match(harness, /test_scope="all"/);
+});
+
 test('the build gate audits Associated Domains from a signed Release product', async () => {
   const harness = await fs.readFile(harnessPath, 'utf8');
 

@@ -47,6 +47,7 @@ ios_test_access_fixture="skyjo-ios-contract-access-v1"
 ios_test_session_secret=""
 ios_test_invite_secret=""
 test_mode="full"
+test_scope="all"
 
 cd "$repo_root"
 mkdir -p "$artifacts_dir"
@@ -77,15 +78,19 @@ report_failure() {
 }
 
 if [[ "$#" -gt 1 ]]; then
-  report_failure "Usage: ./scripts/ios-build-test.sh [--networking-contracts|--ui-accessibility]"
+  report_failure "Usage: ./scripts/ios-build-test.sh [--build-unit-tests|--networking-contracts|--ui-accessibility]"
 fi
 case "${1:-}" in
   "") ;;
+  --build-unit-tests)
+    test_scope="unit"
+    ;;
   --networking-contracts)
     test_mode="networking-contracts"
+    test_scope="unit"
     ;;
   *)
-    report_failure "Usage: ./scripts/ios-build-test.sh [--networking-contracts|--ui-accessibility]"
+    report_failure "Usage: ./scripts/ios-build-test.sh [--build-unit-tests|--networking-contracts|--ui-accessibility]"
     ;;
 esac
 
@@ -725,6 +730,7 @@ if [[ "$test_mode" == "networking-contracts" ]]; then
 fi
 printf 'Started isolated local Node contract server on a dynamic loopback port.\n' | tee -a "$toolchain_log"
 printf 'Native test mode: %s\n' "$test_mode" | tee -a "$toolchain_log"
+printf 'Native test scope: %s\n' "$test_scope" | tee -a "$toolchain_log"
 
 xcode_test_arguments=(
   test
@@ -738,7 +744,7 @@ xcode_test_arguments=(
   -resultBundlePath "$result_bundle"
   -parallel-testing-enabled NO
 )
-if [[ "$test_mode" == "networking-contracts" ]]; then
+if [[ "$test_scope" == "unit" ]]; then
   xcode_test_arguments+=("-only-testing:SkyjoAppTests")
 fi
 xcode_test_arguments+=(CODE_SIGNING_ALLOWED=NO)

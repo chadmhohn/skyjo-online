@@ -189,7 +189,7 @@ jobs:
         run: npm ci
 
       - name: Build and test unsigned simulator app
-        run: ./scripts/ios-build-test.sh
+        run: ./scripts/ios-build-test.sh --build-unit-tests
 
       - name: Upload sanitized iOS failure evidence
         if: failure()
