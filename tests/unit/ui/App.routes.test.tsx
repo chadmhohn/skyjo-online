@@ -149,7 +149,10 @@ describe('application routes and solo controls', () => {
   it.each([
     ['https://evil.example', '/'],
     ['//evil.example', '/'],
+    ['//user@evil.example', '/'],
     ['/\\evil.example', '/'],
+    ['/%2Fevil.example', '/'],
+    ['/%5cevil.example', '/'],
     ['/stats', '/stats']
   ])('normalizes account return path %s to %s', (candidate, expected) => {
     expect(safeAccountReturnPath(candidate)).toBe(expected);

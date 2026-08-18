@@ -3,7 +3,8 @@ export function safeAccountReturnPath(candidate: string | null): string {
     !candidate ||
     !candidate.startsWith('/') ||
     candidate.startsWith('//') ||
-    candidate.includes('\\')
+    candidate.includes('\\') ||
+    /%(?:2f|5c)/iu.test(candidate)
   ) return '/';
 
   for (let index = 0; index < candidate.length; index += 1) {

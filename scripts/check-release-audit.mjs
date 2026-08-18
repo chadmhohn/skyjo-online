@@ -28,7 +28,4 @@ try {
   throw new Error('npm audit returned invalid JSON.');
 }
 const result = validateReleaseAudit(report);
-console.log(
-  `Release audit passed: zero high/critical; ${result.advisoryCount} reviewed React Router advisories ` +
-  `across ${result.moderatePackageCount} packages (exception expires ${result.expiresAt}).`
-);
+console.log(`Release audit passed: zero moderate/high/critical; ${result.lowCount} low.`);
