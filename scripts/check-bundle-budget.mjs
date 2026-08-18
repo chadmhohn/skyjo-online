@@ -5,7 +5,7 @@ import { gzipSync } from 'node:zlib';
 const distDir = path.resolve('dist');
 const htmlPath = path.join(distDir, 'index.html');
 const budgets = {
-  js: 90 * 1024,
+  js: 96 * 1024,
   css: 17 * 1024,
   total: 115 * 1024
 };

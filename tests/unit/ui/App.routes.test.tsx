@@ -67,6 +67,7 @@ vi.mock('../../../src/push', () => ({
 }));
 
 import App from '../../../src/App';
+import { safeAccountReturnPath } from '../../../src/navigation';
 
 const playerUser: AccountUser = {
   id: 'user-1',
@@ -145,6 +146,18 @@ function renderRoute(path: string) {
 }
 
 describe('application routes and solo controls', () => {
+  it.each([
+    ['https://evil.example', '/'],
+    ['//evil.example', '/'],
+    ['//user@evil.example', '/'],
+    ['/\\evil.example', '/'],
+    ['/%2Fevil.example', '/'],
+    ['/%5cevil.example', '/'],
+    ['/stats', '/stats']
+  ])('normalizes account return path %s to %s', (candidate, expected) => {
+    expect(safeAccountReturnPath(candidate)).toBe(expected);
+  });
+
   beforeEach(() => {
     mocks.account.loading = false;
     mocks.account.user = null;

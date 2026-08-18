@@ -59,7 +59,7 @@ async function statsOutboxAttempts(page: import('@playwright/test').Page, ownerK
   );
 }
 
-test('home, account signup, and authenticated account shell work together', async ({ page, skyjoServer }) => {
+test('home, account signup, safe return paths, and authenticated account shell work together', async ({ page, skyjoServer }) => {
   await page.goto(skyjoServer.baseURL);
   await expect(page.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
   await expect(page.getByRole('link', { name: /^Start Solo Game/ })).toBeVisible();
@@ -74,6 +74,13 @@ test('home, account signup, and authenticated account shell work together', asyn
 
   await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
   await expect(page.getByText('Playwright Player')).toBeVisible();
+
+  expect((await page.context().request.post(`${skyjoServer.baseURL}/api/account/logout`)).status()).toBe(200);
+  await page.goto(`${skyjoServer.baseURL}/account?next=${encodeURIComponent('/\\evil.example')}`);
+  await page.getByLabel('Email').fill('playwright@example.test');
+  await page.getByLabel('Password').fill('playwright-secret-123');
+  await page.getByRole('button', { name: 'Sign In' }).click();
+  await expect(page).toHaveURL(`${skyjoServer.baseURL}/`);
 });
 
 test('manifest and service worker assets are release-build reachable', async ({ request, skyjoServer }) => {

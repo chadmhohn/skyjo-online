@@ -1,64 +1,30 @@
 import {
-  ALLOWED_MODERATE_ADVISORIES,
-  ALLOWED_MODERATE_PACKAGES,
-  REACT_ROUTER_EXCEPTION_EXPIRES_AT,
   validateReleaseAudit
 } from '../../../scripts/release-audit-lib.mjs';
 
-function report() {
+function report(severity?: 'moderate' | 'high' | 'critical') {
+  const counts = { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 };
+  const vulnerabilities: Record<string, unknown> = {};
+  if (severity) {
+    counts[severity] = 1;
+    counts.total = 1;
+    vulnerabilities.example = { name: 'example', severity, via: [] };
+  }
   return {
     auditReportVersion: 2,
-    vulnerabilities: {
-      'react-router': {
-        name: 'react-router',
-        severity: 'moderate',
-        via: [
-          { severity: 'moderate', url: ALLOWED_MODERATE_ADVISORIES[0] },
-          { severity: 'moderate', url: ALLOWED_MODERATE_ADVISORIES[2] }
-        ]
-      },
-      'react-router-dom': {
-        name: 'react-router-dom',
-        severity: 'moderate',
-        via: [{ severity: 'moderate', url: ALLOWED_MODERATE_ADVISORIES[1] }, 'react-router']
-      }
-    },
+    vulnerabilities,
     metadata: {
-      vulnerabilities: { info: 0, low: 0, moderate: 2, high: 0, critical: 0, total: 2 }
+      vulnerabilities: counts
     }
   };
 }
 
-describe('v0.3.3 dependency exception gate', () => {
-  it('accepts only the exact reviewed React Router moderate set before expiry', () => {
-    expect(ALLOWED_MODERATE_PACKAGES).toEqual(['react-router', 'react-router-dom']);
-    expect(validateReleaseAudit(report(), { now: Date.parse('2026-07-26T12:00:00.000Z') })).toEqual({
-      advisoryCount: 3,
-      expiresAt: REACT_ROUTER_EXCEPTION_EXPIRES_AT,
-      moderatePackageCount: 2
-    });
+describe('release dependency audit gate', () => {
+  it('accepts a report with no moderate, high, or critical findings', () => {
+    expect(validateReleaseAudit(report())).toEqual({ lowCount: 0 });
   });
 
-  it('rejects high or critical findings, new moderates, advisory drift, and expiry', () => {
-    const high = report();
-    high.metadata.vulnerabilities.high = 1;
-    expect(() => validateReleaseAudit(high)).toThrow(/high or critical/i);
-
-    const newModerate = report();
-    (newModerate.vulnerabilities as Record<string, unknown>).other = {
-      name: 'other',
-      severity: 'moderate',
-      via: []
-    };
-    newModerate.metadata.vulnerabilities.moderate = 3;
-    expect(() => validateReleaseAudit(newModerate)).toThrow(/new, removed, or renamed/i);
-
-    const changedAdvisory = report();
-    changedAdvisory.vulnerabilities['react-router'].via[0].url = 'https://github.com/advisories/GHSA-xxxx-xxxx-xxxx';
-    expect(() => validateReleaseAudit(changedAdvisory)).toThrow(/allowlist/i);
-
-    expect(() => validateReleaseAudit(report(), {
-      now: Date.parse(REACT_ROUTER_EXCEPTION_EXPIRES_AT) + 1
-    })).toThrow(/expired/i);
+  it.each(['moderate', 'high', 'critical'] as const)('rejects a %s finding', (severity) => {
+    expect(() => validateReleaseAudit(report(severity))).toThrow(/moderate, high, or critical/i);
   });
 });
