@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAccount } from './account';
+import { safeAccountReturnPath } from './navigation';
 
 const loadPushSettingsControls = () => import('./PushSettingsControls').catch(() => ({
   default: () => (
@@ -15,7 +16,7 @@ export default function AccountPage() {
   const account = useAccount();
   const location = useLocation();
   const navigate = useNavigate();
-  const next = new URLSearchParams(location.search).get('next') || '/';
+  const next = safeAccountReturnPath(new URLSearchParams(location.search).get('next'));
   const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -39,7 +40,7 @@ export default function AccountPage() {
     try {
       if (mode === 'login') await account.login(email, password);
       else await account.signup(email, displayName, password, confirmPassword);
-      navigate(next.startsWith('/') ? next : '/');
+      navigate(next);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Account request failed.');
     } finally {

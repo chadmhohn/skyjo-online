@@ -1,7 +1,6 @@
-export const REACT_ROUTER_EXCEPTION_EXPIRES_AT = '2026-08-21T23:59:00.000Z';
+export const REACT_ROUTER_EXCEPTION_EXPIRES_AT = '2026-09-30T23:59:00.000Z';
 export const ALLOWED_MODERATE_ADVISORIES = Object.freeze([
   'https://github.com/advisories/GHSA-337j-9hxr-rhxg',
-  'https://github.com/advisories/GHSA-jjmj-jmhj-qwj2',
   'https://github.com/advisories/GHSA-wrjc-x8rr-h8h6'
 ]);
 export const ALLOWED_MODERATE_PACKAGES = Object.freeze(['react-router', 'react-router-dom']);

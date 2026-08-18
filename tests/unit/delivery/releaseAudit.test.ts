@@ -12,15 +12,12 @@ function report() {
       'react-router': {
         name: 'react-router',
         severity: 'moderate',
-        via: [
-          { severity: 'moderate', url: ALLOWED_MODERATE_ADVISORIES[0] },
-          { severity: 'moderate', url: ALLOWED_MODERATE_ADVISORIES[2] }
-        ]
+        via: ALLOWED_MODERATE_ADVISORIES.map((url: string) => ({ severity: 'moderate', url }))
       },
       'react-router-dom': {
         name: 'react-router-dom',
         severity: 'moderate',
-        via: [{ severity: 'moderate', url: ALLOWED_MODERATE_ADVISORIES[1] }, 'react-router']
+        via: ['react-router']
       }
     },
     metadata: {
@@ -32,8 +29,8 @@ function report() {
 describe('v0.3.3 dependency exception gate', () => {
   it('accepts only the exact reviewed React Router moderate set before expiry', () => {
     expect(ALLOWED_MODERATE_PACKAGES).toEqual(['react-router', 'react-router-dom']);
-    expect(validateReleaseAudit(report(), { now: Date.parse('2026-07-26T12:00:00.000Z') })).toEqual({
-      advisoryCount: 3,
+    expect(validateReleaseAudit(report(), { now: Date.parse('2026-08-18T12:00:00.000Z') })).toEqual({
+      advisoryCount: 2,
       expiresAt: REACT_ROUTER_EXCEPTION_EXPIRES_AT,
       moderatePackageCount: 2
     });
