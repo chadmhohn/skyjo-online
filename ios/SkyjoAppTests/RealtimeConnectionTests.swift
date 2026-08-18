@@ -1289,8 +1289,9 @@ struct RoomConnectionStateMachineTests {
       commandIDs: []
     )
     let notices = RoomConnectionNoticeRecorder()
+    let events = await connection.events()
     let observation = Task {
-      for await event in await connection.events() { await notices.record(event) }
+      for await event in events { await notices.record(event) }
     }
 
     let admissionAttemptID = UUID(
@@ -1330,8 +1331,9 @@ struct RoomConnectionStateMachineTests {
       commandIDs: []
     )
     let notices = RoomConnectionNoticeRecorder()
+    let events = await connection.events()
     let observation = Task {
-      for await event in await connection.events() { await notices.record(event) }
+      for await event in events { await notices.record(event) }
     }
     let admission = RoomAdmission.join(
       code: "ABCDE",
