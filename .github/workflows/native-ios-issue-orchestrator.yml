@@ -6,7 +6,7 @@ on:
       - closed
       - reopened
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 9 * * *"
   workflow_dispatch:
 
 permissions:

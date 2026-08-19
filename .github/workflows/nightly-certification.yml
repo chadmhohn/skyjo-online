@@ -1,15 +1,15 @@
-name: Nightly PWA certification
+name: Weekly PWA certification
 
 on:
   schedule:
-    - cron: "23 7 * * *"
+    - cron: "23 7 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: skyjo-nightly-certification
+  group: skyjo-weekly-certification
   cancel-in-progress: false
 
 defaults:
@@ -18,7 +18,7 @@ defaults:
 
 jobs:
   certification:
-    name: Nightly / Load & Recovery
+    name: Weekly / Load & Recovery
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -38,7 +38,7 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Resolve and build the exact nightly source
+      - name: Resolve and build the exact weekly source
         run: |
           set -Eeuo pipefail
           source_sha="$(git rev-parse 'HEAD^{commit}')"
@@ -63,14 +63,14 @@ jobs:
           sh scripts/install-k6.sh "$RUNNER_TEMP/skyjo-k6"
           echo "SKYJO_K6_BIN=$RUNNER_TEMP/skyjo-k6/k6" >> "$GITHUB_ENV"
 
-      - name: Run nightly exact-topology certification
+      - name: Run weekly exact-topology certification
         run: npm run certify:automated
 
-      - name: Upload checksummed sanitized nightly evidence
+      - name: Upload checksummed sanitized weekly evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
-          name: nightly-certification-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: weekly-certification-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             test-results/certification
             test-results/ai

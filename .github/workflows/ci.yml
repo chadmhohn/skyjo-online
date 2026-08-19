@@ -10,6 +10,16 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      ios_ui_mode:
+        description: Native simulator coverage for this manual run
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - skip
+          - smoke
+          - full
 
 permissions:
   contents: read
@@ -23,6 +33,59 @@ defaults:
     shell: bash
 
 jobs:
+  ios-ci-scope:
+    name: CI / Native scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run-native: ${{ steps.scope.outputs.run-native }}
+      ui-mode: ${{ steps.scope.outputs.ui-mode }}
+      ui-roles: ${{ steps.scope.outputs.ui-roles }}
+      reason: ${{ steps.scope.outputs.reason }}
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select pragmatic native coverage
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REQUESTED_UI_MODE: ${{ github.event.inputs.ios_ui_mode || 'auto' }}
+        run: |
+          set -Eeuo pipefail
+          changed_paths="$RUNNER_TEMP/skyjo-changed-paths.zlist"
+          : > "$changed_paths"
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            [[ "$BASE_SHA" =~ ^[a-f0-9]{40}$ && "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
+            git cat-file -e "$BASE_SHA^{commit}"
+            git cat-file -e "$HEAD_SHA^{commit}"
+            git diff --name-only -z "$BASE_SHA...$HEAD_SHA" > "$changed_paths"
+          elif [[ "$EVENT_NAME" == "push" && "$REF_TYPE" == "branch" ]]; then
+            [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
+            if [[ "$BASE_SHA" =~ ^[a-f0-9]{40}$ && ! "$BASE_SHA" =~ ^0+$ ]] && \
+               git cat-file -e "$BASE_SHA^{commit}"; then
+              git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" > "$changed_paths"
+            else
+              git ls-tree -r --name-only -z "$HEAD_SHA" > "$changed_paths"
+            fi
+          fi
+
+          node scripts/select-ci-scope.mjs \
+            --event "$EVENT_NAME" \
+            --ref-type "$REF_TYPE" \
+            --ui-mode "$REQUESTED_UI_MODE" \
+            --paths0-file "$changed_paths" \
+            >> "$GITHUB_OUTPUT"
+
   quality:
     name: CI / Quality & Security
     runs-on: ubuntu-24.04
@@ -107,7 +170,9 @@ jobs:
         run: node scripts/verify-release-tag-identity.mjs "$GITHUB_REF" "$GITHUB_REF_NAME"
 
       - name: Validate native iOS issue orchestration logic
-        run: node scripts/reconcile-native-ios-issues.mjs --self-test
+        run: |
+          node scripts/reconcile-native-ios-issues.mjs --self-test
+          node scripts/select-ci-scope.mjs --self-test
 
       - name: Install audio inspection tools
         run: |
@@ -166,7 +231,8 @@ jobs:
 
   ios-build:
     name: iOS / Build
-    runs-on: macos-26
+    needs: ios-ci-scope
+    runs-on: ${{ needs.ios-ci-scope.outputs.run-native == 'true' && 'macos-26' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -174,25 +240,36 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       SKYJO_IOS_ARTIFACTS_DIR: ${{ github.workspace }}/ios/Artifacts
     steps:
+      - name: Skip unchanged native build
+        if: needs.ios-ci-scope.outputs.run-native != 'true'
+        env:
+          SCOPE_REASON: ${{ needs.ios-ci-scope.outputs.reason }}
+        run: |
+          printf 'Native build skipped: %s\n' "$SCOPE_REASON"
+
       - name: Check out repository
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Node for native contract tests
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .node-version
           cache: npm
 
       - name: Install locked Node dependencies
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         run: npm ci
 
       - name: Build and test unsigned simulator app
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         run: ./scripts/ios-build-test.sh --build-unit-tests
 
       - name: Upload sanitized iOS failure evidence
-        if: failure()
+        if: failure() && needs.ios-ci-scope.outputs.run-native == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: ios-build-failure-${{ github.run_id }}-${{ github.run_attempt }}
@@ -202,7 +279,8 @@ jobs:
 
   ios-networking-contracts:
     name: iOS / Networking Contracts
-    runs-on: macos-26
+    needs: ios-ci-scope
+    runs-on: ${{ needs.ios-ci-scope.outputs.run-native == 'true' && 'macos-26' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -210,29 +288,41 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       SKYJO_IOS_ARTIFACTS_DIR: ${{ github.workspace }}/ios/Artifacts
     steps:
+      - name: Skip unchanged native networking contracts
+        if: needs.ios-ci-scope.outputs.run-native != 'true'
+        env:
+          SCOPE_REASON: ${{ needs.ios-ci-scope.outputs.reason }}
+        run: |
+          printf 'Native networking contracts skipped: %s\n' "$SCOPE_REASON"
+
       - name: Check out repository
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node for native contract tests
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .node-version
           cache: npm
 
       - name: Install locked Node dependencies
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         run: npm ci
 
       - name: Install Chromium for the mixed PWA contract peer
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         run: npm exec -- playwright install chromium
 
       - name: Run native networking contract tests
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         run: ./scripts/ios-build-test.sh --networking-contracts
 
       - name: Upload sanitized native networking failure evidence
-        if: failure()
+        if: failure() && needs.ios-ci-scope.outputs.run-native == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: ios-networking-failure-${{ github.run_id }}-${{ github.run_attempt }}
@@ -242,7 +332,8 @@ jobs:
 
   ios-domain-persistence:
     name: iOS / Domain & Persistence
-    runs-on: macos-26
+    needs: ios-ci-scope
+    runs-on: ${{ needs.ios-ci-scope.outputs.run-native == 'true' && 'macos-26' || 'ubuntu-24.04' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -250,40 +341,50 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       SKYJO_IOS_ARTIFACTS_DIR: ${{ github.workspace }}/ios/Artifacts
     steps:
+      - name: Skip unchanged native domain and persistence tests
+        if: needs.ios-ci-scope.outputs.run-native != 'true'
+        env:
+          SCOPE_REASON: ${{ needs.ios-ci-scope.outputs.reason }}
+        run: |
+          printf 'Native domain and persistence tests skipped: %s\n' "$SCOPE_REASON"
+
       - name: Check out repository
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Node for cross-language fixtures
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .node-version
           cache: npm
 
       - name: Install locked Node dependencies
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         run: npm ci
 
       - name: Run domain parity and coverage gate
+        if: needs.ios-ci-scope.outputs.run-native == 'true'
         run: npm run test:domain:parity
 
   ios-ui-accessibility-role:
     name: iOS / UI & Accessibility (${{ matrix.role }})
+    needs: ios-ci-scope
+    if: ${{ needs.ios-ci-scope.result == 'success' && needs.ios-ci-scope.outputs.ui-mode != 'skip' }}
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: ${{ needs.ios-ci-scope.outputs.ui-mode == 'full' && 120 || 30 }}
     strategy:
       fail-fast: false
       matrix:
-        role:
-          - standard-phone
-          - large-phone
-          - ipad-portrait
-          - ipad-landscape
+        role: ${{ fromJSON(needs.ios-ci-scope.outputs.ui-roles) }}
     permissions:
       contents: read
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       SKYJO_IOS_ARTIFACTS_DIR: ${{ github.workspace }}/ios/Artifacts
+      SKYJO_IOS_UI_ACCESSIBILITY_MODE: ${{ needs.ios-ci-scope.outputs.ui-mode }}
       SKYJO_IOS_UI_ACCESSIBILITY_ROLE: ${{ matrix.role }}
     steps:
       - name: Check out repository
@@ -299,19 +400,26 @@ jobs:
       - name: Run native UI and accessibility simulator matrix
         run: ./scripts/ios-build-test.sh --ui-accessibility
 
-      - name: Upload retained UI, accessibility, and screenshot evidence
-        if: always()
+      - name: Upload compact UI failure evidence
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: ios-ui-accessibility-${{ matrix.role }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ios/Artifacts/UIAccessibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ios/Artifacts/UIAccessibility-${{ github.run_id }}-${{ github.run_attempt }}/**/*.json
+            ios/Artifacts/UIAccessibility-${{ github.run_id }}-${{ github.run_attempt }}/**/*.log
+            ios/Artifacts/UIAccessibility-${{ github.run_id }}-${{ github.run_attempt }}/**/*.png
+            ios/Artifacts/UIAccessibility-${{ github.run_id }}-${{ github.run_attempt }}/**/*.tsv
+            ios/Artifacts/UIAccessibility-${{ github.run_id }}-${{ github.run_attempt }}/**/*.txt
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
   ios-ui-accessibility:
     name: iOS / UI & Accessibility
     if: ${{ always() }}
-    needs: ios-ui-accessibility-role
+    needs:
+      - ios-ci-scope
+      - ios-ui-accessibility-role
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -319,10 +427,22 @@ jobs:
     steps:
       - name: Require every UI and accessibility role
         env:
+          SCOPE_JOB_RESULT: ${{ needs.ios-ci-scope.result }}
+          UI_MODE: ${{ needs.ios-ci-scope.outputs.ui-mode }}
           ROLE_JOBS_RESULT: ${{ needs.ios-ui-accessibility-role.result }}
         run: |
-          if [[ "$ROLE_JOBS_RESULT" != "success" ]]; then
-            printf 'UI and accessibility role jobs finished with result: %s\n' "$ROLE_JOBS_RESULT" >&2
+          set -Eeuo pipefail
+          if [[ "$SCOPE_JOB_RESULT" != "success" ]]; then
+            printf 'Native CI scope finished with result: %s\n' "$SCOPE_JOB_RESULT" >&2
+            exit 1
+          elif [[ "$UI_MODE" == "skip" && "$ROLE_JOBS_RESULT" == "skipped" ]]; then
+            echo 'Native UI coverage skipped because no relevant path changed.'
+          elif [[ ( "$UI_MODE" == "smoke" || "$UI_MODE" == "full" ) && \
+                  "$ROLE_JOBS_RESULT" == "success" ]]; then
+            printf 'Native UI %s coverage passed.\n' "$UI_MODE"
+          else
+            printf 'Unexpected native UI result: mode=%s roles=%s\n' \
+              "$UI_MODE" "$ROLE_JOBS_RESULT" >&2
             exit 1
           fi
 
