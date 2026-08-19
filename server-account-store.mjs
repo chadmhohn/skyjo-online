@@ -16,6 +16,7 @@ export const APNS_DEVICE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 export const APNS_MAX_ACTIVE_INSTALLATIONS_PER_ACCOUNT = 8;
 const publicApiErrors = new Map([
   ['ACCESS_AUTHENTICATION_FAILED', Object.freeze({ status: 401, message: 'Authentication failed.' })],
+  ['ACCOUNT_AUTHENTICATION_REQUIRED', Object.freeze({ status: 401, message: 'Sign in to your Skyjo account.' })],
   ['INVALID_REQUEST', Object.freeze({ status: 400, message: 'Request did not match the expected contract.' })],
   ['UNSUPPORTED_MEDIA_TYPE', Object.freeze({ status: 415, message: 'Content-Type must be application/json.' })],
   ['METHOD_NOT_ALLOWED', Object.freeze({ status: 405, message: 'Method not allowed.' })],
@@ -1025,6 +1026,7 @@ export class AccountStore {
   }
 
   saveAPNSDevice({
+    sessionToken,
     userId,
     installationId,
     environment,
@@ -1044,10 +1046,21 @@ export class AccountStore {
       throw new TypeError('APNs device retention is invalid.');
     }
     const timestamp = this.now();
+    const sessionTokenHash = typeof sessionToken === 'string' && sessionToken
+      ? hashSessionToken(sessionToken)
+      : '';
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const user = this.getUserRowById(userId);
       if (!user || user.disabled === 1) throw new PublicApiError('ACCOUNT_NOT_FOUND');
+      const activeSession = sessionTokenHash && this.db
+        .prepare(
+          `SELECT 1 AS active
+           FROM account_sessions
+           WHERE token_hash = ? AND user_id = ? AND expires_at >= ?`
+        )
+        .get(sessionTokenHash, userId, timestamp);
+      if (!activeSession) throw new PublicApiError('ACCOUNT_AUTHENTICATION_REQUIRED');
       this.db
         .prepare('DELETE FROM apns_devices WHERE updated_at < ?')
         .run(Math.max(0, timestamp - retentionMs));

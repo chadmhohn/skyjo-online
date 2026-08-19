@@ -1895,6 +1895,7 @@ async function handleApiRequest(req, res, url) {
 
     const apnsDeviceMatch = url.pathname.match(/^\/api\/push\/apns\/devices\/([^/]+)$/);
     if (apnsDeviceMatch) {
+      const authenticatedSessionToken = accountToken(req);
       const user = requireAccountForApi(req, res);
       if (!user) return true;
       if (req.method !== 'PUT' && req.method !== 'DELETE') {
@@ -1929,6 +1930,7 @@ async function handleApiRequest(req, res, url) {
       }
       const encryptedToken = apnsConfiguration.tokenCodec.encrypt(registration.deviceToken);
       accountStore.saveAPNSDevice({
+        sessionToken: authenticatedSessionToken,
         userId: user.id,
         installationId,
         environment: registration.environment,

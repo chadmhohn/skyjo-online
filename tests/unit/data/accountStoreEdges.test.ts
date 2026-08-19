@@ -187,7 +187,17 @@ describe('account store defensive and fallback behavior', () => {
     const secondInstallation = '10000000-0000-4000-8000-000000000002';
     const tokenOne = '01'.repeat(32);
     const tokenTwo = '02'.repeat(48);
-    const save = (userId: string, installationId: string, token: string, maxActive = 8) => apnsStore.saveAPNSDevice({
+    const sessionLifetime = APNS_DEVICE_RETENTION_MS * 3;
+    const firstSession = apnsStore.createSession(firstUser.id, sessionLifetime);
+    let secondSession = apnsStore.createSession(secondUser.id, sessionLifetime);
+    const save = (
+      userId: string,
+      installationId: string,
+      token: string,
+      maxActive = 8,
+      sessionToken = userId === secondUser.id ? secondSession.token : firstSession.token
+    ) => apnsStore.saveAPNSDevice({
+      sessionToken,
       userId,
       installationId,
       environment: 'development',
@@ -238,8 +248,11 @@ describe('account store defensive and fallback behavior', () => {
       apnsStore.deleteSessionAndAPNSDevice(session.token, secondInstallation);
       expect(apnsStore.getUserBySessionToken(session.token)).toBeNull();
       expect(apnsStore.listAPNSDevicesForUsers([secondUser.id])).toEqual([]);
+      expect(() => save(secondUser.id, secondInstallation, tokenTwo, 8, session.token)).toThrow(/sign in/i);
+      expect(apnsStore.listAPNSDevicesForUsers([secondUser.id])).toEqual([]);
       apnsStore.deleteSessionAndAPNSDevice('', secondInstallation);
 
+      secondSession = apnsStore.createSession(secondUser.id, sessionLifetime);
       save(secondUser.id, secondInstallation, tokenTwo);
       const racingSession = apnsStore.createSession(secondUser.id, 60_000);
       apnsStore.deleteSession(racingSession.token);
@@ -262,7 +275,16 @@ describe('account store defensive and fallback behavior', () => {
         displayName: 'APNs Cascade',
         password: 'apns-cascade-password'
       });
-      save(cascadeUser.id, firstInstallation, tokenOne);
+      const cascadeSession = apnsStore.createSession(cascadeUser.id, sessionLifetime);
+      apnsStore.saveAPNSDevice({
+        sessionToken: cascadeSession.token,
+        userId: cascadeUser.id,
+        installationId: firstInstallation,
+        environment: 'development',
+        ...codec.encrypt(tokenOne),
+        appVersion: '0.1.0',
+        locale: 'en-US'
+      });
       apnsStore.db.prepare('DELETE FROM users WHERE id = ?').run(cascadeUser.id);
       expect(apnsStore.db.prepare('SELECT COUNT(*) AS count FROM apns_devices').get().count).toBe(0);
     } finally {
