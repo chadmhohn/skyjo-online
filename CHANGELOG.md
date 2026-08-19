@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.5 - 2026-08-19
+
+- Added authenticated native-notification configuration, device registration, rotation, deletion, and logout cleanup while keeping the public database migration ledger at schema 2.
+- Added encrypted APNs token persistence, bounded retention and per-account limits, race-safe invalid-token retirement, fixed-host HTTP/2 delivery, and generic turn/round/game alerts independent from existing Web Push.
+- Added the additive contract fixtures, runtime packaging, credential-isolated canary, production configuration, deployment smoke, backup/restore, and permanent v0.3.3 rollback-floor enforcement needed before the native notification client can be distributed.
+
 ## 0.3.4 - 2026-08-18
 
 - Added the source-only native multiplayer room experience: invite review, seat recovery, server-authoritative room controls, table chat, reconnect/reset recovery, and responsive iPhone/iPad presentation.
