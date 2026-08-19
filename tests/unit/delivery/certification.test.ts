@@ -1283,7 +1283,7 @@ describe('v0.3.4 workflow governance', () => {
     expect(changelog).toMatch(/^## 0\.3\.4 - 2026-08-18$/m);
     expect(changelog).toContain('source-only native multiplayer room experience');
     expect(changelog).toContain('make immutable v0.3.3 the verified production `previous` rollback floor');
-    expect(ci).toContain('Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility');
+    expect(ci).toContain('Verify pinned live v0.3.2 PWA wire compatibility');
     expect(certificationAddendum).toContain('Production dependencies and deployed PWA/server behavior are unchanged');
     expect(certificationAddendum).toContain('four-role UI/accessibility matrix');
     expect(certificationAddendum).toContain('normal `server.mjs` startup never imports it');

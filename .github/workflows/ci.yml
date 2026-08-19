@@ -498,8 +498,8 @@ jobs:
         run: npm ci
       - name: Run isolated data tests
         run: npm run test:unit:data
-      - name: Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility
-        run: npm run test:compat:v011
+      - name: Verify pinned live v0.3.2 PWA wire compatibility
+        run: node scripts/verify-ios-pwa-v032-compatibility.mjs
       - name: Upload data coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
