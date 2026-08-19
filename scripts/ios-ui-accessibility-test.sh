@@ -15,6 +15,7 @@ artifacts_root="${SKYJO_IOS_ARTIFACTS_DIR:-$repo_root/ios/Artifacts}"
 run_key="${GITHUB_RUN_ID:-local-$$}"
 run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
 selected_role="${SKYJO_IOS_UI_ACCESSIBILITY_ROLE:-}"
+selected_mode="${SKYJO_IOS_UI_ACCESSIBILITY_MODE:-full}"
 
 if [[ "$#" -ne 0 ]]; then
   printf 'ERROR: Usage: ./scripts/ios-ui-accessibility-test.sh\n' >&2
@@ -31,6 +32,17 @@ case "$selected_role" in
     exit 1
     ;;
 esac
+case "$selected_mode" in
+  full|smoke) ;;
+  *)
+    printf 'ERROR: SKYJO_IOS_UI_ACCESSIBILITY_MODE must be full or smoke.\n' >&2
+    exit 1
+    ;;
+esac
+if [[ "$selected_mode" == "smoke" && "$selected_role" != "standard-phone" ]]; then
+  printf 'ERROR: Smoke mode requires the standard-phone role.\n' >&2
+  exit 1
+fi
 
 evidence_dir="$artifacts_root/UIAccessibility-$run_key-$run_attempt"
 derived_data="$artifacts_root/UIAccessibilityDerivedData-$run_key-$run_attempt"
@@ -40,6 +52,8 @@ build_log="$evidence_dir/build-for-testing.log"
 mkdir -p "$evidence_dir"
 printf 'Selected UI accessibility role: %s\n' "${selected_role:-full-matrix}" \
   > "$evidence_dir/role-selection.log"
+printf 'Selected UI accessibility mode: %s\n' "$selected_mode" \
+  >> "$evidence_dir/role-selection.log"
 if [[ -e "$derived_data" ]]; then
   printf 'ERROR: Refusing to reuse existing derived data: %s\n' "$derived_data" >&2
   exit 1
@@ -516,15 +530,24 @@ ipad_landscape_tests=(
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
   testRoomIPadLandscapeKeepsAuthoritativeContentContained
 )
+standard_smoke_tests=(
+  testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting
+  testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards
+  testSoloGameSummaryHasDistinctReplayAndSetupRoutes
+  testAuthenticatedHomeOpensNativeMultiplayerWithoutWebContent
+  testRoomCreateRendersDecodedAuthoritativeWaitingRoom
+)
 [[ "${#standard_tests[@]}" -eq 45 && \
    "${#large_tests[@]}" -eq 5 && \
    "${#ipad_portrait_tests[@]}" -eq 24 && \
-   "${#ipad_landscape_tests[@]}" -eq 2 ]] || {
+   "${#ipad_landscape_tests[@]}" -eq 2 && \
+   "${#standard_smoke_tests[@]}" -eq 5 ]] || {
   printf 'ERROR: The expected accessibility matrix inventory changed.\n' >&2
   exit 1
 }
 for pinned_test_name in \
   "${standard_tests[@]}" \
+  "${standard_smoke_tests[@]}" \
   "${large_tests[@]}" \
   "${ipad_portrait_tests[@]}" \
   "${ipad_landscape_tests[@]}"; do
@@ -886,26 +909,30 @@ run_isolated_ipad_portrait_entry() {
   return 0
 }
 
-case "$selected_role" in
-  "")
-    run_matrix_entry standard-phone "$standard_udid" 45 "${standard_tests[@]}"
-    run_matrix_entry large-phone "$large_udid" 5 "${large_tests[@]}"
-    run_matrix_entry ipad-portrait "$ipad_udid" 24 "${ipad_portrait_tests[@]}"
-    run_matrix_entry ipad-landscape "$ipad_udid" 2 "${ipad_landscape_tests[@]}"
-    ;;
-  standard-phone)
-    run_matrix_entry standard-phone "$standard_udid" 45 "${standard_tests[@]}"
-    ;;
-  large-phone)
-    run_matrix_entry large-phone "$large_udid" 5 "${large_tests[@]}"
-    ;;
-  ipad-portrait)
-    run_isolated_ipad_portrait_entry \
-      ipad-portrait "$ipad_udid" 24 "${ipad_portrait_tests[@]}"
-    ;;
-  ipad-landscape)
-    run_matrix_entry ipad-landscape "$ipad_udid" 2 "${ipad_landscape_tests[@]}"
-    ;;
-esac
+if [[ "$selected_mode" == "smoke" ]]; then
+  run_matrix_entry standard-phone "$standard_udid" 5 "${standard_smoke_tests[@]}"
+else
+  case "$selected_role" in
+    "")
+      run_matrix_entry standard-phone "$standard_udid" 45 "${standard_tests[@]}"
+      run_matrix_entry large-phone "$large_udid" 5 "${large_tests[@]}"
+      run_matrix_entry ipad-portrait "$ipad_udid" 24 "${ipad_portrait_tests[@]}"
+      run_matrix_entry ipad-landscape "$ipad_udid" 2 "${ipad_landscape_tests[@]}"
+      ;;
+    standard-phone)
+      run_matrix_entry standard-phone "$standard_udid" 45 "${standard_tests[@]}"
+      ;;
+    large-phone)
+      run_matrix_entry large-phone "$large_udid" 5 "${large_tests[@]}"
+      ;;
+    ipad-portrait)
+      run_isolated_ipad_portrait_entry \
+        ipad-portrait "$ipad_udid" 24 "${ipad_portrait_tests[@]}"
+      ;;
+    ipad-landscape)
+      run_matrix_entry ipad-landscape "$ipad_udid" 2 "${ipad_landscape_tests[@]}"
+      ;;
+  esac
+fi
 
 exit "$matrix_status"

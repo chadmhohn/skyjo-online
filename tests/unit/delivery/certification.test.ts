@@ -1035,26 +1035,42 @@ describe('v0.3.3 workflow governance', () => {
     expect(ci).toMatch(/ios-build:\s*\n\s*name: iOS \/ Build/);
     expect(ci).toMatch(/ios-networking-contracts:\s*\n\s*name: iOS \/ Networking Contracts/);
     expect(ci).toMatch(/ios-ui-accessibility:\s*\n\s*name: iOS \/ UI & Accessibility/);
+    const iosScopeSection = ci.match(/\n {2}ios-ci-scope:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     const iosBuildSection = ci.match(/\n {2}ios-build:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     const iosNetworkingSection = ci.match(/\n {2}ios-networking-contracts:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     const iosUiRoleSection = ci.match(/\n {2}ios-ui-accessibility-role:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     const iosUiAggregateSection = ci.match(/\n {2}ios-ui-accessibility:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
+    expect(iosScopeSection).toMatch(/name: CI \/ Native scope/);
+    expect(iosScopeSection).toContain('node scripts/select-ci-scope.mjs');
+    expect(iosScopeSection).toContain('git diff --name-only -z');
+    expect(iosBuildSection).toMatch(/needs: ios-ci-scope/);
+    expect(iosBuildSection).toContain("'macos-26' || 'ubuntu-24.04'");
     expect(iosNetworkingSection).toMatch(/fetch-depth: 0/);
     expect(iosNetworkingSection).toMatch(/npm exec -- playwright install chromium/);
     expect(iosNetworkingSection).toMatch(/\.\/scripts\/ios-build-test\.sh --networking-contracts/);
     expect(iosBuildSection).not.toMatch(/playwright install chromium/);
     expect(iosUiRoleSection).toMatch(/name: iOS \/ UI & Accessibility \(\$\{\{ matrix\.role \}\}\)/);
-    expect(iosUiRoleSection).toMatch(
-      /role:\s*\n\s*- standard-phone\s*\n\s*- large-phone\s*\n\s*- ipad-portrait\s*\n\s*- ipad-landscape/
+    expect(iosUiRoleSection).toContain(
+      'role: ${{ fromJSON(needs.ios-ci-scope.outputs.ui-roles) }}'
+    );
+    expect(iosUiRoleSection).toContain(
+      'SKYJO_IOS_UI_ACCESSIBILITY_MODE: ${{ needs.ios-ci-scope.outputs.ui-mode }}'
     );
     expect(iosUiRoleSection).toMatch(/SKYJO_IOS_UI_ACCESSIBILITY_ROLE: \$\{\{ matrix\.role \}\}/);
     expect(iosUiRoleSection).toMatch(
       /name: ios-ui-accessibility-\$\{\{ matrix\.role \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/
     );
+    expect(iosUiRoleSection).toContain('if: failure()');
+    expect(iosUiRoleSection).toContain('retention-days: 3');
+    expect(iosUiRoleSection).not.toContain('if: always()');
     expect(iosUiAggregateSection).toMatch(/if: \$\{\{ always\(\) \}\}/);
-    expect(iosUiAggregateSection).toMatch(/needs: ios-ui-accessibility-role/);
+    expect(iosUiAggregateSection).toContain('- ios-ci-scope');
+    expect(iosUiAggregateSection).toContain('- ios-ui-accessibility-role');
     expect(iosUiAggregateSection).toMatch(
       /ROLE_JOBS_RESULT: \$\{\{ needs\.ios-ui-accessibility-role\.result \}\}/
+    );
+    expect(iosUiAggregateSection).toMatch(
+      /UI_MODE: \$\{\{ needs\.ios-ci-scope\.outputs\.ui-mode \}\}/
     );
     expect(uiAccessibilityHarness).toContain(
       '""|standard-phone|large-phone|ipad-portrait|ipad-landscape) ;;'
@@ -1063,6 +1079,19 @@ describe('v0.3.3 workflow governance', () => {
     expect(uiAccessibilityHarness).toContain(
       'printf \'Selected UI accessibility role: %s\\n\' "${selected_role:-full-matrix}"'
     );
+    expect(uiAccessibilityHarness).toContain(
+      'selected_mode="${SKYJO_IOS_UI_ACCESSIBILITY_MODE:-full}"'
+    );
+    expect(uiAccessibilityHarness).toContain(
+      'run_matrix_entry standard-phone "$standard_udid" 5 "${standard_smoke_tests[@]}"'
+    );
+    const ciScopeSelfTest = spawnSync(
+      'node',
+      [path.join(root, 'scripts', 'select-ci-scope.mjs'), '--self-test'],
+      { cwd: root, encoding: 'utf8' }
+    );
+    expect(ciScopeSelfTest.status).toBe(0);
+    expect(ciScopeSelfTest.stdout).toContain('CI scope self-test passed.');
     const invalidUiRole = spawnSync(
       'bash',
       [path.join(root, 'scripts', 'ios-ui-accessibility-test.sh')],
@@ -1076,11 +1105,28 @@ describe('v0.3.3 workflow governance', () => {
     expect(invalidUiRole.stderr).toContain(
       'SKYJO_IOS_UI_ACCESSIBILITY_ROLE must be one of standard-phone, large-phone, ipad-portrait, or ipad-landscape.'
     );
+    const invalidUiMode = spawnSync(
+      'bash',
+      [path.join(root, 'scripts', 'ios-ui-accessibility-test.sh')],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          SKYJO_IOS_UI_ACCESSIBILITY_MODE: 'everything',
+          SKYJO_IOS_UI_ACCESSIBILITY_ROLE: 'standard-phone'
+        }
+      }
+    );
+    expect(invalidUiMode.status).toBe(1);
+    expect(invalidUiMode.stderr).toContain(
+      'SKYJO_IOS_UI_ACCESSIBILITY_MODE must be full or smoke.'
+    );
     expect(ci).toMatch(/load-recovery:\s*\n\s*name: CI \/ Load & Recovery/);
     const loadRecoverySection = ci.match(/\n {2}load-recovery:[\s\S]*?(?=\n {2}[a-z][a-z-]+:)/)?.[0] || '';
     expect(loadRecoverySection).toContain('test-results/certification');
     expect(loadRecoverySection).not.toMatch(/playwright-report|test-results\/playwright|test-results\/server/);
-    expect(nightly).toContain('Upload checksummed sanitized nightly evidence');
+    expect(nightly).toContain('Upload checksummed sanitized weekly evidence');
     expect(nightly).toContain('test-results/certification');
     expect(nightly).not.toMatch(/playwright-report|test-results\/playwright|test-results\/server/);
     expect(ci).toMatch(/release-canary:[\s\S]*?needs:[\s\S]*?- load-recovery/);

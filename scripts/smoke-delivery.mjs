@@ -120,7 +120,10 @@ async function testPublicSmoke() {
 async function testWorkflowContract() {
   const workflow = await fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
   assert.match(workflow, /tags:\s*\n\s*- ["']v\*["']/);
-  assert.match(workflow, /\n  workflow_dispatch:\s*\n\s*\npermissions:/,
+  const dispatch = workflow.match(/\n  workflow_dispatch:[\s\S]*?\npermissions:/)?.[0] || '';
+  assert.match(dispatch, /\n\s+ios_ui_mode:/,
+    'manual dispatch must expose only the bounded native simulator coverage selector');
+  assert.doesNotMatch(dispatch, /\n\s+(?:sha|source_sha|release_sha):/,
     'recovery dispatch must accept only the selected immutable ref, never a mutable SHA input');
   assert.match(workflow, /uses: actions\/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f/);
   assert.match(workflow, /actionlint_1\.7\.12_linux_amd64\.tar\.gz/);

@@ -42,7 +42,7 @@ Acceptance:
 - Domain/network/persistence/design-system local packages compile with no circular dependency.
 - Debug base URL is injected; Release is fixed to HTTPS production.
 - Unsigned simulator build/test runs from one documented `xcodebuild` command on a clean clone.
-- GitHub macOS job uploads `.xcresult` and logs on failure; no signing credentials are required.
+- GitHub macOS jobs retain sanitized local `.xcresult` evidence and upload compact failure logs; no signing credentials are required.
 - Root Node CI remains green.
 
 ## [IOS-2 — Publish Contracts, Golden-Fixture Harness, And Native Access API](https://github.com/chadmhohn/skyjo-online/issues/182)

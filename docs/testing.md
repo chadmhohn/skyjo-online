@@ -34,7 +34,7 @@ Lighthouse runs three cold, storage-isolated mobile audits of both the home and 
 
 ## Release certification
 
-`CI / Load & Recovery` runs for every pull request, protected-main push, and `v*` tag. It is also a dependency of the VPS canary. The scheduled workflow repeats the same certification from protected `main` each night.
+`CI / Load & Recovery` runs for every pull request, protected-main push, and `v*` tag. It is also a dependency of the VPS canary. The scheduled workflow repeats the same certification from protected `main` once a week.
 
 The load lane uses k6 v2.0.0's global `k6/websockets` event loop. Twenty `per-vu-iterations` room controllers each own eight distinct authenticated sockets for ten minutes. Each room serializes 600 authoritative chat-marker commands; all eight clients must observe every resulting revision. The runner rejects anything other than exactly 20 rooms, 160 unique authenticated sessions, 160 connected clients, 12,000 commands, and 96,000 observations. It also rejects an error rate at or above 0.1%, propagation p95 above 250ms, any redaction or revision divergence, interrupted iterations, or measured application RSS at or above 256 MiB.
 
