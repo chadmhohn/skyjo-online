@@ -8,6 +8,7 @@ SWIFT_OPTIMIZATION_LEVEL = -O
 DEBUG_INFORMATION_FORMAT = dwarf-with-dsym
 ENABLE_TESTABILITY = NO
 VALIDATE_PRODUCT = YES
+APS_ENVIRONMENT = production
 
 // Keep this assignment after Local.xcconfig so Release always uses production HTTPS.
 SKYJO_URL_SLASH = /

@@ -10,6 +10,7 @@ struct HomeShellView: View {
   @Bindable var solo: SoloFeatureModel
   @Bindable var preferences: SoloPreferencesStore
   @Bindable var rooms: RoomAppCoordinator
+  @Bindable var notifications: NativeNotificationCoordinator
   let offlineMessage: String?
 
   var body: some View {
@@ -65,7 +66,7 @@ struct HomeShellView: View {
       Tab("Account", systemImage: "person.crop.circle", value: .account) {
         NavigationStack {
           if model.hasConfirmedAccountSession, let user {
-            AccountView(model: model, user: user)
+            AccountView(model: model, notifications: notifications, user: user)
           } else if let user {
             OfflineAccountView(model: model, user: user)
           } else {

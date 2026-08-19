@@ -25,6 +25,9 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
   public static let accountExists = Self(rawValue: "ACCOUNT_EXISTS")
   public static let accountNotFound = Self(rawValue: "ACCOUNT_NOT_FOUND")
   public static let accountSessionChanged = Self(rawValue: "ACCOUNT_SESSION_CHANGED")
+  public static let apnsDeviceLimit = Self(rawValue: "APNS_DEVICE_LIMIT")
+  public static let apnsNotConfigured = Self(rawValue: "APNS_NOT_CONFIGURED")
+  public static let apnsRegistrationRateLimited = Self(rawValue: "APNS_REGISTRATION_RATE_LIMITED")
   public static let adminRequired = Self(rawValue: "ADMIN_REQUIRED")
   public static let adminSelfRevokeForbidden = Self(rawValue: "ADMIN_SELF_REVOKE_FORBIDDEN")
   public static let apiRouteNotFound = Self(rawValue: "API_ROUTE_NOT_FOUND")
@@ -37,6 +40,7 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
   public static let invalidEmail = Self(rawValue: "INVALID_EMAIL")
   public static let invalidJSON = Self(rawValue: "INVALID_JSON")
   public static let invalidPushSubscription = Self(rawValue: "INVALID_PUSH_SUBSCRIPTION")
+  public static let invalidAPNSDevice = Self(rawValue: "INVALID_APNS_DEVICE")
   public static let invalidRole = Self(rawValue: "INVALID_ROLE")
   public static let invalidRoomCode = Self(rawValue: "INVALID_ROOM_CODE")
   public static let invalidRequest = Self(rawValue: "INVALID_REQUEST")
@@ -79,6 +83,9 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
     .accountExists,
     .accountNotFound,
     .accountSessionChanged,
+    .apnsDeviceLimit,
+    .apnsNotConfigured,
+    .apnsRegistrationRateLimited,
     .adminRequired,
     .adminSelfRevokeForbidden,
     .apiRouteNotFound,
@@ -91,6 +98,7 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
     .invalidEmail,
     .invalidJSON,
     .invalidPushSubscription,
+    .invalidAPNSDevice,
     .invalidRole,
     .invalidRoomCode,
     .invalidRequest,

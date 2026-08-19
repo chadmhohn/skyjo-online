@@ -943,7 +943,7 @@ private actor MockSkyjoService: SkyjoService {
     makeUser(disabled: scenario == .disabled)
   }
 
-  func logoutAccount() async throws {}
+  func logoutAccount(apnsInstallationID: UUID?) async throws {}
 
   func updateProfile(displayName: String) async throws -> AccountUser {
     if scenario == .deferredProfile {

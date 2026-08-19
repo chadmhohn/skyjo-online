@@ -1007,6 +1007,74 @@ struct AccessSessionClientTests {
     ])
   }
 
+  @Test("APNs config, registration, deletion, and logout use the exact native contract")
+  func apnsDeviceContract() async throws {
+    let baseURL = URL(string: "https://apns-\(UUID().uuidString).test")!
+    let cookieStorage = testCookieStorage(for: baseURL)
+    let installationID = UUID(uuidString: "10000000-0000-4000-8000-000000000189")!
+    let requests = LockedValue<[String]>([])
+    StubURLProtocol.install { request in
+      requests.set(requests.get() + ["\(request.httpMethod ?? "") \(request.url?.path ?? "")"])
+      switch (request.httpMethod, request.url?.path) {
+      case ("GET", "/api/push/apns/config"):
+        return try stubResponse(for: request, body: #"{"enabled":true}"#)
+      case ("PUT", "/api/push/apns/devices/10000000-0000-4000-8000-000000000189"):
+        try requireJSONBody(
+          request,
+          expected: [
+            "deviceToken": "01abcdef01234567",
+            "environment": "development",
+            "appVersion": "0.1.0",
+            "locale": "en-US",
+          ]
+        )
+        return try stubResponse(for: request, body: #"{"ok":true}"#)
+      case ("DELETE", "/api/push/apns/devices/10000000-0000-4000-8000-000000000189"):
+        #expect(requestBody(request) == nil)
+        return try stubResponse(for: request, body: #"{"ok":true}"#)
+      case ("POST", "/api/account/logout"):
+        try requireJSONBody(
+          request,
+          expected: ["installationId": "10000000-0000-4000-8000-000000000189"]
+        )
+        return try stubResponse(for: request, body: #"{"ok":true}"#)
+      default:
+        throw StubError.invalidRequest
+      }
+    }
+    let session = SkyjoURLSessionFactory.makeDedicated(
+      cookieStorage: cookieStorage,
+      protocolClasses: [StubURLProtocol.self]
+    )
+    let client = SkyjoAPIClient(
+      environment: SkyjoNetworkEnvironment(baseURL: baseURL),
+      session: session
+    )
+    defer {
+      session.invalidateAndCancel()
+      clearCookies(cookieStorage, for: baseURL)
+      StubURLProtocol.removeHandler()
+    }
+
+    #expect(try await client.apnsConfiguration() == APNSConfiguration(enabled: true))
+    try await client.registerAPNSDevice(
+      installationID: installationID,
+      deviceToken: "01abcdef01234567",
+      environment: .development,
+      appVersion: "0.1.0",
+      locale: "en-US"
+    )
+    try await client.deleteAPNSDevice(installationID: installationID)
+    try await client.logoutAccount(apnsInstallationID: installationID)
+
+    #expect(requests.get() == [
+      "GET /api/push/apns/config",
+      "PUT /api/push/apns/devices/10000000-0000-4000-8000-000000000189",
+      "DELETE /api/push/apns/devices/10000000-0000-4000-8000-000000000189",
+      "POST /api/account/logout",
+    ])
+  }
+
   @Test("Required nullable account fields reject omission")
   func missingAccountEnvelopeUser() async {
     let baseURL = URL(string: "https://account-shape-\(UUID().uuidString).test")!

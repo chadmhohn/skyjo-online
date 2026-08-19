@@ -224,6 +224,13 @@ final class RoomAppCoordinator {
     isRoomPresented = true
   }
 
+  func presentNotificationRoom(_ roomCode: String, for account: AccountUser) async {
+    await synchronize(account: account)
+    guard let sessionHost, sessionHost.model.account.id == account.id else { return }
+    sessionHost.model.prepareNotificationRoute(roomCode: roomCode)
+    isRoomPresented = true
+  }
+
   func dismissInviteHandoff() {
     inviteHandoff.dismiss()
   }

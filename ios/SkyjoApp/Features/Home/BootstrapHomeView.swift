@@ -9,11 +9,17 @@ struct BootstrapHomeView: View {
   @State private var dependencies: AppDependencies?
   private let configurationErrorMessage: String?
 
-  init(configuration: Result<AppConfiguration, AppConfigurationError>) {
+  init(
+    configuration: Result<AppConfiguration, AppConfigurationError>,
+    notificationSystem: any NativeNotificationOperatingSystem
+  ) {
     switch configuration {
     case .success(let configuration):
       do {
-        let dependencies = try AppDependencies(configuration: configuration)
+        let dependencies = try AppDependencies(
+          configuration: configuration,
+          notificationSystem: notificationSystem
+        )
         _dependencies = State(initialValue: dependencies)
         _model = State(
           initialValue: AppModel(
@@ -120,6 +126,7 @@ private struct NativeRootView: View {
           solo: dependencies.solo,
           preferences: dependencies.preferences,
           rooms: rooms,
+          notifications: dependencies.notifications,
           offlineMessage: nil
         )
       case .authenticated:
@@ -129,6 +136,7 @@ private struct NativeRootView: View {
           solo: dependencies.solo,
           preferences: dependencies.preferences,
           rooms: rooms,
+          notifications: dependencies.notifications,
           offlineMessage: nil
         )
       case .offline(let message):
@@ -152,6 +160,7 @@ private struct NativeRootView: View {
           solo: dependencies.solo,
           preferences: dependencies.preferences,
           rooms: rooms,
+          notifications: dependencies.notifications,
           offlineMessage: message
         )
       case .serviceNotReady:
@@ -264,11 +273,26 @@ private struct NativeRootView: View {
       await rooms.synchronize(
         account: model.hasConfirmedAccountSession ? model.user : nil
       )
+      await dependencies.notifications.synchronize(
+        account: model.hasConfirmedAccountSession ? model.user : nil
+      )
+      await routePendingNotificationIfPossible(
+        model: model,
+        rooms: rooms,
+        notifications: dependencies.notifications
+      )
       if case .idle = rooms.handoffState,
          rooms.isRoomPresented,
          model.hasConfirmedAccountSession {
         model.selectedTab = .home
       }
+    }
+    .task(id: dependencies.notifications.routeGeneration) {
+      await routePendingNotificationIfPossible(
+        model: model,
+        rooms: rooms,
+        notifications: dependencies.notifications
+      )
     }
     .safeAreaInset(edge: .top) {
       InviteHandoffStatusView(
@@ -296,8 +320,31 @@ private struct NativeRootView: View {
       let isActive = phase == .active
       dependencies.solo.setSceneActive(isActive)
       rooms.setSceneActive(isActive)
+      if isActive {
+        Task {
+          await dependencies.notifications.synchronize(
+            account: model.hasConfirmedAccountSession ? model.user : nil
+          )
+        }
+      }
     }
   }
+}
+
+@MainActor
+private func routePendingNotificationIfPossible(
+  model: AppModel,
+  rooms: RoomAppCoordinator,
+  notifications: NativeNotificationCoordinator
+) async {
+  guard let route = notifications.pendingRoomRoute else { return }
+  guard model.hasConfirmedAccountSession, let user = model.user else {
+    model.selectedTab = .account
+    return
+  }
+  await rooms.presentNotificationRoom(route.roomCode, for: user)
+  model.selectedTab = .home
+  notifications.consumePendingRoomRoute()
 }
 
 private struct LocalSoloSynchronizationID: Equatable {

@@ -4,13 +4,19 @@ import SwiftUI
 @MainActor
 struct AccountView: View {
   @Bindable var model: AppModel
+  @Bindable var notifications: NativeNotificationCoordinator
   @Bindable private var settings: AccountSettingsFormModel
   let user: AccountUser
   @State private var confirmsLogout = false
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-  init(model: AppModel, user: AccountUser) {
+  init(
+    model: AppModel,
+    notifications: NativeNotificationCoordinator,
+    user: AccountUser
+  ) {
     self.model = model
+    self.notifications = notifications
     _settings = Bindable(model.accountSettings)
     self.user = user
   }
@@ -93,6 +99,15 @@ struct AccountView: View {
         }
       }
 
+      Section("Turn notifications") {
+        notificationControls
+        Text(notificationDetail)
+          .font(.footnote)
+          .foregroundStyle(.primary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("account.notifications.detail")
+      }
+
       if user.role == .admin {
         Section("Administration") {
           Text("Native admin tools are intentionally out of scope for v0.1.0.")
@@ -153,6 +168,70 @@ struct AccountView: View {
   private func changePassword() {
     guard settings.canChangePassword else { return }
     Task { await model.changePassword() }
+  }
+
+  @ViewBuilder
+  private var notificationControls: some View {
+    switch notifications.state {
+    case .enabled:
+      Label("Notifications enabled", systemImage: "bell.badge.fill")
+        .accessibilityIdentifier("account.notifications.enabled")
+      Button("Turn Off Notifications", role: .destructive) {
+        Task { await notifications.disable() }
+      }
+      .disabled(notifications.isWorking)
+      .accessibilityIdentifier("account.notifications.disable")
+    case .denied:
+      Label("Notifications blocked in Settings", systemImage: "bell.slash.fill")
+        .accessibilityIdentifier("account.notifications.denied")
+      Button("Open Settings") { notifications.openSettings() }
+        .accessibilityIdentifier("account.notifications.settings")
+    case .checking:
+      HStack {
+        ProgressView()
+        Text("Setting up notifications")
+      }
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("account.notifications.checking")
+    case .unavailable:
+      Label("Notifications are not available yet", systemImage: "bell.slash")
+        .accessibilityIdentifier("account.notifications.unavailable")
+      Button("Try Again") { Task { await notifications.retry() } }
+        .disabled(notifications.isWorking)
+        .accessibilityIdentifier("account.notifications.retry")
+    case .failed:
+      Label("Notification setup needs another try", systemImage: "exclamationmark.triangle")
+        .accessibilityIdentifier("account.notifications.failed")
+      Button("Try Again") { Task { await notifications.retry() } }
+        .disabled(notifications.isWorking)
+        .accessibilityIdentifier("account.notifications.retry")
+      Button("Turn Off Notifications", role: .destructive) {
+        Task { await notifications.disable() }
+      }
+      .disabled(notifications.isWorking)
+      .accessibilityIdentifier("account.notifications.disable")
+    case .off:
+      Button("Enable Turn Notifications") {
+        Task { await notifications.enable() }
+      }
+      .disabled(notifications.isWorking)
+      .accessibilityIdentifier("account.notifications.enable")
+    }
+  }
+
+  private var notificationDetail: String {
+    switch notifications.state {
+    case .enabled:
+      "This device can alert you when a multiplayer turn needs attention. Skyjo hides alerts while the app is open."
+    case .denied:
+      "Allow notifications in iOS Settings, then return to Skyjo."
+    case .unavailable:
+      "The Skyjo service has not enabled native notifications yet. Multiplayer still works normally."
+    case .failed:
+      "Skyjo could not finish notification setup. Multiplayer still works normally."
+    case .off, .checking:
+      "Skyjo asks only after you tap Enable. Alerts contain no cards, chat, scores, email, or invite links."
+    }
   }
 
 #if DEBUG
