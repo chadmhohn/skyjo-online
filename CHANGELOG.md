@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4 - 2026-08-18
+
+- Added the source-only native multiplayer room experience: invite review, seat recovery, server-authoritative room controls, table chat, reconnect/reset recovery, and responsive iPhone/iPad presentation.
+- Added exact Associated Domains build auditing and the production universal-link consumer while retaining browser fallback and the existing access, account, room-membership, schema-2, and protocol-2 boundaries.
+- Preserved the frozen APNs rollback envelope without creating or using `apns_devices`. This successor exists to make immutable v0.3.3 the verified production `previous` rollback floor before #204 begins.
+
 ## 0.3.3 - 2026-07-30
 
 - Added the committed, unsigned source foundation for a universal SwiftUI iPhone/iPad app, including its local package graph, configuration boundary, shared scheme/test plan, and macOS CI. This repository candidate does not contain or distribute a signed native app.
