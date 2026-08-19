@@ -596,8 +596,29 @@ jobs:
         with:
           name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
-      - name: Install pinned WebKit
-        run: npm exec -- playwright install --with-deps webkit
+      - name: Install pinned WebKit and its missing Ubuntu libraries
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libavif16 \
+            libevent-2.1-7t64 \
+            libflite1 \
+            libgles2 \
+            libgraphene-1.0-0 \
+            libgstreamer-gl1.0-0 \
+            libgstreamer-plugins-bad1.0-0 \
+            libgstreamer-plugins-base1.0-0 \
+            libgtk-4-1 \
+            libharfbuzz-icu0 \
+            libhyphen0 \
+            libmanette-0.2-0 \
+            libopus0 \
+            libsecret-1-0 \
+            libwayland-server0 \
+            libwoff1 \
+            libx264-164
+          npm exec -- playwright install webkit
       - name: Run WebKit phone compatibility project
         run: npm exec -- playwright test tests/e2e/functional --project=webkit-phone
       - name: Run WebKit accessibility compatibility gate
