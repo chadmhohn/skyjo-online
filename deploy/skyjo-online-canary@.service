@@ -41,4 +41,4 @@ IPAddressDeny=any
 IPAddressAllow=localhost
 SystemCallArchitectures=native
 ReadWritePaths=/var/tmp/skyjo-deploy/%i
-InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env
+InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env -/etc/skyjo-online

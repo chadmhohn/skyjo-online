@@ -205,7 +205,7 @@ async function testWorkflowContract() {
   for (const unit of [canaryUnit, canarySmokeUnit, stateProofUnit]) {
     assert.match(unit, /^User=skyjo-canary$/m);
     assert.doesNotMatch(unit, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
-    assert.match(unit, /^InaccessiblePaths=\/var\/lib\/skyjo-online \/etc\/skyjo-online\.env$/m);
+    assert.match(unit, /^InaccessiblePaths=\/var\/lib\/skyjo-online \/etc\/skyjo-online\.env -\/etc\/skyjo-online$/m);
     assert.doesNotMatch(unit, /^PrivateTmp=true$/m);
   }
   assert.match(productionUnit, /\/opt\/skyjo-online\/node\/bin\/node/);

@@ -34,7 +34,7 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 - Portable schemas and deterministic fixtures live under `contracts/v1/`; contract-bundle version 1 is independent of the release, multiplayer protocol, snapshot envelope, presence, database, room-persistence, and solo-AI versions.
 - The solo rules and AI are ported to Swift behind those cross-language deterministic fixtures.
 - Native implementation belongs under `ios/`; project files, shared schemes, test plans, sample configuration, and fixtures are committed.
-- APNs persistence uses a two-release rollback rule: the schema-2 envelope release must first be immutably promoted and confirmed as `previous`; only the later feature release may create the exact optional `apns_devices` table. Never roll back past that envelope after the table exists.
+- APNs persistence uses a two-release rollback rule: the schema-2 envelope release must first be immutably promoted and confirmed as `previous`; the feature release then creates the exact optional `apns_devices` table transactionally without advancing the public migration ledger. Never roll back past the verified envelope after the table exists.
 - Apple credentials, signing assets, device tokens, local team configuration, and App Store Connect keys never enter git.
 - No project requirement may depend on Nova/OpenClaw memory or another computer's local files. Move durable decisions into this repository.
 
@@ -43,9 +43,10 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 - `src/game.ts`: shared Skyjo game engine for single-player and multiplayer. Owns deck composition, opening reveal rules, turn progression, scoring, final-turn flow, column clears, and AI decisions.
 - `src/types.ts`: shared client/server state types.
 - `src/serverValidation.ts`: server-side legal multiplayer state validation. This compiles to `server-dist/` and is loaded by the Node server.
-- `server.mjs`: production Node server. Handles password-gated HTTP, the additive JSON access-session contract, public Apple association, pre-gate native invite redemption, invite install/browser handoff, static `dist/` serving, public `/healthz`, `/readyz`, and `/version`, WebSocket rooms at `/rooms`, room chat, host controls, room reset, and verified persistence flush on shutdown.
+- `server.mjs`: production Node server. Handles password-gated HTTP, the additive JSON access-session and authenticated native-push contracts, public Apple association, pre-gate native invite redemption, invite install/browser handoff, static `dist/` serving, public `/healthz`, `/readyz`, and `/version`, WebSocket rooms at `/rooms`, independent Web Push/APNs fanout, room chat, host controls, room reset, and verified persistence flush on shutdown.
 - `server-room-invites.mjs`: signed invite parsing/verification plus strict `SKYJO_APPLE_APPLICATION_IDENTIFIER` validation and exact Apple association-document generation. Production requires the confirmed full App ID; isolated test/canary runs use the fixed non-production identifier.
-- `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, admin user operations, and strict validation of the optional frozen APNs rollback envelope without creating or using it.
+- `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, admin user operations, and the exact frozen APNs table plus encrypted, capped, retained device registrations while public schema remains 2.
+- `server-apns.mjs`: native notification boundary. Owns strict registration validation, server-only key loading, AES-256-GCM token protection and keyed fingerprints, ES256 provider tokens, bounded fixed-host HTTP/2 delivery, generic payloads, retry classification, and race-safe invalid-token retirement.
 - `server-room-persistence.mjs`: versioned JSON persistence for rooms with strict legacy readers and durable atomic v2 writes. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
 - `server-release.mjs` and `server-readiness.mjs`: checksum-validated build identity and sanitized public readiness/version contracts. The current baseline is schema 2 and protocol 2.
 - `server-state-backup.mjs`: online SQLite backup, fixed-file checksum manifest verification, and fresh isolated restore safeguards.
@@ -65,7 +66,7 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 
 ## Safety Rules
 
-- The GitHub repo is public. Never commit `.env`, `/etc/skyjo-online.env`, cookies, passwords, session secrets, tunnel tokens, room dumps with private content, or OpenClaw secrets.
+- The GitHub repo is public. Never commit `.env`, `/etc/skyjo-online.env`, cookies, passwords, session secrets, APNs provider/encryption keys, device tokens or fingerprints, tunnel tokens, room dumps with private content, or OpenClaw secrets.
 - Treat `/var/lib/skyjo-online/rooms.json` and `/var/lib/skyjo-online/skyjo.sqlite` as runtime state, not disposable build artifacts. Back them up before persistence format changes.
 - Do not restart `skyjo-online.service`, Cloudflare Tunnel, Traefik, OpenClaw, Docker, or the VPS unless Chad explicitly approved that disruptive action in the current conversation.
 - Preserve unrelated dirty work. If the dirty files overlap your task, read the diff and build on it; do not reset it away.
@@ -131,7 +132,7 @@ curl -sS -D - https://skyjo.groundworkrevops.com/login -o /dev/null
 Restart is normally needed for:
 
 - `server.mjs` changes.
-- `server-account-store.mjs` or account/session/game-history API changes.
+- `server-account-store.mjs`, `server-apns.mjs`, or account/session/game-history/push API changes.
 - `server-room-persistence.mjs` changes.
 - `src/serverValidation.ts`, `src/game.ts`, or compiled `server-dist/` changes that the Node server must load.
 - Dependency, lockfile, service unit, or `/etc/skyjo-online.env` changes.

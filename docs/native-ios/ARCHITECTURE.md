@@ -172,9 +172,9 @@ IOS-2 adds two native-enabling capabilities to the repository:
 1. The pre-gate JSON access-session endpoint, stable `{ code, error }` API failures, and an `ACCESS_REQUIRED` JSON response for unauthenticated API requests. The legacy HTML `/login` and PWA `error` message fallback remain intact.
 2. Versioned JSON Schemas and deterministic, sanitized fixtures under `contracts/v1/`.
 
-These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. IOS-5 consumes them with the typed native HTTP/session client and accessible access/account/home/stats shell described above; IOS-7 adds the repository-owned native solo experience and multi-device UI/accessibility gate. Local simulator/server evidence proves source compatibility, not production promotion or native distribution. Remaining additive backend work is:
+These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. IOS-5 consumes them with the typed native HTTP/session client and accessible access/account/home/stats shell described above; IOS-7 adds the repository-owned native solo experience and multi-device UI/accessibility gate. Local simulator/server evidence proves source compatibility, not production promotion or native distribution. Native notification support follows one additional backend sequence:
 
-1. A two-release APNs storage sequence: #203 first freezes and validates an optional exact `apns_devices` physical table while retaining public schema 2; after that release is promoted and becomes the verified `previous` rollback anchor, #204 may create/use the same descriptor for authenticated registration/unregistration and provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
+1. #203 first freezes and validates an optional exact `apns_devices` physical table while retaining public schema 2. After that release is promoted and becomes the verified `previous` rollback anchor, #204 creates/uses the same descriptor for authenticated registration/unregistration, encrypted token persistence, and independent post-commit APNs provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
 
 Issue #202 implements the two former invite items in repository source: an invite-only, no-redirect AASA document with a configured full Apple application identifier, plus pre-gate JSON redemption that validates the existing signed token/current room instance and grants only the existing outer-access cookie. The route and fixtures deliberately do not implement Swift URL routing, room UI, Associated Domains entitlement/signing, production promotion, Apple CDN verification, or physical-device behavior; #188 owns that native consumer and those later gates.
 
@@ -184,7 +184,7 @@ All additions must leave the current PWA and web-push paths working. Deploy serv
 
 - HTTPS/WSS only; no App Transport Security exceptions for production.
 - Never pin a single certificate unless an explicit rotation strategy is accepted.
-- Redact email, cookies, passwords, invite tokens, device tokens, room frames, hidden values, and drawn-card values from logs.
+- Redact email, cookies, passwords, invite tokens, device tokens/fingerprints, provider JWTs/APNs IDs, room frames, hidden values, and drawn-card values from logs.
 - Use `Logger` categories and privacy annotations; diagnostics expose release/protocol/status, not secrets or raw state.
 - Validate every decoded payload, array bound, identifier length, revision, URL path, and enum. A decoding failure closes or quarantines the affected flow safely.
 - Universal links may navigate to a lobby/invite review only; they never directly mutate or delete user data.

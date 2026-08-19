@@ -87,7 +87,10 @@ async function createDatabase(filePath: string) {
 }
 
 function installAPNSDeviceEnvelope(database: DatabaseSync) {
-  database.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+  const present = database
+    .prepare("SELECT 1 AS found FROM sqlite_schema WHERE type = 'table' AND name = 'apns_devices'")
+    .get();
+  if (!present) database.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
 }
 
 function apnsRows(database: DatabaseSync) {

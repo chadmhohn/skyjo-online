@@ -27,7 +27,8 @@
         "envelopeIssue": 203,
         "featureIssue": 204,
         "migrationLedgerVersion": 2,
-        "rollbackRule": "Promote the envelope release first and make its exact immutable tag the verified previous anchor before the feature creates the table; never roll back past it afterward"
+        "rollbackRule": "Promote the envelope release first and make its exact immutable tag the verified previous anchor before the feature creates the table; never roll back past it afterward",
+        "featureBehavior": "Issue 204 creates the frozen descriptor transactionally and idempotently, encrypts device-token material, and retains public database schema 2"
       }
     },
     "roomPersistenceVersion": 2,
@@ -52,6 +53,34 @@
       "expiresAt"
     ],
     "maximumInviteTokenCharacters": 2048,
+    "apnsHttp": {
+      "configPath": "/api/push/apns/config",
+      "devicePathTemplate": "/api/push/apns/devices/:installationId",
+      "deviceMethods": [
+        "PUT",
+        "DELETE"
+      ],
+      "registrationFields": [
+        "deviceToken",
+        "environment",
+        "appVersion",
+        "locale"
+      ],
+      "environments": [
+        "development",
+        "production"
+      ],
+      "maximumTokenBytes": 2048,
+      "maximumActiveInstallationsPerAccount": 8,
+      "retentionDays": 180,
+      "schema": "contracts/v1/schemas/push-http.schema.json",
+      "stableErrors": [
+        "INVALID_APNS_DEVICE",
+        "APNS_NOT_CONFIGURED",
+        "APNS_DEVICE_LIMIT",
+        "APNS_REGISTRATION_RATE_LIMITED"
+      ]
+    },
     "nativeInviteRedemptionErrorCodes": [
       "INVITE_INVALID_OR_EXPIRED",
       "INVITE_ROOM_UNAVAILABLE",
@@ -151,6 +180,15 @@
       "tests/unit/data/migrations.test.ts",
       "tests/unit/data/stateBackup.test.ts"
     ],
+    "apnsRegistryAndProvider": [
+      "server-apns.mjs",
+      "server-account-store.mjs",
+      "server.mjs",
+      "contracts/v1/schemas/push-http.schema.json",
+      "scripts/smoke-apns.mjs",
+      "tests/unit/data/apnsDelivery.test.ts",
+      "tests/unit/data/accountStoreEdges.test.ts"
+    ],
     "portableContracts": [
       "contracts/README.md",
       "contracts/v1/schemas",
@@ -246,6 +284,7 @@
     "contractFixturesIntentionalUpdate": "npm run contracts:fixtures:update",
     "nativeDomainAndPersistence": "npm run test:domain:parity",
     "apnsRollbackEnvelope": "npm run smoke:apns-rollback",
+    "apnsRegistryAndProvider": "npm run smoke:apns",
     "nativeNetworkingContracts": "./scripts/ios-build-test.sh --networking-contracts",
     "nativeFullBuildAndTest": "./scripts/ios-build-test.sh",
     "nativeUIAccessibility": "./scripts/ios-build-test.sh --ui-accessibility",
@@ -297,10 +336,10 @@
     "strict actor-owned native protocol-v2 room client with account-fenced durable reset recovery",
     "real Swift and Playwright Chromium mixed-client networking contract gate pinned to cached PWA v0.3.2 compatibility",
     "schema-2 validation and byte-preserving backup/restore support for the exact optional APNs storage envelope; production rollback-floor verification remains pending",
+    "authenticated APNs config/register/delete/logout-cleanup contracts, encrypted device registry, bounded provider delivery, and independent Web Push/APNs fanout; immutable production enablement remains pending",
     "native guest and account-partitioned solo experience with durable stats delivery and multi-device UI/accessibility evidence"
   ],
   "plannedServerAdditions": [
-    "authenticated APNs device registration and delivery after the envelope release is promoted and becomes the verified previous rollback anchor",
     "account deletion before public App Store submission"
   ],
   "nonSecretProductionConfiguration": [
@@ -310,6 +349,8 @@
     "Apple Developer Team ID",
     "APNs key ID and issuer/team ID",
     "APNs .p8 private key",
+    "APNs token-encryption key",
+    "APNs device tokens and keyed fingerprints",
     "App Store Connect API private key",
     "SKYJO_ACCESS_PASSWORD",
     "SKYJO_SESSION_SECRET",

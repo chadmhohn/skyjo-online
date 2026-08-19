@@ -25,7 +25,10 @@ function columnNames(db: DatabaseSync, table: string) {
 }
 
 function installAPNSDeviceEnvelope(db: DatabaseSync) {
-  db.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+  const present = db
+    .prepare("SELECT 1 AS found FROM sqlite_schema WHERE type = 'table' AND name = 'apns_devices'")
+    .get();
+  if (!present) db.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
 }
 
 function apnsRows(db: DatabaseSync) {
@@ -78,7 +81,7 @@ describe('transactional database migrations', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it('creates the current schema with stable migration checksums and no raw invite secret columns', async () => {
+  it('creates the current schema and frozen APNs table with stable migration checksums', async () => {
     const store = await createAccountStore({ filePath: dbFile, now: () => fixedNow });
     expect(store.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION);
     expect(store.checkReadiness()).toBe(true);
@@ -104,8 +107,8 @@ describe('transactional database migrations', () => {
       expect(columnNames(db, 'invite_codes')).not.toEqual(expect.arrayContaining(['code', 'invite_token']));
       expect(
         db.prepare("SELECT 1 AS found FROM sqlite_schema WHERE type = 'table' AND name = 'apns_devices'").get()
-      ).toBeUndefined();
-      expect(validateOptionalAPNSDeviceStorageEnvelope(db)).toEqual({ present: false, version: 1 });
+      ).toEqual({ found: 1 });
+      expect(validateOptionalAPNSDeviceStorageEnvelope(db)).toEqual({ present: true, version: 1 });
     } finally {
       db.close();
     }

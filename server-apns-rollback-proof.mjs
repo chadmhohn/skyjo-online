@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import {
   APNS_DEVICE_STORAGE_ENVELOPE,
-  createAccountStore
+  createAccountStore,
+  validateOptionalAPNSDeviceStorageEnvelope
 } from './server-account-store.mjs';
 import { saveRoomsToDisk } from './server-room-persistence.mjs';
 
@@ -392,7 +393,9 @@ export async function runApnsRollbackProof({
 
     const database = new DatabaseSync(seedDatabase);
     database.exec('PRAGMA foreign_keys = ON');
-    database.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+    if (!validateOptionalAPNSDeviceStorageEnvelope(database).present) {
+      database.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+    }
     database.prepare(`
       INSERT INTO apns_devices (
         installation_id,

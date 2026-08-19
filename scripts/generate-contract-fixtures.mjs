@@ -1200,7 +1200,8 @@ async function createHttpFixtures(gameOverState) {
     'INCOMPLETE_GAME', 'INVALID_ROOM_CODE', 'PASSWORDS_MUST_MATCH', 'MISSING_HUMAN_PLAYER',
     'ACCOUNT_SESSION_CHANGED', 'STATS_CLIENT_UPGRADE_REQUIRED', 'INVALID_COMPLETED_AT',
     'REQUEST_TOO_LARGE', 'INVALID_JSON', 'EXPECTED_JSON_OBJECT', 'CODE_ALLOCATION_FAILED', 'INVITE_CODE_LIMIT',
-    'INVITE_INVALID_OR_EXPIRED', 'INVITE_ROOM_UNAVAILABLE', 'INVITE_RATE_LIMITED'
+    'INVITE_INVALID_OR_EXPIRED', 'INVITE_ROOM_UNAVAILABLE', 'INVITE_RATE_LIMITED',
+    'INVALID_APNS_DEVICE', 'APNS_NOT_CONFIGURED', 'APNS_DEVICE_LIMIT', 'APNS_REGISTRATION_RATE_LIMITED'
   ];
   const propagatedErrors = publicErrorCodes.map((code) => {
     const response = publicApiErrorResponse(new PublicApiError(code));
@@ -1217,6 +1218,13 @@ async function createHttpFixtures(gameOverState) {
     expiresAt: fixedEpoch + 60 * 60 * 1_000
   };
   const appleAppSiteAssociation = createAppleAppSiteAssociation(SYNTHETIC_APPLE_APPLICATION_IDENTIFIER);
+  const apnsDeviceRegistration = {
+    deviceToken: 'ab'.repeat(32),
+    environment: 'development',
+    appVersion: '0.1.0-42',
+    locale: 'en-US'
+  };
+  const apnsLogoutRequest = { installationId: '5000000a-0000-4000-8000-000000000005' };
 
   const valid = [
     fixtureCase('access signed out', 'account-http.schema.json', { authenticated: false }),
@@ -1234,6 +1242,11 @@ async function createHttpFixtures(gameOverState) {
     fixtureCase('service not ready', 'operational.schema.json', notReady),
     fixtureCase('native invite redemption', 'invite-http.schema.json', nativeInviteRedemption),
     fixtureCase('Apple app site association', 'invite-http.schema.json', appleAppSiteAssociation),
+    fixtureCase('APNs enabled config', 'push-http.schema.json', { enabled: true }),
+    fixtureCase('APNs disabled config', 'push-http.schema.json', { enabled: false }),
+    fixtureCase('APNs device registration', 'push-http.schema.json', apnsDeviceRegistration),
+    fixtureCase('APNs logout cleanup', 'push-http.schema.json', apnsLogoutRequest),
+    fixtureCase('APNs operation succeeded', 'push-http.schema.json', { ok: true }),
     ...errors.map((value) => fixtureCase(`API error ${value.code}`, 'api-error.schema.json', value))
   ];
 
@@ -1257,6 +1270,21 @@ async function createHttpFixtures(gameOverState) {
     fixtureCase('native invite response exposes room identity', 'invite-http.schema.json', exposedNativeInviteIdentity, { expectedLayer: 'schema' }),
     fixtureCase('Apple association includes a broad route', 'invite-http.schema.json', broadAppleAssociation, { expectedLayer: 'schema' }),
     fixtureCase('Apple association does not exclude browser fallback', 'invite-http.schema.json', inclusiveBrowserFallback, { expectedLayer: 'schema' }),
+    fixtureCase('APNs token uses uppercase hex', 'push-http.schema.json', {
+      ...apnsDeviceRegistration,
+      deviceToken: apnsDeviceRegistration.deviceToken.toUpperCase()
+    }, { expectedLayer: 'schema' }),
+    fixtureCase('APNs token has odd hex length', 'push-http.schema.json', {
+      ...apnsDeviceRegistration,
+      deviceToken: `${apnsDeviceRegistration.deviceToken}a`
+    }, { expectedLayer: 'schema' }),
+    fixtureCase('APNs registration exposes an extra field', 'push-http.schema.json', {
+      ...apnsDeviceRegistration,
+      accountId: accountId
+    }, { expectedLayer: 'schema' }),
+    fixtureCase('APNs logout installation is not canonical', 'push-http.schema.json', {
+      installationId: apnsLogoutRequest.installationId.toUpperCase()
+    }, { expectedLayer: 'schema' }),
     fixtureCase('API error omits code', 'api-error.schema.json', { error: 'Missing code.' }, { expectedLayer: 'schema' }),
     fixtureCase('API error uses unknown code', 'api-error.schema.json', { code: 'NOT_STABLE', error: 'Unknown.' }, { expectedLayer: 'schema' }),
     fixtureCase('non-JSON response body', 'api-error.schema.json', '<html>not JSON</html>', { expectedLayer: 'transport' })

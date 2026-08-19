@@ -410,6 +410,44 @@
       }
     },
     {
+      "name": "APNs enabled config",
+      "schema": "push-http.schema.json",
+      "value": {
+        "enabled": true
+      }
+    },
+    {
+      "name": "APNs disabled config",
+      "schema": "push-http.schema.json",
+      "value": {
+        "enabled": false
+      }
+    },
+    {
+      "name": "APNs device registration",
+      "schema": "push-http.schema.json",
+      "value": {
+        "appVersion": "0.1.0-42",
+        "deviceToken": "abababababababababababababababababababababababababababababababab",
+        "environment": "development",
+        "locale": "en-US"
+      }
+    },
+    {
+      "name": "APNs logout cleanup",
+      "schema": "push-http.schema.json",
+      "value": {
+        "installationId": "5000000a-0000-4000-8000-000000000005"
+      }
+    },
+    {
+      "name": "APNs operation succeeded",
+      "schema": "push-http.schema.json",
+      "value": {
+        "ok": true
+      }
+    },
+    {
       "name": "API error ACCESS_REQUIRED",
       "schema": "api-error.schema.json",
       "value": {
@@ -735,6 +773,38 @@
       "value": {
         "code": "INVITE_RATE_LIMITED",
         "error": "Too many invite attempts. Try again later."
+      }
+    },
+    {
+      "name": "API error INVALID_APNS_DEVICE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "INVALID_APNS_DEVICE",
+        "error": "APNs device registration is invalid."
+      }
+    },
+    {
+      "name": "API error APNS_NOT_CONFIGURED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "APNS_NOT_CONFIGURED",
+        "error": "Native notifications are not configured."
+      }
+    },
+    {
+      "name": "API error APNS_DEVICE_LIMIT",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "APNS_DEVICE_LIMIT",
+        "error": "Too many native notification devices are registered."
+      }
+    },
+    {
+      "name": "API error APNS_REGISTRATION_RATE_LIMITED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "APNS_REGISTRATION_RATE_LIMITED",
+        "error": "Too many native notification registration attempts. Try again later."
       }
     },
     {

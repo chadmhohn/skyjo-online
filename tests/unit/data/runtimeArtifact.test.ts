@@ -258,11 +258,13 @@ describe('runtime artifact safety contract', () => {
   });
 
   test('allows only compiled output, production dependencies, metadata, and exact runtime scripts', () => {
+    expect(REQUIRED_ARCHIVE_FILES).toContain('server-apns.mjs');
     expect(REQUIRED_ARCHIVE_FILES).toContain('server-apns-rollback-proof.mjs');
     expect(REQUIRED_ARCHIVE_FILES).not.toContain('scripts/smoke-apns-rollback-compatibility.mjs');
     expect(isAllowedRuntimePath('./dist/assets/app.js')).toBe(true);
     expect(isAllowedRuntimePath('node_modules/ws/index.js')).toBe(true);
     expect(isAllowedRuntimePath('server-game-state-validation.mjs')).toBe(true);
+    expect(isAllowedRuntimePath('server-apns.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-apns-rollback-proof.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-invite-codes.mjs')).toBe(true);
     expect(isAllowedRuntimePath('server-room-invites.mjs')).toBe(true);
@@ -336,6 +338,7 @@ describe('runtime artifact safety contract', () => {
   test('validates the complete allowlisted runtime and byte-identical release identities', () => {
     const result = validateRuntimeEntries(fixtureEntries(), releaseSha);
     expect(result.releaseIdentity.releaseSha).toBe(releaseSha);
+    expect(result.files.has('server-apns.mjs')).toBe(true);
     expect(result.files.has('server-apns-rollback-proof.mjs')).toBe(true);
     expect(result.files.has('server-game-state-validation.mjs')).toBe(true);
     expect(result.files.has('server-invite-codes.mjs')).toBe(true);
@@ -462,6 +465,10 @@ describe('runtime artifact safety contract', () => {
     disallowed.push({ ...disallowed[0], rawPath: 'src/secret.ts' });
     expect(() => validateRuntimeEntries(disallowed, releaseSha)).toThrow('not allowlisted');
     expect(() => validateRuntimeEntries(fixtureEntries().filter((entry) => entry.rawPath !== 'server.mjs'), releaseSha)).toThrow('missing required');
+    expect(() => validateRuntimeEntries(
+      fixtureEntries().filter((entry) => entry.rawPath !== 'server-apns.mjs'),
+      releaseSha
+    )).toThrow('missing required');
     expect(() => validateRuntimeEntries(
       fixtureEntries().filter((entry) => entry.rawPath !== 'server-apns-rollback-proof.mjs'),
       releaseSha

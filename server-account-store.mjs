@@ -12,6 +12,8 @@ const inviteCodeHashPattern = /^[0-9a-f]{64}$/;
 const roomCodePattern = /^[A-Z0-9]{5}$/;
 const roomInstanceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const defaultRedeemedInviteRetentionMs = 24 * 60 * 60 * 1000;
+export const APNS_DEVICE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+export const APNS_MAX_ACTIVE_INSTALLATIONS_PER_ACCOUNT = 8;
 const publicApiErrors = new Map([
   ['ACCESS_AUTHENTICATION_FAILED', Object.freeze({ status: 401, message: 'Authentication failed.' })],
   ['INVALID_REQUEST', Object.freeze({ status: 400, message: 'Request did not match the expected contract.' })],
@@ -26,6 +28,10 @@ const publicApiErrors = new Map([
   ['LAST_ADMIN', Object.freeze({ status: 400, message: 'Keep at least one active admin.' })],
   ['INVALID_PUSH_SUBSCRIPTION', Object.freeze({ status: 400, message: 'Push subscription is invalid.' })],
   ['MISSING_PUSH_KEYS', Object.freeze({ status: 400, message: 'Push subscription is missing keys.' })],
+  ['INVALID_APNS_DEVICE', Object.freeze({ status: 400, message: 'APNs device registration is invalid.' })],
+  ['APNS_NOT_CONFIGURED', Object.freeze({ status: 503, message: 'Native notifications are not configured.' })],
+  ['APNS_DEVICE_LIMIT', Object.freeze({ status: 409, message: 'Too many native notification devices are registered.' })],
+  ['APNS_REGISTRATION_RATE_LIMITED', Object.freeze({ status: 429, message: 'Too many native notification registration attempts. Try again later.' })],
   ['INCOMPLETE_GAME', Object.freeze({ status: 400, message: 'Only completed games can be recorded.' })],
   ['INVALID_ROOM_CODE', Object.freeze({ status: 400, message: 'Room code is not valid.' })],
   ['PASSWORDS_MUST_MATCH', Object.freeze({ status: 400, message: 'Passwords must match.' })],
@@ -261,8 +267,9 @@ const apnsDeviceColumns = Object.freeze([
 /**
  * Frozen physical schema shared with the later APNs feature migration.
  *
- * This schema-2 release only validates this descriptor. Runtime code must not
- * execute these statements until the separately reviewed APNs feature release.
+ * The rollback-envelope release only validated this descriptor. The separately
+ * reviewed APNs feature release executes these same statements transactionally
+ * while retaining public migration-ledger version 2.
  */
 export const APNS_DEVICE_STORAGE_ENVELOPE = Object.freeze({
   version: 1,
@@ -668,6 +675,14 @@ export class AccountStore {
          ON invite_codes(room_code, room_instance_id, expires_at)`
       );
 
+      // This physical extension is deliberately outside the public migration
+      // ledger. The preceding envelope release froze and validated these exact
+      // statements so schema-2 code-only rollback remains safe.
+      const apnsEnvelope = validateOptionalAPNSDeviceStorageEnvelope(this.db);
+      if (!apnsEnvelope.present) {
+        this.db.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+      }
+
       validateMigrationRows(rows);
       if (rows.length !== CURRENT_SCHEMA_VERSION) throw new Error('Database schema is not current.');
       validateCurrentSchema(this.db);
@@ -789,6 +804,29 @@ export class AccountStore {
     this.db.prepare('DELETE FROM account_sessions WHERE token_hash = ?').run(hashSessionToken(token));
   }
 
+  deleteSessionAndAPNSDevice(token, installationId = null) {
+    if (!token) return;
+    const tokenHash = hashSessionToken(token);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (installationId) {
+        const session = this.db
+          .prepare('SELECT user_id FROM account_sessions WHERE token_hash = ?')
+          .get(tokenHash);
+        if (session?.user_id) {
+          this.db
+            .prepare('DELETE FROM apns_devices WHERE user_id = ? AND installation_id = ?')
+            .run(session.user_id, installationId);
+        }
+      }
+      this.db.prepare('DELETE FROM account_sessions WHERE token_hash = ?').run(tokenHash);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async changePassword(userId, currentPassword, nextPassword) {
     const row = this.getUserRowById(userId);
     if (!row || row.disabled === 1) throw new PublicApiError('ACCOUNT_NOT_FOUND');
@@ -839,6 +877,7 @@ export class AccountStore {
     this.db
       .prepare('UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ? WHERE id = ?')
       .run(nextName, nextRole, nextDisabled, this.now(), userId);
+    if (nextDisabled === 1) this.db.prepare('DELETE FROM apns_devices WHERE user_id = ?').run(userId);
     return publicUser(this.getUserRowById(userId));
   }
 
@@ -976,6 +1015,158 @@ export class AccountStore {
         return [];
       }
     });
+  }
+
+  pruneAPNSDevices({ retentionMs = APNS_DEVICE_RETENTION_MS } = {}) {
+    if (!Number.isSafeInteger(retentionMs) || retentionMs < 1) throw new TypeError('APNs device retention is invalid.');
+    return this.db
+      .prepare('DELETE FROM apns_devices WHERE updated_at < ?')
+      .run(Math.max(0, this.now() - retentionMs)).changes;
+  }
+
+  saveAPNSDevice({
+    userId,
+    installationId,
+    environment,
+    tokenCiphertext,
+    tokenNonce,
+    tokenAuthTag,
+    tokenFingerprint,
+    appVersion,
+    locale,
+    maxActive = APNS_MAX_ACTIVE_INSTALLATIONS_PER_ACCOUNT,
+    retentionMs = APNS_DEVICE_RETENTION_MS
+  }) {
+    if (!Number.isSafeInteger(maxActive) || maxActive < 1 || maxActive > 64) {
+      throw new TypeError('APNs device limit is invalid.');
+    }
+    if (!Number.isSafeInteger(retentionMs) || retentionMs < 1) {
+      throw new TypeError('APNs device retention is invalid.');
+    }
+    const timestamp = this.now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const user = this.getUserRowById(userId);
+      if (!user || user.disabled === 1) throw new PublicApiError('ACCOUNT_NOT_FOUND');
+      this.db
+        .prepare('DELETE FROM apns_devices WHERE updated_at < ?')
+        .run(Math.max(0, timestamp - retentionMs));
+      const current = this.db
+        .prepare('SELECT user_id, created_at FROM apns_devices WHERE installation_id = ?')
+        .get(installationId);
+      const tokenOwner = this.db
+        .prepare(
+          `SELECT installation_id, user_id
+           FROM apns_devices
+           WHERE environment = ? AND token_fingerprint = ?`
+        )
+        .get(environment, tokenFingerprint);
+      const active = Number(this.db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM apns_devices
+           WHERE user_id = ?
+             AND installation_id <> ?
+             AND installation_id <> ?`
+        )
+        .get(userId, installationId, tokenOwner?.user_id === userId ? tokenOwner.installation_id : '')?.count || 0);
+      if (current?.user_id !== userId && active >= maxActive) throw new PublicApiError('APNS_DEVICE_LIMIT');
+
+      // A token belongs to one installation/account in one APNs environment.
+      // Delete the prior owner inside the same write transaction before upsert.
+      this.db
+        .prepare(
+          `DELETE FROM apns_devices
+           WHERE environment = ? AND token_fingerprint = ? AND installation_id <> ?`
+        )
+        .run(environment, tokenFingerprint, installationId);
+      this.db
+        .prepare(
+          `INSERT INTO apns_devices (
+             installation_id, user_id, environment,
+             token_ciphertext, token_nonce, token_auth_tag, token_fingerprint,
+             app_version, locale, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(installation_id) DO UPDATE SET
+             user_id = excluded.user_id,
+             environment = excluded.environment,
+             token_ciphertext = excluded.token_ciphertext,
+             token_nonce = excluded.token_nonce,
+             token_auth_tag = excluded.token_auth_tag,
+             token_fingerprint = excluded.token_fingerprint,
+             app_version = excluded.app_version,
+             locale = excluded.locale,
+             created_at = CASE
+               WHEN apns_devices.user_id = excluded.user_id THEN apns_devices.created_at
+               ELSE excluded.created_at
+             END,
+             updated_at = excluded.updated_at`
+        )
+        .run(
+          installationId,
+          userId,
+          environment,
+          tokenCiphertext,
+          tokenNonce,
+          tokenAuthTag,
+          tokenFingerprint,
+          appVersion,
+          locale,
+          current?.user_id === userId ? current.created_at : timestamp,
+          timestamp
+        );
+      this.db.exec('COMMIT');
+      return { updatedAt: timestamp };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  deleteAPNSDeviceForUser(userId, installationId) {
+    if (!userId || !installationId) return 0;
+    return this.db
+      .prepare('DELETE FROM apns_devices WHERE user_id = ? AND installation_id = ?')
+      .run(String(userId), String(installationId)).changes;
+  }
+
+  listAPNSDevicesForUsers(userIds, { retentionMs = APNS_DEVICE_RETENTION_MS } = {}) {
+    const uniqueIds = [...new Set(userIds.filter(Boolean).map(String))];
+    if (uniqueIds.length === 0) return [];
+    if (!Number.isSafeInteger(retentionMs) || retentionMs < 1) throw new TypeError('APNs device retention is invalid.');
+    const cutoff = Math.max(0, this.now() - retentionMs);
+    this.db.prepare('DELETE FROM apns_devices WHERE updated_at < ?').run(cutoff);
+    return this.db
+      .prepare(
+        `SELECT apns_devices.*
+         FROM apns_devices
+         JOIN users ON users.id = apns_devices.user_id
+         WHERE users.disabled = 0
+           AND apns_devices.updated_at >= ?
+           AND apns_devices.user_id IN (${placeholders(uniqueIds)})`
+      )
+      .all(cutoff, ...uniqueIds)
+      .map((row) => ({
+        installationId: row.installation_id,
+        environment: row.environment,
+        tokenCiphertext: Buffer.from(row.token_ciphertext),
+        tokenNonce: Buffer.from(row.token_nonce),
+        tokenAuthTag: Buffer.from(row.token_auth_tag),
+        tokenFingerprint: Buffer.from(row.token_fingerprint),
+        updatedAt: Number(row.updated_at)
+      }));
+  }
+
+  deleteAPNSDeviceIfCurrent({ installationId, environment, tokenFingerprint, updatedAt }) {
+    return this.db
+      .prepare(
+        `DELETE FROM apns_devices
+         WHERE installation_id = ?
+           AND environment = ?
+           AND token_fingerprint = ?
+           AND updated_at = ?`
+      )
+      .run(installationId, environment, tokenFingerprint, updatedAt).changes;
   }
 
   recordCompletedGame({

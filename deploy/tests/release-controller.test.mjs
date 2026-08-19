@@ -434,10 +434,12 @@ test('operational assets keep the safety contracts explicit', async () => {
   assert.doesNotMatch(canary, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
   assert.match(canary, /^IPAddressDeny=any$/m);
   assert.match(canary, /^IPAddressAllow=localhost$/m);
+  assert.match(canary, /^InaccessiblePaths=\/var\/lib\/skyjo-online \/etc\/skyjo-online\.env -\/etc\/skyjo-online$/m);
   assert.doesNotMatch(canary, /^PrivateTmp=true$/m);
   assert.match(canarySmoke, /^User=skyjo-canary$/m);
   assert.match(canarySmoke, /^CollectMode=inactive$/m);
   assert.doesNotMatch(canarySmoke, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
+  assert.match(canarySmoke, /^InaccessiblePaths=\/var\/lib\/skyjo-online \/etc\/skyjo-online\.env -\/etc\/skyjo-online$/m);
   assert.match(productionSmoke, /^User=skyjo$/m);
   assert.match(productionSmoke, /^CollectMode=inactive$/m);
   assert.match(productionSmoke, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
@@ -445,6 +447,7 @@ test('operational assets keep the safety contracts explicit', async () => {
   assert.match(stateProof, /^CollectMode=inactive$/m);
   assert.match(stateProof, /^RestrictAddressFamilies=AF_UNIX$/m);
   assert.doesNotMatch(stateProof, /^PrivateTmp=true$/m);
+  assert.match(stateProof, /^InaccessiblePaths=\/var\/lib\/skyjo-online \/etc\/skyjo-online\.env -\/etc\/skyjo-online$/m);
   assert.match(legacyProof, /^User=skyjo$/m);
   assert.match(legacyProof, /^CollectMode=inactive$/m);
   assert.match(legacyProof, /^EnvironmentFile=\/etc\/skyjo-online\.env$/m);
@@ -455,6 +458,8 @@ test('operational assets keep the safety contracts explicit', async () => {
   assert.match(legacyProofScript, /inspectRuntimeState/);
   assert.match(legacyProofScript, /smoke account authentication failed/);
   assert.match(controller, /SKYJO_VAPID_PRIVATE_KEY=/);
+  assert.match(controller, /SKYJO_APNS_PRIVATE_KEY_FILE=/);
+  assert.match(controller, /SKYJO_APNS_TOKEN_KEY_FILE=/);
   assert.match(controller, /\['root:root', runDirectory\]/);
   assert.match(controller, /\['0711', runDirectory\]/);
   assert.doesNotMatch(controller, /run\(PATHS\.node, \[resolveWithin\(releaseDirectory, 'scripts\//);
