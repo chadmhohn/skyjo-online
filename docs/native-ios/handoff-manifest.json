@@ -264,7 +264,7 @@
       "immutable issue 202 backend promotion and public direct AASA verification",
       "Apple CDN AASA propagation verification",
       "Apple-team-signed device archive carrying the matching entitlement",
-      "installed and uninstalled physical iPhone link behavior from Messages, Mail, and Safari"
+      "installed and uninstalled link behavior on physical Apple hardware; the later consolidated release session covers both iPhone and iPad plus Messages, Mail, and Safari"
     ],
     "prohibitedShortcuts": [
       "redirecting the production hostname to loopback",
