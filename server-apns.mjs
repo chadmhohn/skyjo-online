@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import http2 from 'node:http2';
 import path from 'node:path';
@@ -154,18 +155,27 @@ function canonicalBase64UrlKey(value) {
 }
 
 async function readPrivateConfigurationFile(filePath, label, {
-  lstat = fs.lstat,
-  readFile = fs.readFile,
+  openFile = fs.open,
   requireRootOwned = process.platform !== 'win32'
 } = {}) {
   const resolved = path.resolve(filePath);
-  const stat = await lstat(resolved);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`${label} file is invalid.`);
-  if (requireRootOwned && (stat.uid !== 0 || (stat.mode & 0o027) !== 0)) {
-    throw new Error(`${label} file ownership or permissions are invalid.`);
+  let handle;
+  try {
+    handle = await openFile(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch {
+    throw new Error(`${label} file is invalid.`);
   }
-  if (stat.size < 1 || stat.size > 16 * 1024) throw new Error(`${label} file size is invalid.`);
-  return readFile(resolved, 'utf8');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error(`${label} file is invalid.`);
+    if (requireRootOwned && (stat.uid !== 0 || (stat.mode & 0o027) !== 0)) {
+      throw new Error(`${label} file ownership or permissions are invalid.`);
+    }
+    if (stat.size < 1 || stat.size > 16 * 1024) throw new Error(`${label} file size is invalid.`);
+    return await handle.readFile('utf8');
+  } finally {
+    await handle.close();
+  }
 }
 
 function validatedProviderPrivateKey(pem) {

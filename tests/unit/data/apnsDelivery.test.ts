@@ -201,6 +201,17 @@ describe('APNs server-only configuration and provider token', () => {
         SKYJO_APNS_PRIVATE_KEY_FILE: privateKeyFile,
         SKYJO_APNS_TOKEN_KEY_FILE: tokenKeyFile
       }, { requireRootOwned: false })).rejects.toThrow(/encryption key is invalid/i);
+
+      const tokenKeyTarget = path.join(directory, 'token-target.key');
+      await fs.writeFile(tokenKeyTarget, `${Buffer.alloc(32, 5).toString('base64url')}\n`);
+      await fs.rm(tokenKeyFile);
+      await fs.symlink(tokenKeyTarget, tokenKeyFile);
+      await expect(loadAPNSConfiguration({
+        SKYJO_APNS_TEAM_ID: 'TEAMID1234',
+        SKYJO_APNS_KEY_ID: 'KEYID12345',
+        SKYJO_APNS_PRIVATE_KEY_FILE: privateKeyFile,
+        SKYJO_APNS_TOKEN_KEY_FILE: tokenKeyFile
+      }, { requireRootOwned: false })).rejects.toThrow(/file is invalid/i);
     } finally {
       await fs.rm(directory, { recursive: true, force: true });
     }

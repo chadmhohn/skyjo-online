@@ -275,9 +275,9 @@ describe('account store defensive and fallback behavior', () => {
         displayName: 'APNs Password',
         password: 'apns-password-before'
       });
-      const passwordSession = apnsStore.createSession(passwordUser.id, sessionLifetime);
+      const credentialChangeSession = apnsStore.createSession(passwordUser.id, sessionLifetime);
       apnsStore.saveAPNSDevice({
-        sessionToken: passwordSession.token,
+        sessionToken: credentialChangeSession.token,
         userId: passwordUser.id,
         installationId: firstInstallation,
         environment: 'development',
@@ -290,7 +290,7 @@ describe('account store defensive and fallback behavior', () => {
         'apns-password-before',
         'apns-password-after'
       );
-      expect(apnsStore.getUserBySessionToken(passwordSession.token)).toBeNull();
+      expect(apnsStore.getUserBySessionToken(credentialChangeSession.token)).toBeNull();
       expect(apnsStore.listAPNSDevicesForUsers([passwordUser.id])).toEqual([]);
 
       const cascadeUser = await apnsStore.createUser({
