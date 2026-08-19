@@ -196,6 +196,7 @@ jobs:
           node scripts/benchmark-ai.mjs
           node scripts/smoke-persistence.mjs
           node scripts/smoke-accounts.mjs
+          node scripts/smoke-apns.mjs
           node scripts/smoke-ops.mjs
           node scripts/smoke-backup.mjs
           npm run smoke:delivery
