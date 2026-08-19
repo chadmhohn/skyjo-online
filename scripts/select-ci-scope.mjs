@@ -12,13 +12,11 @@ const NATIVE_PATH_PREFIXES = [
 ];
 
 const NATIVE_PATHS = new Set([
-  '.github/workflows/ci.yml',
   'scripts/select-ci-scope.mjs',
 ]);
 
 const UI_PATH_PREFIXES = ['ios/'];
 const UI_PATHS = new Set([
-  '.github/workflows/ci.yml',
   'scripts/ios-simulator-accessibility.c',
   'scripts/ios-ui-accessibility-test.sh',
   'scripts/select-ios-ui-simulators.mjs',
@@ -173,6 +171,20 @@ function runSelfTest() {
       changedPaths: ['ios/README.md'],
     }).runNative,
     false
+  );
+  assert.deepEqual(
+    selectCIScope({
+      eventName: 'pull_request',
+      refType: 'branch',
+      requestedUIMode: 'auto',
+      changedPaths: ['.github/workflows/ci.yml'],
+    }),
+    {
+      runNative: false,
+      uiMode: 'skip',
+      uiRoles: ['standard-phone'],
+      reason: 'no native paths changed',
+    }
   );
   assert.deepEqual(
     selectCIScope({
