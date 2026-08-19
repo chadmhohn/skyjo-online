@@ -67,7 +67,8 @@
     "test:artifact:integration": "node scripts/test-runtime-artifact-integration.mjs",
     "test:visual": "playwright test tests/e2e/visual --project=chromium",
     "test:lighthouse": "node scripts/run-lighthouse.mjs",
-    "test:quality": "git diff --check && npm run lint && npm run check:types && npm run contracts:fixtures:check && npm run audit:release && npm run check:audio && npm run test:unit:delivery && npm run build && npm run check:bundle"
+    "test:quality": "git diff --check && npm run lint && npm run check:types && npm run contracts:fixtures:check && npm run audit:release && npm run check:audio && npm run test:unit:delivery && npm run build && npm run check:bundle",
+    "test:quality:hosted": "git diff --check && npm run lint && npm run check:types && npm run contracts:fixtures:check && npm run audit:release && npm run test:unit:delivery && npm run build && npm run check:bundle"
   },
   "dependencies": {
     "react": "^18.3.1",

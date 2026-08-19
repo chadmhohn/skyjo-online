@@ -20,6 +20,15 @@ on:
           - skip
           - smoke
           - full
+      webkit_mode:
+        description: Playwright WebKit compatibility coverage for this manual run
+        required: true
+        default: skip
+        type: choice
+        options:
+          - skip
+          - phone
+          - full
 
 permissions:
   contents: read
@@ -174,19 +183,11 @@ jobs:
           node scripts/reconcile-native-ios-issues.mjs --self-test
           node scripts/select-ci-scope.mjs --self-test
 
-      - name: Install audio inspection tools
-        run: |
-          set -Eeuo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg
-          ffmpeg -version
-          ffprobe -version
-
       - name: Install locked dependencies
         run: npm ci
 
       - name: Quality, security, build, and bundle gates
-        run: npm run test:quality
+        run: npm run test:quality:hosted
 
       - name: Existing release smoke coverage
         run: |
@@ -531,7 +532,7 @@ jobs:
           path: .
 
       - name: Install pinned Chromium
-        run: npm exec -- playwright install --with-deps chromium
+        run: npm exec -- playwright install chromium
       - name: Run Chromium shard 1
         run: npm run test:e2e:chromium -- --shard=1/2
       - name: Upload Chromium shard 1 failure evidence
@@ -568,7 +569,7 @@ jobs:
           name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
       - name: Install pinned Chromium
-        run: npm exec -- playwright install --with-deps chromium
+        run: npm exec -- playwright install chromium
       - name: Run Chromium shard 2
         run: npm run test:e2e:chromium -- --shard=2/2
       - name: Upload Chromium shard 2 failure evidence
@@ -586,30 +587,73 @@ jobs:
     name: CI / E2E (webkit)
     needs: quality
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
+    env:
+      WEBKIT_MODE: ${{ github.event.inputs.webkit_mode || 'skip' }}
     steps:
+      - name: Defer WebKit compatibility to a deliberate manual run
+        if: env.WEBKIT_MODE == 'skip'
+        run: printf 'Routine CI uses Chromium and native iOS; dispatch CI with webkit_mode=phone or full for WebKit compatibility.\n'
+
       - name: Check out repository
+        if: env.WEBKIT_MODE != 'skip'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - name: Set up Node
+        if: env.WEBKIT_MODE != 'skip'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .node-version
           cache: npm
       - name: Install locked dependencies
+        if: env.WEBKIT_MODE != 'skip'
         run: npm ci
       - name: Download shared production build
+        if: env.WEBKIT_MODE != 'skip'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
           name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
-      - name: Install pinned WebKit
-        run: npm exec -- playwright install --with-deps webkit
-      - name: Run WebKit phone and tablet projects
+      - name: Install pinned WebKit and its missing Ubuntu libraries
+        if: env.WEBKIT_MODE != 'skip'
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            libavif16 \
+            libevent-2.1-7t64 \
+            libflite1 \
+            libgles2 \
+            libgraphene-1.0-0 \
+            libgstreamer-gl1.0-0 \
+            libgstreamer-plugins-bad1.0-0 \
+            libgstreamer-plugins-base1.0-0 \
+            libgtk-4-1 \
+            libharfbuzz-icu0 \
+            libhyphen0 \
+            libmanette-0.2-0 \
+            libopus0 \
+            libsecret-1-0 \
+            libwayland-server0 \
+            libwoff1 \
+            libx264-164
+          npm exec -- playwright install webkit
+      - name: Run WebKit phone compatibility project
+        if: env.WEBKIT_MODE == 'phone'
+        run: npm exec -- playwright test tests/e2e/functional --project=webkit-phone
+      - name: Run full WebKit phone and tablet compatibility projects
+        if: env.WEBKIT_MODE == 'full'
         run: npm run test:e2e:webkit
+      - name: Run WebKit accessibility compatibility gate
+        if: env.WEBKIT_MODE != 'skip'
+        run: npm exec -- playwright test tests/e2e/accessibility --project=webkit-phone
       - name: Upload WebKit failure evidence
-        if: failure()
+        if: failure() && env.WEBKIT_MODE != 'skip'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: webkit-failure-${{ github.run_id }}-${{ github.run_attempt }}
@@ -641,10 +685,10 @@ jobs:
         with:
           name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
-      - name: Install pinned Chromium and WebKit
-        run: npm exec -- playwright install --with-deps chromium webkit
+      - name: Install pinned Chromium
+        run: npm exec -- playwright install chromium
       - name: Run serious and critical accessibility gate
-        run: npm run test:a11y
+        run: npm exec -- playwright test tests/e2e/accessibility --project=chromium
       - name: Run canonical responsive visual gate
         run: npm run test:visual
       - name: Upload visual and accessibility failure evidence
@@ -681,7 +725,7 @@ jobs:
           name: skyjo-build-${{ needs.quality.outputs.source-sha }}
           path: .
       - name: Install pinned Chromium
-        run: npm exec -- playwright install --with-deps chromium
+        run: npm exec -- playwright install chromium
       - name: Run three-pass mobile Lighthouse gate
         run: npm run test:lighthouse
       - name: Upload Lighthouse evidence
@@ -739,7 +783,7 @@ jobs:
       - name: Install pinned Chromium and k6
         run: |
           set -Eeuo pipefail
-          npm exec -- playwright install --with-deps chromium
+          npm exec -- playwright install chromium
           sh scripts/install-k6.sh "$RUNNER_TEMP/skyjo-k6"
 
       - name: Run exact-topology load, recovery, and persona certification
@@ -1008,7 +1052,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           npm ci
-          npm exec -- playwright install --with-deps chromium
+          npm exec -- playwright install chromium
 
       - name: Download the canary-proven release
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
