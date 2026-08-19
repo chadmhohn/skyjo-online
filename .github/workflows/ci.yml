@@ -174,11 +174,11 @@ jobs:
           node scripts/reconcile-native-ios-issues.mjs --self-test
           node scripts/select-ci-scope.mjs --self-test
 
-      - name: Install audio inspection tools
+      - name: Verify audio inspection tools
         run: |
           set -Eeuo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg
+          command -v ffmpeg
+          command -v ffprobe
           ffmpeg -version
           ffprobe -version
 
