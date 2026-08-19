@@ -270,6 +270,29 @@ describe('account store defensive and fallback behavior', () => {
       expect(apnsStore.listAPNSDevicesForUsers([firstUser.id])).toEqual([]);
       expect(() => save(firstUser.id, firstInstallation, tokenOne)).toThrow(/not found/i);
 
+      const passwordUser = await apnsStore.createUser({
+        email: 'apns-password@example.com',
+        displayName: 'APNs Password',
+        password: 'apns-password-before'
+      });
+      const passwordSession = apnsStore.createSession(passwordUser.id, sessionLifetime);
+      apnsStore.saveAPNSDevice({
+        sessionToken: passwordSession.token,
+        userId: passwordUser.id,
+        installationId: firstInstallation,
+        environment: 'development',
+        ...codec.encrypt(tokenOne),
+        appVersion: '0.1.0',
+        locale: 'en-US'
+      });
+      await apnsStore.changePassword(
+        passwordUser.id,
+        'apns-password-before',
+        'apns-password-after'
+      );
+      expect(apnsStore.getUserBySessionToken(passwordSession.token)).toBeNull();
+      expect(apnsStore.listAPNSDevicesForUsers([passwordUser.id])).toEqual([]);
+
       const cascadeUser = await apnsStore.createUser({
         email: 'apns-cascade@example.com',
         displayName: 'APNs Cascade',

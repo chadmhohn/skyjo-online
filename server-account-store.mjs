@@ -834,6 +834,7 @@ export class AccountStore {
     if (!(await verifyPassword(currentPassword, row))) throw new PublicApiError('CURRENT_PASSWORD_MISMATCH');
     await this.setUserPassword(userId, nextPassword);
     this.db.prepare('DELETE FROM account_sessions WHERE user_id = ?').run(userId);
+    this.db.prepare('DELETE FROM apns_devices WHERE user_id = ?').run(userId);
   }
 
   async setUserPassword(userId, nextPassword) {
