@@ -240,6 +240,12 @@ describe('account store defensive and fallback behavior', () => {
       expect(apnsStore.listAPNSDevicesForUsers([secondUser.id])).toEqual([]);
       apnsStore.deleteSessionAndAPNSDevice('', secondInstallation);
 
+      save(secondUser.id, secondInstallation, tokenTwo);
+      const racingSession = apnsStore.createSession(secondUser.id, 60_000);
+      apnsStore.deleteSession(racingSession.token);
+      apnsStore.deleteSessionAndAPNSDevice(racingSession.token, secondInstallation, secondUser.id);
+      expect(apnsStore.listAPNSDevicesForUsers([secondUser.id])).toEqual([]);
+
       save(firstUser.id, firstInstallation, tokenOne);
       timestamp += APNS_DEVICE_RETENTION_MS + 1;
       expect(apnsStore.pruneAPNSDevices()).toBe(1);

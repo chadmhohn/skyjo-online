@@ -63,6 +63,10 @@ async function startServer(dataDir) {
       SKYJO_ROOMS_FILE: path.join(dataDir, 'rooms.json'),
       SKYJO_SECURE_COOKIES: 'false',
       SKYJO_SESSION_SECRET: 'ops-smoke-session-secret',
+      SKYJO_APNS_KEY_ID: '',
+      SKYJO_APNS_PRIVATE_KEY_FILE: '',
+      SKYJO_APNS_TEAM_ID: '',
+      SKYJO_APNS_TOKEN_KEY_FILE: '',
       SKYJO_VAPID_PRIVATE_KEY: '',
       SKYJO_VAPID_PUBLIC_KEY: ''
     },
@@ -109,6 +113,7 @@ try {
     accountEmail: adminEmail,
     accountPassword: adminPassword,
     expectedAppleApplicationIdentifier: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+    expectedAPNSNotificationsEnabled: false,
     expectedProtocolVersion: CURRENT_PROTOCOL_VERSION
   });
   const roomsAfterSocket = await fs.readFile(path.join(healthyDir, 'rooms.json'), 'utf8');
@@ -137,6 +142,7 @@ try {
     accountEmail: adminEmail,
     accountPassword: adminPassword,
     expectedAppleApplicationIdentifier: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+    expectedAPNSNotificationsEnabled: false,
     expectedProtocolVersion: CURRENT_PROTOCOL_VERSION
   });
 

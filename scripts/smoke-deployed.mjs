@@ -4,6 +4,12 @@ import { resolveAppleApplicationIdentifier } from '../server-room-invites.mjs';
 import { fileURLToPath } from 'node:url';
 
 const configuredProtocolVersion = process.env.SKYJO_EXPECTED_PROTOCOL_VERSION;
+const expectedAPNSNotificationsEnabled = [
+  process.env.SKYJO_APNS_TEAM_ID,
+  process.env.SKYJO_APNS_KEY_ID,
+  process.env.SKYJO_APNS_PRIVATE_KEY_FILE,
+  process.env.SKYJO_APNS_TOKEN_KEY_FILE
+].every((value) => String(value || '').trim().length > 0);
 
 const result = await runDeployedSmoke({
   baseUrl: process.env.SKYJO_SMOKE_BASE_URL,
@@ -16,6 +22,7 @@ const result = await runDeployedSmoke({
     canaryReleaseDirectory: process.env.SKYJO_CANARY_RELEASE_DIR,
     runtimeDirectory: fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '')
   }),
+  expectedAPNSNotificationsEnabled,
   expectedReleaseSha: process.env.SKYJO_EXPECTED_RELEASE_SHA || process.env.SKYJO_SMOKE_RELEASE_SHA || undefined,
   expectedProtocolVersion: configuredProtocolVersion === undefined
     ? CURRENT_PROTOCOL_VERSION

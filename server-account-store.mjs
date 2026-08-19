@@ -804,19 +804,19 @@ export class AccountStore {
     this.db.prepare('DELETE FROM account_sessions WHERE token_hash = ?').run(hashSessionToken(token));
   }
 
-  deleteSessionAndAPNSDevice(token, installationId = null) {
+  deleteSessionAndAPNSDevice(token, installationId = null, authenticatedUserId = null) {
     if (!token) return;
     const tokenHash = hashSessionToken(token);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       if (installationId) {
-        const session = this.db
+        const userId = authenticatedUserId || this.db
           .prepare('SELECT user_id FROM account_sessions WHERE token_hash = ?')
-          .get(tokenHash);
-        if (session?.user_id) {
+          .get(tokenHash)?.user_id;
+        if (userId) {
           this.db
             .prepare('DELETE FROM apns_devices WHERE user_id = ? AND installation_id = ?')
-            .run(session.user_id, installationId);
+            .run(userId, installationId);
         }
       }
       this.db.prepare('DELETE FROM account_sessions WHERE token_hash = ?').run(tokenHash);

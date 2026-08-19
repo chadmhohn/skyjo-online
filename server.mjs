@@ -1842,8 +1842,12 @@ async function handleApiRequest(req, res, url) {
     }
 
     if (url.pathname === '/api/account/logout' && req.method === 'POST') {
+      const token = accountToken(req);
+      // Capture the authenticated owner before awaiting the optional body so a
+      // concurrent repeat logout cannot strand this installation registration.
+      const authenticatedUserId = accountStore.getUserBySessionToken(token)?.id || null;
       const installationId = await optionalAPNSLogoutInstallationId(req);
-      accountStore.deleteSessionAndAPNSDevice(accountToken(req), installationId);
+      accountStore.deleteSessionAndAPNSDevice(token, installationId, authenticatedUserId);
       sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
       return true;
     }

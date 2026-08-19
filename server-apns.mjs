@@ -346,7 +346,11 @@ export class APNSHTTP2Transport {
     session.on('error', retire);
     session.once('goaway', () => {
       retire();
-      session.close();
+      try {
+        session.close();
+      } catch {
+        session.destroy();
+      }
     });
     return session;
   }
@@ -371,7 +375,11 @@ export class APNSHTTP2Transport {
         const fail = () => {
           if (settled) return;
           settled = true;
-          request.close(http2.constants.NGHTTP2_CANCEL);
+          try {
+            request.close(http2.constants.NGHTTP2_CANCEL);
+          } catch {
+            // The rejection below still releases the bounded stream permit.
+          }
           reject(new Error('APNs transport request failed.'));
         };
         request.setTimeout(this.responseTimeoutMs, fail);
@@ -418,7 +426,12 @@ export class APNSHTTP2Transport {
       const session = state.session;
       state.session = null;
       if (!session) continue;
-      session.close();
+      try {
+        session.close();
+      } catch {
+        session.destroy();
+        continue;
+      }
       const timer = setTimeout(() => session.destroy(), 5_000);
       timer.unref?.();
     }
