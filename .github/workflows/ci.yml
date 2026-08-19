@@ -174,19 +174,11 @@ jobs:
           node scripts/reconcile-native-ios-issues.mjs --self-test
           node scripts/select-ci-scope.mjs --self-test
 
-      - name: Verify audio inspection tools
-        run: |
-          set -Eeuo pipefail
-          command -v ffmpeg
-          command -v ffprobe
-          ffmpeg -version
-          ffprobe -version
-
       - name: Install locked dependencies
         run: npm ci
 
       - name: Quality, security, build, and bundle gates
-        run: npm run test:quality
+        run: npm run test:quality:hosted
 
       - name: Existing release smoke coverage
         run: |
