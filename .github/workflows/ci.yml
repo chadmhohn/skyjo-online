@@ -601,6 +601,10 @@ jobs:
           set -Eeuo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
+            gstreamer1.0-libav \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
             libavif16 \
             libevent-2.1-7t64 \
             libflite1 \
