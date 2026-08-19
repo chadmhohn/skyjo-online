@@ -75,12 +75,14 @@ export async function runDeployedSmoke({
   accountEmail,
   accountPassword,
   expectedAppleApplicationIdentifier,
+  expectedAPNSNotificationsEnabled,
   expectedReleaseSha,
   expectedProtocolVersion = CURRENT_PROTOCOL_VERSION
 }) {
   assert.ok(baseUrl, 'A deployed base URL is required.');
   assert.ok(accessPassword, 'The shared access password is required.');
   assert.ok(accountEmail && accountPassword, 'A non-destructive smoke account is required.');
+  assert.equal(typeof expectedAPNSNotificationsEnabled, 'boolean', 'Expected APNs availability must be explicit.');
   const expectedAppleAssociation = createAppleAppSiteAssociation(expectedAppleApplicationIdentifier);
   const parsedBaseUrl = new URL(baseUrl);
   const localHost = parsedBaseUrl.hostname === 'localhost' || parsedBaseUrl.hostname === '127.0.0.1' || parsedBaseUrl.hostname === '::1';
@@ -194,6 +196,18 @@ export async function runDeployedSmoke({
   assert.equal(accountResponse.status, 200, 'two-cookie account proof failed');
   const account = await accountResponse.json();
   assert.equal(account.user?.email, accountEmail.trim().toLowerCase(), 'smoke account identity did not match');
+
+  const apnsConfigResponse = await fetch(`${root}/api/push/apns/config`, {
+    headers: { Cookie: cookies },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(5000)
+  });
+  assert.equal(apnsConfigResponse.status, 200, 'authenticated APNs configuration proof failed');
+  assert.equal(apnsConfigResponse.headers.get('location'), null, 'APNs configuration must not redirect');
+  assertNoStore(apnsConfigResponse, 'APNs configuration');
+  assert.deepEqual(await apnsConfigResponse.json(), {
+    enabled: expectedAPNSNotificationsEnabled
+  });
 
   await openAuthenticatedSocket(root, cookies, expectedProtocolVersion);
   return { releaseSha: version.releaseSha, buildTimestamp: version.buildTimestamp, protocolVersion: version.protocolVersion };

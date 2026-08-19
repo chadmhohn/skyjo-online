@@ -310,12 +310,33 @@ Mirror the acceptance behavior in `src/roomConnection.ts`, `src/serverRealtime.t
 
 ## APNs Delta
 
-Existing `/api/push/*` routes store browser PushSubscription/VAPID data. Native device tokens are different and require a parallel contract, for example:
+Existing `/api/push/*` routes continue to own browser PushSubscription/VAPID data. Native device tokens use a parallel authenticated contract:
 
-- `PUT /api/push/apns/devices/:installationId` with `{ deviceToken, environment, appVersion, locale }`.
-- `DELETE /api/push/apns/devices/:installationId`.
+- `GET /api/push/apns/config` returns exactly `{ "enabled": boolean }`.
+- `PUT /api/push/apns/devices/:installationId` accepts exactly `{ deviceToken, environment, appVersion, locale }` and returns exactly `{ "ok": true }` without echoing token material.
+- Account-scoped, idempotent `DELETE /api/push/apns/devices/:installationId` returns exactly `{ "ok": true }` and remains available while provider delivery is disabled.
+- `POST /api/account/logout` still accepts an empty body. Native clients may instead send exactly `{ "installationId": UUID }`; the matching account device row and session are then removed in one SQLite transaction.
 
-The server associates tokens with the authenticated account, supports multiple devices, rotates tokens, removes invalid tokens, and sends minimal turn-alert payloads through APNs. Device tokens and APNs errors are secrets/sensitive operations data. Define final route schemas, stable codes, retention, and web-push coexistence before implementation.
+All three native-push routes require the existing authenticated account cookie and reject queries. `installationId` is a canonical lowercase UUID. `environment` is exactly `development` or `production`, mapping respectively to Apple sandbox or production. `deviceToken` is lowercase, even-length hex representing 8 through 2,048 bytes; its length is deliberately not fixed at 32 bytes. `appVersion` and `locale` are 1 through 64 characters from the documented alphanumeric/dot/underscore/hyphen set. PUT requires JSON media, enforces 20 attempts per account per one-hour window, caps an account at eight active installations, and prunes registrations not refreshed for 180 days. The same retention prune runs after every successful account-store open or recovery and during the existing 30-minute housekeeping pass, so a dormant installation does not remain indefinitely just because no later push request arrives.
+
+Stable native-push failures are:
+
+| Code | HTTP | Meaning |
+| --- | ---: | --- |
+| `INVALID_APNS_DEVICE` | 400 | Path, logout cleanup body, token, environment, or metadata is outside the exact contract |
+| `APNS_NOT_CONFIGURED` | 503 | Registration is unavailable because provider delivery is coherently disabled |
+| `APNS_DEVICE_LIMIT` | 409 | The account already owns the maximum active installation set |
+| `APNS_REGISTRATION_RATE_LIMITED` | 429 | The account attempt window is exhausted; `Retry-After` is present |
+
+Existing authentication, method, media, body-size, JSON, and object errors retain their stable codes. The additive `push-http.schema.json`, valid/invalid fixtures, and fixture manifest are contract-bundle-v1 assets; this does not change multiplayer protocol 2, snapshot envelope 2, presence 1, room persistence 2, public database schema 2, or bundle version 1.
+
+The store persists only AES-256-GCM ciphertext, a 12-byte nonce, a 16-byte authentication tag, and a keyed SHA-256 fingerprint derived independently from one persistent 32-byte master key. Plaintext tokens are never stored in SQLite, backups, fixtures, logs, errors, diagnostics, or artifacts. Registration rechecks the original account session inside the same write transaction as the device upsert, so a logout, expiry, disablement, or account change that wins the race cannot recreate a registration. It rotates a stable installation, atomically reassigns a unique environment/fingerprint pair on account switch, preserves the active-device cap when the same token moves between installation IDs, cascades with eventual account deletion, and removes rows for disabled accounts. Provider cleanup is conditional on installation ID, environment, current fingerprint, and `updated_at`, so a late response cannot delete a token rotated after delivery began.
+
+Provider enablement is all-or-nothing through `SKYJO_APNS_TEAM_ID`, `SKYJO_APNS_KEY_ID`, `SKYJO_APNS_PRIVATE_KEY_FILE`, and `SKYJO_APNS_TOKEN_KEY_FILE`. Production uses `/etc/skyjo-online/apns-provider.p8` and `/etc/skyjo-online/apns-token.key`, installed `root:skyjo` mode `0640` under a root-owned non-writable directory. The token-key file contains one canonical base64url encoding of 32 random bytes. Partial configuration, malformed IDs/keys, unsafe ownership, or writable permissions fail startup without printing values. The release artifact contains `server-apns.mjs` but never either key; the isolated canary explicitly blanks all four settings, cannot read the production key directory, and therefore cannot call Apple.
+
+`server-apns.mjs` uses built-in `node:http2` and `node:crypto`: ES256 provider JWTs are cached for at most 50 minutes, sessions connect only to Apple's fixed sandbox/production origins, concurrency is limited to eight streams per environment with a 128-request queue, responses are bounded to 8 KiB, and requests time out after 10 seconds. Requests use topic `com.groundworkrevops.skyjo`, alert push type, priority 10, a five-minute expiry, an opaque collapse ID, and at most one bounded retry for transport failure or HTTP 429/500/503. One expired-provider-token response refreshes the JWT once. Permanent token cleanup is limited to the documented bad/unregistered token classifications; a 410 response must include an Apple timestamp at least as new as the stored registration. Authentication, configuration, throttling, and 5xx failures retain the registration.
+
+The authoritative post-commit room event independently schedules Web Push and APNs adapters after a legal move. A failure in either adapter cannot block the other. Existing visible-live-client suppression and recovered-command deduplication remain unchanged. Native alerts cover `turn`, `round-ended`, and `game-ended` with generic visible copy. The payload contains only `aps` plus `{ version: 1, kind, route: "room", roomCode }`; it never contains a player/name, account/email, card/state/score, chat, invite, token, APNs ID, or command ID. The room code is routing data and is not rendered. A native tap must open review/recovery and never auto-join.
 
 APNs storage has an explicit two-release database contract. Issue #203 keeps the public migration ledger and readiness contract at schema 2 while freezing `APNS_DEVICE_STORAGE_ENVELOPE` in `server-account-store.mjs`. That descriptor defines one optional `apns_devices` table with:
 
@@ -325,9 +346,9 @@ APNs storage has an explicit two-release database contract. Issue #203 keeps the
 - bounded app-version and locale strings plus integer-storage-class creation/update timestamps;
 - unique `(environment, token_fingerprint)`, account/update, and retention indexes.
 
-The envelope release accepts the table absent or exact-present, rejects any partial/widened column, storage-class constraint, foreign-key or index drift, and rejects all persistent database triggers or views while the optional table is present so baseline account activity cannot indirectly mutate rows and no undeclared projection can expose them. It never creates or queries device rows. Startup, readiness, backup, restore, concurrent opens, and shutdown preserve exact-present rows byte-for-byte. The later #204 feature must execute this same descriptor transactionally and idempotently; it may not redefine the SQL or advance the migration ledger merely to add the frozen physical table.
+The envelope release accepts the table absent or exact-present, rejects any partial/widened column, storage-class constraint, foreign-key or index drift, and rejects all persistent database triggers or views while the optional table is present so baseline account activity cannot indirectly mutate rows and no undeclared projection can expose them. It never creates or queries device rows. Startup, readiness, backup, restore, concurrent opens, and shutdown preserve exact-present rows byte-for-byte. The #204 feature executes this same descriptor transactionally and idempotently, validates it on every open/readiness check, and does not redefine the SQL or advance the migration ledger.
 
-Promote the envelope release first through an immutable tag. Confirm it as healthy production `current`, then promote one later release so the envelope tag is the verified `previous` rollback anchor before #204 may create storage. After `apns_devices` exists, code-only rollback must never target a pre-envelope release. Merge and CI evidence are not deployment evidence.
+Promote the envelope release first through an immutable tag. Confirm it as healthy production `current`, then promote one later release so the envelope tag is the verified `previous` rollback anchor before #204 may create storage. After `apns_devices` exists, code-only rollback must never target a pre-envelope release. Merge and CI evidence are not deployment evidence, and native #189 must not distribute a dependent build until the #204 feature release and sanitized production endpoint/provider/rollback proof complete.
 
 ## Native Access Verification And Rollback Compatibility
 

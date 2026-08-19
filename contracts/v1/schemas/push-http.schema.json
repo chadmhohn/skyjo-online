@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skyjo.groundworkrevops.com/contracts/v1/schemas/push-http.schema.json",
+  "title": "Skyjo native push HTTP DTOs",
+  "oneOf": [
+    { "$ref": "#/$defs/apnsConfig" },
+    { "$ref": "#/$defs/apnsDeviceRegistration" },
+    { "$ref": "#/$defs/apnsLogoutRequest" },
+    { "$ref": "#/$defs/okEnvelope" }
+  ],
+  "$defs": {
+    "installationId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "deviceToken": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 4096,
+      "pattern": "^(?:[0-9a-f]{2})+$"
+    },
+    "boundedMetadata": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "apnsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "apnsDeviceRegistration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deviceToken", "environment", "appVersion", "locale"],
+      "properties": {
+        "deviceToken": { "$ref": "#/$defs/deviceToken" },
+        "environment": { "enum": ["development", "production"] },
+        "appVersion": { "$ref": "#/$defs/boundedMetadata" },
+        "locale": { "$ref": "#/$defs/boundedMetadata" }
+      }
+    },
+    "apnsLogoutRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installationId"],
+      "properties": {
+        "installationId": { "$ref": "#/$defs/installationId" }
+      }
+    },
+    "okEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "const": true }
+      }
+    }
+  }
+}

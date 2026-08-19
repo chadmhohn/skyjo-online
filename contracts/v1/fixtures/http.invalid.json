@@ -182,6 +182,48 @@
     },
     {
       "expectedLayer": "schema",
+      "name": "APNs token uses uppercase hex",
+      "schema": "push-http.schema.json",
+      "value": {
+        "appVersion": "0.1.0-42",
+        "deviceToken": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+        "environment": "development",
+        "locale": "en-US"
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "APNs token has odd hex length",
+      "schema": "push-http.schema.json",
+      "value": {
+        "appVersion": "0.1.0-42",
+        "deviceToken": "ababababababababababababababababababababababababababababababababa",
+        "environment": "development",
+        "locale": "en-US"
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "APNs registration exposes an extra field",
+      "schema": "push-http.schema.json",
+      "value": {
+        "accountId": "30000000-0000-4000-8000-000000000003",
+        "appVersion": "0.1.0-42",
+        "deviceToken": "abababababababababababababababababababababababababababababababab",
+        "environment": "development",
+        "locale": "en-US"
+      }
+    },
+    {
+      "expectedLayer": "schema",
+      "name": "APNs logout installation is not canonical",
+      "schema": "push-http.schema.json",
+      "value": {
+        "installationId": "5000000A-0000-4000-8000-000000000005"
+      }
+    },
+    {
+      "expectedLayer": "schema",
       "name": "API error omits code",
       "schema": "api-error.schema.json",
       "value": {

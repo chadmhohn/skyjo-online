@@ -902,7 +902,9 @@ async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
     'SKYJO_DATABASE_RETRY_MS=100',
     'SKYJO_SMOKE_BASE_URL=http://127.0.0.1:4181',
     'HOST=127.0.0.1', 'PORT=4181', 'NODE_ENV=production',
-    'SKYJO_VAPID_PUBLIC_KEY=', 'SKYJO_VAPID_PRIVATE_KEY=', 'SKYJO_VAPID_SUBJECT='
+    'SKYJO_VAPID_PUBLIC_KEY=', 'SKYJO_VAPID_PRIVATE_KEY=', 'SKYJO_VAPID_SUBJECT=',
+    'SKYJO_APNS_TEAM_ID=', 'SKYJO_APNS_KEY_ID=',
+    'SKYJO_APNS_PRIVATE_KEY_FILE=', 'SKYJO_APNS_TOKEN_KEY_FILE='
   ].join('\n');
   const serverUnit = `skyjo-online-canary@${runId}.service`;
   const smokeUnit = `skyjo-online-canary-smoke@${runId}.service`;
@@ -1497,6 +1499,27 @@ function parseProductionEnvironment(value) {
   if (entries.get('SKYJO_ADMIN_EMAIL') && entries.get('SKYJO_ADMIN_EMAIL') === entries.get('SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL')) {
     throw new Error('Deployment smoke account must be distinct from the administrator account.');
   }
+  const apnsNames = [
+    'SKYJO_APNS_TEAM_ID',
+    'SKYJO_APNS_KEY_ID',
+    'SKYJO_APNS_PRIVATE_KEY_FILE',
+    'SKYJO_APNS_TOKEN_KEY_FILE'
+  ];
+  const apnsValues = apnsNames.map((name) => entries.get(name) || '');
+  if (apnsValues.some(Boolean) && apnsValues.some((valueForName) => !valueForName)) {
+    throw new Error('Production APNs configuration must be either complete or disabled.');
+  }
+  if (apnsValues.every(Boolean)) {
+    if (!/^[A-Z0-9]{10}$/.test(apnsValues[0]) || !/^[A-Z0-9]{10}$/.test(apnsValues[1])) {
+      throw new Error('Production APNs provider identifiers are invalid.');
+    }
+    if (
+      apnsValues[2] !== '/etc/skyjo-online/apns-provider.p8' ||
+      apnsValues[3] !== '/etc/skyjo-online/apns-token.key'
+    ) {
+      throw new Error('Production APNs key paths must equal their hardened runtime values.');
+    }
+  }
   for (const forbidden of ['SKYJO_CANARY_RELEASE_DIR', 'SKYJO_CANARY_PROOF_DIR', 'SKYJO_LEGACY_RELEASE_DIR', 'SKYJO_EXPECTED_RELEASE_SHA', 'SKYJO_SMOKE_BASE_URL']) {
     if (entries.has(forbidden)) throw new Error(`Canary-only variable is forbidden in production environment: ${forbidden}`);
   }
@@ -1694,19 +1717,24 @@ async function selfTest() {
   }
 
   await exactPath('/etc/skyjo-online.env', { type: 'file', uid: 0, gid: 0, mode: 0o600 });
-  parseProductionEnvironment(await readNoFollow('/etc/skyjo-online.env'));
+  const productionEnvironment = parseProductionEnvironment(await readNoFollow('/etc/skyjo-online.env'));
+  if (productionEnvironment.get('SKYJO_APNS_PRIVATE_KEY_FILE')) {
+    await exactPath('/etc/skyjo-online', { type: 'directory', uid: 0, gid: identities.skyjo.gid, mode: 0o750 });
+    await exactPath('/etc/skyjo-online/apns-provider.p8', { type: 'file', uid: 0, gid: identities.skyjo.gid, mode: 0o640 });
+    await exactPath('/etc/skyjo-online/apns-token.key', { type: 'file', uid: 0, gid: identities.skyjo.gid, mode: 0o640 });
+  }
 
   const unitContracts = [
     ['/etc/systemd/system/skyjo-online-canary@.service', {
-      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
+      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env -/etc/skyjo-online'],
       forbidden: ['EnvironmentFile=/etc/skyjo-online.env', 'User=skyjo']
     }],
     ['/etc/systemd/system/skyjo-online-canary-smoke@.service', {
-      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
+      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env -/etc/skyjo-online'],
       forbidden: ['EnvironmentFile=/etc/skyjo-online.env', 'User=skyjo']
     }],
     ['/etc/systemd/system/skyjo-online-state-proof@.service', {
-      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env'],
+      required: ['CollectMode=inactive', 'User=skyjo-canary', 'Group=skyjo-canary', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=false', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env -/etc/skyjo-online'],
       forbidden: ['EnvironmentFile=/etc/skyjo-online.env', 'User=skyjo', 'IPAddressAllow=localhost']
     }],
     ['/etc/systemd/system/skyjo-online-smoke@.service', {
@@ -1715,7 +1743,7 @@ async function selfTest() {
     }],
     ['/etc/systemd/system/skyjo-online-legacy-proof@.service', {
       required: ['CollectMode=inactive', 'User=skyjo', 'Group=skyjo', 'EnvironmentFile=/etc/skyjo-online.env', 'EnvironmentFile=/run/skyjo-online-canary/%i.env', 'PrivateTmp=true', 'NoNewPrivileges=true', 'ProtectSystem=strict', 'IPAddressDeny=any', 'IPAddressAllow=localhost'],
-      forbidden: ['User=skyjo-canary', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env']
+      forbidden: ['User=skyjo-canary', 'InaccessiblePaths=/var/lib/skyjo-online /etc/skyjo-online.env -/etc/skyjo-online']
     }]
   ];
   for (const [unitPath, contract] of unitContracts) assertUnitDirectives(unitPath, await readNoFollow(unitPath), contract);

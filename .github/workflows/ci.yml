@@ -196,6 +196,7 @@ jobs:
           node scripts/benchmark-ai.mjs
           node scripts/smoke-persistence.mjs
           node scripts/smoke-accounts.mjs
+          node scripts/smoke-apns.mjs
           node scripts/smoke-ops.mjs
           node scripts/smoke-backup.mjs
           npm run smoke:delivery
@@ -497,8 +498,8 @@ jobs:
         run: npm ci
       - name: Run isolated data tests
         run: npm run test:unit:data
-      - name: Prove pinned live v0.3.2 and immutable v0.1.1 rollback compatibility
-        run: npm run test:compat:v011
+      - name: Verify pinned live v0.3.2 PWA wire compatibility
+        run: node scripts/verify-ios-pwa-v032-compatibility.mjs
       - name: Upload data coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
@@ -777,7 +778,7 @@ jobs:
         run: |
           npm run benchmark:ai:verify -- \
             --source-sha "${{ needs.quality.outputs.source-sha }}" \
-            --release-version 0.3.4 \
+            --release-version 0.3.5 \
             --strategy-version 1
 
       - name: Install pinned Chromium and k6

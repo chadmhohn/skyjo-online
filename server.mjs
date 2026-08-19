@@ -74,6 +74,14 @@ import {
   deliverWebPushNotifications,
   resolveWebPushConfiguration
 } from './server-push.mjs';
+import {
+  createAPNSProvider,
+  createAPNSRegistrationRateLimiter,
+  deliverAPNSNotifications,
+  isCanonicalAPNSInstallationId,
+  loadAPNSConfiguration,
+  validateAPNSRegistration
+} from './server-apns.mjs';
 import { createReadinessResult, createVersionResult } from './server-readiness.mjs';
 import { loadReleaseIdentity, releaseValidationOptionsForEnvironment } from './server-release.mjs';
 
@@ -125,6 +133,7 @@ const lifecycleTickMs = positiveDurationFromEnvironment('SKYJO_LIFECYCLE_TICK_MS
 const aiActionDelayMs = positiveDurationFromEnvironment('SKYJO_AI_ACTION_DELAY_MS', 650, true);
 const inviteRedemptionRateLimiter = createInviteRedemptionRateLimiter();
 const nativeInviteRedemptionRateLimiter = createInviteRedemptionRateLimiter();
+const apnsRegistrationRateLimiter = createAPNSRegistrationRateLimiter();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
 let shuttingDown = false;
@@ -133,6 +142,8 @@ let nextDatabaseRetryAt = 0;
 let databaseFailureLogged = false;
 let releaseIdentity = null;
 let appleAppSiteAssociation = null;
+let apnsConfiguration = null;
+let apnsProvider = null;
 
 function positiveDurationFromEnvironment(name, fallback, allowZero = false) {
   const raw = process.env[name];
@@ -211,6 +222,21 @@ try {
 const pushNotificationsEnabled = webPushConfiguration.enabled;
 
 try {
+  apnsConfiguration = await loadAPNSConfiguration(process.env, {
+    requireRootOwned: process.env.NODE_ENV !== 'test'
+  });
+  if (apnsConfiguration.enabled) {
+    apnsProvider = createAPNSProvider({ configuration: apnsConfiguration });
+  } else {
+    console.warn('Native notifications are disabled. Install the APNs provider and token-encryption key files to enable them.');
+  }
+} catch {
+  console.error('APNs configuration is invalid; provider values were withheld.');
+  process.exit(1);
+}
+const apnsNotificationsEnabled = Boolean(apnsConfiguration?.enabled && apnsProvider);
+
+try {
   releaseIdentity = await loadReleaseIdentity(distDir, releaseValidationOptionsForEnvironment(process.env.NODE_ENV));
 } catch {
   console.error('Release identity validation failed; readiness and version endpoints will remain unavailable.');
@@ -228,6 +254,7 @@ async function ensureAccountStore({ force = false } = {}) {
   let candidate = null;
   try {
     candidate = await createAccountStore({ filePath: accountDatabaseFile });
+    candidate.pruneAPNSDevices();
     const bootstrappedAdmin = await candidate.bootstrapAdmin({ email: adminEmail, password: adminInitialPassword });
     if (bootstrappedAdmin) {
       console.log(`Admin account ready for ${bootstrappedAdmin.email}`);
@@ -1403,10 +1430,44 @@ async function sendPushToUsers(userIds, payload) {
   }
 }
 
-function schedulePushToUsers(userIds, payload) {
-  void sendPushToUsers(userIds, payload).catch(() => {
-    reportWebPushFailure('Web Push notification task rejected unexpectedly.');
-  });
+function reportAPNSFailure(message, diagnostic = {
+  statusCode: null,
+  providerReason: null,
+  environment: null,
+  stage: 'provider'
+}) {
+  try {
+    console.warn(message, diagnostic);
+  } catch {
+    // Logging cannot be allowed to reject a fire-and-forget notification task.
+  }
+}
+
+async function sendAPNSToUsers(userIds, event) {
+  try {
+    const store = accountStore;
+    if (!apnsNotificationsEnabled || !store) return;
+    const devices = store.listAPNSDevicesForUsers(userIds);
+    if (devices.length === 0) return;
+    await deliverAPNSNotifications({
+      devices,
+      event,
+      tokenCodec: apnsConfiguration.tokenCodec,
+      provider: apnsProvider,
+      deleteDevice: (device) => store.deleteAPNSDeviceIfCurrent(device),
+      reportFailure: (diagnostic) => reportAPNSFailure('APNs delivery failed.', diagnostic),
+      reportCleanupFailure: (diagnostic) => reportAPNSFailure('APNs device cleanup failed.', diagnostic)
+    });
+  } catch {
+    reportAPNSFailure('APNs notification task failed.');
+  }
+}
+
+function scheduleNotificationToUsers(userIds, webPayload, apnsEvent) {
+  void Promise.allSettled([
+    sendPushToUsers(userIds, webPayload),
+    sendAPNSToUsers(userIds, apnsEvent)
+  ]);
 }
 
 function awayUserIdsForPlayers(room, playerIds) {
@@ -1425,24 +1486,25 @@ function notifyAwayPlayersAfterMove(room, actor, nextState) {
       room.players.filter((player) => player.id !== actor.id).map((player) => player.id)
     );
     const title = nextState.phase === 'game-over' ? 'Skyjo game finished' : 'Skyjo round ended';
-    schedulePushToUsers(targetUserIds, {
+    const kind = nextState.phase === 'game-over' ? 'game-ended' : 'round-ended';
+    scheduleNotificationToUsers(targetUserIds, {
       title,
       body: `${actor.name} played in room ${room.code}.`,
       tag: `skyjo-${room.code}-${nextState.phase}`,
       url
-    });
+    }, { kind, roomCode: room.code });
     return;
   }
 
   const activePlayer = nextState.players[nextState.currentPlayerIndex];
   if (!activePlayer || activePlayer.id === actor.id) return;
   const targetUserIds = awayUserIdsForPlayers(room, [activePlayer.id]);
-  schedulePushToUsers(targetUserIds, {
+  scheduleNotificationToUsers(targetUserIds, {
     title: 'Your turn in Skyjo',
     body: `${actor.name} played. Tap to take your turn.`,
     tag: `skyjo-${room.code}-turn`,
     url
-  });
+  }, { kind: 'turn', roomCode: room.code });
 }
 
 function cleanChatText(value) {
@@ -1724,6 +1786,29 @@ function singlePlayerSourceKey(user, body) {
   return `single:${user.id}:${rawKey.slice(0, 160) || crypto.randomUUID()}`;
 }
 
+async function optionalAPNSLogoutInstallationId(req) {
+  const body = await readRequestBody(req);
+  if (!body.trim()) return null;
+  if (!requestUsesJson(req)) throw new PublicApiError('UNSUPPORTED_MEDIA_TYPE');
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new PublicApiError('INVALID_JSON');
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).length !== 1 ||
+    !Object.hasOwn(parsed, 'installationId') ||
+    !isCanonicalAPNSInstallationId(parsed.installationId)
+  ) {
+    throw new PublicApiError('INVALID_APNS_DEVICE');
+  }
+  return parsed.installationId;
+}
+
 async function handleApiRequest(req, res, url) {
   try {
     if (url.pathname === '/api/account/me' && req.method === 'GET') {
@@ -1758,7 +1843,12 @@ async function handleApiRequest(req, res, url) {
     }
 
     if (url.pathname === '/api/account/logout' && req.method === 'POST') {
-      accountStore.deleteSession(accountToken(req));
+      const token = accountToken(req);
+      // Capture the authenticated owner before awaiting the optional body so a
+      // concurrent repeat logout cannot strand this installation registration.
+      const authenticatedUserId = accountStore.getUserBySessionToken(token)?.id || null;
+      const installationId = await optionalAPNSLogoutInstallationId(req);
+      accountStore.deleteSessionAndAPNSDevice(token, installationId, authenticatedUserId);
       sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
       return true;
     }
@@ -1789,6 +1879,67 @@ async function handleApiRequest(req, res, url) {
         enabled: pushNotificationsEnabled,
         publicKey: pushNotificationsEnabled ? webPushConfiguration.publicKey : ''
       });
+      return true;
+    }
+
+    if (url.pathname === '/api/push/apns/config') {
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      if (req.method !== 'GET') {
+        sendApiError(res, 405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', { Allow: 'GET' });
+        return true;
+      }
+      if (url.search) throw new PublicApiError('INVALID_REQUEST');
+      sendJsonResponse(res, 200, { enabled: apnsNotificationsEnabled });
+      return true;
+    }
+
+    const apnsDeviceMatch = url.pathname.match(/^\/api\/push\/apns\/devices\/([^/]+)$/);
+    if (apnsDeviceMatch) {
+      const authenticatedSessionToken = accountToken(req);
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      if (req.method !== 'PUT' && req.method !== 'DELETE') {
+        sendApiError(res, 405, 'METHOD_NOT_ALLOWED', 'Method not allowed.', { Allow: 'PUT, DELETE' });
+        return true;
+      }
+      if (url.search || !isCanonicalAPNSInstallationId(apnsDeviceMatch[1])) {
+        throw new PublicApiError('INVALID_APNS_DEVICE');
+      }
+      const installationId = apnsDeviceMatch[1];
+      if (req.method === 'DELETE') {
+        accountStore.deleteAPNSDeviceForUser(user.id, installationId);
+        sendJsonResponse(res, 200, { ok: true });
+        return true;
+      }
+      if (!requestUsesJson(req)) throw new PublicApiError('UNSUPPORTED_MEDIA_TYPE');
+      if (!apnsNotificationsEnabled) throw new PublicApiError('APNS_NOT_CONFIGURED');
+      const rate = apnsRegistrationRateLimiter.consume(user.id);
+      if (!rate.allowed) {
+        const publicError = publicApiErrorResponse(new PublicApiError('APNS_REGISTRATION_RATE_LIMITED'));
+        sendApiError(res, publicError.status, publicError.code, publicError.message, {
+          'Retry-After': String(rate.retryAfterSeconds)
+        });
+        return true;
+      }
+      const body = await readJsonBody(req);
+      let registration;
+      try {
+        registration = validateAPNSRegistration(installationId, body);
+      } catch {
+        throw new PublicApiError('INVALID_APNS_DEVICE');
+      }
+      const encryptedToken = apnsConfiguration.tokenCodec.encrypt(registration.deviceToken);
+      accountStore.saveAPNSDevice({
+        sessionToken: authenticatedSessionToken,
+        userId: user.id,
+        installationId,
+        environment: registration.environment,
+        ...encryptedToken,
+        appVersion: registration.appVersion,
+        locale: registration.locale
+      });
+      sendJsonResponse(res, 200, { ok: true });
       return true;
     }
 
@@ -2540,6 +2691,11 @@ const disposeRealtimeServer = registerRealtimeServer({
 });
 
 setInterval(() => {
+  try {
+    accountStore?.pruneAPNSDevices();
+  } catch {
+    console.error('APNs device retention pruning failed.');
+  }
   const cutoff = Date.now() - ROOM_STALE_MS;
   let removedRoom = false;
   for (const [code, room] of rooms.entries()) {
@@ -2572,6 +2728,7 @@ async function shutdown(signal) {
     console.error('Room persistence flush failed during shutdown.');
   }
   disposeRealtimeServer();
+  apnsProvider?.shutdown();
   for (const client of wss.clients) {
     client.close(1001, 'Server shutting down');
   }

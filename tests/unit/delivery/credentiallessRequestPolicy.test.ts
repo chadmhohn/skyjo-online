@@ -41,6 +41,7 @@ describe('credentialless production request policy', () => {
   it.each([
     '/api/account/signup',
     '/api/account/stats',
+    '/api/push/apns/devices/00000000-0000-4000-8000-000000000001',
     '/api/push/subscribe',
     '/invite-code',
     '/login',

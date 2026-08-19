@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
   APNS_DEVICE_STORAGE_ENVELOPE,
-  createAccountStore
+  createAccountStore,
+  validateOptionalAPNSDeviceStorageEnvelope
 } from '../server-account-store.mjs';
 import { loadRoomsSnapshotFromDisk, saveRoomsToDisk } from '../server-room-persistence.mjs';
 import { loadReleaseIdentity } from '../server-release.mjs';
@@ -41,7 +42,9 @@ try {
   store.close();
   const sourceDatabase = new DatabaseSync(databasePath);
   sourceDatabase.exec('PRAGMA foreign_keys = ON');
-  sourceDatabase.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+  if (!validateOptionalAPNSDeviceStorageEnvelope(sourceDatabase).present) {
+    sourceDatabase.exec(`${APNS_DEVICE_STORAGE_ENVELOPE.createStatements.join(';\n')};`);
+  }
   sourceDatabase.prepare(`
     INSERT INTO apns_devices (
       installation_id, user_id, environment, token_ciphertext, token_nonce,

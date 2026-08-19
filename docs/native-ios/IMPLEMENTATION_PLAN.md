@@ -167,8 +167,8 @@ Server sequencing is tracked separately by [rollback-envelope #203](https://gith
 
 Acceptance:
 
-- Additive SQLite migration and authenticated device registration/unregistration contract with installation ID, environment, token rotation, multi-device support, and invalid-token cleanup.
-- APNs provider authentication secrets remain server-only under `/etc/skyjo-online.env` or an approved secret store.
+- Frozen schema-2 SQLite physical extension and authenticated device registration/unregistration contract with installation ID, environment, token rotation, multi-device support, retention, and race-safe invalid-token cleanup.
+- APNs provider and token-encryption keys remain server-only files beneath `/etc/skyjo-online`; the environment contains only their exact paths and provider identifiers.
 - Existing turn-trigger semantics fan out independently to Web Push and APNs without duplicate alerts to an active visible client.
 - Notification payload contains only minimal routing data and no card values, room state, chat, account email, or invite token.
 - Permission-denied, token failure, logout/account switch, reinstall/rotation, background tap, and stale-room cases are tested.

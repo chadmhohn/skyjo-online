@@ -134,6 +134,10 @@ try {
     'The packaged artifact must include the Web Push validation and delivery module imported at production startup.'
   );
   assert.ok(
+    controllerContract.entries.has('server-apns.mjs'),
+    'The packaged artifact must include the APNs configuration, encryption, and provider module imported at production startup.'
+  );
+  assert.ok(
     controllerContract.entries.has('server-unicode.mjs'),
     'The packaged artifact must include the Unicode helper imported by the compiled protocol and persistence modules.'
   );
