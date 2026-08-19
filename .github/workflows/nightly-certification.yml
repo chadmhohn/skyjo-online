@@ -59,7 +59,7 @@ jobs:
       - name: Install pinned Chromium and k6
         run: |
           set -Eeuo pipefail
-          npm exec -- playwright install --with-deps chromium
+          npm exec -- playwright install chromium
           sh scripts/install-k6.sh "$RUNNER_TEMP/skyjo-k6"
           echo "SKYJO_K6_BIN=$RUNNER_TEMP/skyjo-k6/k6" >> "$GITHUB_ENV"
 
