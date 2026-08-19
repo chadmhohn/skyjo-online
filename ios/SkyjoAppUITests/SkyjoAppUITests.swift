@@ -200,6 +200,602 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  func testAuthenticatedHomeOpensNativeMultiplayerWithoutWebContent() throws {
+    let app = launchRoomFixture(
+      "admission",
+      additionalArguments: ["--ui-room-manual-navigation"]
+    )
+    defer { app.terminate() }
+
+    let rooms = app.buttons["home.rooms"]
+    XCTAssertTrue(rooms.waitForExistence(timeout: 8))
+    XCTAssertTrue(rooms.isEnabled)
+    XCTAssertGreaterThanOrEqual(rooms.frame.height, 44)
+    rooms.tap()
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    XCTAssertTrue(app.textFields["rooms.join-code"].exists)
+    let create = app.buttons["rooms.create"]
+    XCTAssertTrue(create.exists)
+    XCTAssertEqual(app.webViews.count, 0)
+
+    let admissionReady = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"),
+      object: create
+    )
+    XCTAssertEqual(XCTWaiter.wait(for: [admissionReady], timeout: 5), .completed)
+    XCTAssertFalse(app.buttons["rooms.retry-seat"].exists)
+    XCTAssertFalse(app.buttons["rooms.forget-seat"].exists)
+
+    attachScreenshot(app, name: "ios8-room-join-portrait")
+    try performAccessibilityAudit(on: app)
+  }
+
+  @MainActor
+  func testSeededSavedSeatRecoveryControlsRequireDestructiveConfirmation() throws {
+    let app = launchRoomFixture(
+      "recovery-unavailable",
+      additionalArguments: ["--ui-room-manual-navigation"]
+    )
+    defer { app.terminate() }
+
+    let rooms = app.buttons["home.rooms"]
+    XCTAssertTrue(rooms.waitForExistence(timeout: 8))
+    XCTAssertTrue(rooms.isEnabled)
+    rooms.tap()
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    XCTAssertTrue(app.staticTexts["Saved room unavailable"].waitForExistence(timeout: 5))
+
+    let retrySavedSeat = app.buttons["rooms.retry-seat"]
+    let forgetSavedSeat = app.buttons["rooms.forget-seat"]
+    XCTAssertTrue(retrySavedSeat.waitForExistence(timeout: 5))
+    XCTAssertTrue(forgetSavedSeat.waitForExistence(timeout: 5))
+    XCTAssertTrue(retrySavedSeat.isEnabled)
+    XCTAssertTrue(forgetSavedSeat.isEnabled)
+    XCTAssertTrue(forgetSavedSeat.isHittable)
+    XCTAssertGreaterThanOrEqual(forgetSavedSeat.frame.height, 44)
+    forgetSavedSeat.tap()
+
+    let confirmation = app.alerts["Forget saved seat?"]
+    XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+    XCTAssertTrue(confirmation.buttons["Forget Saved Seat"].exists)
+    XCTAssertTrue(confirmation.buttons["Cancel"].exists)
+    XCTAssertTrue(
+      confirmation.staticTexts.matching(
+        NSPredicate(
+          format: "label == %@",
+          "Saved room and reset recovery routing for this account will be removed from this device. The server room and other players are not changed."
+        )
+      ).firstMatch.exists
+    )
+    confirmation.buttons["Cancel"].tap()
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 5))
+    XCTAssertTrue(retrySavedSeat.exists)
+    XCTAssertTrue(forgetSavedSeat.exists)
+  }
+
+  @MainActor
+  func testNoSeatCleanupRequirementExposesOnlyConfirmedForget() throws {
+    let app = launchRoomFixture(
+      "cleanup-required",
+      additionalArguments: ["--ui-room-manual-navigation"]
+    )
+    defer { app.terminate() }
+
+    let rooms = app.buttons["home.rooms"]
+    XCTAssertTrue(rooms.waitForExistence(timeout: 8))
+    rooms.tap()
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    let create = app.buttons["rooms.create"]
+    let admissionReady = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"),
+      object: create
+    )
+    XCTAssertEqual(XCTWaiter.wait(for: [admissionReady], timeout: 5), .completed)
+    XCTAssertFalse(app.buttons["rooms.retry-seat"].exists)
+    XCTAssertFalse(app.buttons["rooms.forget-seat"].exists)
+
+    create.tap()
+    XCTAssertTrue(app.staticTexts["Room reset cleanup needed"].waitForExistence(timeout: 8))
+    let forgetSavedSeat = app.buttons["rooms.forget-seat"]
+    XCTAssertTrue(forgetSavedSeat.waitForExistence(timeout: 5))
+    XCTAssertFalse(app.buttons["rooms.retry-seat"].exists)
+    XCTAssertFalse(create.isEnabled)
+    forgetSavedSeat.tap()
+
+    let confirmation = app.alerts["Forget saved seat?"]
+    XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+    confirmation.buttons["Forget Saved Seat"].tap()
+
+    let cleanupCompleted = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "enabled == true"),
+      object: create
+    )
+    XCTAssertEqual(XCTWaiter.wait(for: [cleanupCompleted], timeout: 8), .completed)
+    XCTAssertFalse(app.buttons["rooms.retry-seat"].exists)
+    XCTAssertFalse(app.buttons["rooms.forget-seat"].exists)
+    XCTAssertTrue(joinScreen.exists)
+
+    attachScreenshot(app, name: "ios8-room-cleanup-required-cleared")
+  }
+
+  @MainActor
+  func testRoomCreateRendersDecodedAuthoritativeWaitingRoom() throws {
+    let app = launchRoomFixture("admission")
+    defer { app.terminate() }
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    XCTAssertEqual(app.webViews.count, 0)
+
+    let create = app.buttons["rooms.create"]
+    XCTAssertTrue(create.waitForExistence(timeout: 5))
+    XCTAssertTrue(create.isEnabled)
+    XCTAssertTrue(create.isHittable)
+    XCTAssertGreaterThanOrEqual(create.frame.height, 44)
+    create.tap()
+
+    let waiting = element(in: app, identifier: "rooms.waiting-screen")
+    XCTAssertTrue(
+      waiting.waitForExistence(timeout: 8),
+      "Create must render the decoded authoritative waiting-room snapshot."
+    )
+    let roomCode = element(in: app, identifier: "rooms.code")
+    XCTAssertTrue(roomCode.waitForExistence(timeout: 5))
+    XCTAssertEqual(roomCode.label, "Room code ABCDE")
+    XCTAssertFalse(joinScreen.exists)
+    attachScreenshot(app, name: "ios8-room-create-authoritative-waiting")
+  }
+
+  @MainActor
+  func testRoomJoinRendersDecodedAuthoritativeWaitingRoom() throws {
+    let app = launchRoomFixture("admission")
+    defer { app.terminate() }
+
+    let joinScreen = element(in: app, identifier: "rooms.join-screen")
+    XCTAssertTrue(joinScreen.waitForExistence(timeout: 8))
+    XCTAssertEqual(app.webViews.count, 0)
+
+    let code = app.textFields["rooms.join-code"]
+    XCTAssertTrue(code.waitForExistence(timeout: 5))
+    replaceText(in: code, with: "abcde")
+    XCTAssertEqual(code.value as? String, "ABCDE")
+
+    let join = app.buttons["rooms.join"]
+    XCTAssertTrue(join.isEnabled)
+    XCTAssertTrue(join.isHittable)
+    XCTAssertGreaterThanOrEqual(join.frame.height, 44)
+    join.tap()
+
+    let waiting = element(in: app, identifier: "rooms.waiting-screen")
+    XCTAssertTrue(
+      waiting.waitForExistence(timeout: 8),
+      "Join must render the decoded authoritative waiting-room snapshot."
+    )
+    let roomCode = element(in: app, identifier: "rooms.code")
+    XCTAssertTrue(roomCode.waitForExistence(timeout: 5))
+    XCTAssertEqual(roomCode.label, "Room code ABCDE")
+    XCTAssertFalse(joinScreen.exists)
+    attachScreenshot(app, name: "ios8-room-join-authoritative-waiting")
+  }
+
+  @MainActor
+  func testAuthenticatedInviteFromStatsAndAccountSelectsHomeAfterReviewIsConsumed() throws {
+    for (sourceArgument, sourceLabel) in [
+      ("--ui-start-tab=stats", "Stats"),
+      ("--ui-start-tab=account", "Account"),
+    ] {
+      let app = XCUIApplication()
+      app.launchArguments = [
+        "--ui-state=authenticated-admin",
+        sourceArgument,
+        "--ui-open-room-invite",
+      ]
+      app.launch()
+
+      let review = element(in: app, identifier: "rooms.invite.review")
+      XCTAssertTrue(
+        review.waitForExistence(timeout: 8),
+        "An invite accepted from \(sourceLabel) must expose its Home-owned review."
+      )
+      XCTAssertTrue(app.staticTexts["Room ABCDE"].exists)
+      XCTAssertTrue(app.tabBars.buttons["Home"].isSelected)
+      XCTAssertFalse(app.tabBars.buttons[sourceLabel].isSelected)
+      XCTAssertEqual(app.webViews.count, 0)
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testRoomEightPlayerWaitingRoomAndHostRemovalConfirmation() throws {
+    let app = launchRoomFixture("waiting")
+    defer { app.terminate() }
+
+    let waiting = element(in: app, identifier: "rooms.waiting-screen")
+    let roster = element(in: app, identifier: "rooms.roster")
+    XCTAssertTrue(waiting.waitForExistence(timeout: 8))
+    XCTAssertTrue(roster.waitForExistence(timeout: 5))
+    XCTAssertEqual(app.webViews.count, 0)
+
+    for index in 0..<8 {
+      XCTAssertTrue(
+        element(in: app, identifier: "rooms.roster.player.\(index)")
+          .waitForExistence(timeout: 5),
+        "The waiting-room roster must expose all eight authoritative seats."
+      )
+    }
+
+    let connected = element(in: app, identifier: "rooms.connection.connected")
+    XCTAssertTrue(connected.exists)
+    XCTAssertTrue(app.staticTexts["Table synchronized"].exists)
+
+    let start = app.buttons["rooms.start"]
+    XCTAssertTrue(start.exists)
+    XCTAssertTrue(start.isEnabled)
+    XCTAssertGreaterThanOrEqual(start.frame.height, 44)
+
+    let removeGuest = app.buttons["rooms.roster.remove.1"]
+    XCTAssertTrue(removeGuest.waitForExistence(timeout: 5))
+    XCTAssertEqual(removeGuest.label, "Remove Guest 2 from room")
+    XCTAssertGreaterThanOrEqual(removeGuest.frame.height + 0.5, 44)
+    removeGuest.tap()
+
+    let confirmation = app.alerts["Remove Guest 2?"]
+    XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+    XCTAssertTrue(confirmation.buttons["Remove Player"].exists)
+    XCTAssertTrue(confirmation.buttons["Cancel"].exists)
+    XCTAssertTrue(
+      confirmation.staticTexts[
+        "Guest 2's waiting-room seat will be removed. They can join again while the room is waiting."
+      ].exists
+    )
+    confirmation.buttons["Cancel"].tap()
+    XCTAssertTrue(waiting.waitForExistence(timeout: 5))
+
+    let chat = app.buttons["rooms.chat.open"]
+    XCTAssertTrue(chat.exists)
+    XCTAssertEqual(chat.label, "Chat, 1 unread")
+    XCTAssertGreaterThanOrEqual(chat.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(chat.frame.height, 44)
+    attachScreenshot(app, name: "ios8-room-waiting-eight-player-portrait")
+  }
+
+  @MainActor
+  func testRoomActiveTableKeepsChatCompactAndRedactsHiddenValues() throws {
+    let app = launchRoomFixture("active")
+    defer { app.terminate() }
+
+    let table = element(in: app, identifier: "rooms.table")
+    XCTAssertTrue(table.waitForExistence(timeout: 8))
+    XCTAssertEqual(app.webViews.count, 0)
+
+    let hiddenOpponentCard = element(
+      in: app,
+      identifier: "rooms.card.opponent.0.r1.c3"
+    )
+    XCTAssertTrue(hiddenOpponentCard.waitForExistence(timeout: 5))
+    XCTAssertEqual(
+      hiddenOpponentCard.label,
+      "Guest 2's card, row 1, column 3, face down"
+    )
+    XCTAssertFalse(hiddenOpponentCard.label.contains("value"))
+    XCTAssertGreaterThanOrEqual(hiddenOpponentCard.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(hiddenOpponentCard.frame.height, 44)
+
+    let deck = app.buttons["rooms.action.deck"]
+    let discard = app.buttons["rooms.action.discard"]
+    let localCard = element(in: app, identifier: "rooms.card.local.r1.c1")
+    let window = app.windows.firstMatch
+    XCTAssertTrue(localCard.waitForExistence(timeout: 5))
+    XCTAssertGreaterThanOrEqual(localCard.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(localCard.frame.height, 44)
+    assertElement(localCard, isContainedIn: table, tolerance: 2)
+    assertElement(localCard, isContainedIn: window, tolerance: 2)
+    for action in [deck, discard] {
+      XCTAssertTrue(action.exists)
+      XCTAssertGreaterThanOrEqual(action.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(action.frame.height, 44)
+      assertElement(action, isContainedIn: table, tolerance: 2)
+      assertElement(action, isContainedIn: window, tolerance: 2)
+    }
+
+    let chat = app.buttons["rooms.chat.open"]
+    XCTAssertTrue(chat.exists)
+    XCTAssertEqual(chat.label, "Chat, 1 unread")
+    XCTAssertGreaterThanOrEqual(chat.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(chat.frame.height, 44)
+    let originalTableFrame = table.frame
+    let originalDeckFrame = deck.frame
+    let originalLocalCardFrame = localCard.frame
+
+    chat.tap()
+    let chatSheet = element(in: app, identifier: "rooms.chat.sheet")
+    XCTAssertTrue(chatSheet.waitForExistence(timeout: 5))
+    let message = element(in: app, identifier: "rooms.chat.message.0")
+    XCTAssertTrue(message.waitForExistence(timeout: 5))
+    XCTAssertEqual(message.label, "Guest 2: Eight-player table is ready.")
+    let chatDraft = app.textFields["rooms.chat.message"]
+    XCTAssertTrue(chatDraft.waitForExistence(timeout: 5))
+    replaceText(in: chatDraft, with: "Hello from native UI.")
+    let send = app.buttons["rooms.chat.send"]
+    XCTAssertTrue(send.isEnabled)
+    XCTAssertTrue(send.isHittable)
+    XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+    send.tap()
+
+    let echoedMessage = element(in: app, identifier: "rooms.chat.message.1")
+    XCTAssertTrue(
+      echoedMessage.waitForExistence(timeout: 5),
+      "Chat send must render the decoded authoritative echo."
+    )
+    XCTAssertEqual(echoedMessage.label, "You: Hello from native UI.")
+    app.navigationBars["Table Chat"].buttons["Done"].tap()
+
+    XCTAssertTrue(table.waitForExistence(timeout: 5))
+    assertFrame(table.frame, equals: originalTableFrame, accuracy: 2)
+    assertFrame(deck.frame, equals: originalDeckFrame, accuracy: 2)
+    assertFrame(localCard.frame, equals: originalLocalCardFrame, accuracy: 2)
+    assertElement(table, isContainedIn: window, tolerance: 2)
+    attachScreenshot(app, name: "ios8-room-active-eight-player-portrait")
+  }
+
+  @MainActor
+  func testRoomShortLandscapeContainsEightPlayerBoardsAndTargets() throws {
+    let app = launchRoomFixture("active", orientation: .landscapeLeft)
+    defer {
+      app.terminate()
+      XCUIDevice.shared.orientation = .portrait
+    }
+    let table = element(in: app, identifier: "rooms.table")
+    XCTAssertTrue(table.waitForExistence(timeout: 8))
+    waitForSettledOrientation(app, landscape: true, timeout: 12)
+    let layout = element(in: app, identifier: "rooms.table.layout.short-landscape")
+    XCTAssertTrue(layout.waitForExistence(timeout: 5))
+
+    let opponentBoard = element(in: app, identifier: "rooms.board.opponent.0")
+    XCTAssertTrue(opponentBoard.waitForExistence(timeout: 5))
+    XCTAssertGreaterThanOrEqual(opponentBoard.frame.width, 187)
+
+    for column in 1...4 {
+      let card = element(
+        in: app,
+        identifier: "rooms.card.opponent.0.r1.c\(column)"
+      )
+      XCTAssertTrue(card.exists)
+      XCTAssertGreaterThanOrEqual(card.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(card.frame.height + 0.5, 44)
+      assertElement(card, isContainedIn: opponentBoard, tolerance: 2)
+    }
+
+    let localCards = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "rooms.card.local.")
+    ).allElementsBoundByIndex
+    XCTAssertEqual(localCards.count, 12)
+    let window = app.windows.firstMatch
+    for card in localCards {
+      XCTAssertGreaterThanOrEqual(card.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(card.frame.height + 0.5, 44)
+      assertElement(card, isContainedIn: table, tolerance: 2)
+      assertElement(card, isContainedIn: window, tolerance: 2)
+    }
+
+    for action in [
+      app.buttons["rooms.action.deck"],
+      app.buttons["rooms.action.discard"],
+    ] {
+      XCTAssertTrue(action.exists)
+      XCTAssertGreaterThanOrEqual(action.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(action.frame.height, 44)
+      assertElement(action, isContainedIn: table, tolerance: 2)
+      assertElement(action, isContainedIn: window, tolerance: 2)
+    }
+
+    assertElement(opponentBoard, isContainedIn: table, tolerance: 2)
+    assertElement(opponentBoard, isContainedIn: window, tolerance: 2)
+    attachScreenScreenshot(name: "ios8-room-active-eight-player-short-landscape")
+  }
+
+  @MainActor
+  func testRoomScoringReadyWaitsForAuthoritativeUpdate() throws {
+    let app = launchRoomFixture("scoring")
+    defer { app.terminate() }
+
+    let scoreSheet = element(in: app, identifier: "rooms.score.sheet")
+    XCTAssertTrue(scoreSheet.waitForExistence(timeout: 8))
+    let readyCount = app.staticTexts["rooms.score.ready-count"]
+    XCTAssertTrue(readyCount.waitForExistence(timeout: 5))
+    XCTAssertEqual(readyCount.label, "7/8 ready")
+
+    let ready = app.buttons["rooms.score.ready"]
+    let advance = app.buttons["rooms.score.advance"]
+    XCTAssertTrue(ready.isEnabled)
+    XCTAssertGreaterThanOrEqual(ready.frame.height, 44)
+    XCTAssertFalse(advance.isEnabled)
+    XCTAssertGreaterThanOrEqual(advance.frame.height, 44)
+    ready.tap()
+
+    let allReady = NSPredicate(format: "label == %@", "8/8 ready")
+    XCTAssertEqual(
+      XCTWaiter.wait(
+        for: [XCTNSPredicateExpectation(predicate: allReady, object: readyCount)],
+        timeout: 8
+      ),
+      .completed,
+      "Ready state must change only after the authoritative revision arrives."
+    )
+    XCTAssertTrue(advance.isEnabled)
+    XCTAssertEqual(ready.label, "Mark Not Ready")
+    attachScreenshot(app, name: "ios8-room-scoring-all-ready")
+
+    app.navigationBars["Scores"].buttons["Minimize"].tap()
+    XCTAssertTrue(element(in: app, identifier: "rooms.table").waitForExistence(timeout: 5))
+  }
+
+  @MainActor
+  func testRoomPendingOfflineAndResyncStatusMessaging() throws {
+    let pendingApp = launchRoomFixture("pending")
+    XCTAssertTrue(element(in: pendingApp, identifier: "rooms.table").waitForExistence(timeout: 8))
+    pendingApp.buttons["rooms.action.deck"].tap()
+    let pendingBanner = element(in: pendingApp, identifier: "rooms.connection.connected")
+    XCTAssertTrue(pendingBanner.waitForExistence(timeout: 5))
+    XCTAssertTrue(pendingBanner.label.contains("Action pending"))
+    XCTAssertTrue(
+      pendingBanner.label.contains("Waiting for an acknowledgement and authoritative snapshot.")
+    )
+    XCTAssertFalse(pendingApp.buttons["rooms.action.discard"].isEnabled)
+    attachScreenshot(pendingApp, name: "ios8-room-action-pending")
+    pendingApp.terminate()
+
+    let offlineApp = launchRoomFixture("offline")
+    let offlineBanner = element(in: offlineApp, identifier: "rooms.connection.offline")
+    XCTAssertTrue(offlineBanner.waitForExistence(timeout: 8))
+    XCTAssertTrue(offlineBanner.label.contains("Offline"))
+    XCTAssertTrue(
+      offlineBanner.label.contains("The last table remains visible and read-only until the network returns.")
+    )
+    XCTAssertTrue(element(in: offlineApp, identifier: "rooms.table").exists)
+    XCTAssertFalse(offlineApp.buttons["rooms.action.deck"].isEnabled)
+    attachScreenshot(offlineApp, name: "ios8-room-offline-read-only")
+    offlineApp.terminate()
+
+    let resyncApp = launchRoomFixture("resync")
+    XCTAssertTrue(element(in: resyncApp, identifier: "rooms.table").waitForExistence(timeout: 8))
+    resyncApp.buttons["rooms.action.deck"].tap()
+    let resyncBanner = element(in: resyncApp, identifier: "rooms.banner")
+    XCTAssertTrue(resyncBanner.waitForExistence(timeout: 8))
+    XCTAssertTrue(resyncBanner.label.contains("Table resynchronized"))
+    XCTAssertTrue(
+      resyncBanner.label.contains(
+        "The room changed before that action was accepted. Review the table and try again."
+      )
+    )
+    XCTAssertTrue(resyncApp.buttons["rooms.action.deck"].isEnabled)
+    attachScreenshot(resyncApp, name: "ios8-room-resynchronized")
+    resyncApp.terminate()
+  }
+
+  @MainActor
+  func testRoomAccessibilityXXXLUsesScrollableSafeLayout() throws {
+    let app = launchRoomFixture(
+      "active",
+      additionalArguments: [
+        "--ui-expose-dynamic-type",
+        "-UIPreferredContentSizeCategoryName",
+        "UICTContentSizeCategoryAccessibilityXXXL",
+      ]
+    )
+    defer { app.terminate() }
+
+    let table = element(in: app, identifier: "rooms.table")
+    XCTAssertTrue(table.waitForExistence(timeout: 8))
+    XCTAssertTrue(
+      element(in: app, identifier: "rooms.table.accessible-layout")
+        .waitForExistence(timeout: 5),
+      "Accessibility Dynamic Type must use the explicit scrollable room table."
+    )
+    let window = app.windows.firstMatch
+    assertElement(table, isContainedIn: window, tolerance: 2)
+
+    let hiddenCard = element(in: app, identifier: "rooms.card.opponent.0.r1.c3")
+    XCTAssertTrue(hiddenCard.waitForExistence(timeout: 5))
+    XCTAssertEqual(hiddenCard.label, "Guest 2's card, row 1, column 3, face down")
+    XCTAssertGreaterThanOrEqual(hiddenCard.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(hiddenCard.frame.height, 44)
+    let firstOpponentBoard = element(in: app, identifier: "rooms.board.opponent.0")
+    XCTAssertTrue(firstOpponentBoard.waitForExistence(timeout: 5))
+    let firstOpponentScore = firstOpponentBoard.descendants(matching: .staticText)
+      .matching(NSPredicate(format: "label == %@", "3 pts"))
+      .firstMatch
+    XCTAssertTrue(firstOpponentScore.waitForExistence(timeout: 5))
+    XCTAssertEqual(firstOpponentScore.label, "3 pts")
+    assertElement(firstOpponentScore, isContainedIn: firstOpponentBoard, tolerance: 2)
+
+    let localCard = element(in: app, identifier: "rooms.card.local.r1.c1")
+    for _ in 0..<6 where !localCard.isHittable {
+      table.swipeUp(velocity: .slow)
+    }
+    XCTAssertTrue(localCard.waitForExistence(timeout: 5))
+    XCTAssertTrue(localCard.isHittable)
+    XCTAssertGreaterThanOrEqual(localCard.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(localCard.frame.height, 44)
+    assertElement(localCard, isContainedIn: table, tolerance: 2)
+    assertElement(localCard, isContainedIn: window, tolerance: 2)
+
+    let chat = app.buttons["rooms.chat.open"]
+    XCTAssertTrue(chat.exists)
+    XCTAssertTrue(chat.isHittable)
+    XCTAssertGreaterThanOrEqual(chat.frame.width, 44)
+    XCTAssertGreaterThanOrEqual(chat.frame.height, 44)
+    attachScreenshot(app, name: "ios8-room-active-accessibility-xxxl")
+
+    try performRoomAccessibilityAudits(on: app)
+  }
+
+  @MainActor
+  func testRoomIPadLandscapeKeepsAuthoritativeContentContained() throws {
+    try XCTSkipUnless(
+      UIDevice.current.userInterfaceIdiom == .pad,
+      "Requires the dedicated iPad landscape destination."
+    )
+    let app = launchRoomFixture("active", orientation: .landscapeLeft)
+    defer {
+      app.terminate()
+      XCUIDevice.shared.orientation = .portrait
+    }
+
+    let table = element(in: app, identifier: "rooms.table")
+    XCTAssertTrue(table.waitForExistence(timeout: 8))
+    waitForSettledOrientation(app, landscape: true, timeout: 12)
+    XCTAssertTrue(
+      element(in: app, identifier: "rooms.table.layout.standard")
+        .waitForExistence(timeout: 5),
+      "The iPad landscape matrix must exercise the regular authoritative table layout."
+    )
+
+    let window = app.windows.firstMatch
+    for column in 1...4 {
+      let opponentCard = element(
+        in: app,
+        identifier: "rooms.card.opponent.0.r1.c\(column)"
+      )
+      XCTAssertTrue(opponentCard.exists)
+      XCTAssertGreaterThanOrEqual(opponentCard.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(opponentCard.frame.height, 44)
+      assertElement(opponentCard, isContainedIn: table, tolerance: 2)
+      assertElement(opponentCard, isContainedIn: window, tolerance: 2)
+    }
+
+    let localCards = app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "rooms.card.local.")
+    ).allElementsBoundByIndex
+    XCTAssertEqual(localCards.count, 12)
+    for card in localCards {
+      XCTAssertGreaterThanOrEqual(card.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(card.frame.height, 44)
+      assertElement(card, isContainedIn: table, tolerance: 2)
+      assertElement(card, isContainedIn: window, tolerance: 2)
+    }
+
+    for action in [
+      app.buttons["rooms.action.deck"],
+      app.buttons["rooms.action.discard"],
+    ] {
+      XCTAssertTrue(action.exists)
+      XCTAssertGreaterThanOrEqual(action.frame.width, 44)
+      XCTAssertGreaterThanOrEqual(action.frame.height, 44)
+      assertElement(action, isContainedIn: table, tolerance: 2)
+      assertElement(action, isContainedIn: window, tolerance: 2)
+    }
+
+    attachScreenScreenshot(name: "ios8-room-active-eight-player-ipad-landscape")
+  }
+
+  @MainActor
   func testStatsOfflineStateRetriesIntoLoadedHistory() throws {
     XCUIDevice.shared.orientation = .portrait
     let app = XCUIApplication()
@@ -234,7 +830,7 @@ final class SkyjoAppUITests: XCTestCase {
 
     XCTAssertTrue(app.staticTexts["home.welcome"].waitForExistence(timeout: 8))
     XCTAssertTrue(element(in: app, identifier: "home.solo").isEnabled)
-    XCTAssertFalse(app.buttons["home.rooms-disabled"].isEnabled)
+    XCTAssertTrue(app.buttons["home.rooms"].isEnabled)
 
     tapTab("Stats", in: app)
     XCTAssertTrue(element(in: app, identifier: "stats.empty").waitForExistence(timeout: 5))
@@ -482,6 +1078,7 @@ final class SkyjoAppUITests: XCTestCase {
     volatileHome.launchArguments = ["--ui-state=solo-launcher-volatile"]
     volatileHome.launch()
     XCTAssertTrue(volatileHome.staticTexts["home.welcome"].waitForExistence(timeout: 8))
+    XCTAssertFalse(volatileHome.buttons["home.rooms-disabled"].isEnabled)
     XCTAssertTrue(
       volatileHome.staticTexts.matching(
         NSPredicate(
@@ -509,6 +1106,7 @@ final class SkyjoAppUITests: XCTestCase {
     app.launch()
 
     XCTAssertTrue(app.staticTexts["home.welcome"].waitForExistence(timeout: 8))
+    XCTAssertFalse(app.buttons["home.rooms-disabled"].isEnabled)
     XCTAssertTrue(app.staticTexts["Offline account save"].exists)
     let offlineCopy = app.staticTexts.matching(
       NSPredicate(
@@ -547,6 +1145,7 @@ final class SkyjoAppUITests: XCTestCase {
     ]
     cachedAccountApp.launch()
     XCTAssertTrue(cachedAccountApp.staticTexts["home.welcome"].waitForExistence(timeout: 8))
+    XCTAssertFalse(cachedAccountApp.buttons["home.rooms-disabled"].isEnabled)
 
     tapTab("Stats", in: cachedAccountApp)
     let offlineStats = element(
@@ -2706,6 +3305,32 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  private func launchRoomFixture(
+    _ mode: String,
+    orientation: UIDeviceOrientation = .portrait,
+    additionalArguments: [String] = []
+  ) -> XCUIApplication {
+    XCUIDevice.shared.orientation = orientation
+    let app = XCUIApplication()
+    var launchArguments = [
+      "--ui-state=authenticated-admin",
+      "--ui-room-fixture=\(mode)",
+    ]
+    if !additionalArguments.contains("-UIPreferredContentSizeCategoryName") {
+      launchArguments += [
+        "-UIPreferredContentSizeCategoryName",
+        "UICTContentSizeCategoryL",
+      ]
+    }
+    app.launchArguments = launchArguments + additionalArguments
+    app.launch()
+    if orientation.isLandscape {
+      XCUIDevice.shared.orientation = orientation
+    }
+    return app
+  }
+
+  @MainActor
   private func assertResumedThreeOpponentMixedGame(in app: XCUIApplication) {
     let table = element(in: app, identifier: "solo.table.layout.standard")
     XCTAssertTrue(table.waitForExistence(timeout: 8))
@@ -3375,6 +4000,212 @@ final class SkyjoAppUITests: XCTestCase {
       on: app,
       allowedUnattributedTextClippingSignatures: allowedUnattributedTextClippingSignatures,
       maximumAllowedUnattributedTextClippingOccurrences: maximumAllowedUnattributedTextClippingOccurrences
+    )
+  }
+
+  @MainActor
+  private func performRoomAccessibilityAudits(on app: XCUIApplication) throws {
+    // Run the categories that do not need framework reconciliation as one
+    // fail-closed pass. Contrast, Dynamic Type, and clipped text are audited
+    // independently below so any allowance stays tied to an exact room node.
+    try app.performAccessibilityAudit(
+      for: .all.subtracting(
+        .contrast.union(.dynamicType).union(.textClipped)
+      )
+    )
+
+    // As with the solo contrast owner, never query XCUIApplication from an
+    // accessibility-audit callback. Snapshot each exact room contract before
+    // AXRuntime owns the traversal, then evaluate findings against values only.
+    let appFrame = app.frame
+    let navigationBar = app.navigationBars["Room ABCDE"]
+    XCTAssertTrue(navigationBar.exists)
+    let navigationBarFrame = navigationBar.frame
+    let opponentHeaders = (0..<7).map { index in
+      let board = element(in: app, identifier: "rooms.board.opponent.\(index)")
+      let labels = Set(["Guest \(index + 2)", "\((index + 1) * 3) pts"])
+      let boardExists = board.exists
+      let boardFrame = boardExists ? board.frame : .zero
+      var exactNodeFrames: [(label: String, frame: CGRect)] = []
+      if boardExists {
+        for label in labels {
+          let exactNode = board.descendants(matching: .staticText)
+            .matching(NSPredicate(format: "label == %@", label))
+            .firstMatch
+          if exactNode.exists {
+            exactNodeFrames.append((label: label, frame: exactNode.frame))
+          }
+        }
+      }
+      return (
+        boardExists: boardExists,
+        boardFrame: boardFrame,
+        labels: labels,
+        exactNodeFrames: exactNodeFrames
+      )
+    }
+    let opponentFaceUpValues = (0..<7).flatMap { opponentIndex in
+      (1...2).map { column in
+        let label = "\(opponentIndex + column)"
+        let card = element(
+          in: app,
+          identifier: "rooms.card.opponent.\(opponentIndex).r1.c\(column)"
+        )
+        let cardExists = card.exists
+        let cardFrame = cardExists ? card.frame : .zero
+        let exactNode = card.descendants(matching: .staticText)
+          .matching(NSPredicate(format: "label == %@", label))
+          .firstMatch
+        return (
+          cardExists: cardExists,
+          cardFrame: cardFrame,
+          label: label,
+          exactNodeFrame: exactNode.exists ? exactNode.frame : nil
+        )
+      }
+    }
+    var contrastFindings: [String] = []
+    try app.performAccessibilityAudit(for: .contrast) { issue in
+      guard let element = issue.element else {
+        contrastFindings.append("unattributed: \(issue.detailedDescription)")
+        return true
+      }
+      // Xcode 26.6 walks header Text children retained by the nested opponent
+      // rail after they have scrolled beneath the translucent navigation bar.
+      // It can then report those intentionally obscured nodes as contrast
+      // failures. Match only an exact deterministic fixture name/score node,
+      // its exact live frame within its exact board, and navigation-material
+      // intersection. Visible room content and every other contrast finding
+      // remain fail-closed.
+      let isObscuredOpponentHeaderFrameworkArtifact = opponentHeaders.contains {
+        contract in
+        guard contract.boardExists,
+              contract.labels.contains(element.label),
+              element.identifier.isEmpty,
+              element.elementType == .staticText,
+              !element.frame.isEmpty,
+              issue.detailedDescription == "Contrast failed for SwiftUI.AccessibilityNode",
+              contract.boardFrame.insetBy(dx: -2, dy: -2).contains(element.frame),
+              navigationBarFrame.insetBy(dx: -4, dy: -4).intersects(element.frame)
+        else { return false }
+        return contract.exactNodeFrames.contains {
+          $0.label == element.label && $0.frame == element.frame
+        }
+      }
+      if isObscuredOpponentHeaderFrameworkArtifact {
+        return true
+      }
+      // The same Xcode release can attribute a contrast finding to the empty-ID
+      // Text child of a high-contrast face-up card on wide iPad layouts. Scope
+      // this allowance to the exact deterministic first-row value, exact live
+      // child frame, and exact card container; no hidden or arbitrary numeric
+      // node is accepted.
+      let isExactOpponentValueFrameworkArtifact = opponentFaceUpValues.contains {
+        contract in
+        guard contract.cardExists,
+              element.identifier.isEmpty,
+              element.elementType == .staticText,
+              element.label == contract.label,
+              !element.frame.isEmpty,
+              issue.detailedDescription == "Contrast failed for SwiftUI.AccessibilityNode",
+              contract.cardFrame.insetBy(dx: -2, dy: -2).contains(element.frame),
+              appFrame.intersects(element.frame)
+        else { return false }
+        return contract.exactNodeFrame == element.frame
+      }
+      if isExactOpponentValueFrameworkArtifact {
+        return true
+      }
+      contrastFindings.append(
+        "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), detail=\(issue.detailedDescription)"
+      )
+      return true
+    }
+
+    var dynamicTypeFindings: [String] = []
+    var allowedSystemTabLabelFindings = 0
+    let systemTabButtonSnapshots = ["Home", "Stats", "Account"].map { label in
+      let button = app.buttons[label].firstMatch
+      let exists = button.exists
+      return (
+        exists: exists,
+        isHittable: exists && button.isHittable,
+        isButton: exists && button.elementType == .button,
+        frame: exists ? button.frame : .zero
+      )
+    }
+    let systemTabButtonFrames = systemTabButtonSnapshots
+      .filter(\.exists)
+      .map(\.frame)
+    let systemTabButtonMidYs = systemTabButtonFrames.map(\.midY)
+    let hasExactSystemTabShell = systemTabButtonSnapshots.allSatisfy {
+      $0.exists
+        && $0.isHittable
+        && $0.isButton
+        && appFrame.insetBy(dx: -2, dy: -2).contains($0.frame)
+    }
+      && systemTabButtonFrames.count == 3
+      && Set(systemTabButtonFrames.map { "\($0.minX),\($0.minY),\($0.width),\($0.height)" }).count == 3
+      && (systemTabButtonMidYs.max() ?? 0) - (systemTabButtonMidYs.min() ?? 0) <= 4
+    let accessibleRoomLayout = element(
+      in: app,
+      identifier: "rooms.table.accessible-layout"
+    )
+    let hasAccessibleRoomLayout = accessibleRoomLayout.exists
+    try app.performAccessibilityAudit(for: .dynamicType) { issue in
+      guard let element = issue.element else {
+        // Xcode 26.6 omits the element for the three UIKit-owned labels in the
+        // iPad floating TabView bar. The room's SwiftUI Dynamic Type branch,
+        // complete tab labels, and exact three-button shell are asserted; cap
+        // the exact UILabel diagnostic at those three system controls.
+        if issue.detailedDescription
+            == "User will not be able to change the font size of this UILabel",
+           hasAccessibleRoomLayout,
+           hasExactSystemTabShell
+        {
+          allowedSystemTabLabelFindings += 1
+          return true
+        }
+        dynamicTypeFindings.append("unattributed: \(issue.detailedDescription)")
+        return true
+      }
+      dynamicTypeFindings.append(
+        "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), detail=\(issue.detailedDescription)"
+      )
+      return true
+    }
+    XCTAssertLessThanOrEqual(
+      allowedSystemTabLabelFindings,
+      3,
+      "Only the exact three UIKit-owned iPad tab labels may be unattributed."
+    )
+    if allowedSystemTabLabelFindings > 0 {
+      XCTAssertEqual(
+        allowedSystemTabLabelFindings,
+        3,
+        "The bounded UIKit tab-label framework signature changed."
+      )
+    }
+
+    var textClippingFindings: [String] = []
+    try app.performAccessibilityAudit(for: .textClipped) { issue in
+      guard let element = issue.element else {
+        textClippingFindings.append("unattributed: \(issue.detailedDescription)")
+        return true
+      }
+      textClippingFindings.append(
+        "id=\(element.identifier), label=\(element.label), frame=\(element.frame), type=\(element.elementType.rawValue), detail=\(issue.detailedDescription)"
+      )
+      return true
+    }
+
+    XCTAssertTrue(
+      contrastFindings.isEmpty && dynamicTypeFindings.isEmpty && textClippingFindings.isEmpty,
+      "Unexpected focused room accessibility findings:\nContrast:\n\(contrastFindings.joined(separator: "\n"))\nDynamic Type:\n\(dynamicTypeFindings.joined(separator: "\n"))\nText clipping:\n\(textClippingFindings.joined(separator: "\n"))"
+    )
+    assertAuditTargetRemainsForegroundAndTerminate(
+      app,
+      auditOwner: "room accessibility audit"
     )
   }
 

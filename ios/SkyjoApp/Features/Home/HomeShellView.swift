@@ -9,6 +9,7 @@ struct HomeShellView: View {
   let user: AccountUser?
   @Bindable var solo: SoloFeatureModel
   @Bindable var preferences: SoloPreferencesStore
+  @Bindable var rooms: RoomAppCoordinator
   let offlineMessage: String?
 
   var body: some View {
@@ -20,8 +21,21 @@ struct HomeShellView: View {
             user: user,
             solo: solo,
             preferences: preferences,
+            rooms: rooms,
             offlineMessage: offlineMessage
           )
+          .navigationDestination(isPresented: $rooms.isRoomPresented) {
+            if model.hasConfirmedAccountSession,
+               let user,
+               let roomHost = rooms.sessionHost,
+               roomHost.model.account.id == user.id {
+              RoomRootView(model: roomHost.model)
+                .id(ObjectIdentifier(roomHost.model))
+            } else {
+              ProgressView("Preparing multiplayer")
+                .accessibilityIdentifier("rooms.preparing")
+            }
+          }
         }
       }
 
@@ -81,6 +95,7 @@ private struct HomeView: View {
   let user: AccountUser?
   @Bindable var solo: SoloFeatureModel
   @Bindable var preferences: SoloPreferencesStore
+  @Bindable var rooms: RoomAppCoordinator
   let offlineMessage: String?
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -146,10 +161,19 @@ private struct HomeView: View {
           .accessibilityHint("Opens the native single-player table")
           FeatureCard(
             title: "Multiplayer",
-            detail: "Native rooms arrive in IOS-8.",
+            detail: multiplayerDetail,
             systemImage: "person.3.fill",
-            accessibilityIdentifier: "home.rooms-disabled"
-          )
+            accessibilityIdentifier: model.hasConfirmedAccountSession
+              ? "home.rooms"
+              : "home.rooms-disabled",
+            isEnabled: model.hasConfirmedAccountSession,
+            accessibilityHint: model.hasConfirmedAccountSession
+              ? "Opens the native multiplayer room screen"
+              : "Sign in online before opening multiplayer"
+          ) {
+            guard model.hasConfirmedAccountSession, let user else { return }
+            Task { await rooms.presentRooms(for: user) }
+          }
         }
 
         GroupBox(accountSnapshotTitle) {
@@ -227,6 +251,16 @@ private struct HomeView: View {
     }
     return "Play solo as a guest, or sign in when you want account stats."
   }
+
+  private var multiplayerDetail: String {
+    if model.hasConfirmedAccountSession {
+      return "Create or join a native room with up to eight players."
+    }
+    if user != nil {
+      return "Reconnect to confirm your account before joining a room."
+    }
+    return "Sign in online to create or join a room."
+  }
 }
 
 private struct FeatureCard: View {
@@ -234,15 +268,18 @@ private struct FeatureCard: View {
   let detail: String
   let systemImage: String
   let accessibilityIdentifier: String
+  let isEnabled: Bool
+  let accessibilityHint: String
+  let action: () -> Void
 
   var body: some View {
-    Button {} label: {
+    Button(action: action) {
       FeatureCardLabel(title: title, detail: detail, systemImage: systemImage)
     }
     .buttonStyle(AccessibleBorderedButtonStyle(addsContentPadding: false))
-    .disabled(true)
+    .disabled(!isEnabled)
     .accessibilityIdentifier(accessibilityIdentifier)
-    .accessibilityHint("Unavailable in this foundation release")
+    .accessibilityHint(accessibilityHint)
   }
 }
 

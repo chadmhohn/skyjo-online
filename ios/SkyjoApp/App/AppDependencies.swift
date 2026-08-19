@@ -188,6 +188,8 @@ actor SoloStatsDeliveryAdapter {
 @MainActor
 final class AppDependencies {
   let apiClient: SkyjoAPIClient
+  let inviteClient: RoomInviteClient
+  let rooms: RoomAppCoordinator
   let preferences: SoloPreferencesStore
   let sessionInvalidation: SessionInvalidationRelay
   let persistenceStore: SoloPersistenceStore
@@ -203,10 +205,57 @@ final class AppDependencies {
       statsOutboxAuthorization: statsOutboxAuthorization
     )
     let networkEnvironment = SkyjoNetworkEnvironment(baseURL: configuration.apiBaseURL)
-    apiClient = SkyjoAPIClient(
+    let cookieStorage = HTTPCookieStorage.shared
+    let apiClient = SkyjoAPIClient(
       environment: networkEnvironment,
-      persistentCookieStorage: .shared
+      persistentCookieStorage: cookieStorage
     )
+    self.apiClient = apiClient
+    let inviteClient = RoomInviteClient(
+      environment: networkEnvironment,
+      persistentCookieStorage: cookieStorage
+    )
+    self.inviteClient = inviteClient
+#if DEBUG
+    if let roomFixtureMode = RoomUITestFixtureMode.launchMode(
+      arguments: ProcessInfo.processInfo.arguments
+    ) {
+      rooms = RoomAppCoordinator(
+        inviteHandoff: RoomInviteCoordinator { _ in
+          throw RoomUITestFixtureError.connectionUnavailable
+        },
+        makeSessionHost: { account in
+          RoomUITestFixtureFactory.makeSessionHost(account: account, mode: roomFixtureMode)
+        }
+      )
+    } else if ProcessInfo.processInfo.arguments.contains("--ui-open-room-invite") {
+      rooms = RoomAppCoordinator(
+        inviteHandoff: RoomInviteCoordinator { _ in
+          try RedeemedRoomInvite(
+            roomCode: "ABCDE",
+            expiresAt: 2_000_000_000_000
+          )
+        },
+        makeSessionHost: { account in
+          RoomSessionHost(account: account) { nextAccount in
+            RoomSessionModel(
+              account: nextAccount,
+              environment: RoomSessionEnvironment(
+                makeConnection: { throw RoomUITestFixtureError.connectionUnavailable },
+                createInvite: { _ in throw RoomUITestFixtureError.connectionUnavailable },
+                seatStore: VolatileRoomSeatRecoveryStore(),
+                nowMilliseconds: { 1_900_000_000_000 }
+              )
+            )
+          }
+        }
+      )
+    } else {
+      rooms = RoomAppCoordinator(apiClient: apiClient, inviteClient: inviteClient)
+    }
+#else
+    rooms = RoomAppCoordinator(apiClient: apiClient, inviteClient: inviteClient)
+#endif
 
     let container: ModelContainer
     var initialWarning: SoloPersistenceWarning?
@@ -295,3 +344,9 @@ final class AppDependencies {
     )
   }
 }
+
+#if DEBUG
+private enum RoomUITestFixtureError: Error {
+  case connectionUnavailable
+}
+#endif

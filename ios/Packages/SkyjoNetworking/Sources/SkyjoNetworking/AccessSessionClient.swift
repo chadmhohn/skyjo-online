@@ -41,6 +41,9 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
   public static let invalidRoomCode = Self(rawValue: "INVALID_ROOM_CODE")
   public static let invalidRequest = Self(rawValue: "INVALID_REQUEST")
   public static let inviteCodeLimit = Self(rawValue: "INVITE_CODE_LIMIT")
+  public static let inviteInvalidOrExpired = Self(rawValue: "INVITE_INVALID_OR_EXPIRED")
+  public static let inviteRateLimited = Self(rawValue: "INVITE_RATE_LIMITED")
+  public static let inviteRoomUnavailable = Self(rawValue: "INVITE_ROOM_UNAVAILABLE")
   public static let lastAdmin = Self(rawValue: "LAST_ADMIN")
   public static let methodNotAllowed = Self(rawValue: "METHOD_NOT_ALLOWED")
   public static let missingHumanPlayer = Self(rawValue: "MISSING_HUMAN_PLAYER")
@@ -92,6 +95,9 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
     .invalidRoomCode,
     .invalidRequest,
     .inviteCodeLimit,
+    .inviteInvalidOrExpired,
+    .inviteRateLimited,
+    .inviteRoomUnavailable,
     .lastAdmin,
     .methodNotAllowed,
     .missingHumanPlayer,
@@ -160,6 +166,25 @@ public enum SkyjoURLSessionFactory: Sendable {
     if let protocolClasses {
       configuration.protocolClasses = protocolClasses
     }
+
+    return URLSession(
+      configuration: configuration,
+      delegate: RedirectRejectingURLSessionDelegate(),
+      delegateQueue: nil
+    )
+  }
+
+  /// Creates a transport that can send explicitly attached cookies but can never
+  /// accept response cookies on URLSession's behalf. Callers must validate a
+  /// complete response before committing any parsed cookies to their shared jar.
+  public static func makeCookieDisabled(copying sourceSession: URLSession? = nil) -> URLSession {
+    let configuration = sourceSession?.configuration ?? .default
+    configuration.httpCookieStorage = nil
+    configuration.httpCookieAcceptPolicy = .never
+    configuration.httpShouldSetCookies = false
+    configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+    configuration.urlCache = nil
+    configuration.urlCredentialStorage = nil
 
     return URLSession(
       configuration: configuration,

@@ -164,7 +164,7 @@ Issue #202 adds the backend-only native handoff in repository source. This is no
 The token is accepted only in the body; query parameters are rejected. It must match the established signed-token alphabet/shape within 2,048 characters. The server validates its HMAC, version, expiry, room code, v4 room-instance UUID, and the currently live room instance. Success is a direct HTTP 200 with `Cache-Control: no-store`, exactly one existing outer-access cookie, and the exact sanitized body:
 
 ```json
-{ "roomCode": "ABCDE", "expiresAt": 1780000000000 }
+{ "roomCode": "ABCDE", "expiresAt": 1800003600000 }
 ```
 
 Redemption does not read or create an account session, install-code row, room membership, player seat, room revision, database record, or persistence update. The token and room-instance UUID are never returned, persisted, or logged. The native token route uses the trusted client-IP selection in its own `native-token` limiter namespace and a limiter instance separate from install-code redemption. Other methods return `METHOD_NOT_ALLOWED` with `Allow: POST`.
@@ -179,7 +179,7 @@ Stable native-redemption failures are:
 
 Existing `INVALID_REQUEST`, `UNSUPPORTED_MEDIA_TYPE`, `METHOD_NOT_ALLOWED`, `REQUEST_TOO_LARGE`, `INVALID_JSON`, and `EXPECTED_JSON_OBJECT` errors cover request-contract failures. No failure sets a cookie or redirects.
 
-The app-side consumer remains owned by #188. It must validate the HTTPS host and `/invite/` path, keep the token ephemeral, redeem it before account/room admission, and present a join review rather than mutating membership from the universal link. Invite possession never replaces account authentication or room membership rules.
+The app-side consumer remains owned by #188. It must validate the HTTPS host and `/invite/` path, keep the token ephemeral, redeem it before account/room admission, and present a join review rather than mutating membership from the universal link. Its invite transport is cookie-disabled: existing same-origin cookies are attached explicitly, while response cookies remain pending until the complete direct 200 JSON/no-store body passes byte bounds, decoding, and room/expiry semantics. A redirect, transport interruption, error status, invalid media/cache header, oversized body, malformed JSON, or invalid DTO must leave the shared access/account jar unchanged. Invite possession never replaces account authentication or room membership rules.
 
 This additive backend does not change the invite producer, browser landing, install-code concurrency/persistence, cookie format, shared-password/account/WebSocket gates, PWA service worker, database schema, room-persistence schema, protocol 2, snapshot envelope 2, presence 1, or contract-bundle version 1. Promote it before distributing a dependent native build. A code-only rollback needs no state restore and remains PWA-safe, but it removes AASA/redemption support; cached Apple association state is a compatibility consideration, not a reason to restore data.
 

@@ -69,6 +69,7 @@ The TypeScript engine remains the reference implementation during the port. Once
 - Operational DTOs require schema 2 and protocol 2 plus valid release identity/timestamps. Unsupported values become an explicit upgrade state. Contract-required nullable keys must be present even when their value is `null`; absent keys fail decoding.
 - Canonical valid/invalid HTTP fixtures under `contracts/v1/fixtures/` are decoded by Swift tests in addition to focused `URLProtocol` boundary and safe-error tests.
 - Typed Codable request/response models remain the boundary for later invite and realtime contracts.
+- `RoomInviteClient` uses a separate cookie-disabled transport. It explicitly attaches the current same-origin authentication cookies to each request, holds parsed response cookies outside the persistent jar, and commits the single same-host redemption cookie only after the final URL, redirect/status, media type, no-store policy, streaming byte bound, decoded DTO, and invite-specific semantic checks all pass. Invite creation discards response cookies. Any rejected or interrupted response leaves both shared session layers byte-for-byte unchanged.
 - An actor-owned `RoomConnection` around `URLSessionWebSocketTask`, created by `SkyjoAPIClient` on its authenticated cookie session.
 - One in-flight command at a time, UUID command IDs, expected revisions, replay only with the identical ID/body, and acknowledgement-plus-authoritative-snapshot convergence before enabling another action.
 - Explicit foreground/background presence, jittered reconnect, reachability hints, eight-second initial sync timeout, socket-generation fencing, and diagnostic connection states.
@@ -120,6 +121,15 @@ The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, becaus
 - Navigation state is typed and restorable where safe. Invite routes are validated before they affect state.
 - SwiftUI views render state and send intents; they do not implement game rules or WebSocket framing.
 - Passwords are cleared after submission and never stored or logged; session cookies never enter UI state. Native admin remains intentionally web-only, and the Account screen links the public-release deletion dependency tracked by issue #192.
+
+### Universal-Link Handoff
+
+- [`RoomInvites.swift`](../../ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RoomInvites.swift) accepts only the exact production HTTPS host and one opaque `/invite/<token>` path segment. User information, ports, query/fragment data, percent-encoded separators, extra path segments, redirects, and oversized tokens fail closed.
+- [`BootstrapHomeView.swift`](../../ios/SkyjoApp/Features/Home/BootstrapHomeView.swift) sends SwiftUI's `onOpenURL` value to [`RoomInviteCoordinator.swift`](../../ios/SkyjoApp/Features/Rooms/RoomInviteCoordinator.swift) through the account-fenced `RoomAppCoordinator`. Redemption grants only the outer access cookie and publishes sanitized review/failure state; it cannot create a multiplayer seat before account authentication and explicit join.
+- [`SkyjoNative.entitlements`](../../ios/SkyjoApp/Resources/SkyjoNative.entitlements) declares only `applinks:skyjo.groundworkrevops.com`, and both app configurations select it through the committed Xcode project. [`check-ios-associated-domains.mjs`](../../scripts/check-ios-associated-domains.mjs) fails closed against a built `.app`: device products must carry the exact domain in signed entitlements, while Xcode-signed simulator products must carry it in every architecture's bounded `__TEXT,__entitlements` section. The audit never substitutes the source plist or an intermediate `.xcent` for built-product evidence.
+- The networking-contract test creates a signed invite on an isolated real Node server, reconstructs the exact production-shaped universal-link URL, enters through `RoomAppCoordinator.accept`, proves only outer access was granted, resets the room, and verifies stable stale-room UI copy. This exercises the app-side handoff beneath `onOpenURL`; it does not prove that iOS selected the installed app for an HTTPS tap.
+
+Operating-system selection depends on the public AASA/application identifier and Apple's association cache. Do not redirect the production hostname to loopback, seed private simulator association state, add a custom-scheme test bypass, or place a real invite token in launch arguments or result bundles. Final proof requires the promoted #202 backend, Apple CDN verification, a team-signed device build with the matching application identifier, and installed/uninstalled taps on physical hardware.
 
 ## State Ownership
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Runs the deterministic native-solo UI evidence matrix without a backend or credentials.
+# Runs the deterministic native solo-and-room UI evidence matrix without a backend or credentials.
 set -Eeuo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -431,7 +431,7 @@ if [[ "$build_status" -ne 0 ]]; then
   exit "$build_status"
 fi
 
-solo_suite="SkyjoAppUITests/SkyjoAppUITests"
+ui_suite="SkyjoAppUITests/SkyjoAppUITests"
 standard_tests=(
   testSoloLauncherMakesReplacementExplicitAndRecoverable
   testSoloOfflineAccountCopyAndRevalidationAreExplicit
@@ -467,11 +467,24 @@ standard_tests=(
   testSoloAccessibilityAdaptationsAreActive
   testSoloAccessibilityXXXLRemainsOperable
   testSoloRightToLeftLayoutKeepsControlsContained
+  testAuthenticatedHomeOpensNativeMultiplayerWithoutWebContent
+  testSeededSavedSeatRecoveryControlsRequireDestructiveConfirmation
+  testNoSeatCleanupRequirementExposesOnlyConfirmedForget
+  testRoomCreateRendersDecodedAuthoritativeWaitingRoom
+  testRoomJoinRendersDecodedAuthoritativeWaitingRoom
+  testRoomEightPlayerWaitingRoomAndHostRemovalConfirmation
+  testRoomActiveTableKeepsChatCompactAndRedactsHiddenValues
+  testRoomShortLandscapeContainsEightPlayerBoardsAndTargets
+  testRoomScoringReadyWaitsForAuthoritativeUpdate
+  testRoomPendingOfflineAndResyncStatusMessaging
+  testRoomAccessibilityXXXLUsesScrollableSafeLayout
 )
 large_tests=(
   testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards
   testSoloSingleOpponentFitsLargePhoneAndRendersHighValueCard
   testSoloAccessibilityXXXLRemainsOperable
+  testRoomActiveTableKeepsChatCompactAndRedactsHiddenValues
+  testRoomAccessibilityXXXLUsesScrollableSafeLayout
 )
 ipad_portrait_tests=(
   testSoloSetupDefaultsAndExplainsDifficultyBeforeWriting
@@ -495,14 +508,18 @@ ipad_portrait_tests=(
   testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards
   testSoloRepresentativeTurnKeepsEveryActionSlotStable
   testSoloAccessibilityXXXLRemainsOperable
+  testRoomEightPlayerWaitingRoomAndHostRemovalConfirmation
+  testRoomActiveTableKeepsChatCompactAndRedactsHiddenValues
+  testRoomAccessibilityXXXLUsesScrollableSafeLayout
 )
 ipad_landscape_tests=(
   testSoloLandscapeTableFitsWithoutWholeScreenScrolling
+  testRoomIPadLandscapeKeepsAuthoritativeContentContained
 )
-[[ "${#standard_tests[@]}" -eq 34 && \
-   "${#large_tests[@]}" -eq 3 && \
-   "${#ipad_portrait_tests[@]}" -eq 21 && \
-   "${#ipad_landscape_tests[@]}" -eq 1 ]] || {
+[[ "${#standard_tests[@]}" -eq 45 && \
+   "${#large_tests[@]}" -eq 5 && \
+   "${#ipad_portrait_tests[@]}" -eq 24 && \
+   "${#ipad_landscape_tests[@]}" -eq 2 ]] || {
   printf 'ERROR: The expected accessibility matrix inventory changed.\n' >&2
   exit 1
 }
@@ -642,7 +659,7 @@ run_matrix_entry() {
   )
   local test_name=""
   for test_name in "$@"; do
-    arguments+=("-only-testing:$solo_suite/$test_name")
+    arguments+=("-only-testing:$ui_suite/$test_name")
   done
   arguments+=(CODE_SIGNING_ALLOWED=NO)
 
@@ -745,7 +762,7 @@ run_isolated_ipad_portrait_entry() {
         -derivedDataPath "$derived_data"
         -resultBundlePath "$child_result_bundle"
         -parallel-testing-enabled NO
-        "-only-testing:$solo_suite/$test_name"
+        "-only-testing:$ui_suite/$test_name"
         CODE_SIGNING_ALLOWED=NO
       )
 
@@ -871,23 +888,23 @@ run_isolated_ipad_portrait_entry() {
 
 case "$selected_role" in
   "")
-    run_matrix_entry standard-phone "$standard_udid" 34 "${standard_tests[@]}"
-    run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
-    run_matrix_entry ipad-portrait "$ipad_udid" 21 "${ipad_portrait_tests[@]}"
-    run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
+    run_matrix_entry standard-phone "$standard_udid" 45 "${standard_tests[@]}"
+    run_matrix_entry large-phone "$large_udid" 5 "${large_tests[@]}"
+    run_matrix_entry ipad-portrait "$ipad_udid" 24 "${ipad_portrait_tests[@]}"
+    run_matrix_entry ipad-landscape "$ipad_udid" 2 "${ipad_landscape_tests[@]}"
     ;;
   standard-phone)
-    run_matrix_entry standard-phone "$standard_udid" 34 "${standard_tests[@]}"
+    run_matrix_entry standard-phone "$standard_udid" 45 "${standard_tests[@]}"
     ;;
   large-phone)
-    run_matrix_entry large-phone "$large_udid" 3 "${large_tests[@]}"
+    run_matrix_entry large-phone "$large_udid" 5 "${large_tests[@]}"
     ;;
   ipad-portrait)
     run_isolated_ipad_portrait_entry \
-      ipad-portrait "$ipad_udid" 21 "${ipad_portrait_tests[@]}"
+      ipad-portrait "$ipad_udid" 24 "${ipad_portrait_tests[@]}"
     ;;
   ipad-landscape)
-    run_matrix_entry ipad-landscape "$ipad_udid" 1 "${ipad_landscape_tests[@]}"
+    run_matrix_entry ipad-landscape "$ipad_udid" 2 "${ipad_landscape_tests[@]}"
     ;;
 esac
 

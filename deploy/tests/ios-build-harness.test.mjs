@@ -53,7 +53,10 @@ const ipadPortraitTests = [
   'testSoloSetupBlockedStatsRecoveryScalesAtAccessibilityXXXL',
   'testSoloPhoneTableKeepsActionsStableAndRedactsHiddenCards',
   'testSoloRepresentativeTurnKeepsEveryActionSlotStable',
-  'testSoloAccessibilityXXXLRemainsOperable'
+  'testSoloAccessibilityXXXLRemainsOperable',
+  'testRoomEightPlayerWaitingRoomAndHostRemovalConfirmation',
+  'testRoomActiveTableKeepsChatCompactAndRedactsHiddenValues',
+  'testRoomAccessibilityXXXLUsesScrollableSafeLayout'
 ];
 
 function passingSummary(testCount, configurationCounts = [testCount]) {
@@ -168,7 +171,7 @@ async function runIsolatedPortraitScenario(harness, scenario) {
     'evidence_dir="$STUB_DIR/evidence"',
     'project_path="$STUB_DIR/project"',
     'derived_data="$STUB_DIR/derived"',
-    'solo_suite="SkyjoAppUITests/SkyjoAppUITests"',
+    'ui_suite="SkyjoAppUITests/SkyjoAppUITests"',
     'stub_environment() { "$@"; }',
     'xcode_environment=(stub_environment)',
     'mkdir -p "$evidence_dir"',
@@ -292,6 +295,42 @@ test('networking mode launches a credential-isolated PWA bridge and current prod
   assert.doesNotMatch(harness, /Started isolated mixed PWA driver[^\n]*\$pwa_driver_control_(?:port|url)/);
 });
 
+test('the bounded hosted build runs unit tests while dedicated jobs retain UI coverage', async () => {
+  const harness = await fs.readFile(harnessPath, 'utf8');
+  const workflow = await fs.readFile(
+    path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
+    'utf8'
+  );
+
+  assert.match(
+    workflow,
+    /Build and test unsigned simulator app[\s\S]*?\.\/scripts\/ios-build-test\.sh --build-unit-tests/
+  );
+  assert.match(harness, /--build-unit-tests\)\n\s+test_scope="unit"/);
+  assert.match(
+    harness,
+    /if \[\[ "\$test_scope" == "unit" \]\]; then\n\s+xcode_test_arguments\+=\("-only-testing:SkyjoAppTests"\)/
+  );
+  assert.match(harness, /test_scope="all"/);
+});
+
+test('the build gate audits Associated Domains from a signed Release product', async () => {
+  const harness = await fs.readFile(harnessPath, 'utf8');
+
+  assert.match(
+    harness,
+    /xcodebuild build[\s\\\n]*-project "\$project_path"[\s\S]*-destination "generic\/platform=iOS Simulator"[\s\S]*CODE_SIGNING_ALLOWED=YES[\s\S]*CODE_SIGNING_REQUIRED=YES[\s\S]*CODE_SIGN_IDENTITY=-/
+  );
+  assert.match(
+    harness,
+    /node scripts\/check-ios-associated-domains\.mjs[\s\\\n]*--app-bundle "\$release_simulator_bundle_path"/
+  );
+  const auditBlock = harness.match(
+    /node scripts\/check-ios-associated-domains\.mjs[\s\S]*?associated_domains_audit_status=\$\{PIPESTATUS\[0\]\}/
+  )?.[0] || '';
+  assert.doesNotMatch(auditBlock, /SkyjoNative\.entitlements|\.xcent/);
+});
+
 test('mixed driver cleanup, simulator environment, and lifecycle acceleration stay fail-closed', async () => {
   const harness = await fs.readFile(harnessPath, 'utf8');
 
@@ -369,7 +408,7 @@ test('the selected iPad portrait role cold-boots and isolates each pinned test',
   assert.match(isolatedEntry, /reset_simulator_after_infrastructure_failure/);
   assert.match(isolatedEntry, /"\$status" -eq 65/);
   assert.match(isolatedEntry, /"\$attempt_number" -eq 1/);
-  assert.match(isolatedEntry, /"-only-testing:\$solo_suite\/\$test_name"/);
+  assert.match(isolatedEntry, /"-only-testing:\$ui_suite\/\$test_name"/);
   assert.doesNotMatch(isolatedEntry, /break|continue/);
   assert.match(isolatedEntry, /child_result_bundles\+=\("\$child_result_bundle"\)/);
   assert.match(isolatedEntry, /xcrun xcresulttool merge/);
@@ -379,7 +418,7 @@ test('the selected iPad portrait role cold-boots and isolates each pinned test',
     selectedRole,
     /""\)[\s\S]*?run_matrix_entry ipad-portrait[\s\S]*?ipad-portrait\)[\s\S]*?run_isolated_ipad_portrait_entry/
   );
-  assert.equal(ipadPortraitTests.length, 21);
+  assert.equal(ipadPortraitTests.length, 24);
   for (const testName of ipadPortraitTests) assert.match(harness, new RegExp(`  ${testName}\\n`));
 });
 
@@ -525,7 +564,7 @@ test('blocked-outbox audit categories own separate fail-closed terminal XCTest c
   }
 
   assert.equal(auditOwners.length, 7);
-  assert.match(harness, /"\$\{#standard_tests\[@\]\}" -eq 34/);
+  assert.match(harness, /"\$\{#standard_tests\[@\]\}" -eq 45/);
   const runner = uiTests.match(
     /  private func runBlockedStatsRecoveryAudit\([\s\S]*?\n  \}\n\n  @MainActor/
   );
@@ -717,6 +756,53 @@ test('contrast audit snapshots app state and never exempts disabled controls', a
   );
 });
 
+test('room audit callbacks use immutable snapshots and terminate after the final audit', async () => {
+  const uiTests = await fs.readFile(uiAccessibilityTestsPath, 'utf8');
+  const roomAudit = uiTests.match(
+    /  private func performRoomAccessibilityAudits\([\s\S]*?\n  \}\n\n  @MainActor/
+  );
+  assert.ok(roomAudit, 'missing focused room accessibility audit');
+
+  const contrastCall = 'try app.performAccessibilityAudit(for: .contrast) { issue in';
+  const contrastStart = roomAudit[0].indexOf(contrastCall);
+  const contrastEnd = roomAudit[0].indexOf('\n\n    var dynamicTypeFindings', contrastStart);
+  assert.ok(contrastStart > 0 && contrastEnd > contrastStart, 'missing room contrast callback');
+  const contrastBody = roomAudit[0].slice(contrastStart + contrastCall.length, contrastEnd);
+
+  const dynamicTypeCall = 'try app.performAccessibilityAudit(for: .dynamicType) { issue in';
+  const dynamicTypeStart = roomAudit[0].indexOf(dynamicTypeCall);
+  const dynamicTypeEnd = roomAudit[0].indexOf(
+    '\n    XCTAssertLessThanOrEqual(',
+    dynamicTypeStart
+  );
+  assert.ok(
+    dynamicTypeStart > contrastEnd && dynamicTypeEnd > dynamicTypeStart,
+    'missing room Dynamic Type callback'
+  );
+  const dynamicTypeBody = roomAudit[0].slice(
+    dynamicTypeStart + dynamicTypeCall.length,
+    dynamicTypeEnd
+  );
+
+  for (const callbackBody of [contrastBody, dynamicTypeBody]) {
+    assert.doesNotMatch(callbackBody, /\bapp\.|self\.element\(in:\s*app/);
+  }
+  for (const exactSnapshot of [
+    /let appFrame = app\.frame/,
+    /let navigationBarFrame = navigationBar\.frame/,
+    /exactNodeFrames: exactNodeFrames/,
+    /exactNodeFrame: exactNode\.exists \? exactNode\.frame : nil/,
+    /let systemTabButtonSnapshots = \["Home", "Stats", "Account"\]/,
+    /let hasAccessibleRoomLayout = accessibleRoomLayout\.exists/
+  ]) {
+    assert.match(roomAudit[0], exactSnapshot);
+  }
+  assert.match(
+    roomAudit[0],
+    /try app\.performAccessibilityAudit\(for: \.textClipped\)[\s\S]*?assertAuditTargetRemainsForegroundAndTerminate\(\n      app,[\s\S]*?auditOwner: "room accessibility audit"/
+  );
+});
+
 test('the infrastructure reset erases only the exact selected GitHub-hosted simulator', async () => {
   const harness = await fs.readFile(uiAccessibilityHarnessPath, 'utf8');
   const resetFunction = extractBashFunction(
@@ -802,7 +888,7 @@ test('a failed child proof does not stop the remaining isolated portrait invocat
     'evidence_dir="$STUB_DIR/evidence"',
     'project_path="$STUB_DIR/project"',
     'derived_data="$STUB_DIR/derived"',
-    'solo_suite="SkyjoAppUITests/SkyjoAppUITests"',
+    'ui_suite="SkyjoAppUITests/SkyjoAppUITests"',
     'stub_environment() { "$@"; }',
     'xcode_environment=(stub_environment)',
     'mkdir -p "$evidence_dir"',
