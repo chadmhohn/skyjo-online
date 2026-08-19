@@ -1241,6 +1241,13 @@ describe('v0.3.4 workflow governance', () => {
     expect(apnsRollbackProof).toContain('proof passed for ${releaseSha}');
     expect(apnsRollbackProof).not.toMatch(/console\.(?:error|log)\(logs\)/);
     expect(serverEntrypoint).not.toContain('server-apns-rollback-proof');
+    expect(serverEntrypoint).toMatch(
+      /candidate = await createAccountStore\(\{ filePath: accountDatabaseFile \}\);\s+candidate\.pruneAPNSDevices\(\);/
+    );
+    expect(serverEntrypoint).toContain('accountStore?.pruneAPNSDevices();');
+    expect(serverEntrypoint).toContain(
+      "console.error('APNs device retention pruning failed.');"
+    );
     expect(artifactIntegration).toContain("path.join(projectRoot, 'release', expectedNames.archiveName)");
     expect(artifactIntegration).toContain('verifyRuntimeArtifact({');
     expect(artifactIntegration).toContain('[published.archivePath, first.archivePath, second.archivePath]');
@@ -1320,8 +1327,13 @@ describe('v0.3.4 workflow governance', () => {
     expect(deploymentChecklist).toContain('exact uploaded archive, checksum, and SBOM equal both deterministic rebuilds');
     expect(deploymentChecklist).toContain('root-owned mode-`0644` `.skyjo-deployment.json` exact bytes');
     expect(deploymentChecklist).toContain('run its artifact-carried proof helper as `skyjo-canary` under `env -i`');
+    expect(deploymentChecklist).toContain('privileged controls are excluded from the runtime artifact');
+    expect(deploymentChecklist).toContain('signed verify-only localhost canary all pass with `activation=false`');
     expect(immutableDeployment).toContain('invokes the helper\'s strict direct CLI with its required expected SHA');
     expect(immutableDeployment).toContain('root-owned mode-`0644` deployment metadata bytes');
     expect(immutableDeployment).toContain('literal installed-`previous` proof');
+    expect(immutableDeployment).toContain('The first APNs backend release changes privileged `deploy/` controls');
+    expect(immutableDeployment).toContain('Production identity and readiness must remain unchanged');
+    expect(immutableDeployment).toContain('execute that prior generation\'s preparation rollback below');
   });
 });

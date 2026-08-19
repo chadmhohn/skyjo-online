@@ -254,6 +254,7 @@ async function ensureAccountStore({ force = false } = {}) {
   let candidate = null;
   try {
     candidate = await createAccountStore({ filePath: accountDatabaseFile });
+    candidate.pruneAPNSDevices();
     const bootstrappedAdmin = await candidate.bootstrapAdmin({ email: adminEmail, password: adminInitialPassword });
     if (bootstrappedAdmin) {
       console.log(`Admin account ready for ${bootstrappedAdmin.email}`);
@@ -2690,6 +2691,11 @@ const disposeRealtimeServer = registerRealtimeServer({
 });
 
 setInterval(() => {
+  try {
+    accountStore?.pruneAPNSDevices();
+  } catch {
+    console.error('APNs device retention pruning failed.');
+  }
   const cutoff = Date.now() - ROOM_STALE_MS;
   let removedRoom = false;
   for (const [code, room] of rooms.entries()) {

@@ -9,6 +9,7 @@ Use this as the concise release checklist. The trust model, bootstrap commands, 
 - [ ] `CI / Runtime Artifact` packages the build emitted by `CI / Quality & Security`; it does not invoke an application build again.
 - [ ] Archive allowlist, checksum, exact source SHA, production dependency inventory, CycloneDX SBOM, and GitHub provenance verification pass.
 - [ ] No application, account, VAPID, session, database, SSH, smoke-account secret, APNs provider/encryption key, JWT, device token/fingerprint, real invite token, or live room-instance UUID appears in source, artifacts, logs, or workflow inputs.
+- [ ] For the first APNs backend release, the exact reviewed PR head's complete `deploy/` bundle is installed as a new immutable bootstrap generation because those privileged controls are excluded from the runtime artifact. Delivery-manifest verification, controller self-test, and the signed verify-only localhost canary all pass with `activation=false`; local and public production identity remain unchanged, and the prior generation is retained for executable rollback.
 
 ## Main canary
 
