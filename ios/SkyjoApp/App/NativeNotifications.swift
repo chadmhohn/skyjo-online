@@ -205,6 +205,8 @@ final class NativeNotificationCoordinator {
   private var accountID: UUID?
   private var accountGeneration: UInt64 = 0
   private var registrationTask: Task<Void, Never>?
+  private var registeredAccountID: UUID?
+  private var registeredDeviceToken: String?
 
   init(
     service: any NativeNotificationService,
@@ -237,6 +239,8 @@ final class NativeNotificationCoordinator {
     if accountID != nextAccountID {
       accountID = nextAccountID
       accountGeneration &+= 1
+      registeredAccountID = nil
+      registeredDeviceToken = nil
     }
 
     guard accountID != nil else {
@@ -268,11 +272,12 @@ final class NativeNotificationCoordinator {
     defaults.set(false, forKey: Self.enabledKey)
     accountGeneration &+= 1
     deviceToken = nil
+    registeredAccountID = nil
+    registeredDeviceToken = nil
     operatingSystem.unregisterForRemoteNotifications()
 
     let pendingRegistration = registrationTask
     registrationTask = nil
-    pendingRegistration?.cancel()
     await pendingRegistration?.value
 
     do {
@@ -335,11 +340,13 @@ final class NativeNotificationCoordinator {
       }
       operatingSystem.registerForRemoteNotifications()
       if let deviceToken {
-        try await register(
+        let queuedRegistration = enqueueRegistration(
           deviceToken: deviceToken,
           accountID: expectedAccountID,
-          generation: expectedGeneration
+          generation: expectedGeneration,
+          checkConfiguration: false
         )
+        await queuedRegistration.value
       }
     } catch {
       guard isCurrentAccount(expectedAccountID, generation: expectedGeneration) else { return }
@@ -359,30 +366,62 @@ final class NativeNotificationCoordinator {
     }
     deviceToken = token
     let expectedGeneration = accountGeneration
+    enqueueRegistration(
+      deviceToken: token,
+      accountID: expectedAccountID,
+      generation: expectedGeneration,
+      checkConfiguration: true
+    )
+  }
+
+  @discardableResult
+  private func enqueueRegistration(
+    deviceToken: String,
+    accountID: UUID,
+    generation: UInt64,
+    checkConfiguration: Bool
+  ) -> Task<Void, Never> {
     let priorRegistration = registrationTask
-    priorRegistration?.cancel()
-    registrationTask = Task {
+    let task = Task {
       await priorRegistration?.value
       do {
-        let configuration = try await service.apnsConfiguration()
-        guard isCurrentAccount(expectedAccountID, generation: expectedGeneration) else { return }
-        guard configuration.enabled else {
-          state = .unavailable
+        guard isCurrentAccount(accountID, generation: generation), self.deviceToken == deviceToken else {
           return
         }
+        if checkConfiguration {
+          let configuration = try await service.apnsConfiguration()
+          guard isCurrentAccount(accountID, generation: generation), self.deviceToken == deviceToken else {
+            return
+          }
+          guard configuration.enabled else {
+            state = .unavailable
+            return
+          }
+        }
         try await register(
-          deviceToken: token,
-          accountID: expectedAccountID,
-          generation: expectedGeneration
+          deviceToken: deviceToken,
+          accountID: accountID,
+          generation: generation
         )
       } catch {
-        guard isCurrentAccount(expectedAccountID, generation: expectedGeneration) else { return }
+        guard isCurrentAccount(accountID, generation: generation), self.deviceToken == deviceToken else {
+          return
+        }
         state = .failed
       }
     }
+    registrationTask = task
+    return task
   }
 
   private func register(deviceToken: String, accountID: UUID, generation: UInt64) async throws {
+    guard isCurrentAccount(accountID, generation: generation), self.deviceToken == deviceToken else {
+      return
+    }
+    if registeredAccountID == accountID, registeredDeviceToken == deviceToken {
+      state = .enabled
+      return
+    }
     try await service.registerAPNSDevice(
       installationID: installationID,
       deviceToken: deviceToken,
@@ -393,11 +432,15 @@ final class NativeNotificationCoordinator {
     guard isCurrentAccount(accountID, generation: generation), self.deviceToken == deviceToken else {
       return
     }
+    registeredAccountID = accountID
+    registeredDeviceToken = deviceToken
     state = .enabled
   }
 
   private func didFailRegistration() {
     deviceToken = nil
+    registeredAccountID = nil
+    registeredDeviceToken = nil
     if wantsNotifications, accountID != nil {
       state = .failed
     }

@@ -62,6 +62,64 @@ struct NativeNotificationTests {
     #expect(relaunched.installationID == coordinator.installationID)
   }
 
+  @Test("Repeated foreground activation does not repeat the same server registration")
+  func repeatedForegroundRegistrationIsDeduplicated() async throws {
+    let (defaults, suite) = try makeNotificationDefaults()
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "skyjo.apns.enabled.v1")
+    let service = NotificationServiceProbe()
+    let system = NotificationSystemProbe(authorization: .authorized, requestResult: true)
+    let coordinator = makeCoordinator(service: service, system: system, defaults: defaults)
+    let account = notificationUser(idSuffix: "01")
+    let token = Data([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef])
+
+    await coordinator.synchronize(account: account)
+    system.deliverDeviceToken(token)
+    await coordinator.synchronize(account: account)
+
+    for _ in 0..<3 {
+      await coordinator.synchronize(account: account)
+      system.deliverDeviceToken(token)
+      await coordinator.synchronize(account: account)
+    }
+
+    #expect(await service.registrations().count == 1)
+    #expect(coordinator.state == .enabled)
+  }
+
+  @Test("A newer token registration is the final server mutation")
+  func newerTokenWinsRegistrationRace() async throws {
+    let (defaults, suite) = try makeNotificationDefaults()
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "skyjo.apns.enabled.v1")
+    let service = SuspendingNotificationServiceProbe()
+    let system = NotificationSystemProbe(authorization: .authorized, requestResult: true)
+    let coordinator = makeCoordinator(service: service, system: system, defaults: defaults)
+    let account = notificationUser(idSuffix: "01")
+
+    await coordinator.synchronize(account: account)
+    system.deliverDeviceToken(Data([0x01]))
+    await waitForEventCount(1, service: service)
+    system.deliverDeviceToken(Data([0x02]))
+    await Task.yield()
+    #expect(await service.events() == ["register-start:01"])
+
+    await service.releaseRegistration()
+    await waitForEventCount(3, service: service)
+    await service.releaseRegistration()
+    await waitForEventCount(4, service: service)
+    await coordinator.synchronize(account: account)
+
+    #expect(await service.events() == [
+      "register-start:01",
+      "register-finish:01",
+      "register-start:02",
+      "register-finish:02",
+    ])
+    #expect(await service.registeredDeviceToken() == "02")
+    #expect(coordinator.state == .enabled)
+  }
+
   @Test("Registration failure is recoverable and payload routing rejects ambiguous rooms")
   func failureAndSafeRouting() async throws {
     let (defaults, suite) = try makeNotificationDefaults()
@@ -108,12 +166,16 @@ struct NativeNotificationTests {
 
     let disable = Task { await coordinator.disable() }
     await Task.yield()
-    #expect(await service.events() == ["register-start"])
+    #expect(await service.events() == ["register-start:0123456789abcdef"])
 
     await service.releaseRegistration()
     await disable.value
 
-    #expect(await service.events() == ["register-start", "register-finish", "delete"])
+    #expect(await service.events() == [
+      "register-start:0123456789abcdef",
+      "register-finish:0123456789abcdef",
+      "delete",
+    ])
     #expect(await service.hasRegistration() == false)
     #expect(coordinator.state == .off)
     #expect(system.unregistrationCount == 1)
@@ -168,8 +230,8 @@ private actor NotificationServiceProbe: NativeNotificationService {
 
 private actor SuspendingNotificationServiceProbe: NativeNotificationService {
   private var eventValues: [String] = []
-  private var registrationContinuation: CheckedContinuation<Void, Never>?
-  private var registered = false
+  private var registrationContinuations: [CheckedContinuation<Void, Never>] = []
+  private var registeredToken: String?
 
   func apnsConfiguration() async throws -> APNSConfiguration {
     APNSConfiguration(enabled: true)
@@ -182,26 +244,27 @@ private actor SuspendingNotificationServiceProbe: NativeNotificationService {
     appVersion: String,
     locale: String
   ) async throws {
-    eventValues.append("register-start")
+    eventValues.append("register-start:\(deviceToken)")
     await withCheckedContinuation { continuation in
-      registrationContinuation = continuation
+      registrationContinuations.append(continuation)
     }
-    registered = true
-    eventValues.append("register-finish")
+    registeredToken = deviceToken
+    eventValues.append("register-finish:\(deviceToken)")
   }
 
   func deleteAPNSDevice(installationID: UUID) async throws {
-    registered = false
+    registeredToken = nil
     eventValues.append("delete")
   }
 
   func releaseRegistration() {
-    registrationContinuation?.resume()
-    registrationContinuation = nil
+    guard !registrationContinuations.isEmpty else { return }
+    registrationContinuations.removeFirst().resume()
   }
 
   func events() -> [String] { eventValues }
-  func hasRegistration() -> Bool { registered }
+  func hasRegistration() -> Bool { registeredToken != nil }
+  func registeredDeviceToken() -> String? { registeredToken }
 }
 
 @MainActor
@@ -266,8 +329,19 @@ private func waitForRegistrationStart(
   service: SuspendingNotificationServiceProbe
 ) async {
   for _ in 0..<100 {
-    if await service.events() == ["register-start"] { break }
+    if await service.events().count == 1 { break }
     await Task.yield()
   }
-  #expect(await service.events() == ["register-start"])
+  #expect(await service.events().count == 1)
+}
+
+private func waitForEventCount(
+  _ expectedCount: Int,
+  service: SuspendingNotificationServiceProbe
+) async {
+  for _ in 0..<100 {
+    if await service.events().count >= expectedCount { break }
+    await Task.yield()
+  }
+  #expect(await service.events().count == expectedCount)
 }
