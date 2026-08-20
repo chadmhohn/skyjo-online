@@ -204,6 +204,7 @@ final class NativeNotificationCoordinator {
   private var deviceToken: String?
   private var accountID: UUID?
   private var accountGeneration: UInt64 = 0
+  private var registrationTask: Task<Void, Never>?
 
   init(
     service: any NativeNotificationService,
@@ -263,14 +264,21 @@ final class NativeNotificationCoordinator {
     guard !isWorking else { return }
     isWorking = true
     defer { isWorking = false }
+    wantsNotifications = false
+    defaults.set(false, forKey: Self.enabledKey)
+    accountGeneration &+= 1
+    deviceToken = nil
+    operatingSystem.unregisterForRemoteNotifications()
+
+    let pendingRegistration = registrationTask
+    registrationTask = nil
+    pendingRegistration?.cancel()
+    await pendingRegistration?.value
+
     do {
       if accountID != nil {
         try await service.deleteAPNSDevice(installationID: installationID)
       }
-      wantsNotifications = false
-      defaults.set(false, forKey: Self.enabledKey)
-      deviceToken = nil
-      operatingSystem.unregisterForRemoteNotifications()
       state = .off
     } catch {
       state = .failed
@@ -345,10 +353,16 @@ final class NativeNotificationCoordinator {
       didFailRegistration()
       return
     }
+    guard wantsNotifications, let expectedAccountID = accountID else {
+      deviceToken = nil
+      return
+    }
     deviceToken = token
-    guard wantsNotifications, let expectedAccountID = accountID else { return }
     let expectedGeneration = accountGeneration
-    Task {
+    let priorRegistration = registrationTask
+    priorRegistration?.cancel()
+    registrationTask = Task {
+      await priorRegistration?.value
       do {
         let configuration = try await service.apnsConfiguration()
         guard isCurrentAccount(expectedAccountID, generation: expectedGeneration) else { return }
