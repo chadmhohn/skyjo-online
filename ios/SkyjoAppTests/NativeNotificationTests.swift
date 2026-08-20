@@ -181,6 +181,45 @@ struct NativeNotificationTests {
     #expect(system.unregistrationCount == 1)
   }
 
+  @Test("Account replacement cannot let an old opt-out delete the new registration")
+  func accountReplacementWinsOldDisableRace() async throws {
+    let (defaults, suite) = try makeNotificationDefaults()
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "skyjo.apns.enabled.v1")
+    let service = SuspendingNotificationServiceProbe()
+    let system = NotificationSystemProbe(authorization: .authorized, requestResult: true)
+    let coordinator = makeCoordinator(service: service, system: system, defaults: defaults)
+
+    await coordinator.synchronize(account: notificationUser(idSuffix: "01"))
+    system.deliverDeviceToken(Data([0x01]))
+    await waitForEventCount(1, service: service)
+    let disable = Task { await coordinator.disable() }
+    await waitForWorkingState(true, coordinator: coordinator)
+
+    await coordinator.synchronize(account: nil)
+    await coordinator.synchronize(account: notificationUser(idSuffix: "02"))
+    let enableReplacement = Task { await coordinator.enable() }
+    await waitForSystemRegistrationCount(2, system: system)
+    system.deliverDeviceToken(Data([0x02]))
+
+    await service.releaseRegistration()
+    await waitForEventCount(3, service: service)
+    await service.releaseRegistration()
+    await waitForEventCount(4, service: service)
+    await disable.value
+    await enableReplacement.value
+
+    #expect(await service.events() == [
+      "register-start:01",
+      "register-finish:01",
+      "register-start:02",
+      "register-finish:02",
+    ])
+    #expect(await service.registeredDeviceToken() == "02")
+    #expect(coordinator.state == .enabled)
+    #expect(coordinator.isWorking == false)
+  }
+
   private func makeCoordinator(
     service: any NativeNotificationService,
     system: NotificationSystemProbe,
@@ -344,4 +383,28 @@ private func waitForEventCount(
     await Task.yield()
   }
   #expect(await service.events().count == expectedCount)
+}
+
+@MainActor
+private func waitForWorkingState(
+  _ expectedState: Bool,
+  coordinator: NativeNotificationCoordinator
+) async {
+  for _ in 0..<100 {
+    if coordinator.isWorking == expectedState { break }
+    await Task.yield()
+  }
+  #expect(coordinator.isWorking == expectedState)
+}
+
+@MainActor
+private func waitForSystemRegistrationCount(
+  _ expectedCount: Int,
+  system: NotificationSystemProbe
+) async {
+  for _ in 0..<100 {
+    if system.registrationCount >= expectedCount { break }
+    await Task.yield()
+  }
+  #expect(system.registrationCount == expectedCount)
 }

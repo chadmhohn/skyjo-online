@@ -207,6 +207,7 @@ final class NativeNotificationCoordinator {
   private var registrationTask: Task<Void, Never>?
   private var registeredAccountID: UUID?
   private var registeredDeviceToken: String?
+  private var workingOperationCount = 0
 
   init(
     service: any NativeNotificationService,
@@ -247,7 +248,6 @@ final class NativeNotificationCoordinator {
       operatingSystem.unregisterForRemoteNotifications()
       deviceToken = nil
       state = .off
-      isWorking = false
       return
     }
     guard wantsNotifications else {
@@ -258,36 +258,37 @@ final class NativeNotificationCoordinator {
   }
 
   func enable() async {
-    guard accountID != nil, !isWorking else { return }
+    guard accountID != nil else { return }
+    if !wantsNotifications {
+      accountGeneration &+= 1
+    }
     wantsNotifications = true
     defaults.set(true, forKey: Self.enabledKey)
     await activate(requestPermission: true)
   }
 
   func disable() async {
-    guard !isWorking else { return }
-    isWorking = true
-    defer { isWorking = false }
+    beginWorking()
+    defer { endWorking() }
+    let expectedAccountID = accountID
     wantsNotifications = false
     defaults.set(false, forKey: Self.enabledKey)
     accountGeneration &+= 1
+    let expectedGeneration = accountGeneration
     deviceToken = nil
     registeredAccountID = nil
     registeredDeviceToken = nil
     operatingSystem.unregisterForRemoteNotifications()
 
-    let pendingRegistration = registrationTask
-    registrationTask = nil
-    await pendingRegistration?.value
-
-    do {
-      if accountID != nil {
-        try await service.deleteAPNSDevice(installationID: installationID)
-      }
+    guard let expectedAccountID else {
       state = .off
-    } catch {
-      state = .failed
+      return
     }
+    let queuedDeletion = enqueueDeletion(
+      accountID: expectedAccountID,
+      generation: expectedGeneration
+    )
+    await queuedDeletion.value
   }
 
   func retry() async {
@@ -307,11 +308,11 @@ final class NativeNotificationCoordinator {
   }
 
   private func activate(requestPermission: Bool) async {
-    guard let expectedAccountID = accountID, !isWorking else { return }
+    guard let expectedAccountID = accountID else { return }
     let expectedGeneration = accountGeneration
-    isWorking = true
+    beginWorking()
     state = .checking
-    defer { isWorking = false }
+    defer { endWorking() }
 
     do {
       var authorization = await operatingSystem.authorizationStatus()
@@ -437,6 +438,25 @@ final class NativeNotificationCoordinator {
     state = .enabled
   }
 
+  @discardableResult
+  private func enqueueDeletion(accountID: UUID, generation: UInt64) -> Task<Void, Never> {
+    let priorRegistration = registrationTask
+    let task = Task {
+      await priorRegistration?.value
+      guard isCurrentDisabledAccount(accountID, generation: generation) else { return }
+      do {
+        try await service.deleteAPNSDevice(installationID: installationID)
+        guard isCurrentDisabledAccount(accountID, generation: generation) else { return }
+        state = .off
+      } catch {
+        guard isCurrentDisabledAccount(accountID, generation: generation) else { return }
+        state = .failed
+      }
+    }
+    registrationTask = task
+    return task
+  }
+
   private func didFailRegistration() {
     deviceToken = nil
     registeredAccountID = nil
@@ -453,6 +473,20 @@ final class NativeNotificationCoordinator {
 
   private func isCurrentAccount(_ expectedAccountID: UUID, generation: UInt64) -> Bool {
     accountID == expectedAccountID && accountGeneration == generation && wantsNotifications
+  }
+
+  private func isCurrentDisabledAccount(_ expectedAccountID: UUID, generation: UInt64) -> Bool {
+    accountID == expectedAccountID && accountGeneration == generation && !wantsNotifications
+  }
+
+  private func beginWorking() {
+    workingOperationCount += 1
+    isWorking = true
+  }
+
+  private func endWorking() {
+    workingOperationCount = max(0, workingOperationCount - 1)
+    isWorking = workingOperationCount > 0
   }
 
   private static func loadInstallationID(defaults: UserDefaults) -> UUID {
