@@ -220,6 +220,28 @@ struct NativeNotificationTests {
     #expect(coordinator.isWorking == false)
   }
 
+  @Test("Retry after an opt-out failure retries deletion without re-enabling notifications")
+  func failedOptOutRetryRemainsDisabled() async throws {
+    let (defaults, suite) = try makeNotificationDefaults()
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "skyjo.apns.enabled.v1")
+    let service = DeletionRetryServiceProbe()
+    let system = NotificationSystemProbe(authorization: .authorized, requestResult: true)
+    let coordinator = makeCoordinator(service: service, system: system, defaults: defaults)
+
+    await coordinator.synchronize(account: notificationUser(idSuffix: "01"))
+    await coordinator.disable()
+    #expect(coordinator.state == .failed)
+
+    await coordinator.retry()
+
+    #expect(coordinator.state == .off)
+    #expect(await service.deletionAttempts() == 2)
+    #expect(await service.registrationAttempts() == 0)
+    #expect(defaults.bool(forKey: "skyjo.apns.enabled.v1") == false)
+    #expect(system.registrationCount == 1)
+  }
+
   private func makeCoordinator(
     service: any NativeNotificationService,
     system: NotificationSystemProbe,
@@ -304,6 +326,39 @@ private actor SuspendingNotificationServiceProbe: NativeNotificationService {
   func events() -> [String] { eventValues }
   func hasRegistration() -> Bool { registeredToken != nil }
   func registeredDeviceToken() -> String? { registeredToken }
+}
+
+private actor DeletionRetryServiceProbe: NativeNotificationService {
+  private var registrationAttemptCount = 0
+  private var deletionAttemptCount = 0
+
+  func apnsConfiguration() async throws -> APNSConfiguration {
+    APNSConfiguration(enabled: true)
+  }
+
+  func registerAPNSDevice(
+    installationID: UUID,
+    deviceToken: String,
+    environment: APNSDeviceEnvironment,
+    appVersion: String,
+    locale: String
+  ) async throws {
+    registrationAttemptCount += 1
+  }
+
+  func deleteAPNSDevice(installationID: UUID) async throws {
+    deletionAttemptCount += 1
+    if deletionAttemptCount == 1 {
+      throw DeletionRetryProbeError.firstAttempt
+    }
+  }
+
+  func registrationAttempts() -> Int { registrationAttemptCount }
+  func deletionAttempts() -> Int { deletionAttemptCount }
+}
+
+private enum DeletionRetryProbeError: Error {
+  case firstAttempt
 }
 
 @MainActor

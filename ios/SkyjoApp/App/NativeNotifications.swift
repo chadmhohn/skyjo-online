@@ -293,7 +293,7 @@ final class NativeNotificationCoordinator {
 
   func retry() async {
     guard wantsNotifications else {
-      await enable()
+      await disable()
       return
     }
     await activate(requestPermission: false)
