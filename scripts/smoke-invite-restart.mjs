@@ -13,7 +13,6 @@ const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-invite-restart-'));
 const databaseFile = path.join(temporaryDirectory, 'skyjo.sqlite');
 const roomsFile = path.join(temporaryDirectory, 'rooms.json');
-const accessPassword = 'invite-restart-access-password';
 const accountPassword = 'invite-restart-account-password';
 const accountEmail = 'invite-restart@example.test';
 const protocolVersion = 2;
@@ -53,7 +52,6 @@ function startServer(port) {
     NODE_ENV: 'test',
     HOST: '127.0.0.1',
     PORT: String(port),
-    SKYJO_ACCESS_PASSWORD: accessPassword,
     SKYJO_APPLE_APPLICATION_IDENTIFIER: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
     SKYJO_ACCOUNT_COOKIE_NAME: 'skyjo_restart_account',
     SKYJO_ADMIN_INITIAL_PASSWORD: '',
@@ -85,7 +83,6 @@ async function assertShortInviteSecretIsRejected() {
     env: {
       ...process.env,
       NODE_ENV: 'test',
-      SKYJO_ACCESS_PASSWORD: accessPassword,
       SKYJO_INVITE_SECRET: rawShortSecret,
       SKYJO_SESSION_SECRET: 'valid-session-secret-0123456789abcdef'
     },
@@ -176,16 +173,9 @@ try {
   child = startServer(port);
   await waitForReady(baseUrl, child);
 
-  const sharedLogin = await fetch(`${baseUrl}/login`, {
-    method: 'POST',
-    body: new URLSearchParams({ password: accessPassword, next: '/' }),
-    redirect: 'manual'
-  });
-  assert.equal(sharedLogin.status, 303);
-  const siteCookie = cookieFrom(sharedLogin, 'Shared login');
   const signup = await fetch(`${baseUrl}/api/account/signup`, {
     method: 'POST',
-    headers: { Cookie: siteCookie, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       email: accountEmail,
       displayName: 'Restart Host',
@@ -195,7 +185,7 @@ try {
   });
   assert.equal(signup.status, 201);
   const accountCookie = cookieFrom(signup, 'Account signup');
-  const cookies = `${siteCookie}; ${accountCookie}`;
+  const cookies = accountCookie;
   const { socket, roomCode } = await openRoom(baseUrl, cookies);
   const inviteResponse = await fetch(`${baseUrl}/api/rooms/invite`, {
     method: 'POST',
@@ -208,8 +198,8 @@ try {
   const landing = await fetch(`${baseUrl}${invite.path}`);
   assert.equal(landing.status, 200);
   const landingHtml = await landing.text();
-  const code = landingHtml.match(/id="invite-code" readonly value="([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{7})"/)?.[1];
-  assert.ok(code, 'Invite landing did not mint a short code.');
+  assert.match(landingHtml, new RegExp(`id="room-code" readonly value="${roomCode}"`));
+  assert.equal(landingHtml.includes('id="invite-code"'), false, 'Open-access landing minted an obsolete install code.');
   assert.equal(landingHtml.includes(invite.path), false, 'Invite landing duplicated the signed token in response HTML.');
   const persistedRoomInstanceId = await waitForPersistedRoom(roomCode);
   assert.equal(
@@ -262,43 +252,18 @@ try {
     'Native redemption cookie has the expected secure structure without logging its value.'
   );
 
-  const redemptions = await Promise.all(Array.from({ length: 6 }, () => fetch(`${baseUrl}/invite-code`, {
-    method: 'POST',
-    body: new URLSearchParams({ code }),
-    redirect: 'manual'
-  })));
-  assert.equal(redemptions.filter((response) => response.status === 303 && response.headers.get('set-cookie')).length, 1);
-  const failures = redemptions.filter((response) => !response.headers.get('set-cookie'));
-  assert.equal(failures.length, 5);
-  for (const response of failures) {
-    assert.equal(response.status, 400);
-    assert.match(await response.text(), /invite code expired or did not match/i);
-  }
-  const replay = await fetch(`${baseUrl}/invite-code`, {
-    method: 'POST',
-    body: new URLSearchParams({ code }),
-    redirect: 'manual'
-  });
-  assert.equal(replay.status, 400);
-  assert.match(await replay.text(), /invite code expired or did not match/i);
-  assert.equal(replay.headers.get('set-cookie'), null);
   await stopServer(child);
   child = null;
 
   const database = new DatabaseSync(databaseFile, { readOnly: true });
   const rows = database.prepare('SELECT * FROM invite_codes').all();
   database.close();
-  assert.equal(rows.length, 1);
-  assert.equal(JSON.stringify(rows).includes(code), false, 'Raw invite code reached SQLite.');
+  assert.equal(rows.length, 0, 'Open-access invite landing persisted an obsolete install code.');
   assert.equal(JSON.stringify(rows).includes(invite.path), false, 'Signed invite token reached SQLite.');
   assert.equal(JSON.stringify(rows).includes(inviteToken), false, 'Signed invite token reached SQLite without its route prefix.');
-  assert.equal(rows[0].room_code === roomCode, true, 'Persisted invite remains bound to its private room.');
-  assert.equal(typeof rows[0].room_instance_id, 'string');
-  assert.equal(typeof rows[0].redeemed_at, 'number');
-  assert.equal(logs.includes(code), false, 'Raw invite code reached server logs.');
   assert.equal(logs.includes(invite.path), false, 'Signed invite token reached server logs.');
   assert.equal(logs.includes(inviteToken), false, 'Signed invite token reached server logs without its route prefix.');
-  console.log('Invite restart smoke passed: browser/native restart survival, one atomic install-code redemption, replay rejection, and no raw secret persistence.');
+  console.log('Invite restart smoke passed: open-access room-code handoff, browser/native restart survival, and no obsolete install-code persistence.');
 } catch (error) {
   if (logs) {
     console.error('Invite restart server diagnostics were suppressed because they may contain private invite or session data.');

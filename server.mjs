@@ -57,7 +57,6 @@ import {
 import {
   cleanInviteInstallCode,
   createInviteRedemptionRateLimiter,
-  createPersistentInviteInstallCode,
   hashInviteInstallCode
 } from './server-invite-codes.mjs';
 import {
@@ -94,7 +93,6 @@ const inviteSecret = process.env.SKYJO_INVITE_SECRET || sessionSecret;
 const cookieName = process.env.SKYJO_COOKIE_NAME || 'skyjo_session';
 const sessionTtlMs = Number(process.env.SKYJO_SESSION_TTL_HOURS || 24 * 14) * 60 * 60 * 1000;
 const inviteTtlMs = Number(process.env.SKYJO_INVITE_TTL_HOURS || 24 * 7) * 60 * 60 * 1000;
-const inviteCodeTtlMs = Number(process.env.SKYJO_INVITE_CODE_TTL_MINUTES || 30) * 60 * 1000;
 const accountCookieName = process.env.SKYJO_ACCOUNT_COOKIE_NAME || 'skyjo_account';
 const accountSessionTtlMs = Number(process.env.SKYJO_ACCOUNT_SESSION_TTL_HOURS || 24 * 14) * 60 * 60 * 1000;
 const adminEmail = process.env.SKYJO_ADMIN_EMAIL || 'chad.hohn@groundworkrevops.com';
@@ -1177,19 +1175,8 @@ async function handleRoomInviteAccess(res, url, { landing = false } = {}) {
   }
 
   if (landing && url.searchParams.get('open') !== 'browser') {
-    if (!(await ensureAccountStore())) {
-      send(res, 503, 'Invite service is temporarily unavailable.', { 'Content-Type': 'text/plain; charset=utf-8' });
-      return true;
-    }
-    const installCode = createPersistentInviteInstallCode({
-      store: accountStore,
-      roomCode: invite.room,
-      roomInstanceId: invite.roomInstanceId,
-      expiresAt: Math.min(invite.expiresAt, Date.now() + inviteCodeTtlMs),
-      secret: inviteSecret
-    });
     const nonce = htmlNonce();
-    send(res, 200, renderInviteLanding({ token, invite, installCode, nonce }), htmlSecurityHeaders(nonce));
+    send(res, 200, renderInviteLanding({ invite, nonce }), htmlSecurityHeaders(nonce));
     return true;
   }
 
@@ -1589,15 +1576,8 @@ function inviteRedemptionClientKey(req, namespace) {
   return `${namespace}:${trustedClientIp(req)}`;
 }
 
-function formatInviteCodeMinutes(expiresAt) {
-  const minutes = Math.max(1, Math.ceil((expiresAt - Date.now()) / 60000));
-  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
-}
-
-function renderInviteLanding({ token, invite, installCode, nonce }) {
+function renderInviteLanding({ invite, nonce }) {
   const safeRoom = escapeHtml(invite.room);
-  const safeCode = escapeHtml(installCode.code);
-  const safeMinutes = escapeHtml(formatInviteCodeMinutes(installCode.expiresAt));
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -1680,36 +1660,36 @@ function renderInviteLanding({ token, invite, installCode, nonce }) {
 
       <section class="choice">
         <h2>Add Skyjo to your Home Screen</h2>
-        <p>Copy this invite code first, then add Skyjo from Safari.</p>
+        <p>Copy the room code, then add Skyjo from Safari.</p>
         <div class="code-row">
-          <input id="invite-code" readonly value="${safeCode}" />
+          <input id="room-code" readonly value="${safeRoom}" />
           <button class="button" id="copy-code" type="button">Copy Code</button>
         </div>
         <div class="status" id="copy-status" role="status"></div>
         <ol>
           <li>Tap the Safari share button.</li>
           <li>Choose Add to Home Screen.</li>
-          <li>Open Skyjo from the new icon and paste this code.</li>
+          <li>Open Skyjo, create or sign in to your account, then join this room code.</li>
         </ol>
-        <p class="note">Code expires in about ${safeMinutes}. If it expires, open the original invite link again.</p>
+        <p class="note">The host can share the same room code with everyone playing.</p>
       </section>
 
       <section class="choice">
         <h2>Open in browser</h2>
-        <p>Continue in this browser now. This still bypasses the shared Skyjo password for this invite.</p>
+        <p>Continue in this browser now. You can create or sign in to your own account when you join.</p>
         <div class="actions">
           <a class="button secondary" href="?open=browser">Open in Browser</a>
         </div>
       </section>
     </main>
     <script nonce="${nonce}">
-      const codeInput = document.getElementById('invite-code');
+      const codeInput = document.getElementById('room-code');
       const copyButton = document.getElementById('copy-code');
       const status = document.getElementById('copy-status');
       copyButton.addEventListener('click', async () => {
         try {
           await navigator.clipboard.writeText(codeInput.value);
-          status.textContent = 'Invite code copied';
+          status.textContent = 'Room code copied';
         } catch {
           codeInput.focus();
           codeInput.select();

@@ -13,7 +13,7 @@ async function expectCompletePwaHead(page: import('@playwright/test').Page): Pro
   await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/skyjo-icon-v2-180.png');
 }
 
-test('a live room invite hands off through browser and one-time Home Screen code paths', async ({
+test('a live room invite hands off through browser and open-access Home Screen paths', async ({
   browser,
   context,
   page,
@@ -49,7 +49,6 @@ test('a live room invite hands off through browser and one-time Home Screen code
 
   const landingContext = await browser.newContext({ serviceWorkers: 'block' });
   const codeContext = await browser.newContext({ serviceWorkers: 'block' });
-  const replayContext = await browser.newContext({ serviceWorkers: 'block' });
   try {
     const landingPage = await landingContext.newPage();
     const landingResponse = await landingPage.goto(`${skyjoServer.baseURL}${invite.path}`, {
@@ -61,8 +60,8 @@ test('a live room invite hands off through browser and one-time Home Screen code
     expect(landingResponse?.headers()['content-security-policy']).toContain("form-action 'self'");
     await expectCompletePwaHead(landingPage);
     await expect(landingPage.getByRole('heading', { name: `Join Room ${roomCode}` })).toBeVisible();
-    const installCode = await landingPage.locator('#invite-code').inputValue();
-    expect(installCode).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{7}$/);
+    await expect(landingPage.locator('#room-code')).toHaveValue(roomCode);
+    await expect(landingPage.getByText('create or sign in to your account')).toBeVisible();
 
     await landingPage.getByRole('link', { name: 'Open in Browser' }).click();
     await expect(landingPage).toHaveURL(`${skyjoServer.baseURL}/lobby?room=${roomCode}`);
@@ -71,23 +70,22 @@ test('a live room invite hands off through browser and one-time Home Screen code
     expect(browserCookies.some((cookie) => cookie.name.startsWith('skyjo_session_') && cookie.value)).toBe(true);
 
     const codePage = await codeContext.newPage();
-    await codePage.goto(`${skyjoServer.baseURL}/login`);
+    const codeSignup = await codeContext.request.post(`${skyjoServer.baseURL}/api/account/signup`, {
+      data: {
+        email: `invite-guest-${suffix}@example.test`,
+        displayName: 'Invite Guest',
+        password: 'invite-handoff-password',
+        confirmPassword: 'invite-handoff-password'
+      }
+    });
+    expect(codeSignup.status()).toBe(201);
+    await codePage.goto(`${skyjoServer.baseURL}/lobby?room=${roomCode}`);
     await expectCompletePwaHead(codePage);
-    await codePage.locator('form[action="/invite-code"] input[name="code"]').fill(installCode);
-    await codePage.getByRole('button', { name: 'Open Invite' }).click();
-    await expect(codePage).toHaveURL(`${skyjoServer.baseURL}/lobby?room=${roomCode}`);
-    await expect(codePage.getByRole('heading', { name: 'Sign in to play multiplayer' })).toBeVisible();
-    const codeCookies = await codeContext.cookies();
-    expect(codeCookies.some((cookie) => cookie.name.startsWith('skyjo_session_') && cookie.value)).toBe(true);
-
-    const replayPage = await replayContext.newPage();
-    await replayPage.goto(`${skyjoServer.baseURL}/login`);
-    await replayPage.locator('form[action="/invite-code"] input[name="code"]').fill(installCode);
-    await replayPage.getByRole('button', { name: 'Open Invite' }).click();
-    await expect(replayPage).toHaveURL(`${skyjoServer.baseURL}/login?inviteError=1`);
-    await expect(replayPage.getByText('That invite code expired or did not match.')).toBeVisible();
-    expect((await replayContext.cookies()).some((cookie) => cookie.name.startsWith('skyjo_session_'))).toBe(false);
+    await expect(codePage.getByLabel('Room code')).toHaveValue(roomCode);
+    await codePage.getByRole('button', { name: 'Join', exact: true }).click();
+    await expect(codePage.getByTestId('connection-status')).toHaveAttribute('data-connection-state', 'connected');
+    await expect(codePage.locator('.skyjo-room-code')).toHaveText(roomCode);
   } finally {
-    await Promise.all([landingContext.close(), codeContext.close(), replayContext.close()]);
+    await Promise.all([landingContext.close(), codeContext.close()]);
   }
 });

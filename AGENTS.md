@@ -10,7 +10,7 @@ Last reviewed by Codex: 2026-07-28 America/Denver, against the live v0.3.2 relea
 - Immutable release root: `/srv/skyjo-online` on `hostinger-vps`; `current` and `previous` select release directories.
 - Production service: `skyjo-online.service`, working directory `/srv/skyjo-online/current`.
 - Service env file: `/etc/skyjo-online.env`. Do not print or commit secret values from this file.
-- Signed room invites use `SKYJO_INVITE_SECRET`, `SKYJO_INVITE_TTL_HOURS`, and optional `SKYJO_INVITE_CODE_TTL_MINUTES`. The public app no longer has a shared site-password gate; invites still grant neither account identity nor room membership.
+- Signed room invites use `SKYJO_INVITE_SECRET` and `SKYJO_INVITE_TTL_HOURS`. The public app no longer has a shared site-password gate; invites still grant neither account identity nor room membership. The retired one-time install-code endpoint remains only for already-minted rollback compatibility.
 - Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
 - Account and game-history database: `/var/lib/skyjo-online/skyjo.sqlite`, via `SKYJO_DB_FILE`.
 - Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. Treat that password as temporary.
@@ -166,8 +166,8 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - Account stats start from the account release forward. Do not attempt historical backfill from `rooms.json` unless Chad explicitly asks for a separate import pass.
 - Mobile phone layout is intentionally board-first/locked: opponents scroll above, local board and table controls stay anchored. Be careful not to regress this when changing tablet/desktop layouts.
 - Tablet landscape intentionally borrows the compact phone header: Rules, Log, and AI opponents stay as small disclosure buttons; the local "You" board is scaled down and bottom-anchored so opponent boards remain visible above it. Opponent boards should not exceed 4 columns in tablet landscape or 3 columns in tablet portrait.
-- Multiplayer rooms are friend-facing and password gated. Shared room links should land on the install/browser choice page, and browser/install-code continuation should prefill join without reusing a stale saved player identity for another room.
-- The long invite link is reusable for group threads. Each invite page load mints a fresh one-time Home Screen install code, so several recipients can use the same shared link without racing over one copied code.
+- Multiplayer rooms are friend-facing and account gated. Shared room links should land on the Home Screen/browser choice page, and either continuation should prefill or clearly preserve the reusable room code without reusing a stale saved player identity for another room.
+- The long invite link is reusable for group threads. Its Home Screen path now uses the ordinary reusable five-character room code; players create or sign in to their own account before joining.
 
 ## Repository Handoff Notes
 
