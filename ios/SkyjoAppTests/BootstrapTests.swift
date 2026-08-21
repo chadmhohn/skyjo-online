@@ -85,7 +85,7 @@ struct BootstrapTests {
     #expect(UIColor(named: "AccentColor", in: .main, compatibleWith: nil) != nil)
   }
 
-  @Test("The embedded privacy manifest matches the account, room, and notification data inventory")
+  @Test("The embedded privacy manifest matches the accessed API and collected data inventory")
   func privacyManifestDataInventory() throws {
     let url = try #require(Bundle.main.url(forResource: "PrivacyInfo", withExtension: "xcprivacy"))
     let data = try Data(contentsOf: url)
@@ -93,6 +93,22 @@ struct BootstrapTests {
       PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
     )
     let entries = try #require(root["NSPrivacyCollectedDataTypes"] as? [[String: Any]])
+    let accessedAPIEntries = try #require(root["NSPrivacyAccessedAPITypes"] as? [[String: Any]])
+    let accessedAPIReasons: [String: [String]] = Dictionary(
+      uniqueKeysWithValues: accessedAPIEntries.compactMap { entry -> (String, [String])? in
+        guard
+          let category = entry["NSPrivacyAccessedAPIType"] as? String,
+          let reasons = entry["NSPrivacyAccessedAPITypeReasons"] as? [String]
+        else {
+          return nil
+        }
+        return (category, reasons)
+      })
+    #expect(
+      accessedAPIReasons == [
+        "NSPrivacyAccessedAPICategoryUserDefaults": ["CA92.1"],
+        "NSPrivacyAccessedAPICategoryFileTimestamp": ["C617.1"],
+      ])
     let expectedTypes: Set<String> = [
       "NSPrivacyCollectedDataTypeName",
       "NSPrivacyCollectedDataTypeEmailAddress",
