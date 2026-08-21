@@ -1471,8 +1471,8 @@ struct RoomConnectionNodeIntegrationTests {
     let environment = SkyjoNetworkEnvironment(baseURL: baseURL)
 
     let hostCookies = realtimeCookieStorage(label: "invite-host")
-    let hostAPISession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: hostCookies)
-    let hostInviteSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: hostCookies)
+    let hostAPISession = mixedRealtimeSession(cookieStorage: hostCookies, clientIndex: 1)
+    let hostInviteSession = mixedRealtimeSession(cookieStorage: hostCookies, clientIndex: 1)
     defer {
       hostAPISession.invalidateAndCancel()
       hostInviteSession.invalidateAndCancel()
@@ -1502,8 +1502,8 @@ struct RoomConnectionNodeIntegrationTests {
     )
 
     let guestCookies = realtimeCookieStorage(label: "invite-guest")
-    let guestInviteSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: guestCookies)
-    let guestAPISession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: guestCookies)
+    let guestInviteSession = mixedRealtimeSession(cookieStorage: guestCookies, clientIndex: 2)
+    let guestAPISession = mixedRealtimeSession(cookieStorage: guestCookies, clientIndex: 2)
     defer {
       guestInviteSession.invalidateAndCancel()
       guestAPISession.invalidateAndCancel()
@@ -1540,7 +1540,7 @@ struct RoomConnectionNodeIntegrationTests {
     })
 
     let staleCookies = realtimeCookieStorage(label: "invite-stale")
-    let staleSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: staleCookies)
+    let staleSession = mixedRealtimeSession(cookieStorage: staleCookies, clientIndex: 3)
     defer {
       staleSession.invalidateAndCancel()
       clearRealtimeCookies(staleCookies)
@@ -1587,7 +1587,7 @@ struct RoomConnectionNodeIntegrationTests {
 
     for index in 1...7 {
       let cookies = realtimeCookieStorage(label: "eight-native-\(index)")
-      let session = SkyjoURLSessionFactory.makeDedicated(cookieStorage: cookies)
+      let session = mixedRealtimeSession(cookieStorage: cookies, clientIndex: 10 + index)
       await cleanup.retain(session: session, cookies: cookies)
       let api = SkyjoAPIClient(environment: environment, session: session)
       #expect(try await api.loginAccess(password: syntheticAccessPassword).authenticated)
@@ -1688,7 +1688,7 @@ struct RoomConnectionNodeIntegrationTests {
     let rawBaseURL = try #require(ProcessInfo.processInfo.environment["SKYJO_IOS_TEST_SERVER_URL"])
     let baseURL = try #require(URL(string: rawBaseURL))
     let cookies = realtimeCookieStorage(label: "native-host")
-    let session = SkyjoURLSessionFactory.makeDedicated(cookieStorage: cookies)
+    let session = mixedRealtimeSession(cookieStorage: cookies, clientIndex: 20)
     defer {
       session.invalidateAndCancel()
       clearRealtimeCookies(cookies)
@@ -1806,7 +1806,7 @@ struct RoomConnectionNodeIntegrationTests {
     let rawBaseURL = try #require(ProcessInfo.processInfo.environment["SKYJO_IOS_TEST_SERVER_URL"])
     let baseURL = try #require(URL(string: rawBaseURL))
     let cookies = realtimeCookieStorage(label: "native-guest")
-    let session = SkyjoURLSessionFactory.makeDedicated(cookieStorage: cookies)
+    let session = mixedRealtimeSession(cookieStorage: cookies, clientIndex: 21)
     defer {
       session.invalidateAndCancel()
       clearRealtimeCookies(cookies)
@@ -2571,6 +2571,17 @@ private func completeBlindDrawTurn(on connection: RoomConnection) async throws -
 private func realtimeCookieStorage(label: String) -> HTTPCookieStorage {
   HTTPCookieStorage.sharedCookieStorage(
     forGroupContainerIdentifier: "com.groundworkrevops.skyjo.realtime-tests.\(label).\(UUID().uuidString)"
+  )
+}
+
+private func mixedRealtimeSession(
+  cookieStorage: HTTPCookieStorage,
+  clientIndex: Int
+) -> URLSession {
+  precondition((1...254).contains(clientIndex))
+  return SkyjoURLSessionFactory.makeDedicated(
+    cookieStorage: cookieStorage,
+    additionalHTTPHeaders: ["CF-Connecting-IP": "198.18.1.\(clientIndex)"]
   )
 }
 

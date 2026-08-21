@@ -453,8 +453,12 @@ test('a fresh credentialless install caches only the data-free offline solo allo
       expect(entry.revision).toBe(createHash('md5').update(builtBytes).digest('hex'));
     }
 
-    const loginResponse = await page.goto(`${skyjoServer.baseURL}/login`);
-    expect(loginResponse?.headers()['content-security-policy']).toContain("media-src 'self' data:");
+    const loginResponse = await fetch(`${skyjoServer.baseURL}/login`, { redirect: 'manual' });
+    expect(loginResponse.status).toBe(302);
+    expect(loginResponse.headers.get('location')).toBe('/');
+    const rootResponse = await context.request.get(skyjoServer.baseURL);
+    expect(rootResponse.headers()['content-security-policy']).toContain("media-src 'self' data:");
+    await page.goto(`${skyjoServer.baseURL}/healthz`);
     await page.evaluate(async () => {
       const legacyOnline = await caches.open('skyjo-online-v5');
       const legacyStatic = await caches.open('skyjo-static-v5');

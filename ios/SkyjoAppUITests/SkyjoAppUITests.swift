@@ -8,7 +8,6 @@ final class SkyjoAppUITests: XCTestCase {
     let contentSizeCategory: UIContentSizeCategory
   }
 
-  private let accessFixture = "skyjo-ios-contract-access-v1"
   private let soloSetupContrastHeaderIdentifiers: Set<String> = [
     "solo.setup.opponents-header",
     "solo.setup.difficulty-header",
@@ -19,20 +18,14 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
-  func testAccessSignupRelaunchProfilePasswordAndLogout() throws {
+  func testOpenSignupRelaunchProfilePasswordAndLogout() throws {
     XCUIDevice.shared.orientation = .portrait
     let app = XCUIApplication()
     app.launch()
 
-    XCTAssertTrue(app.secureTextFields["access.password"].waitForExistence(timeout: 10))
-    XCTAssertFalse(app.buttons["access.submit"].isEnabled)
-    XCTAssertEqual(app.webViews.count, 0)
-
-    app.secureTextFields["access.password"].tap()
-    app.secureTextFields["access.password"].typeText(accessFixture)
-    app.buttons["access.submit"].tap()
-
     XCTAssertTrue(app.staticTexts["home.welcome"].waitForExistence(timeout: 10))
+    XCTAssertFalse(app.secureTextFields["access.password"].exists)
+    XCTAssertEqual(app.webViews.count, 0)
     tapTab("Account", in: app)
     XCTAssertTrue(app.segmentedControls["auth.mode"].waitForExistence(timeout: 10))
     app.buttons["Create Account"].tap()

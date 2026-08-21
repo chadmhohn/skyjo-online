@@ -71,7 +71,6 @@ async function openAuthenticatedSocket(baseUrl, cookies, expectedProtocolVersion
 
 export async function runDeployedSmoke({
   baseUrl,
-  accessPassword,
   accountEmail,
   accountPassword,
   expectedAppleApplicationIdentifier,
@@ -80,7 +79,6 @@ export async function runDeployedSmoke({
   expectedProtocolVersion = CURRENT_PROTOCOL_VERSION
 }) {
   assert.ok(baseUrl, 'A deployed base URL is required.');
-  assert.ok(accessPassword, 'The shared access password is required.');
   assert.ok(accountEmail && accountPassword, 'A non-destructive smoke account is required.');
   assert.equal(typeof expectedAPNSNotificationsEnabled, 'boolean', 'Expected APNs availability must be explicit.');
   const expectedAppleAssociation = createAppleAppSiteAssociation(expectedAppleApplicationIdentifier);
@@ -147,7 +145,7 @@ export async function runDeployedSmoke({
     redirect: 'manual',
     signal: AbortSignal.timeout(5000)
   });
-  assert.equal(invalidNativeInvite.status, 410, 'native invite redemption is not available before the access gate');
+  assert.equal(invalidNativeInvite.status, 410, 'invalid native invite redemption must fail publicly');
   assert.equal(invalidNativeInvite.headers.get('location'), null, 'native invite failure must not redirect');
   assert.equal(invalidNativeInvite.headers.get('set-cookie'), null, 'native invite failure must not grant access');
   assertNoStore(invalidNativeInvite, 'native invite failure');
@@ -156,21 +154,36 @@ export async function runDeployedSmoke({
     error: 'This invite is invalid or has expired.'
   });
 
-  const siteLogin = await fetch(`${root}/login`, {
-    method: 'POST',
-    body: new URLSearchParams({ password: accessPassword, next: '/' }),
+  const retiredLogin = await fetch(`${root}/login?next=%2Frules`, {
     redirect: 'manual',
     signal: AbortSignal.timeout(5000)
   });
-  assert.equal(siteLogin.status, 303, 'shared access login failed');
-  const siteCookie = cookieFromResponse(siteLogin, 'shared access login');
+  assert.equal(retiredLogin.status, 302, 'retired shared login must redirect');
+  assert.equal(retiredLogin.headers.get('location'), '/rules', 'retired shared login lost its safe continuation');
+  assert.equal(retiredLogin.headers.get('set-cookie'), null, 'retired shared login GET must not create a cookie');
+
+  const accessStatus = await fetch(`${root}/api/access/session`, {
+    redirect: 'manual',
+    signal: AbortSignal.timeout(5000)
+  });
+  assert.equal(accessStatus.status, 200, 'legacy native access status failed');
+  assert.deepEqual(await accessStatus.json(), { authenticated: true }, 'legacy native access must be open');
+
+  const legacyAccessPost = await fetch(`${root}/api/access/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: 'ignored-legacy-placeholder' }),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(5000)
+  });
+  assert.equal(legacyAccessPost.status, 200, 'legacy native access compatibility failed');
+  assert.deepEqual(await legacyAccessPost.json(), { authenticated: true }, 'legacy native POST must report open access');
 
   const appResponse = await fetch(`${root}/`, {
-    headers: { Cookie: siteCookie },
     redirect: 'manual',
     signal: AbortSignal.timeout(5000)
   });
-  assert.equal(appResponse.status, 200, 'authenticated app shell failed');
+  assert.equal(appResponse.status, 200, 'open app shell failed');
   assert.match(appResponse.headers.get('content-type') || '', /^text\/html\b/i, 'app shell must be HTML');
   const appShell = await appResponse.text();
   assert.match(appShell, /<div id="root"><\/div>/, 'app shell root is missing');
@@ -178,27 +191,25 @@ export async function runDeployedSmoke({
 
   const accountLogin = await fetch(`${root}/api/account/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: siteCookie },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: accountEmail, password: accountPassword }),
     redirect: 'manual',
     signal: AbortSignal.timeout(5000)
   });
   assert.equal(accountLogin.status, 200, 'account login failed');
   const accountCookie = cookieFromResponse(accountLogin, 'account login');
-  assert.notEqual(accountCookie.split('=', 1)[0], siteCookie.split('=', 1)[0], 'site and account cookies must be distinct');
-  const cookies = `${siteCookie}; ${accountCookie}`;
 
   const accountResponse = await fetch(`${root}/api/account/me`, {
-    headers: { Cookie: cookies },
+    headers: { Cookie: accountCookie },
     redirect: 'manual',
     signal: AbortSignal.timeout(5000)
   });
-  assert.equal(accountResponse.status, 200, 'two-cookie account proof failed');
+  assert.equal(accountResponse.status, 200, 'account-cookie proof failed');
   const account = await accountResponse.json();
   assert.equal(account.user?.email, accountEmail.trim().toLowerCase(), 'smoke account identity did not match');
 
   const apnsConfigResponse = await fetch(`${root}/api/push/apns/config`, {
-    headers: { Cookie: cookies },
+    headers: { Cookie: accountCookie },
     redirect: 'manual',
     signal: AbortSignal.timeout(5000)
   });
@@ -209,6 +220,6 @@ export async function runDeployedSmoke({
     enabled: expectedAPNSNotificationsEnabled
   });
 
-  await openAuthenticatedSocket(root, cookies, expectedProtocolVersion);
+  await openAuthenticatedSocket(root, accountCookie, expectedProtocolVersion);
   return { releaseSha: version.releaseSha, buildTimestamp: version.buildTimestamp, protocolVersion: version.protocolVersion };
 }

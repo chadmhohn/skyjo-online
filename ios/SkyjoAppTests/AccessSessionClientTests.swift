@@ -8,6 +8,11 @@ import Testing
 
 @Suite("Access, account, and stats HTTP clients", .serialized)
 struct AccessSessionClientTests {
+  @Test("Account throttling is a recognized safe server error")
+  func accountRateLimitCode() {
+    #expect(SkyjoAPIErrorCode.accountRateLimited.isKnown)
+  }
+
   @Test("Status requires its typed field and tolerates additive fields")
   func statusResponseCompatibility() async throws {
     let fixture = makeFixture { request in
@@ -1533,7 +1538,7 @@ struct AccessSessionClientTests {
 struct AccessSessionNodeIntegrationTests {
   private let syntheticAccessPassword = "skyjo-ios-contract-access-v1"
 
-  @Test("URLSession persists outer access and logout clears both cookie layers")
+  @Test("Retired access endpoint stays open and legacy logout clears both cookie layers")
   func cookieRoundTrip() async throws {
     let environment = ProcessInfo.processInfo.environment
     guard
@@ -1556,21 +1561,11 @@ struct AccessSessionNodeIntegrationTests {
       clearCookies(cookieStorage, for: baseURL)
     }
 
-    #expect(try await client.status() == AccessSessionStatus(authenticated: false))
-
-    await expectError(
-      .server(
-        statusCode: 401,
-        code: .accessAuthenticationFailed,
-        message: "Authentication failed."
-      )
-    ) {
-      _ = try await client.login(password: "incorrect-\(syntheticAccessPassword.count)")
-    }
+    #expect(try await client.status() == AccessSessionStatus(authenticated: true))
     #expect(cookieNames(in: cookieStorage, for: baseURL).isEmpty)
 
     #expect(
-      try await client.login(password: syntheticAccessPassword)
+      try await client.login(password: "ignored-legacy-\(syntheticAccessPassword.count)")
         == AccessSessionStatus(authenticated: true)
     )
     #expect(try await client.status() == AccessSessionStatus(authenticated: true))
@@ -1586,15 +1581,15 @@ struct AccessSessionNodeIntegrationTests {
     cookieStorage.setCookie(accountCookie)
     #expect(cookieNames(in: cookieStorage, for: baseURL).contains("skyjo_account"))
 
-    #expect(try await client.logout() == AccessSessionStatus(authenticated: false))
+    #expect(try await client.logout() == AccessSessionStatus(authenticated: true))
     let namesAfterLogout = cookieNames(in: cookieStorage, for: baseURL)
     #expect(!namesAfterLogout.contains("skyjo_session"))
     #expect(!namesAfterLogout.contains("skyjo_account"))
-    #expect(try await client.status() == AccessSessionStatus(authenticated: false))
-    #expect(try await client.logout() == AccessSessionStatus(authenticated: false))
+    #expect(try await client.status() == AccessSessionStatus(authenticated: true))
+    #expect(try await client.logout() == AccessSessionStatus(authenticated: true))
   }
 
-  @Test("Two cookie layers survive client recreation and protect the complete account and stats flow")
+  @Test("Account signup needs no outer cookie and survives client recreation")
   func accountStatsRoundTripAcrossRelaunchSimulation() async throws {
     let environment = ProcessInfo.processInfo.environment
     guard
@@ -1614,10 +1609,8 @@ struct AccessSessionNodeIntegrationTests {
     defer { clearCookies(cookieStorage, for: baseURL) }
 
     #expect(try await firstClient.readiness().status == .ready)
-    #expect(
-      try await firstClient.loginAccess(password: syntheticAccessPassword)
-        == AccessSessionStatus(authenticated: true)
-    )
+    #expect(try await firstClient.accessStatus() == AccessSessionStatus(authenticated: true))
+    #expect(cookieNames(in: cookieStorage, for: baseURL).isEmpty)
 
     let accountPassword = "native-account-password-v1"
     let replacementPassword = "native-account-password-v2"
@@ -1628,7 +1621,8 @@ struct AccessSessionNodeIntegrationTests {
       password: accountPassword,
       confirmPassword: accountPassword
     )
-    #expect(cookieNames(in: cookieStorage, for: baseURL).isSuperset(of: ["skyjo_session", "skyjo_account"]))
+    #expect(cookieNames(in: cookieStorage, for: baseURL).contains("skyjo_account"))
+    #expect(!cookieNames(in: cookieStorage, for: baseURL).contains("skyjo_session"))
 
     firstSession.invalidateAndCancel()
     let relaunchedSession = SkyjoURLSessionFactory.makeDedicated(cookieStorage: cookieStorage)

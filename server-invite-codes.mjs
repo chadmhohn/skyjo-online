@@ -63,7 +63,7 @@ export function createPersistentInviteInstallCode({
   throw new PublicApiError('CODE_ALLOCATION_FAILED');
 }
 
-export function createInviteRedemptionRateLimiter({
+export function createRequestRateLimiter({
   limit = 12,
   windowMs = 5 * 60 * 1000,
   maxKeys = 10_000,
@@ -102,3 +102,5 @@ export function createInviteRedemptionRateLimiter({
     }
   });
 }
+
+export const createInviteRedemptionRateLimiter = createRequestRateLimiter;

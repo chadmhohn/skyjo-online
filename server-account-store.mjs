@@ -17,6 +17,7 @@ export const APNS_MAX_ACTIVE_INSTALLATIONS_PER_ACCOUNT = 8;
 const publicApiErrors = new Map([
   ['ACCESS_AUTHENTICATION_FAILED', Object.freeze({ status: 401, message: 'Authentication failed.' })],
   ['ACCOUNT_AUTHENTICATION_REQUIRED', Object.freeze({ status: 401, message: 'Sign in to your Skyjo account.' })],
+  ['ACCOUNT_RATE_LIMITED', Object.freeze({ status: 429, message: 'Too many account attempts. Try again later.' })],
   ['INVALID_REQUEST', Object.freeze({ status: 400, message: 'Request did not match the expected contract.' })],
   ['UNSUPPORTED_MEDIA_TYPE', Object.freeze({ status: 415, message: 'Content-Type must be application/json.' })],
   ['METHOD_NOT_ALLOWED', Object.freeze({ status: 405, message: 'Method not allowed.' })],

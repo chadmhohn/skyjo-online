@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import { devices, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
-import { expect, installSeededBrowserRuntime, test } from '../fixtures';
+import { expect, installSeededBrowserRuntime, test, testClientIpHeaders } from '../fixtures';
 
 type PortraitVariant = {
   boardScroll?: boolean;
@@ -146,6 +146,7 @@ async function openMultiplayerClients(
     for (let index = 0; index < playerCount; index += 1) {
       const context = await browser.newContext({
         deviceScaleFactor: iphone16ProMax.deviceScaleFactor,
+        extraHTTPHeaders: testClientIpHeaders(`mobile-fixed-${suffix}-${index}`),
         hasTouch: iphone16ProMax.hasTouch,
         isMobile: iphone16ProMax.isMobile,
         screen: portrait,

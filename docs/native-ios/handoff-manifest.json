@@ -293,7 +293,7 @@
   "nativeUniversalLinkEvidence": {
     "repositoryOwned": [
       "strict exact production-host invite URL parsing",
-      "app-coordinator handoff and real isolated-Node redemption with outer-access-only and stale-room assertions",
+      "app-coordinator handoff and real isolated-Node redemption with no-account-grant and stale-room assertions",
       "exact source Associated Domains declaration selected by both app configurations",
       "fail-closed built Release simulator executable entitlement audit for every architecture"
     ],
@@ -317,7 +317,7 @@
     "browserPeer": "real incognito Playwright Chromium driven through current PWA UI under a separate credential-free environment",
     "previousPwaCompatibility": "exact v0.3.2 command and snapshot validators pinned by release commit and reviewed SHA-256 digests",
     "state": "temporary isolated SQLite and room files",
-    "credentials": "fixed non-secret access fixture plus generated test-only session and invite secrets",
+    "credentials": "no access password; generated test-only session and invite secrets",
     "simulatorEnvironmentNames": [
       "SKYJO_IOS_TEST_SERVER_URL",
       "SKYJO_IOS_TEST_MODE",
@@ -326,11 +326,11 @@
     "cleanup": "on every trappable exit terminate the exact Chromium driver before the exact server child, remove validated temporary state, browser profile, and raw logs, scan raw evidence for generated secrets, and stage only verified ignored evidence for CI upload"
   },
   "repositoryCapabilitiesAwaitingDeploymentVerification": [
-    "pre-gate GET/POST/DELETE JSON outer-access session API using the established signed cookie",
+    "legacy-compatible GET/POST/DELETE access-session API that always reports open access",
     "stable JSON API error envelope with code and legacy-compatible error fields",
     "contracts/v1 machine-readable schemas and deterministic sanitized fixtures",
     "public exact-shape apple-app-site-association limited to /invite/* with open=browser excluded",
-    "pre-gate native invite-token redemption that grants only the outer access cookie",
+    "public native invite-token redemption that grants no account session and may emit only the legacy compatibility cookie",
     "native URLSession access-client tests against an isolated real local Node server",
     "native app-coordinator invite handoff against an isolated real local Node server plus built Release simulator Associated Domains entitlement audit",
     "strict actor-owned native protocol-v2 room client with account-fenced durable reset recovery",

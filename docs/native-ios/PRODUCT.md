@@ -10,8 +10,8 @@ The native client is a companion to the PWA, not a replacement deployment. Playe
 
 | Capability | Native v0.1.0 behavior | Source of truth |
 | --- | --- | --- |
-| Outer access gate | Enter the shared access password or redeem a room invite; retain the signed server session cookie | `server.mjs`, `contracts/v1/schemas/account-http.schema.json`, and `AccessSessionClient` |
-| Accounts | Sign up, sign in/out, edit display name, change password | `src/account.tsx`, `server.mjs`, `server-account-store.mjs` |
+| Public access | Open directly into guest play; no shared password or outer-access cookie is required | `server.mjs`, `BootstrapHomeView.swift`, and issue #228 |
+| Accounts | Optionally sign up, sign in/out, edit display name, and change password; Google sign-in is future work after v0.1.0 | `src/account.tsx`, `server.mjs`, `server-account-store.mjs` |
 | Solo setup | Continue an existing game or explicitly replace it; choose 1-7 bots and Easy, Medium, Hard, Ultra Hard, or deterministic Mixed | `src/App.tsx`, `src/SoloSetupFlow.tsx`, `src/SoloGamePrompt.tsx`, `src/soloAiSetup.ts` |
 | Solo play | Full rules, scoring, round continuity, bot identities/difficulties, offline play, atomic restore, and stats outbox | `src/game.ts`, `src/aiStrategy.ts`, `src/soloDurability.ts` |
 | Multiplayer | Create/join rooms, reconnect to the same seat, opening reveal, turns, ready flow, leave/remove, reset, AI takeover, and mixed web/native play | protocol-v2 files listed in `BACKEND_CONTRACTS.md` |

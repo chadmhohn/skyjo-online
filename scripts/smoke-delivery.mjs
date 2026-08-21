@@ -48,6 +48,16 @@ async function withPublicFixture({ legacy = false, nativeInviteHandoff = true } 
       response.end(JSON.stringify({ id: '/', name: 'Skyjo Online', icons: [{ src: '/icon.png' }] }));
       return;
     }
+    if (!legacy && nativeInviteHandoff && request.url === '/login?next=%2Frules') {
+      response.writeHead(302, { ...noStore, location: '/rules' });
+      response.end();
+      return;
+    }
+    if (!legacy && nativeInviteHandoff && request.url === '/') {
+      response.writeHead(200, { ...noStore, 'content-type': 'text/html; charset=utf-8' });
+      response.end('<div id="root"></div>');
+      return;
+    }
     if (request.url === '/login') {
       response.writeHead(200, { ...noStore, 'content-type': 'text/html; charset=utf-8' });
       response.end('<form method="post" action="/login"></form>');

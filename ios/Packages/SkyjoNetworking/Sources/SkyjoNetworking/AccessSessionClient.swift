@@ -22,6 +22,7 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
   public static let accessAuthenticationFailed = Self(rawValue: "ACCESS_AUTHENTICATION_FAILED")
   public static let accountAuthenticationFailed = Self(rawValue: "ACCOUNT_AUTHENTICATION_FAILED")
   public static let accountAuthenticationRequired = Self(rawValue: "ACCOUNT_AUTHENTICATION_REQUIRED")
+  public static let accountRateLimited = Self(rawValue: "ACCOUNT_RATE_LIMITED")
   public static let accountExists = Self(rawValue: "ACCOUNT_EXISTS")
   public static let accountNotFound = Self(rawValue: "ACCOUNT_NOT_FOUND")
   public static let accountSessionChanged = Self(rawValue: "ACCOUNT_SESSION_CHANGED")
@@ -80,6 +81,7 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
     .accessAuthenticationFailed,
     .accountAuthenticationFailed,
     .accountAuthenticationRequired,
+    .accountRateLimited,
     .accountExists,
     .accountNotFound,
     .accountSessionChanged,
@@ -162,6 +164,7 @@ extension SkyjoHTTPClientError: LocalizedError {
 public enum SkyjoURLSessionFactory: Sendable {
   public static func makeDedicated(
     cookieStorage: HTTPCookieStorage = .shared,
+    additionalHTTPHeaders: [String: String] = [:],
     protocolClasses: [AnyClass]? = nil
   ) -> URLSession {
     let configuration = URLSessionConfiguration.default
@@ -171,6 +174,9 @@ public enum SkyjoURLSessionFactory: Sendable {
     configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
     configuration.urlCache = nil
     configuration.urlCredentialStorage = nil
+    if !additionalHTTPHeaders.isEmpty {
+      configuration.httpAdditionalHeaders = additionalHTTPHeaders
+    }
     if let protocolClasses {
       configuration.protocolClasses = protocolClasses
     }
