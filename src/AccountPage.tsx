@@ -24,6 +24,9 @@ export default function AccountPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [profileDisplayName, setProfileDisplayName] = useState('');
+  const [showsDeletion, setShowsDeletion] = useState(false);
+  const [deletionPassword, setDeletionPassword] = useState('');
+  const [deletionConfirmation, setDeletionConfirmation] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -94,6 +97,23 @@ export default function AccountPage() {
     }
   }
 
+  async function handleAccountDeletion(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await account.deleteAccount(deletionPassword, deletionConfirmation);
+      setDeletionPassword('');
+      setDeletionConfirmation('');
+      navigate('/');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Account deletion failed safely. Your account remains active.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="skyjo-surface px-4 py-8">
       <section className="skyjo-shell mx-auto max-w-3xl space-y-5">
@@ -129,6 +149,30 @@ export default function AccountPage() {
                 <label>Confirm new password<input className="skyjo-input px-3 py-2" onChange={(event) => setConfirmPassword(event.target.value)} type="password" value={confirmPassword} /></label>
                 <button className="skyjo-button skyjo-button-primary px-4 py-2" disabled={busy} type="submit">Change Password</button>
               </form>
+              <section className="skyjo-account-form" aria-labelledby="delete-account-heading">
+                <div>
+                  <h2 className="text-xl font-black text-[#f5e6c8]" id="delete-account-heading">Delete account</h2>
+                  <p className="mt-2 text-sm text-[#f5e6c8]/72">
+                    This permanently removes your profile, sessions, notification registrations, and solo history. Multiplayer scores remain only as “Deleted player”; your active-room chat is removed.
+                  </p>
+                </div>
+                {!showsDeletion ? (
+                  <button className="skyjo-button px-4 py-2" disabled={busy} onClick={() => setShowsDeletion(true)} type="button">Delete Account</button>
+                ) : (
+                  <form className="space-y-3" onSubmit={handleAccountDeletion}>
+                    <label>Current password<input autoComplete="current-password" className="skyjo-input px-3 py-2" onChange={(event) => setDeletionPassword(event.target.value)} type="password" value={deletionPassword} /></label>
+                    <label>Type DELETE to confirm<input autoCapitalize="characters" autoComplete="off" className="skyjo-input px-3 py-2" onChange={(event) => setDeletionConfirmation(event.target.value)} value={deletionConfirmation} /></label>
+                    <div className="flex flex-wrap gap-2">
+                      <button className="skyjo-button px-4 py-2" disabled={busy || !deletionPassword || deletionConfirmation !== 'DELETE'} type="submit">Permanently Delete Account</button>
+                      <button className="skyjo-button px-4 py-2" disabled={busy} onClick={() => {
+                        setShowsDeletion(false);
+                        setDeletionPassword('');
+                        setDeletionConfirmation('');
+                      }} type="button">Cancel</button>
+                    </div>
+                  </form>
+                )}
+              </section>
             </div>
           ) : (
             <form className="skyjo-account-form mt-5" onSubmit={handleAuth}>

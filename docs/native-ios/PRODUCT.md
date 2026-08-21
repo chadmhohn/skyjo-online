@@ -78,6 +78,6 @@ The fixtures are compatibility assets under `contracts/v1`, not a new game/proto
 3. Internal TestFlight with production-like backend access.
 4. Complete [branding and asset-rights gate #193](https://github.com/chadmhohn/skyjo-online/issues/193).
 5. External TestFlight for invited friends after Beta App Review.
-6. Public App Store only after account deletion, privacy metadata, support URL, review account, and product-page assets are approved.
+6. Public App Store only after the implemented in-app account deletion path, privacy metadata, support URL, review account, and product-page assets are approved.
 
 Apple's current review guidance requires original or licensed content and prohibits misleading/copycat metadata. Treat that as a release-planning constraint, not as a reason to block engineering under a working title.

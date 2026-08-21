@@ -28,6 +28,26 @@ const releaseIdentity = await loadReleaseIdentity(path.dirname(releasePath), {
 });
 const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo backup smoke with spaces '));
 
+function completedState(players) {
+  return {
+    players,
+    phase: 'game-over',
+    round: 1,
+    winnerId: players[0].id,
+    roundHistory: [{
+      round: 1,
+      closerId: players[0].id,
+      scores: players.map((player) => ({
+        playerId: player.id,
+        name: player.name,
+        roundScore: player.roundScore,
+        totalScore: player.totalScore
+      }))
+    }],
+    log: [`${players[0].name} finished the game`]
+  };
+}
+
 try {
   const sourceDirectory = path.join(tempDirectory, 'source state');
   const databasePath = path.join(sourceDirectory, 'skyjo.sqlite');
@@ -39,6 +59,68 @@ try {
     displayName: 'Backup Smoke',
     password: 'backup-smoke-password'
   });
+  const deletedUser = await store.createUser({
+    email: 'deleted-backup-smoke@example.com',
+    displayName: 'Deleted Backup Smoke',
+    password: 'deleted-backup-password'
+  });
+  const deletedSession = store.createSession(deletedUser.id, 60_000);
+  store.savePushSubscription(
+    deletedUser.id,
+    { endpoint: 'https://push.example.test/deleted-backup', keys: { p256dh: 'key', auth: 'auth' } },
+    'backup smoke'
+  );
+  store.db.prepare(`
+    INSERT INTO apns_devices (
+      installation_id, user_id, environment, token_ciphertext, token_nonce,
+      token_auth_tag, token_fingerprint, app_version, locale, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    '40000000-0000-4000-8000-000000000002',
+    deletedUser.id,
+    'development',
+    Buffer.from('00027fff80fe', 'hex'),
+    Buffer.from('000102030405060708090a0b', 'hex'),
+    Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+    Buffer.from('43'.repeat(32), 'hex'),
+    '0.1.0 (203)',
+    'en-US',
+    1,
+    2
+  );
+  const deletedPlayers = [
+    { id: 'deleted-player', kind: 'human', name: 'Deleted Backup Smoke', roundScore: 4, totalScore: 4 },
+    { id: 'retained-player', kind: 'human', name: 'Backup Smoke', roundScore: 9, totalScore: 9 }
+  ];
+  const retainedMultiplayer = store.recordCompletedGame({
+    mode: 'multi',
+    state: completedState(deletedPlayers),
+    roomCode: 'DEL01',
+    createdByUserId: deletedUser.id,
+    playerAccounts: { 'deleted-player': deletedUser.id, 'retained-player': user.id },
+    sourceKey: 'multi:backup-account-deletion'
+  });
+  const deletedSolo = store.recordCompletedGame({
+    mode: 'single',
+    state: completedState([deletedPlayers[0]]),
+    createdByUserId: deletedUser.id,
+    playerAccounts: { 'deleted-player': deletedUser.id },
+    sourceKey: `single:${deletedUser.id}:backup-account-deletion`
+  });
+  const deletionAuthorization = await store.authorizeAccountDeletion(
+    deletedUser.id,
+    'deleted-backup-password'
+  );
+  assert.deepEqual(store.deleteAccount(deletionAuthorization), {
+    deletedSoloGames: 1,
+    anonymizedMultiplayerGames: 1
+  });
+  assert.equal(store.getUserBySessionToken(deletedSession.token), null);
+  assert.equal(store.getGame(deletedSolo.id), null);
+  assert.equal(
+    store.getVisibleGame(user, retainedMultiplayer.id).participants[0].displayName,
+    'Deleted player'
+  );
   store.close();
   const sourceDatabase = new DatabaseSync(databasePath);
   sourceDatabase.exec('PRAGMA foreign_keys = ON');
@@ -128,6 +210,34 @@ try {
     schemaVersion: 2
   });
   const restoredDatabase = new DatabaseSync(path.join(restoreDirectory, 'skyjo.sqlite'), { readOnly: true });
+  assert.equal(
+    restoredDatabase.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ?').get(deletedUser.id).count,
+    0,
+    'post-deletion backup restore does not resurrect the account'
+  );
+  assert.equal(
+    restoredDatabase.prepare('SELECT COUNT(*) AS count FROM account_sessions WHERE user_id = ?').get(deletedUser.id).count,
+    0
+  );
+  assert.equal(
+    restoredDatabase.prepare('SELECT COUNT(*) AS count FROM push_subscriptions WHERE user_id = ?').get(deletedUser.id).count,
+    0
+  );
+  assert.equal(
+    restoredDatabase.prepare('SELECT COUNT(*) AS count FROM apns_devices WHERE user_id = ?').get(deletedUser.id).count,
+    0
+  );
+  assert.equal(
+    restoredDatabase.prepare('SELECT COUNT(*) AS count FROM games WHERE id = ?').get(deletedSolo.id).count,
+    0
+  );
+  assert.deepEqual(
+    { ...restoredDatabase.prepare(
+      'SELECT user_id, display_name FROM game_participants WHERE game_id = ? AND player_id = ?'
+    ).get(retainedMultiplayer.id, 'deleted-player') },
+    { user_id: null, display_name: 'Deleted player' },
+    'shared multiplayer history stays anonymized after restore'
+  );
   const restoredAPNSRow = {
     ...restoredDatabase.prepare(`
       SELECT
@@ -166,7 +276,7 @@ try {
     /live state target/i
   );
   console.log(
-    'backup smoke passed: online SQLite snapshot, fixed checksums, exact optional APNs-row preservation, and isolated restore in paths with spaces'
+    'backup smoke passed: online SQLite snapshot, fixed checksums, post-deletion non-resurrection, exact optional APNs-row preservation, and isolated restore in paths with spaces'
   );
 } finally {
   await fs.rm(tempDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

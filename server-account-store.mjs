@@ -27,6 +27,8 @@ const publicApiErrors = new Map([
   ['ACCOUNT_EXISTS', Object.freeze({ status: 400, message: 'An account already exists for that email.' })],
   ['ACCOUNT_NOT_FOUND', Object.freeze({ status: 400, message: 'Account not found.' })],
   ['CURRENT_PASSWORD_MISMATCH', Object.freeze({ status: 400, message: 'Current password did not match.' })],
+  ['ACCOUNT_DELETION_STALE', Object.freeze({ status: 409, message: 'Account changed. Sign in again before deleting it.' })],
+  ['ACCOUNT_DELETION_UNAVAILABLE', Object.freeze({ status: 503, message: 'Account deletion could not be completed safely. Try again.' })],
   ['LAST_ADMIN', Object.freeze({ status: 400, message: 'Keep at least one active admin.' })],
   ['INVALID_PUSH_SUBSCRIPTION', Object.freeze({ status: 400, message: 'Push subscription is invalid.' })],
   ['MISSING_PUSH_KEYS', Object.freeze({ status: 400, message: 'Push subscription is missing keys.' })],
@@ -556,6 +558,36 @@ function publicUser(row) {
   };
 }
 
+const deletedPlayerName = 'Deleted player';
+
+function anonymizeCompletedState(rawState, playerIds) {
+  let state;
+  try {
+    state = JSON.parse(rawState);
+  } catch (cause) {
+    throw new Error('Completed game journal state is invalid.', { cause });
+  }
+  if (!isRecord(state) || !Array.isArray(state.players)) {
+    throw new Error('Completed game journal state is invalid.');
+  }
+
+  for (const player of state.players) {
+    if (isRecord(player) && playerIds.has(player.id)) player.name = deletedPlayerName;
+  }
+  if (Array.isArray(state.roundHistory)) {
+    for (const round of state.roundHistory) {
+      if (!isRecord(round) || !Array.isArray(round.scores)) continue;
+      for (const score of round.scores) {
+        if (isRecord(score) && playerIds.has(score.playerId)) score.name = deletedPlayerName;
+      }
+    }
+  }
+  // Free-form game logs include copied display names and are not required for
+  // retained score/history behavior after an account is deleted.
+  state.log = [];
+  return JSON.stringify(state);
+}
+
 function normalizeBool(value) {
   return value === true || value === 1 ? 1 : 0;
 }
@@ -717,12 +749,12 @@ export class AccountStore {
     if (!normalizedEmail) return null;
     assertEmail(normalizedEmail);
     const existing = this.getUserRowByEmail(normalizedEmail);
-    if (existing) {
-      if (existing.role !== 'admin' || existing.disabled === 1) {
-        this.db.prepare('UPDATE users SET role = ?, disabled = 0, updated_at = ? WHERE id = ?').run('admin', this.now(), existing.id);
-      }
-      return publicUser(this.getUserRowById(existing.id));
-    }
+    if (existing) return existing.role === 'admin' && existing.disabled === 0 ? publicUser(existing) : null;
+    // Initial credentials are a one-time empty-database bootstrap, not an
+    // account repair loop. Once any account exists, a previously deleted
+    // bootstrap email must stay deleted across service restarts.
+    const userCount = Number(this.db.prepare('SELECT COUNT(*) AS count FROM users').get()?.count || 0);
+    if (userCount > 0) return null;
     if (!password) return null;
     return this.createUser({
       email: normalizedEmail,
@@ -836,6 +868,113 @@ export class AccountStore {
     await this.setUserPassword(userId, nextPassword);
     this.db.prepare('DELETE FROM account_sessions WHERE user_id = ?').run(userId);
     this.db.prepare('DELETE FROM apns_devices WHERE user_id = ?').run(userId);
+  }
+
+  async authorizeAccountDeletion(userId, currentPassword) {
+    const row = this.getUserRowById(userId);
+    if (!row || row.disabled === 1) throw new PublicApiError('ACCOUNT_NOT_FOUND');
+    if (!(await verifyPassword(currentPassword, row))) throw new PublicApiError('CURRENT_PASSWORD_MISMATCH');
+    if (row.role === 'admin') {
+      const activeAdmins = Number(
+        this.db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0").get()?.count || 0
+      );
+      if (activeAdmins <= 1) throw new PublicApiError('LAST_ADMIN');
+    }
+    return Object.freeze({
+      userId: row.id,
+      passwordHash: row.password_hash,
+      passwordSalt: row.password_salt
+    });
+  }
+
+  deleteAccount(authorization) {
+    const userId = typeof authorization?.userId === 'string' ? authorization.userId : '';
+    const passwordHash = typeof authorization?.passwordHash === 'string' ? authorization.passwordHash : '';
+    const passwordSalt = typeof authorization?.passwordSalt === 'string' ? authorization.passwordSalt : '';
+    if (!userId || !passwordHash || !passwordSalt) throw new TypeError('Account deletion authorization is invalid.');
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.getUserRowById(userId);
+      if (!row || row.disabled === 1 || row.password_hash !== passwordHash || row.password_salt !== passwordSalt) {
+        throw new PublicApiError('ACCOUNT_DELETION_STALE');
+      }
+      if (row.role === 'admin') {
+        const activeAdmins = Number(
+          this.db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0").get()?.count || 0
+        );
+        if (activeAdmins <= 1) throw new PublicApiError('LAST_ADMIN');
+      }
+
+      const participantRows = this.db
+        .prepare(
+          `SELECT game_id, player_id
+           FROM game_participants
+           WHERE user_id = ?`
+        )
+        .all(userId);
+      const playerIdsByGame = new Map();
+      for (const participant of participantRows) {
+        const ids = playerIdsByGame.get(participant.game_id) || new Set();
+        ids.add(participant.player_id);
+        playerIdsByGame.set(participant.game_id, ids);
+      }
+
+      const soloGameIds = this.db
+        .prepare(
+          `SELECT DISTINCT games.id
+           FROM games
+           LEFT JOIN game_participants ON game_participants.game_id = games.id
+           WHERE games.mode = 'single'
+             AND (games.created_by_user_id = ? OR game_participants.user_id = ?)`
+        )
+        .all(userId, userId)
+        .map((game) => game.id);
+      if (soloGameIds.length > 0) {
+        this.db
+          .prepare(`DELETE FROM games WHERE id IN (${placeholders(soloGameIds)})`)
+          .run(...soloGameIds);
+      }
+
+      let anonymizedMultiplayerGames = 0;
+      for (const [gameId, playerIds] of playerIdsByGame.entries()) {
+        if (soloGameIds.includes(gameId)) continue;
+        const game = this.db
+          .prepare('SELECT mode, final_state_json, winner_player_id FROM games WHERE id = ?')
+          .get(gameId);
+        if (!game || game.mode !== 'multi') continue;
+        const anonymizedState = anonymizeCompletedState(game.final_state_json, playerIds);
+        this.db
+          .prepare(
+            `UPDATE games
+             SET source_key = NULL,
+                 room_code = NULL,
+                 winner_name = CASE WHEN winner_player_id IN (${placeholders([...playerIds])}) THEN ? ELSE winner_name END,
+                 final_state_json = ?
+             WHERE id = ?`
+          )
+          .run(...playerIds, deletedPlayerName, anonymizedState, gameId);
+        anonymizedMultiplayerGames += 1;
+      }
+
+      this.db
+        .prepare('UPDATE game_participants SET user_id = NULL, display_name = ? WHERE user_id = ?')
+        .run(deletedPlayerName, userId);
+      this.db
+        .prepare('UPDATE game_round_scores SET user_id = NULL, display_name = ? WHERE user_id = ?')
+        .run(deletedPlayerName, userId);
+
+      const deleted = this.db.prepare('DELETE FROM users WHERE id = ?').run(userId).changes;
+      if (deleted !== 1) throw new PublicApiError('ACCOUNT_DELETION_STALE');
+      this.db.exec('COMMIT');
+      return {
+        deletedSoloGames: soloGameIds.length,
+        anonymizedMultiplayerGames
+      };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   async setUserPassword(userId, nextPassword) {

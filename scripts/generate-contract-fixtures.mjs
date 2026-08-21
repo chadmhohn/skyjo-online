@@ -1196,7 +1196,8 @@ async function createHttpFixtures(gameOverState) {
   const publicErrorCodes = [
     'ACCESS_AUTHENTICATION_FAILED', 'ACCOUNT_RATE_LIMITED', 'INVALID_REQUEST', 'UNSUPPORTED_MEDIA_TYPE', 'METHOD_NOT_ALLOWED',
     'INVALID_EMAIL', 'WEAK_PASSWORD', 'INVALID_ROLE', 'ACCOUNT_EXISTS', 'ACCOUNT_NOT_FOUND',
-    'CURRENT_PASSWORD_MISMATCH', 'LAST_ADMIN', 'INVALID_PUSH_SUBSCRIPTION', 'MISSING_PUSH_KEYS',
+    'CURRENT_PASSWORD_MISMATCH', 'ACCOUNT_DELETION_STALE', 'ACCOUNT_DELETION_UNAVAILABLE', 'LAST_ADMIN',
+    'INVALID_PUSH_SUBSCRIPTION', 'MISSING_PUSH_KEYS',
     'INCOMPLETE_GAME', 'INVALID_ROOM_CODE', 'PASSWORDS_MUST_MATCH', 'MISSING_HUMAN_PLAYER',
     'ACCOUNT_SESSION_CHANGED', 'STATS_CLIENT_UPGRADE_REQUIRED', 'INVALID_COMPLETED_AT',
     'REQUEST_TOO_LARGE', 'INVALID_JSON', 'EXPECTED_JSON_OBJECT', 'CODE_ALLOCATION_FAILED', 'INVITE_CODE_LIMIT',
@@ -1225,6 +1226,7 @@ async function createHttpFixtures(gameOverState) {
     locale: 'en-US'
   };
   const apnsLogoutRequest = { installationId: '5000000a-0000-4000-8000-000000000005' };
+  const accountDeletionRequest = { currentPassword: 'current-password', confirmation: 'DELETE' };
 
   const valid = [
     fixtureCase('access signed out', 'account-http.schema.json', { authenticated: false }),
@@ -1232,6 +1234,7 @@ async function createHttpFixtures(gameOverState) {
     fixtureCase('account absent', 'account-http.schema.json', { user: null }),
     fixtureCase('account user', 'account-http.schema.json', { user }),
     fixtureCase('operation succeeded', 'account-http.schema.json', { ok: true }),
+    fixtureCase('account deletion request', 'account-http.schema.json', accountDeletionRequest),
     fixtureCase('recorded stats game', 'stats-http.schema.json', { game }),
     fixtureCase('stats games list', 'stats-http.schema.json', { games: [game] }),
     fixtureCase('stats summary', 'stats-http.schema.json', summary),
@@ -1264,6 +1267,10 @@ async function createHttpFixtures(gameOverState) {
   const invalid = [
     fixtureCase('access flag has wrong type', 'account-http.schema.json', { authenticated: 'yes' }, { expectedLayer: 'schema' }),
     fixtureCase('account exposes internal field', 'account-http.schema.json', accountInternal, { expectedLayer: 'schema' }),
+    fixtureCase('account deletion lacks exact confirmation', 'account-http.schema.json', {
+      ...accountDeletionRequest,
+      confirmation: 'delete'
+    }, { expectedLayer: 'schema' }),
     fixtureCase('stats game omits AI attribution', 'stats-http.schema.json', { game: incompleteGame }, { expectedLayer: 'schema' }),
     fixtureCase('readiness schema is unsupported', 'operational.schema.json', { ...readiness, schemaVersion: 3 }, { expectedLayer: 'schema' }),
     fixtureCase('version timestamp is not canonical', 'operational.schema.json', { ...version, buildTimestamp: 'not-a-date' }, { expectedLayer: 'schema' }),

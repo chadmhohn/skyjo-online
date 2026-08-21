@@ -25,6 +25,8 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
   public static let accountRateLimited = Self(rawValue: "ACCOUNT_RATE_LIMITED")
   public static let accountExists = Self(rawValue: "ACCOUNT_EXISTS")
   public static let accountNotFound = Self(rawValue: "ACCOUNT_NOT_FOUND")
+  public static let accountDeletionStale = Self(rawValue: "ACCOUNT_DELETION_STALE")
+  public static let accountDeletionUnavailable = Self(rawValue: "ACCOUNT_DELETION_UNAVAILABLE")
   public static let accountSessionChanged = Self(rawValue: "ACCOUNT_SESSION_CHANGED")
   public static let apnsDeviceLimit = Self(rawValue: "APNS_DEVICE_LIMIT")
   public static let apnsNotConfigured = Self(rawValue: "APNS_NOT_CONFIGURED")
@@ -84,6 +86,8 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
     .accountRateLimited,
     .accountExists,
     .accountNotFound,
+    .accountDeletionStale,
+    .accountDeletionUnavailable,
     .accountSessionChanged,
     .apnsDeviceLimit,
     .apnsNotConfigured,

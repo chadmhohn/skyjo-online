@@ -83,6 +83,7 @@ type AccountContextValue = {
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, displayName: string, password: string, confirmPassword: string) => Promise<void>;
   logout: () => Promise<void>;
+  deleteAccount: (currentPassword: string, confirmation: string) => Promise<void>;
   changePassword: (currentPassword: string, password: string, confirmPassword: string) => Promise<void>;
   updateProfile: (displayName: string) => Promise<void>;
 };
@@ -216,6 +217,14 @@ export function AccountProvider({ children }: { children: ReactNode }) {
         } finally {
           applyConfirmedUser(null);
         }
+      },
+      async deleteAccount(currentPassword, confirmation) {
+        setError('');
+        await apiJson<{ ok: boolean }>('/api/account', {
+          method: 'DELETE',
+          body: JSON.stringify({ currentPassword, confirmation })
+        });
+        applyConfirmedUser(null);
       },
       async changePassword(currentPassword, password, confirmPassword) {
         setError('');

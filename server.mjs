@@ -1298,6 +1298,67 @@ async function flushRoomPersistence() {
   await queueRoomsSave();
 }
 
+const deletedAccountPlayerName = 'Deleted player';
+
+function scrubAccountFromActiveRooms(userId) {
+  const changedRooms = [];
+  for (const room of rooms.values()) {
+    const deletedPlayers = room.players.filter((player) => player.userId === userId);
+    if (deletedPlayers.length === 0) continue;
+    const deletedPlayerIds = new Set(deletedPlayers.map((player) => player.id));
+
+    for (const client of [...room.clients]) {
+      if (!deletedPlayerIds.has(client.playerId)) continue;
+      room.clients.delete(client);
+      client.close(1000, 'Account deleted');
+    }
+    for (const player of deletedPlayers) {
+      player.userId = undefined;
+      player.name = deletedAccountPlayerName;
+      player.connected = false;
+      player.disconnectedAt = Date.now();
+      player.controller = 'ai';
+    }
+    if (deletedPlayerIds.has(room.hostId)) {
+      room.hostId = room.players.find((player) => !deletedPlayerIds.has(player.id))?.id || deletedPlayers[0].id;
+    }
+    for (const player of room.players) player.host = player.id === room.hostId;
+
+    room.chatMessages = Array.isArray(room.chatMessages)
+      ? room.chatMessages.filter((message) => !deletedPlayerIds.has(message.playerId))
+      : [];
+    room.readyForNextRoundPlayerIds = Array.isArray(room.readyForNextRoundPlayerIds)
+      ? room.readyForNextRoundPlayerIds.filter((playerId) => !deletedPlayerIds.has(playerId))
+      : [];
+    if (room.state && Array.isArray(room.state.players)) {
+      // The public-state projector caches by state identity. Replace the state
+      // instead of mutating it so the next broadcast cannot reuse names from a
+      // snapshot projected before deletion.
+      room.state = {
+        ...room.state,
+        players: room.state.players.map((player) => deletedPlayerIds.has(player.id)
+          ? { ...player, name: deletedAccountPlayerName }
+          : player),
+        roundHistory: Array.isArray(room.state.roundHistory)
+          ? room.state.roundHistory.map((round) => ({
+              ...round,
+              scores: Array.isArray(round?.scores)
+                ? round.scores.map((score) => deletedPlayerIds.has(score.playerId)
+                    ? { ...score, name: deletedAccountPlayerName }
+                    : score)
+                : []
+            }))
+          : [],
+        log: []
+      };
+    }
+    room.updatedAt = Date.now();
+    room.revision = (Number.isSafeInteger(room.revision) ? room.revision : 0) + 1;
+    changedRooms.push(room);
+  }
+  return changedRooms;
+}
+
 function markAllPlayersDisconnected() {
   const timestamp = Date.now();
   for (const room of rooms.values()) {
@@ -1854,6 +1915,37 @@ async function handleApiRequest(req, res, url) {
       const body = await readJsonBody(req);
       if (body.password !== body.confirmPassword) throw new PublicApiError('PASSWORDS_MUST_MATCH');
       await accountStore.changePassword(user.id, body.currentPassword, body.password);
+      sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
+      return true;
+    }
+
+    if (url.pathname === '/api/account' && req.method === 'DELETE') {
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      if (url.search) throw new PublicApiError('INVALID_REQUEST');
+      const body = await readJsonBody(req);
+      const keys = Object.keys(body).sort();
+      if (
+        keys.length !== 2 ||
+        keys[0] !== 'confirmation' ||
+        keys[1] !== 'currentPassword' ||
+        body.confirmation !== 'DELETE' ||
+        typeof body.currentPassword !== 'string' ||
+        [...body.currentPassword].length < 1 ||
+        [...body.currentPassword].length > 1_024
+      ) {
+        throw new PublicApiError('INVALID_REQUEST');
+      }
+
+      const authorization = await accountStore.authorizeAccountDeletion(user.id, body.currentPassword);
+      const changedRooms = scrubAccountFromActiveRooms(user.id);
+      try {
+        await flushRoomPersistence();
+      } catch {
+        throw new PublicApiError('ACCOUNT_DELETION_UNAVAILABLE');
+      }
+      accountStore.deleteAccount(authorization);
+      for (const room of changedRooms) broadcastRoom(room);
       sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
       return true;
     }

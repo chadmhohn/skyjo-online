@@ -8,6 +8,7 @@ struct AccountView: View {
   @Bindable private var settings: AccountSettingsFormModel
   let user: AccountUser
   @State private var confirmsLogout = false
+  @State private var showsAccountDeletion = false
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   init(
@@ -122,17 +123,19 @@ struct AccountView: View {
       }
 
       Section("Account deletion") {
-        Label("Required before public App Store release", systemImage: "checklist")
+        Label("Permanent account deletion", systemImage: "person.crop.circle.badge.minus")
           .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("account.deletion-gate")
-        Text("Deletion semantics and native UI are tracked in public-release dependency #192. TestFlight work may continue, but this release cannot be listed publicly until that issue is complete.")
+          .accessibilityIdentifier("account.deletion-summary")
+        Text("Deletes your profile, sessions, notification registrations, on-device account saves, and solo history. Multiplayer scores remain only as Deleted player; messages you authored in active rooms are removed.")
           .font(.footnote)
           .foregroundStyle(.primary)
           .fixedSize(horizontal: false, vertical: true)
-        Link("View tracking issue #192", destination: model.accountDeletionIssueURL)
-          .font(.body)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("account.deletion-link")
+        Button("Delete Account", role: .destructive) {
+          showsAccountDeletion = true
+        }
+        .disabled(settings.isDeletingAccount)
+        .buttonStyle(AccessibleBorderedButtonStyle())
+        .accessibilityIdentifier("account.delete")
       }
 
       Section {
@@ -162,6 +165,54 @@ struct AccountView: View {
         Task { await model.logoutAccount() }
       }
       Button("Cancel", role: .cancel) {}
+    }
+    .sheet(isPresented: $showsAccountDeletion) {
+      NavigationStack {
+        Form {
+          Section("This cannot be undone") {
+            Text("Deleting this account signs it out everywhere. Solo records are removed. Multiplayer score history is retained without your account identity, and active-room messages you authored are removed.")
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          Section("Verify your identity") {
+            SecureField("Current password", text: $settings.deletionPassword)
+              .textContentType(.password)
+              .accessibilityIdentifier("account.delete-password")
+            TextField("Type DELETE", text: $settings.deletionConfirmation)
+              .textInputAutocapitalization(.characters)
+              .autocorrectionDisabled()
+              .accessibilityIdentifier("account.delete-confirmation")
+          }
+          if !settings.deletionMessage.isEmpty {
+            Section {
+              Text(settings.deletionMessage)
+                .foregroundStyle(Color.red)
+                .accessibilityIdentifier("account.delete-message")
+            }
+          }
+        }
+        .navigationTitle("Delete Account")
+        .interactiveDismissDisabled(settings.isDeletingAccount)
+        .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel") {
+              settings.deletionPassword = ""
+              settings.deletionConfirmation = ""
+              settings.deletionMessage = ""
+              showsAccountDeletion = false
+            }
+            .disabled(settings.isDeletingAccount)
+          }
+          ToolbarItem(placement: .confirmationAction) {
+            Button("Delete Permanently", role: .destructive) {
+              Task { await model.deleteAccount() }
+            }
+            .disabled(!settings.canDeleteAccount)
+            .accessibilityIdentifier("account.delete-confirm")
+          }
+        }
+      }
+      .presentationDetents([.large])
+      .accessibilityIdentifier("account.delete-sheet")
     }
   }
 

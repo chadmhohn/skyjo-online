@@ -208,4 +208,108 @@ describe('account and stats persistence', () => {
     const second = store!.recordCompletedGame({ ...input, sourceKey: 'single:ada:second' });
     expect(store!.listVisibleGames(ada).map((game: { id: string }) => game.id)).toEqual([second.id, first.id]);
   });
+
+  it('deletes private account data transactionally and anonymizes retained multiplayer history', async () => {
+    const ada = await store!.createUser({ email: 'ada@example.com', displayName: 'Ada', password: 'ada-secret-123' });
+    const grace = await store!.createUser({ email: 'grace@example.com', displayName: 'Grace', password: 'grace-secret-123' });
+    const session = store!.createSession(ada.id, 60_000);
+    store!.savePushSubscription(
+      ada.id,
+      { endpoint: 'https://push.example.test/ada', keys: { p256dh: 'key', auth: 'auth' } },
+      'test'
+    );
+    store!.db.prepare(
+      `INSERT INTO apns_devices (
+        installation_id, user_id, environment, token_ciphertext, token_nonce, token_auth_tag,
+        token_fingerprint, app_version, locale, created_at, updated_at
+      ) VALUES (?, ?, 'production', ?, ?, ?, ?, '0.1.0', 'en-US', ?, ?)`
+    ).run(
+      '10000000-0000-4000-8000-000000000192',
+      ada.id,
+      Buffer.alloc(32, 1),
+      Buffer.alloc(12, 2),
+      Buffer.alloc(16, 3),
+      Buffer.alloc(32, 4),
+      fixedNow,
+      fixedNow
+    );
+
+    const multiplayer = store!.recordCompletedGame({
+      mode: 'multi',
+      state: completedState(),
+      roomCode: 'ABCDE',
+      createdByUserId: ada.id,
+      playerAccounts: { 'player-1': ada.id, 'player-2': grace.id },
+      sourceKey: 'multi:account-deletion'
+    });
+    const solo = store!.recordCompletedGame({
+      mode: 'single',
+      state: completedState(),
+      createdByUserId: ada.id,
+      playerAccounts: { 'player-1': ada.id },
+      sourceKey: `single:${ada.id}:account-deletion`,
+      completedAt: fixedNow
+    });
+
+    await expect(store!.authorizeAccountDeletion(ada.id, 'wrong-password')).rejects.toMatchObject({
+      code: 'CURRENT_PASSWORD_MISMATCH'
+    });
+    expect(store!.getUserRowById(ada.id)).not.toBeNull();
+
+    const staleAuthorization = await store!.authorizeAccountDeletion(ada.id, 'ada-secret-123');
+    await store!.setUserPassword(ada.id, 'ada-secret-456');
+    expect(() => store!.deleteAccount(staleAuthorization)).toThrow(expect.objectContaining({ code: 'ACCOUNT_DELETION_STALE' }));
+
+    const authorization = await store!.authorizeAccountDeletion(ada.id, 'ada-secret-456');
+    expect(store!.deleteAccount(authorization)).toEqual({ deletedSoloGames: 1, anonymizedMultiplayerGames: 1 });
+
+    expect(store!.getUserRowById(ada.id)).toBeUndefined();
+    expect(store!.getUserBySessionToken(session.token)).toBeNull();
+    expect(store!.db.prepare('SELECT COUNT(*) AS count FROM push_subscriptions WHERE user_id = ?').get(ada.id).count).toBe(0);
+    expect(store!.db.prepare('SELECT COUNT(*) AS count FROM apns_devices WHERE user_id = ?').get(ada.id).count).toBe(0);
+    expect(store!.getGame(solo.id)).toBeNull();
+
+    const retained = store!.getVisibleGame(grace, multiplayer.id)!;
+    expect(retained.roomCode).toBeNull();
+    expect(retained.winnerUserId).toBeNull();
+    expect(retained.winnerName).toBe('Deleted player');
+    expect(retained.participants.find((participant: { playerId: string }) => participant.playerId === 'player-1')).toMatchObject({
+      userId: null,
+      displayName: 'Deleted player'
+    });
+    expect(retained.rounds.filter((score: { playerId: string }) => score.playerId === 'player-1'))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ userId: null, displayName: 'Deleted player' })]));
+    const journalRow = store!.db.prepare('SELECT source_key, final_state_json FROM games WHERE id = ?').get(multiplayer.id);
+    expect(journalRow.source_key).toBeNull();
+    const journalState = JSON.parse(journalRow.final_state_json);
+    expect(journalState.players[0].name).toBe('Deleted player');
+    expect(journalState.log).toEqual([]);
+  });
+
+  it('keeps at least one active administrator and never bootstraps a deleted admin again', async () => {
+    const admin = await store!.bootstrapAdmin({ email: 'admin@example.com', password: 'admin-secret-123' });
+    await expect(store!.authorizeAccountDeletion(admin.id, 'admin-secret-123')).rejects.toMatchObject({ code: 'LAST_ADMIN' });
+    expect(store!.getUserRowById(admin.id)).not.toBeNull();
+
+    await store!.createUser({
+      email: 'surviving-admin@example.com',
+      displayName: 'Surviving Admin',
+      password: 'surviving-admin-secret',
+      role: 'admin'
+    });
+    const authorization = await store!.authorizeAccountDeletion(admin.id, 'admin-secret-123');
+    store!.deleteAccount(authorization);
+    expect(await store!.bootstrapAdmin({
+      email: 'admin@example.com',
+      password: 'admin-secret-123'
+    })).toBeNull();
+
+    store!.close();
+    store = await createAccountStore({ filePath: dbFile, now: () => currentTime });
+    expect(await store!.bootstrapAdmin({
+      email: 'admin@example.com',
+      password: 'admin-secret-123'
+    })).toBeNull();
+    expect(store!.getUserRowByEmail('surviving-admin@example.com')?.role).toBe('admin');
+  });
 });

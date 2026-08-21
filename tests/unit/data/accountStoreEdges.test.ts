@@ -30,7 +30,7 @@ describe('account store defensive and fallback behavior', () => {
     store.close();
   });
 
-  it('validates account inputs, bootstrap promotion, uniqueness, and last-admin safety', async () => {
+  it('validates account inputs, one-time bootstrap, uniqueness, and last-admin safety', async () => {
     expect(await store.bootstrapAdmin({ email: '', password: '' })).toBeNull();
     expect(await store.bootstrapAdmin({ email: 'nobody@example.com', password: '' })).toBeNull();
     await expect(store.createUser({ email: '', displayName: '', password: 'password-123' })).rejects.toThrow(/valid email/i);
@@ -75,10 +75,12 @@ describe('account store defensive and fallback behavior', () => {
     });
     expect(store.patchUser(secondAdmin.id, { disabled: true }).disabled).toBe(true);
     const repaired = await store.bootstrapAdmin({ email: 'second-admin@example.com', password: '' });
-    expect(repaired).toMatchObject({ role: 'admin', disabled: false });
+    expect(repaired).toBeNull();
+    expect(store.getUserRowById(secondAdmin.id).disabled).toBe(1);
 
     const promoted = await store.bootstrapAdmin({ email: 'player@example.com', password: '' });
-    expect(promoted).toMatchObject({ role: 'admin', disabled: false });
+    expect(promoted).toBeNull();
+    expect(store.getUserRowById(player.id).role).toBe('player');
     expect(() => store.patchUser('missing-user', {})).toThrow(/not found/i);
     expect(() => store.patchUser(player.id, { role: 'owner' })).toThrow(/role/i);
   });

@@ -39,6 +39,11 @@ struct SoloSessionStoreTests {
       try await store.loadSession(for: .account(PersistenceTestSupport.bobID)).session?.owner
         == .account(PersistenceTestSupport.bobID)
     )
+
+    try await store.deleteAccountData(accountID: PersistenceTestSupport.aliceID)
+    #expect(try await store.loadSession(for: .account(PersistenceTestSupport.aliceID)).session == nil)
+    #expect(try await store.loadSession(for: .guest).session != nil)
+    #expect(try await store.loadSession(for: .account(PersistenceTestSupport.bobID)).session != nil)
   }
 
   @Test("Monotonic save sequences reject stale and conflicting autosaves")

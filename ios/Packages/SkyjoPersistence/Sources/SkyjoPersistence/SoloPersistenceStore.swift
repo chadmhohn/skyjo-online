@@ -307,6 +307,26 @@ public actor SoloPersistenceStore: ModelActor {
     }
   }
 
+  /// Removes every device-local save and undelivered stats item owned by an
+  /// account after the server has confirmed permanent account deletion.
+  public func deleteAccountData(accountID: UUID) throws {
+    let ownerKey = SoloOwnerPartition.account(accountID).storageKey
+    do {
+      try modelContext.transaction {
+        for record in try sessionRecords(ownerKey: ownerKey) {
+          modelContext.delete(record)
+        }
+        for record in try outboxRecords(ownerKey: ownerKey) {
+          recoveryHandles.removeValue(forKey: record.persistentModelID)
+          modelContext.delete(record)
+        }
+      }
+    } catch {
+      modelContext.rollback()
+      throw mapStorageError(error)
+    }
+  }
+
   func eligibleOutboxItems(
     accountID: UUID,
     nowMilliseconds: Int64,

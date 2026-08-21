@@ -13,7 +13,7 @@ Last reviewed by Codex: 2026-07-28 America/Denver, against the live v0.3.2 relea
 - Signed room invites use `SKYJO_INVITE_SECRET` and `SKYJO_INVITE_TTL_HOURS`. The public app no longer has a shared site-password gate; invites still grant neither account identity nor room membership. The retired one-time install-code endpoint remains only for already-minted rollback compatibility.
 - Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
 - Account and game-history database: `/var/lib/skyjo-online/skyjo.sqlite`, via `SKYJO_DB_FILE`.
-- Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. Treat that password as temporary.
+- Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. This is an empty-database-only bootstrap and never recreates or re-promotes an account after any user exists. Treat that password as temporary.
 - App bind address: `127.0.0.1:4180`.
 - Public hostname: `skyjo.groundworkrevops.com`.
 - Cloudflare zone: `groundworkrevops.com`.

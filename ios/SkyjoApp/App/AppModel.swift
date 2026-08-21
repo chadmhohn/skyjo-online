@@ -22,6 +22,7 @@ protocol SkyjoService: Sendable {
     password: String,
     confirmPassword: String
   ) async throws
+  func deleteAccount(currentPassword: String, confirmation: String) async throws
   func statsSummary() async throws -> StatsSummary
   func statsGames() async throws -> [StatsGame]
   func statsGame(id: UUID) async throws -> StatsGame
@@ -148,9 +149,13 @@ final class AccountSettingsFormModel {
   var confirmPassword = ""
   var profileMessage = ""
   var passwordMessage = ""
+  var deletionPassword = ""
+  var deletionConfirmation = ""
+  var deletionMessage = ""
   var isSavingProfile = false
   var isChangingPassword = false
   var isLoggingOut = false
+  var isDeletingAccount = false
 
   var canSaveProfile: Bool {
     let value = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -164,6 +169,12 @@ final class AccountSettingsFormModel {
       && !isChangingPassword
   }
 
+  var canDeleteAccount: Bool {
+    hasSchemaLength(deletionPassword, in: 1...1_024)
+      && deletionConfirmation == "DELETE"
+      && !isDeletingAccount
+  }
+
   func synchronize(with user: AccountUser) {
     displayName = user.displayName
   }
@@ -172,6 +183,8 @@ final class AccountSettingsFormModel {
     currentPassword = ""
     password = ""
     confirmPassword = ""
+    deletionPassword = ""
+    deletionConfirmation = ""
   }
 }
 
@@ -185,6 +198,7 @@ final class AppModel {
   private let preferences: SoloPreferencesStore?
   private let sessionInvalidation: SessionInvalidationRelay?
   private let logoutInstallationID: () -> UUID?
+  private let deleteLocalAccountData: @Sendable (UUID) async throws -> Void
   private var accountGeneration = 0
   private var bootstrapRequestID: UUID?
   private var statsRequestID: UUID?
@@ -192,6 +206,7 @@ final class AppModel {
   private var playerHistoryRequestID: UUID?
   private var profileRequestID: UUID?
   private var passwordRequestID: UUID?
+  private var deletionRequestID: UUID?
   private var logoutRequestID: UUID?
 #if DEBUG
   private var uiTestStatsFixture: UITestStatsFixture?
@@ -201,7 +216,6 @@ final class AppModel {
   let authentication = AuthenticationFormModel()
   let accountSettings = AccountSettingsFormModel()
   let adminURL: URL
-  let accountDeletionIssueURL = URL(string: "https://github.com/chadmhohn/skyjo-online/issues/192")!
 
   var rootState = AppRootState.loading
   var selectedTab = AppTab.home
@@ -219,12 +233,14 @@ final class AppModel {
     baseURL: URL,
     preferences: SoloPreferencesStore? = nil,
     sessionInvalidation: SessionInvalidationRelay? = nil,
-    logoutInstallationID: @escaping () -> UUID? = { nil }
+    logoutInstallationID: @escaping () -> UUID? = { nil },
+    deleteLocalAccountData: @escaping @Sendable (UUID) async throws -> Void = { _ in }
   ) {
     self.service = service
     self.preferences = preferences
     self.sessionInvalidation = sessionInvalidation
     self.logoutInstallationID = logoutInstallationID
+    self.deleteLocalAccountData = deleteLocalAccountData
     adminURL = baseURL.appending(path: "admin")
   }
 
@@ -234,7 +250,10 @@ final class AppModel {
       baseURL: baseURL,
       preferences: dependencies.preferences,
       sessionInvalidation: dependencies.sessionInvalidation,
-      logoutInstallationID: { dependencies.notifications.installationID }
+      logoutInstallationID: { dependencies.notifications.installationID },
+      deleteLocalAccountData: { accountID in
+        try await dependencies.persistenceStore.deleteAccountData(accountID: accountID)
+      }
     )
   }
 
@@ -631,6 +650,57 @@ final class AppModel {
     }
   }
 
+  func deleteAccount() async {
+    guard
+      accountSettings.canDeleteAccount,
+      rootState == .authenticated,
+      let expectedUser = user
+    else { return }
+    let expectedGeneration = accountGeneration
+    let requestID = UUID()
+    deletionRequestID = requestID
+    accountSettings.isDeletingAccount = true
+    accountSettings.deletionMessage = ""
+    defer {
+      if deletionRequestID == requestID {
+        accountSettings.isDeletingAccount = false
+        accountSettings.deletionPassword = ""
+        accountSettings.deletionConfirmation = ""
+        deletionRequestID = nil
+      }
+    }
+    do {
+      try await service.deleteAccount(
+        currentPassword: accountSettings.deletionPassword,
+        confirmation: accountSettings.deletionConfirmation
+      )
+      var localCleanupFailed = false
+      do {
+        try await deleteLocalAccountData(expectedUser.id)
+      } catch {
+        localCleanupFailed = true
+      }
+      guard
+        isCurrentAccount(expectedUser.id, generation: expectedGeneration),
+        deletionRequestID == requestID
+      else { return }
+      resetAccountState()
+      authentication.errorMessage = localCleanupFailed
+        ? "Account deleted online. This device could not remove its saved account game data; reinstall Skyjo to finish local cleanup."
+        : "Account deleted. Retained multiplayer results now identify you only as Deleted player."
+      preferences?.confirmSignedOut()
+      selectedTab = .home
+      rootState = .guest
+    } catch {
+      guard
+        isCurrentAccount(expectedUser.id, generation: expectedGeneration),
+        deletionRequestID == requestID
+      else { return }
+      guard !routeSessionError(error, accountWasKnown: true) else { return }
+      accountSettings.deletionMessage = userMessage(for: error)
+    }
+  }
+
 #if DEBUG
   @discardableResult
   func applyUITestState(arguments: [String]) -> Bool {
@@ -783,8 +853,10 @@ final class AppModel {
     accountSettings.isSavingProfile = false
     accountSettings.isChangingPassword = false
     accountSettings.isLoggingOut = false
+    accountSettings.isDeletingAccount = false
     accountSettings.profileMessage = ""
     accountSettings.passwordMessage = ""
+    accountSettings.deletionMessage = ""
     accountSettings.clearSensitiveFields()
     localSessionGeneration &+= 1
   }
@@ -796,6 +868,7 @@ final class AppModel {
     playerHistoryRequestID = nil
     profileRequestID = nil
     passwordRequestID = nil
+    deletionRequestID = nil
     logoutRequestID = nil
   }
 

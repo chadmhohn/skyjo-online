@@ -28,6 +28,15 @@
     },
     {
       "expectedLayer": "schema",
+      "name": "account deletion lacks exact confirmation",
+      "schema": "account-http.schema.json",
+      "value": {
+        "confirmation": "delete",
+        "currentPassword": "current-password"
+      }
+    },
+    {
+      "expectedLayer": "schema",
       "name": "stats game omits AI attribution",
       "schema": "stats-http.schema.json",
       "value": {

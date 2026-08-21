@@ -105,7 +105,7 @@ The 2026-08-21 Release-optimized fixture baseline on stable Xcode 26.6, iOS 26.5
 - No secret in source, Info.plist, asset catalog, `.xcconfig`, build log, archive, or Git history.
 - Dependency additions use SPM, are pinned/resolved, license-reviewed, privacy-manifest-reviewed, and justified in an ADR when architectural.
 - `PrivacyInfo.xcprivacy` and the [`PRIVACY.md`](PRIVACY.md) App Store privacy-answer draft match actual APIs/data.
-- Account creation must have an in-app deletion path before public App Store release.
+- Account creation has the in-app current-password-verified deletion path documented in [`ACCOUNT_DELETION.md`](ACCOUNT_DELETION.md); keep its backend, native, web, post-deletion backup/restore, retention, and disclosure evidence green before public App Store release.
 
 ## Simulator Matrix
 
