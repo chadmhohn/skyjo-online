@@ -116,7 +116,19 @@ private struct NativeRootView: View {
           .navigationTitle("Skyjo")
         }
       case .accessRequired:
-        AccessGateView(model: model)
+        NavigationStack {
+          StateMessageView(
+            title: "Server update required",
+            systemImage: "arrow.triangle.2.circlepath",
+            message: "This version no longer uses a shared access password. Try again after the service update completes.",
+            accessibilityIdentifier: "state.upgrade-required"
+          ) {
+            Button("Retry") { Task { await model.bootstrap() } }
+              .buttonStyle(.borderedProminent)
+              .accessibilityIdentifier("state.retry")
+          }
+          .navigationTitle("Skyjo")
+        }
       case .accountRequired:
         AuthenticationView(model: model)
       case .guest:

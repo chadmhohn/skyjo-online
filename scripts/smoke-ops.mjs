@@ -12,7 +12,6 @@ import { SYNTHETIC_APPLE_APPLICATION_IDENTIFIER } from '../server-room-invites.m
 import { runDeployedSmoke } from './deployed-smoke-lib.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const accessPassword = 'ops-smoke-access-password';
 const adminEmail = 'ops-smoke@example.com';
 const adminPassword = 'ops-smoke-admin-password';
 
@@ -53,7 +52,6 @@ async function startServer(dataDir) {
       NODE_ENV: 'test',
       HOST: '127.0.0.1',
       PORT: String(port),
-      SKYJO_ACCESS_PASSWORD: accessPassword,
       SKYJO_APPLE_APPLICATION_IDENTIFIER: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
       SKYJO_ADMIN_EMAIL: adminEmail,
       SKYJO_ADMIN_INITIAL_PASSWORD: adminPassword,
@@ -109,7 +107,6 @@ try {
   const initialRooms = await fs.readFile(path.join(healthyDir, 'rooms.json'), 'utf8');
   await runDeployedSmoke({
     baseUrl: server.baseUrl,
-    accessPassword,
     accountEmail: adminEmail,
     accountPassword: adminPassword,
     expectedAppleApplicationIdentifier: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
@@ -138,7 +135,6 @@ try {
   await waitForResponse(`${server.baseUrl}/readyz`, async (response) => response.status === 200, 8000);
   await runDeployedSmoke({
     baseUrl: server.baseUrl,
-    accessPassword,
     accountEmail: adminEmail,
     accountPassword: adminPassword,
     expectedAppleApplicationIdentifier: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
@@ -198,7 +194,7 @@ try {
   );
   await stopServer(server, { allowFailure: true });
   server = undefined;
-  console.log('operations smoke passed: release metadata, sanitized readiness, two-cookie auth, non-mutating WebSocket, database recovery, and rejected-room preservation');
+  console.log('operations smoke passed: release metadata, sanitized readiness, open access, account-cookie auth, non-mutating WebSocket, database recovery, and rejected-room preservation');
 } finally {
   if (server) await stopServer(server);
   await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

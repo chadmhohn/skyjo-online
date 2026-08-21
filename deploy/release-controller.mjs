@@ -891,7 +891,6 @@ async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
     `SKYJO_RELEASE_FILE=${resolveWithin(releaseDirectory, 'dist/release.json')}`,
     `SKYJO_EXPECTED_RELEASE_SHA=${identity.releaseSha}`,
     `SKYJO_EXPECTED_PROTOCOL_VERSION=${identity.protocolVersion}`,
-    `SKYJO_ACCESS_PASSWORD=${crypto.randomBytes(32).toString('base64url')}`,
     `SKYJO_SESSION_SECRET=${crypto.randomBytes(48).toString('base64url')}`,
     `SKYJO_INVITE_SECRET=${crypto.randomBytes(48).toString('base64url')}`,
     `SKYJO_ADMIN_EMAIL=${canaryEmail}`,
@@ -1476,7 +1475,6 @@ function parseProductionEnvironment(value) {
     entries.set(match[1], match[2]);
   }
   const requiredSecrets = [
-    'SKYJO_ACCESS_PASSWORD',
     'SKYJO_SESSION_SECRET',
     'SKYJO_INVITE_SECRET',
     'SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL',

@@ -13,7 +13,6 @@ const expectedAPNSNotificationsEnabled = [
 
 const result = await runDeployedSmoke({
   baseUrl: process.env.SKYJO_SMOKE_BASE_URL,
-  accessPassword: process.env.SKYJO_SMOKE_ACCESS_PASSWORD || process.env.SKYJO_ACCESS_PASSWORD,
   accountEmail: process.env.SKYJO_SMOKE_ACCOUNT_EMAIL || process.env.SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL,
   accountPassword: process.env.SKYJO_SMOKE_ACCOUNT_PASSWORD || process.env.SKYJO_DEPLOY_SMOKE_ACCOUNT_PASSWORD,
   expectedAppleApplicationIdentifier: resolveAppleApplicationIdentifier({

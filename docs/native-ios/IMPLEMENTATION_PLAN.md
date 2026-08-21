@@ -55,7 +55,7 @@ Acceptance:
 - Sanitized fixtures cover every client/server frame type, hidden-card redaction, bounds, malformed payloads, stale/future revisions, exact replay, conflicting command IDs, and reset recovery.
 - A deterministic fixture generator uses injected RNG/clock/UUID and refuses dirty unexpected output.
 - TypeScript tests validate all fixtures against current producers/consumers.
-- Additive JSON outer-access status/login/logout endpoints set/clear the established cookie and leave HTML `/login` behavior intact.
+- Additive JSON outer-access status/login/logout endpoints set/clear the established cookie and leave HTML `/login` behavior intact. Issue #228 later supersedes the authorization behavior while retaining these routes for client/rollback compatibility.
 - Native URLSession contract tests prove cookie persistence and safe error decoding against a local Node server.
 - Compatibility/versioning policy is documented.
 
@@ -104,8 +104,8 @@ Implement the typed HTTP client and first native navigation shell.
 
 Acceptance:
 
-- Access gate, signup/login/logout, profile, password change, current account, stats summary/list/detail, and session-expiry recovery.
-- Dedicated cookie jar sends both session layers and is tested across app relaunch simulation.
+- The original access gate plus signup/login/logout, profile, password change, current account, stats summary/list/detail, and session-expiry recovery. Issue #228 retires the shared-password presentation before external TestFlight.
+- Dedicated cookie jar persists the optional account session and any legacy compatibility cookie across app relaunch simulation.
 - Passwords are never logged or stored; cookies are never exposed to UI.
 - Stable server error codes map to accessible user messages with a safe unknown fallback.
 - Loading, empty, offline, retry, disabled-account, and service-not-ready states are designed and tested.

@@ -271,16 +271,16 @@ try {
   const failures = redemptions.filter((response) => !response.headers.get('set-cookie'));
   assert.equal(failures.length, 5);
   for (const response of failures) {
-    assert.equal(response.status, 303);
-    assert.equal(response.headers.get('location'), '/login?inviteError=1');
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /invite code expired or did not match/i);
   }
   const replay = await fetch(`${baseUrl}/invite-code`, {
     method: 'POST',
     body: new URLSearchParams({ code }),
     redirect: 'manual'
   });
-  assert.equal(replay.status, 303);
-  assert.equal(replay.headers.get('location'), '/login?inviteError=1');
+  assert.equal(replay.status, 400);
+  assert.match(await replay.text(), /invite code expired or did not match/i);
   assert.equal(replay.headers.get('set-cookie'), null);
   await stopServer(child);
   child = null;

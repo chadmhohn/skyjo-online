@@ -9,11 +9,12 @@ import Testing
 @Suite("Native app state and navigation", .serialized)
 @MainActor
 struct AppModelTests {
-  @Test("Bootstrap routes access, guest, and authenticated empty states")
+  @Test("Bootstrap bypasses retired shared access and routes account states")
   func bootstrapRoutes() async {
     let accessModel = makeModel(scenario: .accessRequired)
     await accessModel.bootstrap()
-    #expect(accessModel.rootState == .accessRequired)
+    #expect(accessModel.rootState == .authenticated)
+    #expect(accessModel.user?.displayName == "Native Player")
 
     let accountModel = makeModel(scenario: .accountRequired)
     await accountModel.bootstrap()
@@ -260,7 +261,7 @@ struct AppModelTests {
     accessModel.handleStatsAuthorizationInvalidation(accessInvalidation)
     accessRelay.consume(accessInvalidation)
 
-    #expect(accessModel.rootState == .accessRequired)
+    #expect(accessModel.rootState == .upgradeRequired)
     #expect(accessModel.user == nil)
   }
 

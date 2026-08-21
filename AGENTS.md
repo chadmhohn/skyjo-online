@@ -10,7 +10,7 @@ Last reviewed by Codex: 2026-07-28 America/Denver, against the live v0.3.2 relea
 - Immutable release root: `/srv/skyjo-online` on `hostinger-vps`; `current` and `previous` select release directories.
 - Production service: `skyjo-online.service`, working directory `/srv/skyjo-online/current`.
 - Service env file: `/etc/skyjo-online.env`. Do not print or commit secret values from this file.
-- Signed room invites use `SKYJO_INVITE_SECRET`, `SKYJO_INVITE_TTL_HOURS`, and optional `SKYJO_INVITE_CODE_TTL_MINUTES`. Invites only bypass the shared site-password gate; multiplayer still requires account login and room membership rules.
+- Signed room invites use `SKYJO_INVITE_SECRET`, `SKYJO_INVITE_TTL_HOURS`, and optional `SKYJO_INVITE_CODE_TTL_MINUTES`. The public app no longer has a shared site-password gate; invites still grant neither account identity nor room membership.
 - Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
 - Account and game-history database: `/var/lib/skyjo-online/skyjo.sqlite`, via `SKYJO_DB_FILE`.
 - Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. Treat that password as temporary.
@@ -43,7 +43,7 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 - `src/game.ts`: shared Skyjo game engine for single-player and multiplayer. Owns deck composition, opening reveal rules, turn progression, scoring, final-turn flow, column clears, and AI decisions.
 - `src/types.ts`: shared client/server state types.
 - `src/serverValidation.ts`: server-side legal multiplayer state validation. This compiles to `server-dist/` and is loaded by the Node server.
-- `server.mjs`: production Node server. Handles password-gated HTTP, the additive JSON access-session and authenticated native-push contracts, public Apple association, pre-gate native invite redemption, invite install/browser handoff, static `dist/` serving, public `/healthz`, `/readyz`, and `/version`, WebSocket rooms at `/rooms`, independent Web Push/APNs fanout, room chat, host controls, room reset, and verified persistence flush on shutdown.
+- `server.mjs`: production Node server. Serves the public PWA and legacy access-session compatibility routes, account authentication and native-push contracts, public Apple association and invite redemption, invite install/browser handoff, static `dist/` serving, public `/healthz`, `/readyz`, and `/version`, account-authenticated WebSocket rooms at `/rooms`, independent Web Push/APNs fanout, room chat, host controls, room reset, and verified persistence flush on shutdown.
 - `server-room-invites.mjs`: signed invite parsing/verification plus strict `SKYJO_APPLE_APPLICATION_IDENTIFIER` validation and exact Apple association-document generation. Production requires the confirmed full App ID; isolated test/canary runs use the fixed non-production identifier.
 - `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, admin user operations, and the exact frozen APNs table plus encrypted, capped, retained device registrations while public schema remains 2.
 - `server-apns.mjs`: native notification boundary. Owns strict registration validation, server-only key loading, AES-256-GCM token protection and keyed fingerprints, ES256 provider tokens, bounded fixed-host HTTP/2 delivery, generic payloads, retry classification, and race-safe invalid-token retirement.
@@ -70,7 +70,7 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 - Treat `/var/lib/skyjo-online/rooms.json` and `/var/lib/skyjo-online/skyjo.sqlite` as runtime state, not disposable build artifacts. Back them up before persistence format changes.
 - Do not restart `skyjo-online.service`, Cloudflare Tunnel, Traefik, OpenClaw, Docker, or the VPS unless Chad explicitly approved that disruptive action in the current conversation.
 - Preserve unrelated dirty work. If the dirty files overlap your task, read the diff and build on it; do not reset it away.
-- Do not rely on `curl -I -L /` as a login smoke. `HEAD /login` can redirect again because the server login handler is GET-specific. Use GET checks or `/healthz`.
+- `/login` is a retired compatibility redirect, not an authentication surface. Verify the public app shell with GET `/`, account state with `/api/account/me`, and service health with `/healthz` or `/readyz`.
 
 ## Standard Workflow
 
@@ -162,7 +162,7 @@ curl -fsS https://skyjo.groundworkrevops.com/healthz
 - Matching revealed columns clear and score zero. Replacement-driven column clears should put the cleared column on top of the replaced card in the discard pile.
 - Single-player supports 1-7 AI opponents with shuffled themed names and Easy, Medium, Hard, Ultra Hard, or deterministic Mixed profiles. New players default to Medium; v0.2.2 saves normalize to Hard without rewriting their v1 record. New game reshuffles names; next round preserves identities, Mixed assignments, and scoring continuity.
 - Opening solo setup creates no game or durable record. Replacing an active save requires explicit review and confirmation, and a failed replacement must leave the prior game intact.
-- The shared site password remains the outer gate. Single-player is playable without an account, but guest solo games do not save stats. Multiplayer requires a signed-in account, and room seats are tied to account user IDs.
+- The app is publicly reachable without a shared password. Visitors may play solo as guests or create/sign into their own accounts; guest solo games do not save stats. Multiplayer requires a signed-in account, and room seats are tied to account user IDs. Google sign-in is future work after the base native release.
 - Account stats start from the account release forward. Do not attempt historical backfill from `rooms.json` unless Chad explicitly asks for a separate import pass.
 - Mobile phone layout is intentionally board-first/locked: opponents scroll above, local board and table controls stay anchored. Be careful not to regress this when changing tablet/desktop layouts.
 - Tablet landscape intentionally borrows the compact phone header: Rules, Log, and AI opponents stay as small disclosure buttons; the local "You" board is scaled down and bottom-anchored so opponent boards remain visible above it. Opponent boards should not exceed 4 columns in tablet landscape or 3 columns in tablet portrait.

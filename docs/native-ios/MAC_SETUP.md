@@ -90,7 +90,7 @@ The stable clean-clone build/test entrypoint discovers an iPhone on the newest a
 ./scripts/ios-build-test.sh
 ```
 
-The script first verifies that the resolved Release build setting remains the exact production HTTPS origin. It then passes only the dynamic loopback URL into the simulator test environment; the test target and loopback server share a fixed, explicitly non-secret access fixture. It runs the equivalent of this command with its discovered simulator UUID and unique ignored artifact paths:
+The script first verifies that the resolved Release build setting remains the exact production HTTPS origin. It then passes only the dynamic loopback URL into the simulator test environment; the loopback server starts without an access password. It runs the equivalent of this command with its discovered simulator UUID and unique ignored artifact paths:
 
 ```sh
 xcodebuild test \
@@ -124,7 +124,7 @@ npm exec -- playwright install chromium
 ./scripts/ios-build-test.sh --networking-contracts
 ```
 
-Networking mode pins and executes the immutable v0.3.2 PWA protocol validator, builds the current PWA/server, and launches one real incognito Chromium peer in a separate credential-free environment. The harness generates UUID-based test-only session/invite secrets, creates temporary SQLite and room-state files, terminates Chromium before the exact server child, removes the validated browser profile/state directory, and sanitizes saved logs. Its exit finalizer scans raw evidence for the generated secrets and stages only verified files into the current run's validated artifact directory; CI never uploads the raw location. The fixed access fixture is non-secret and works only with the loopback test server; the harness never uses the production URL, production secrets, or production state.
+Networking mode pins and executes the immutable v0.3.2 PWA protocol validator, builds the current PWA/server, and launches one real incognito Chromium peer in a separate credential-free environment. The harness generates UUID-based test-only session/invite secrets, creates temporary SQLite and room-state files, terminates Chromium before the exact server child, removes the validated browser profile/state directory, and sanitizes saved logs. Its exit finalizer scans raw evidence for the generated secrets and stages only verified files into the current run's validated artifact directory; CI never uploads the raw location. The harness never uses the production URL, production secrets, or production state.
 
 Verify or deliberately regenerate the portable fixture corpus with:
 

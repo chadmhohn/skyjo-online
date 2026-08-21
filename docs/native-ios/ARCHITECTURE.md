@@ -63,13 +63,13 @@ The TypeScript engine remains the reference implementation during the port. Once
 
 ### SkyjoNetworking
 
-- One dedicated `URLSession` configured with an explicitly supplied, persistent `HTTPCookieStorage` for the outer access and account HttpOnly cookies; tests inject an isolated cookie store.
+- One dedicated `URLSession` configured with an explicitly supplied, persistent `HTTPCookieStorage` for the optional account cookie and any legacy compatibility cookie; tests inject an isolated cookie store.
 - `AccessSessionClient` owns typed `GET`, `POST`, and `DELETE /api/access/session` calls. It tolerates additive success fields, requires the typed `authenticated` field, rejects redirects and unexpected final URLs, caps requests at 256 KiB and responses at 64 KiB, and maps only known stable error codes to server messages.
 - `SkyjoAPIClient` composes that access actor on the same session/cookie jar and adds typed current-account, signup/login/logout, profile/password, stats summary/list/detail/player, solo-stats submission, readiness, and version requests. Solo submission requires exactly HTTP 201 and a returned `single` game. General responses are capped at 2 MiB while the access route retains its 64 KiB boundary.
 - Operational DTOs require schema 2 and protocol 2 plus valid release identity/timestamps. Unsupported values become an explicit upgrade state. Contract-required nullable keys must be present even when their value is `null`; absent keys fail decoding.
 - Canonical valid/invalid HTTP fixtures under `contracts/v1/fixtures/` are decoded by Swift tests in addition to focused `URLProtocol` boundary and safe-error tests.
 - Typed Codable request/response models remain the boundary for later invite and realtime contracts.
-- `RoomInviteClient` uses a separate cookie-disabled transport. It explicitly attaches the current same-origin authentication cookies to each request, holds parsed response cookies outside the persistent jar, and commits the single same-host redemption cookie only after the final URL, redirect/status, media type, no-store policy, streaming byte bound, decoded DTO, and invite-specific semantic checks all pass. Invite creation discards response cookies. Any rejected or interrupted response leaves both shared session layers byte-for-byte unchanged.
+- `RoomInviteClient` uses a separate cookie-disabled transport. It explicitly attaches current same-origin cookies to each request, holds parsed response cookies outside the persistent jar, and commits the single same-host legacy redemption cookie only after the final URL, redirect/status, media type, no-store policy, streaming byte bound, decoded DTO, and invite-specific semantic checks all pass. Invite creation discards response cookies. Any rejected or interrupted response leaves the shared cookie jar byte-for-byte unchanged.
 - An actor-owned `RoomConnection` around `URLSessionWebSocketTask`, created by `SkyjoAPIClient` on its authenticated cookie session.
 - One in-flight command at a time, UUID command IDs, expected revisions, replay only with the identical ID/body, and acknowledgement-plus-authoritative-snapshot convergence before enabling another action.
 - Explicit foreground/background presence, jittered reconnect, reachability hints, eight-second initial sync timeout, socket-generation fencing, and diagnostic connection states.
@@ -79,7 +79,7 @@ The TypeScript engine remains the reference implementation during the port. Once
 
 Do not store passwords just to recreate sessions. The server's signed cookies are the session. If a later credential-remembrance feature is approved, use Keychain Services and keep it separate from game storage.
 
-Unknown, malformed, or non-JSON error responses use a safe local fallback. This preserves forward compatibility without displaying untrusted server detail. The real access-cookie round trip is exercised against an isolated local `server.mjs` process by `./scripts/ios-build-test.sh --networking-contracts`; unit tests continue to use `URLProtocol` for malformed and boundary cases.
+Unknown, malformed, or non-JSON error responses use a safe local fallback. This preserves forward compatibility without displaying untrusted server detail. Open access, direct account signup, account-cookie recreation, and the legacy access-route compatibility boundary are exercised against an isolated local `server.mjs` process by `./scripts/ios-build-test.sh --networking-contracts`; unit tests continue to use `URLProtocol` for malformed and boundary cases.
 
 ### SkyjoPersistence
 
@@ -101,7 +101,7 @@ The implemented store uses a custom real V1-to-V2 migration: it resolves impossi
 
 Signed-in completion atomically removes the active save and inserts an immutable idempotent stats request; an acknowledgement-loss retry preserves that first request and its original completion timestamp, while guest completion inserts no outbox row. Delivery is owner-scoped FIFO, capped at four per pass, generation-fenced across every await, and retried with exponential backoff capped at five minutes. Attempt counters use a portable saturating bound. Permanent delivery failures and corrupt FIFO heads remain visible blockers across relaunch. Recovery exposes an optional safe game UUID for presentation plus an actor-scoped opaque handle required to retry or discard the exact head, so malformed persisted identifiers cannot make the queue unrecoverable.
 
-The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, because a schema-valid 256-round Unicode history can exceed 256 KiB. The current Node JSON-body and native HTTP request boundary is separately 256 KiB. The implemented solo adapter maps local request-size rejection and server size, invalid-payload, and unsupported-version responses to durable permanent outbox failures; account replacement or loss of either authenticated layer aborts the in-flight delivery without mutating its row. CloudKit and PWA IndexedDB import remain outside v0.1.0.
+The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, because a schema-valid 256-round Unicode history can exceed 256 KiB. The current Node JSON-body and native HTTP request boundary is separately 256 KiB. The implemented solo adapter maps local request-size rejection and server size, invalid-payload, and unsupported-version responses to durable permanent outbox failures; account replacement or loss of the authenticated account aborts the in-flight delivery without mutating its row. CloudKit and PWA IndexedDB import remain outside v0.1.0.
 
 ### SkyjoDesignSystem
 
@@ -125,9 +125,9 @@ The local Codable envelope allows 2 MiB, measured in encoded UTF-8 bytes, becaus
 ### Universal-Link Handoff
 
 - [`RoomInvites.swift`](../../ios/Packages/SkyjoNetworking/Sources/SkyjoNetworking/RoomInvites.swift) accepts only the exact production HTTPS host and one opaque `/invite/<token>` path segment. User information, ports, query/fragment data, percent-encoded separators, extra path segments, redirects, and oversized tokens fail closed.
-- [`BootstrapHomeView.swift`](../../ios/SkyjoApp/Features/Home/BootstrapHomeView.swift) sends SwiftUI's `onOpenURL` value to [`RoomInviteCoordinator.swift`](../../ios/SkyjoApp/Features/Rooms/RoomInviteCoordinator.swift) through the account-fenced `RoomAppCoordinator`. Redemption grants only the outer access cookie and publishes sanitized review/failure state; it cannot create a multiplayer seat before account authentication and explicit join.
+- [`BootstrapHomeView.swift`](../../ios/SkyjoApp/Features/Home/BootstrapHomeView.swift) sends SwiftUI's `onOpenURL` value to [`RoomInviteCoordinator.swift`](../../ios/SkyjoApp/Features/Rooms/RoomInviteCoordinator.swift) through the account-fenced `RoomAppCoordinator`. Redemption may add only the legacy compatibility cookie and publishes sanitized review/failure state; it cannot create a multiplayer seat before account authentication and explicit join.
 - [`SkyjoNative.entitlements`](../../ios/SkyjoApp/Resources/SkyjoNative.entitlements) declares only `applinks:skyjo.groundworkrevops.com`, and both app configurations select it through the committed Xcode project. [`check-ios-associated-domains.mjs`](../../scripts/check-ios-associated-domains.mjs) fails closed against a built `.app`: device products must carry the exact domain in signed entitlements, while Xcode-signed simulator products must carry it in every architecture's bounded `__TEXT,__entitlements` section. The audit never substitutes the source plist or an intermediate `.xcent` for built-product evidence.
-- The networking-contract test creates a signed invite on an isolated real Node server, reconstructs the exact production-shaped universal-link URL, enters through `RoomAppCoordinator.accept`, proves only outer access was granted, resets the room, and verifies stable stale-room UI copy. This exercises the app-side handoff beneath `onOpenURL`; it does not prove that iOS selected the installed app for an HTTPS tap.
+- The networking-contract test creates a signed invite on an isolated real Node server, reconstructs the exact production-shaped universal-link URL, enters through `RoomAppCoordinator.accept`, proves no account was granted, resets the room, and verifies stable stale-room UI copy. This exercises the app-side handoff beneath `onOpenURL`; it does not prove that iOS selected the installed app for an HTTPS tap.
 
 Operating-system selection depends on the public AASA/application identifier and Apple's association cache. Do not redirect the production hostname to loopback, seed private simulator association state, add a custom-scheme test bypass, or place a real invite token in launch arguments or result bundles. Final proof requires the promoted #202 backend, Apple CDN verification, a team-signed device build with the matching application identifier, and installed/uninstalled taps on physical hardware.
 
@@ -148,7 +148,7 @@ For multiplayer, optimistic board mutation is prohibited. A tap may show a short
 
 Native states mirror the established web client: `idle`, `connecting`, `connected`, `reconnecting`, `offline`, `error`, and terminal `upgrade-required`.
 
-- Connect to `wss://skyjo.groundworkrevops.com/rooms` with both valid server cookies.
+- Connect to `wss://skyjo.groundworkrevops.com/rooms` with a valid account cookie; no shared-access cookie is required.
 - Send exactly one create/join request after open.
 - Treat the first valid personalized snapshot/resync as synchronization.
 - Publish `set-presence` after synchronization and on foreground/background transitions.
@@ -167,16 +167,16 @@ Native states mirror the established web client: `idle`, `connecting`, `connecte
 
 ## Native-Specific Backend Work
 
-IOS-2 adds two native-enabling capabilities to the repository:
+IOS-2 originally added two native-enabling capabilities to the repository:
 
-1. The pre-gate JSON access-session endpoint, stable `{ code, error }` API failures, and an `ACCESS_REQUIRED` JSON response for unauthenticated API requests. The legacy HTML `/login` and PWA `error` message fallback remain intact.
+1. The JSON access-session endpoint, stable `{ code, error }` API failures, and an `ACCESS_REQUIRED` JSON response for unauthenticated API requests.
 2. Versioned JSON Schemas and deterministic, sanitized fixtures under `contracts/v1/`.
 
-These are repository capabilities, not a claim that production has been promoted beyond the dated baseline in `README.md`. IOS-5 consumes them with the typed native HTTP/session client and accessible access/account/home/stats shell described above; IOS-7 adds the repository-owned native solo experience and multi-device UI/accessibility gate. Local simulator/server evidence proves source compatibility, not production promotion or native distribution. Native notification support follows one additional backend sequence:
+Issue #228 supersedes the outer-gate behavior: `/login` redirects into the open app, the compatibility access API always reports authenticated, and legacy `ACCESS_REQUIRED` maps to upgrade-required. IOS-5 retains the typed compatibility client while current bootstrap goes directly from readiness/version to optional account state. Local simulator/server evidence proves source compatibility, not production promotion or native distribution. Native notification support follows one additional backend sequence:
 
 1. #203 first freezes and validates an optional exact `apns_devices` physical table while retaining public schema 2. After that release is promoted and becomes the verified `previous` rollback anchor, #204 creates/uses the same descriptor for authenticated registration/unregistration, encrypted token persistence, and independent post-commit APNs provider delivery. VAPID web subscriptions cannot receive native APNs notifications.
 
-Issue #202 implements the two former invite items in repository source: an invite-only, no-redirect AASA document with a configured full Apple application identifier, plus pre-gate JSON redemption that validates the existing signed token/current room instance and grants only the existing outer-access cookie. The route and fixtures deliberately do not implement Swift URL routing, room UI, Associated Domains entitlement/signing, production promotion, Apple CDN verification, or physical-device behavior; #188 owns that native consumer and those later gates.
+Issue #202 implements the two former invite items in repository source: an invite-only, no-redirect AASA document with a configured full Apple application identifier, plus public JSON redemption that validates the existing signed token/current room instance and emits only the legacy compatibility cookie. The route and fixtures deliberately do not implement Swift URL routing, room UI, Associated Domains entitlement/signing, production promotion, Apple CDN verification, or physical-device behavior; #188 owns that native consumer and those later gates.
 
 All additions must leave the current PWA and web-push paths working. Deploy server support before a native build depends on it. Once the optional APNs table exists, never roll production back past the promoted envelope release; do not roll production back to a server that lacks a contract already required by a distributed native build.
 

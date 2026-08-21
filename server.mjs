@@ -89,7 +89,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(__dirname, 'dist');
 const port = Number(process.env.PORT || 4180);
 const host = process.env.HOST || '127.0.0.1';
-const accessPassword = process.env.SKYJO_ACCESS_PASSWORD;
 const sessionSecret = process.env.SKYJO_SESSION_SECRET;
 const inviteSecret = process.env.SKYJO_INVITE_SECRET || sessionSecret;
 const cookieName = process.env.SKYJO_COOKIE_NAME || 'skyjo_session';
@@ -121,7 +120,6 @@ const databaseRetryDelayMs = Math.max(100, Number(process.env.SKYJO_DATABASE_RET
 const roomsSaveDebounceMs = 250;
 const maxRoomChatMessages = 80;
 const maxRoomChatMessageLength = 280;
-const maxAccessPasswordLength = 4096;
 const inviteCodeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const roomCodeLength = 5;
 const secureCodeMaxAttempts = 128;
@@ -172,16 +170,13 @@ const mimeTypes = new Map([
   ['.webp', 'image/webp']
 ]);
 
-const accessPasswordLength = typeof accessPassword === 'string' ? [...accessPassword].length : 0;
 if (
-  accessPasswordLength < 1 ||
-  accessPasswordLength > maxAccessPasswordLength ||
   !sessionSecret ||
   typeof inviteSecret !== 'string' ||
   inviteSecret.length < 16
 ) {
   console.error('Skyjo authentication secrets are missing or invalid.');
-  console.error('Set the access, session, and invite secrets before running npm start.');
+  console.error('Set the session and invite secrets before running npm start.');
   process.exit(1);
 }
 
@@ -287,13 +282,6 @@ async function ensureAccountStore({ force = false } = {}) {
 
 await ensureAccountStore({ force: true });
 
-function timingSafeEqualString(a, b) {
-  const left = Buffer.from(String(a));
-  const right = Buffer.from(String(b));
-  if (left.length !== right.length) return false;
-  return crypto.timingSafeEqual(left, right);
-}
-
 function sign(value) {
   return crypto.createHmac('sha256', sessionSecret).update(value).digest('base64url');
 }
@@ -320,17 +308,11 @@ function parseCookies(header = '') {
 }
 
 function hasValidSession(req) {
-  const token = parseCookies(req.headers.cookie).get(cookieName);
-  if (!token) return false;
-  const parts = token.split('.');
-  if (parts.length !== 3) return false;
-
-  const [expiresAtRaw, nonce, signature] = parts;
-  const expiresAt = Number(expiresAtRaw);
-  if (!Number.isFinite(expiresAt) || expiresAt < Date.now() || !nonce) return false;
-
-  const payload = `${expiresAtRaw}.${nonce}`;
-  return timingSafeEqualString(signature, sign(payload));
+  // The former shared-password gate is intentionally open. Keep this named
+  // boundary for rollback compatibility and realtime dependency injection,
+  // but never make public app access depend on the legacy cookie again.
+  void req;
+  return true;
 }
 
 function cookieHeader(value, maxAgeSeconds) {
@@ -1583,7 +1565,7 @@ function renderInviteUnavailable(message, nonce) {
       a { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; border-radius: 8px; padding: 0 16px; color: #0a1410; background: #f5e6c8; font-weight: 900; text-decoration: none; }
     </style>
   </head>
-  <body><main><h1>Invite unavailable</h1><p>${escapeHtml(message)}</p><a href="/login">Open Skyjo</a></main></body>
+  <body><main><h1>Invite unavailable</h1><p>${escapeHtml(message)}</p><a href="/">Open Skyjo</a></main></body>
 </html>`;
 }
 
@@ -2121,13 +2103,6 @@ function requestUsesJson(req) {
   return contentType === 'application/json';
 }
 
-function validAccessSessionBody(body) {
-  if (Object.keys(body).length !== 1 || !Object.hasOwn(body, 'password')) return false;
-  if (typeof body.password !== 'string') return false;
-  const passwordLength = [...body.password].length;
-  return passwordLength >= 1 && passwordLength <= maxAccessPasswordLength;
-}
-
 function handleAppleAppSiteAssociation(req, res, url) {
   if (url.pathname !== '/.well-known/apple-app-site-association') return false;
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -2195,7 +2170,7 @@ async function handleAccessSessionRequest(req, res, url) {
   if (url.pathname !== '/api/access/session') return false;
 
   if (req.method === 'GET') {
-    sendJsonResponse(res, 200, { authenticated: hasValidSession(req) });
+    sendJsonResponse(res, 200, { authenticated: true });
     return true;
   }
 
@@ -2205,7 +2180,7 @@ async function handleAccessSessionRequest(req, res, url) {
     } catch {
       console.error('Account session revocation failed during access logout.');
     }
-    sendJsonResponse(res, 200, { authenticated: false }, {
+    sendJsonResponse(res, 200, { authenticated: true }, {
       'Set-Cookie': [cookieHeader('', 0), accountCookieHeader('', 0)]
     });
     return true;
@@ -2219,12 +2194,10 @@ async function handleAccessSessionRequest(req, res, url) {
   }
 
   try {
-    if (!requestUsesJson(req)) throw new PublicApiError('UNSUPPORTED_MEDIA_TYPE');
-    const body = await readJsonBody(req);
-    if (!validAccessSessionBody(body)) throw new PublicApiError('INVALID_REQUEST');
-    if (!timingSafeEqualString(body.password, accessPassword)) {
-      throw new PublicApiError('ACCESS_AUTHENTICATION_FAILED');
-    }
+    // Old native builds still POST a password-shaped body. Drain it within the
+    // ordinary request bound without parsing, comparing, persisting, or logging
+    // the value. Access is open regardless of whether that legacy field exists.
+    await discardRequestBody(req);
     sendJsonResponse(res, 200, { authenticated: true }, {
       'Set-Cookie': cookieHeader(createSessionCookie(), Math.floor(sessionTtlMs / 1000))
     });
@@ -2236,8 +2209,7 @@ async function handleAccessSessionRequest(req, res, url) {
   return true;
 }
 
-function renderLogin(error = false, next = '/', inviteCodeError = false, inviteRateLimited = false, nonce = htmlNonce()) {
-  const safeNext = safeRedirectPath(next);
+function renderInviteCodePage(inviteCodeError = false, inviteRateLimited = false, nonce = htmlNonce()) {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -2258,7 +2230,7 @@ function renderLogin(error = false, next = '/', inviteCodeError = false, inviteR
       h2 { margin: 0 0 10px; font-size: 18px; }
       p { margin: 0 0 24px; color: #bfdbfe; line-height: 1.45; }
       form { display: grid; gap: 12px; }
-      input, button {
+      input, button, .home-link {
         width: 100%;
         box-sizing: border-box;
         border: 0;
@@ -2268,6 +2240,7 @@ function renderLogin(error = false, next = '/', inviteCodeError = false, inviteR
       }
       input { padding: 0 12px; background: #f8fafc; color: #0f172a; }
       button { background: #38bdf8; color: #082f49; font-weight: 700; cursor: pointer; }
+      .home-link { display: grid; place-items: center; background: #38bdf8; color: #082f49; font-weight: 700; text-decoration: none; }
       .invite-panel { margin-top: 18px; border-top: 1px solid rgba(191, 219, 254, 0.22); padding-top: 18px; }
       .invite-panel p { margin-bottom: 12px; color: rgba(191, 219, 254, 0.82); }
       .invite-panel input { text-transform: uppercase; letter-spacing: 0.08em; text-align: center; font-weight: 800; }
@@ -2277,16 +2250,11 @@ function renderLogin(error = false, next = '/', inviteCodeError = false, inviteR
   <body>
     <main>
       <h1>SKYJO</h1>
-      <p>Enter the shared game password.</p>
-      <form method="post" action="/login">
-        <input name="next" type="hidden" value="${escapeHtml(safeNext)}" />
-        <input name="password" type="password" autocomplete="current-password" autofocus required />
-        <button type="submit">Continue</button>
-      </form>
-      ${error ? '<div class="error">That password did not work.</div>' : ''}
+      <p>The game is open. Play as a guest or create your own account.</p>
+      <a class="home-link" href="/">Open Skyjo</a>
       <section class="invite-panel">
         <h2>Have an invite code?</h2>
-        <p>Paste the code from a Skyjo invite to open that room without the shared password.</p>
+        <p>Paste the code from a Skyjo invite to open that room.</p>
         <form method="post" action="/invite-code">
           <input name="code" autocomplete="one-time-code" inputmode="text" placeholder="ABCD123" required />
           <button type="submit">Open Invite</button>
@@ -2303,7 +2271,7 @@ async function handleInviteCodeRedeem(req, res) {
   const rate = inviteRedemptionRateLimiter.consume(inviteRedemptionClientKey(req, 'install-code'));
   if (!rate.allowed) {
     const nonce = htmlNonce();
-    send(res, 429, renderLogin(false, '/', false, true, nonce), {
+    send(res, 429, renderInviteCodePage(false, true, nonce), {
       ...htmlSecurityHeaders(nonce),
       'Retry-After': String(rate.retryAfterSeconds)
     });
@@ -2313,13 +2281,15 @@ async function handleInviteCodeRedeem(req, res) {
   const form = new URLSearchParams(body);
   const code = cleanInviteInstallCode(form.get('code'));
   if (!code || !(await ensureAccountStore())) {
-    send(res, 303, '', { Location: '/login?inviteError=1' });
+    const nonce = htmlNonce();
+    send(res, 400, renderInviteCodePage(true, false, nonce), htmlSecurityHeaders(nonce));
     return;
   }
 
   const invite = accountStore.consumeInviteCode(hashInviteInstallCode(code, inviteSecret));
   if (!invite) {
-    send(res, 303, '', { Location: '/login?inviteError=1' });
+    const nonce = htmlNonce();
+    send(res, 400, renderInviteCodePage(true, false, nonce), htmlSecurityHeaders(nonce));
     return;
   }
 
@@ -2340,6 +2310,14 @@ async function readRequestBody(req) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+async function discardRequestBody(req) {
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 256 * 1024) throw new PublicApiError('REQUEST_TOO_LARGE');
+  }
 }
 
 async function readJsonBody(req) {
@@ -2525,7 +2503,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/logout') {
       accountStore?.deleteSession(accountToken(req));
       send(res, 302, '', {
-        Location: '/login',
+        Location: '/',
         'Set-Cookie': [cookieHeader('', 0), accountCookieHeader('', 0)]
       });
       return;
@@ -2541,46 +2519,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/login' && req.method === 'GET') {
-      const nonce = htmlNonce();
-      send(
-        res,
-        200,
-        renderLogin(
-          url.searchParams.get('error') === '1',
-          url.searchParams.get('next') || '/',
-          url.searchParams.get('inviteError') === '1',
-          false,
-          nonce
-        ),
-        htmlSecurityHeaders(nonce)
-      );
+      const requestedNext = safeRedirectPath(url.searchParams.get('next') || '/');
+      const next = requestedNext.startsWith('/login') ? '/' : requestedNext;
+      send(res, 302, '', { Location: next });
       return;
     }
 
     if (url.pathname === '/login' && req.method === 'POST') {
       const body = await readRequestBody(req);
       const form = new URLSearchParams(body);
-      const password = form.get('password') || '';
       const next = safeRedirectPath(form.get('next') || '/');
-      if (!timingSafeEqualString(password, accessPassword)) {
-        send(res, 303, '', { Location: `/login?error=1&next=${encodeURIComponent(next)}` });
-        return;
-      }
       send(res, 303, '', {
-        Location: next,
+        Location: next.startsWith('/login') ? '/' : next,
         'Set-Cookie': cookieHeader(createSessionCookie(), Math.floor(sessionTtlMs / 1000))
       });
-      return;
-    }
-
-    if (!hasValidSession(req)) {
-      if (url.pathname.startsWith('/api/')) {
-        sendApiError(res, 401, 'ACCESS_REQUIRED', 'Skyjo access is required.');
-        return;
-      }
-      if (url.searchParams.has('invite') && (await handleRoomInviteAccess(res, url))) return;
-      const next = safeRedirectPath(`${url.pathname}${url.search}`);
-      send(res, 302, '', { Location: `/login?next=${encodeURIComponent(next)}` });
       return;
     }
 

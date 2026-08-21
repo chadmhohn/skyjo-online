@@ -60,37 +60,23 @@ These endpoints do not require either session cookie and return `Cache-Control: 
 
 Never use `/healthz` as proof that accounts or rooms are ready.
 
-## Two Session Layers
+## Public Access And Account Session
 
-The service has two distinct signed HttpOnly cookies:
+Issue #228 retires the private shared-password layer before external TestFlight. Browser pages, guest solo play, account signup/sign-in, and the WebSocket handshake no longer require `skyjo_session`. The only active authentication cookie is `skyjo_account`, which identifies an optional signed-in account and is still required for account-only APIs and multiplayer admission.
 
-1. Outer access cookie, default name `skyjo_session`. It admits requests past the private shared-password gate.
-2. Account cookie, default name `skyjo_account`. It identifies a signed-in account.
+The legacy access surface remains bounded and no-store solely so already-installed native clients roll forward safely:
 
-Both use path `/`, `SameSite=Lax`, a finite Max-Age, and `Secure` in production. The WebSocket upgrade requires both a valid outer session and a current account session. Use one dedicated `URLSession`/cookie jar for HTTP and WebSocket requests so the handshake receives both cookies.
+- `GET /api/access/session` always returns HTTP 200 `{ "authenticated": true }` without creating a cookie.
+- `POST /api/access/session` drains at most 256 KiB without parsing, comparing, persisting, or logging a password-shaped body; it returns HTTP 200 `{ "authenticated": true }`. A legacy access cookie may still be set for downgrade compatibility, but no authorization decision reads it.
+- `DELETE /api/access/session` remains an idempotent full sign-out compatibility operation. It revokes the presented account session when possible, expires both legacy and account cookies, and returns `{ "authenticated": true }` because public access remains available.
+- `GET /login` redirects to the safe `next` path or `/`; legacy `POST /login` also redirects without inspecting the former password field.
+- Other access-session methods return HTTP 405 `METHOD_NOT_ALLOWED`; oversized bodies remain `REQUEST_TOO_LARGE`.
 
-Do not extract, log, copy into `UserDefaults`, or manually expose HttpOnly cookie values. Do not bundle the shared password.
-
-### Outer Access Flow
-
-The existing PWA continues to submit `POST /login` as `application/x-www-form-urlencoded` with `password` and `next`; success sets the access cookie and responds with a 303. Its GET page, redirect behavior, and browser logout flow remain unchanged.
-
-IOS-2 adds an API-only surface handled before the outer access redirect:
-
-- `GET /api/access/session` -> HTTP 200 `{ "authenticated": boolean }`. A missing, expired, invalid, or malformed cookie yields `false`, not a redirect or server error.
-- `POST /api/access/session` requires `Content-Type: application/json` and exactly `{ "password": string }`. The password must contain 1-4096 Unicode code points; the same bound is enforced for the configured access secret at server startup. Success returns HTTP 200 `{ "authenticated": true }` and sets the existing signed outer-access cookie. A wrong password returns HTTP 401 `ACCESS_AUTHENTICATION_FAILED` and sets no cookie.
-- `DELETE /api/access/session` is idempotent and returns HTTP 200 `{ "authenticated": false }`. It expires both outer-access and account cookies and best-effort revokes the presented account session server-side.
-- Other methods return HTTP 405 `METHOD_NOT_ALLOWED` with `Allow: GET, POST, DELETE`.
-
-Malformed JSON, a non-object body, an unsupported media type, an invalid shape/bound, and an oversized body use `INVALID_JSON`, `EXPECTED_JSON_OBJECT`, `UNSUPPORTED_MEDIA_TYPE`, `INVALID_REQUEST`, and `REQUEST_TOO_LARGE` respectively. Success and error responses are JSON with `Cache-Control: no-store`.
-
-The endpoint reuses the established cookie signing, name, path, lifetime, HttpOnly, SameSite, and production Secure behavior, so the PWA, HTTP APIs, and WebSocket upgrade see the same outer session. It does not introduce a new access-specific rate limiter; the server retains the existing outer-gate posture, generic authentication message, constant-time secret comparison, request bounds, and no-secret logging. Any future throttling must cover both JSON and legacy HTML login without breaking invite/browser behavior.
+Do not extract, log, copy into `UserDefaults`, or manually expose account-cookie values. Production may retain the old access secret temporarily for rollback, but startup and authorization no longer depend on it.
 
 ## Account And Stats HTTP API
 
-All routes below require the outer access session. Authenticated routes additionally require the account cookie. IOS-2 normalizes JSON API failures to the stable object `{ "code": string, "error": string }` described by `contracts/v1/schemas/api-error.schema.json`. `code` is the machine-readable branch key; `error` remains the sanitized user-facing string consumed by the PWA, so adding the sibling field is backward compatible. Canonical producers emit the exact envelope, while clients must tolerate additive response fields.
-
-An unauthenticated request to `/api/*`, except the pre-gate access-session endpoint itself, receives HTTP 401 `{ "code": "ACCESS_REQUIRED", "error": "Skyjo access is required." }` rather than an HTML login redirect. Browser page requests still redirect to `/login`. Do not confuse `ACCESS_REQUIRED` with `ACCOUNT_AUTHENTICATION_REQUIRED`: the former means the outer shared gate is absent; the latter means the account cookie is absent, expired, disabled, or otherwise invalid after outer access succeeds.
+Public account-status/signup/login routes require no cookie. Authenticated routes require only the account cookie. IOS-2 normalizes JSON API failures to the stable object `{ "code": string, "error": string }` described by `contracts/v1/schemas/api-error.schema.json`; clients must tolerate additive response fields. `ACCESS_REQUIRED` remains a recognized legacy error only so a native app can classify an accidental rollback as upgrade-required rather than presenting the retired shared-password form.
 
 Native clients may display the server message only for a recognized stable code. Unknown codes, malformed/non-JSON bodies, redirects, or out-of-bound error values use the safe local fallback `Request failed.` The PWA continues reading `error` and does not need to understand `code` immediately.
 
@@ -126,15 +112,15 @@ Before public App Store submission, add authenticated account deletion with expl
 - `GET /api/stats/players/:userId` -> `{ user, summary, games }`.
 - `POST /api/stats/single-player` body `{ state, clientGameKey, completedAt?, expectedAccountUserId }` -> 201 `{ game }`.
 
-Use `src/account.tsx` as the current DTO map. A solo completion uses a stable game UUID as `clientGameKey`; the outbox replays the same key and immutable body until accepted. The native client accepts only the exact 201 success with a schema-valid `game.mode == "single"` response. `ACCESS_REQUIRED` and `ACCOUNT_AUTHENTICATION_REQUIRED` invalidate their respective authenticated layers. Local request-size rejection plus recognized size, invalid-payload, and unsupported-version responses are permanent blockers; transient transport/server failures remain retryable. If the confirmed account changes across any await, delivery aborts without mutating the durable row.
+Use `src/account.tsx` as the current DTO map. A solo completion uses a stable game UUID as `clientGameKey`; the outbox replays the same key and immutable body until accepted. The native client accepts only the exact 201 success with a schema-valid `game.mode == "single"` response. `ACCOUNT_AUTHENTICATION_REQUIRED` invalidates the account session; legacy `ACCESS_REQUIRED` indicates an incompatible rollback and routes to upgrade-required. Local request-size rejection plus recognized size, invalid-payload, and unsupported-version responses are permanent blockers; transient transport/server failures remain retryable. If the confirmed account changes across any await, delivery aborts without mutating the durable row.
 
 Admin endpoints exist under `/api/admin/users` but are outside native v0.1.0.
 
 ### IOS-5 Native HTTP Boundary
 
-The IOS-5/7 native implementation uses one injected persistent cookie jar for both session layers. `SkyjoAPIClient` composes the access-session actor and exposes typed current-account, signup/login/logout, profile/password, stats summary/list/detail/player, solo-stats submission, readiness, and version operations without exposing cookies or passwords to SwiftUI state. It rejects redirects and unexpected final URLs, retains the access route's 64 KiB response cap, caps general responses at 2 MiB, maps recognized stable error codes, and replaces unknown or malformed server detail with a safe local message.
+The native implementation uses one injected persistent cookie jar for the optional account session and legacy compatibility cookies. Bootstrap verifies readiness/version and then loads the optional account directly; it does not call the retired access gate. `SkyjoAPIClient` retains the compatibility access-session actor and exposes typed current-account, signup/login/logout, profile/password, stats summary/list/detail/player, solo-stats submission, readiness, and version operations without exposing cookies or passwords to SwiftUI state. It rejects redirects and unexpected final URLs, retains the legacy access route's 64 KiB response cap, caps general responses at 2 MiB, maps recognized stable error codes, and replaces unknown or malformed server detail with a safe local message.
 
-Operational DTOs inspect schema/protocol axes before version-specific status, checks, release identity, or timestamp fields. They accept only schema 2 and protocol 2; future axes route to an explicit upgrade-required state even when that future payload introduces unknown status values or fields. Account and stats responses validate the committed schema's UUID versions/variants, Unicode string bounds, safe timestamps and scores, enum and collection bounds, and requested/returned detail identities without inventing producer-only constraints for paged or additive responses. Contract-required nullable fields must be present and may decode to `nil`, while omission fails closed; additive response fields remain ignored for forward compatibility. Swift tests decode the canonical valid/invalid HTTP fixtures from `contracts/v1/fixtures/`, exercise schema boundary mutations, request and streaming bounds, loaded/detail/player/offline-retry model and UI flows, and prove the two cookies survive client recreation through the complete local account/stats flow. Native admin remains a web-only link. Public-release account deletion is still blocked on [issue #192](https://github.com/chadmhohn/skyjo-online/issues/192); IOS-5 does not invent or call a deletion API.
+Operational DTOs inspect schema/protocol axes before version-specific status, checks, release identity, or timestamp fields. They accept only schema 2 and protocol 2; future axes route to an explicit upgrade-required state even when that future payload introduces unknown status values or fields. Account and stats responses validate the committed schema's UUID versions/variants, Unicode string bounds, safe timestamps and scores, enum and collection bounds, and requested/returned detail identities without inventing producer-only constraints for paged or additive responses. Contract-required nullable fields must be present and may decode to `nil`, while omission fails closed; additive response fields remain ignored for forward compatibility. Swift tests decode the canonical valid/invalid HTTP fixtures from `contracts/v1/fixtures/`, exercise schema boundary mutations, request and streaming bounds, loaded/detail/player/offline-retry model and UI flows, and prove direct signup plus the account cookie survive client recreation through the complete local account/stats flow. Native admin remains a web-only link. Public-release account deletion is still blocked on [issue #192](https://github.com/chadmhohn/skyjo-online/issues/192); IOS-5 does not invent or call a deletion API.
 
 ## Invite Contract
 
@@ -142,26 +128,26 @@ Reusable signed HTTPS invites are returned by:
 
 - `POST /api/rooms/invite` body `{ roomCode }` -> `{ roomCode, path, expiresAt }`.
 
-The caller must be an account member of the room. `path` is `/invite/<signed-token>`. The existing web landing still mints short, one-use install codes. An explicit `?open=browser` redemption still grants the outer-access cookie and redirects to the lobby. Neither path grants an account session, room membership, or a player seat.
+The caller must be an account member of the room. `path` is `/invite/<signed-token>`. The existing web landing still mints short, one-use install codes. An explicit `?open=browser` redemption still emits the legacy compatibility cookie and redirects to the lobby. Neither path grants an account session, room membership, or a player seat.
 
 Issue #202 adds the backend-only native handoff in repository source. This is not evidence that production has been promoted or that Apple has accepted the Associated Domains configuration.
 
 ### Apple App Site Association
 
-- `GET` and `HEAD /.well-known/apple-app-site-association` are handled before the shared-password gate and return direct HTTP 200 responses with `Content-Type: application/json`, `Cache-Control: public, max-age=3600`, no redirect, and no cookie.
+- `GET` and `HEAD /.well-known/apple-app-site-association` are public direct HTTP 200 responses with `Content-Type: application/json`, `Cache-Control: public, max-age=3600`, no redirect, and no cookie.
 - The exact document has one `applinks.details` item and one full Apple application identifier. Its first component excludes `/invite/*` when query item `open` equals `browser`; its second component includes only `/invite/*`. It contains no `webcredentials`, unrelated service, broad route, or wildcard domain.
 - `SKYJO_APPLE_APPLICATION_IDENTIFIER` supplies the complete application-identifier prefix plus `com.groundworkrevops.skyjo`. The prefix is not inferred from the Team ID. Production-like startup rejects a missing, malformed, placeholder, or fixed synthetic identifier.
 - Development, tests, and the isolated deployment canary use only `TESTSKYJ01.com.groundworkrevops.skyjo`. The canary exception requires the deployment controller's exact `/var/tmp/skyjo-deploy/<validated-run-id>/release` path shape in `SKYJO_CANARY_RELEASE_DIR` and requires the running server module to reside in that same directory; an arbitrary or spoofed value cannot authorize the synthetic identifier for the production service.
 
 ### Native JSON Redemption
 
-`POST /api/rooms/invite/redeem` is also handled before the shared-password and account gates. It requires `Content-Type: application/json` and the exact request:
+`POST /api/rooms/invite/redeem` is public before account authentication. It requires `Content-Type: application/json` and the exact request:
 
 ```json
 { "token": "<opaque-signed-token>" }
 ```
 
-The token is accepted only in the body; query parameters are rejected. It must match the established signed-token alphabet/shape within 2,048 characters. The server validates its HMAC, version, expiry, room code, v4 room-instance UUID, and the currently live room instance. Success is a direct HTTP 200 with `Cache-Control: no-store`, exactly one existing outer-access cookie, and the exact sanitized body:
+The token is accepted only in the body; query parameters are rejected. It must match the established signed-token alphabet/shape within 2,048 characters. The server validates its HMAC, version, expiry, room code, v4 room-instance UUID, and the currently live room instance. Success is a direct HTTP 200 with `Cache-Control: no-store`, exactly one legacy compatibility cookie, and the exact sanitized body:
 
 ```json
 { "roomCode": "ABCDE", "expiresAt": 1800003600000 }
@@ -179,9 +165,9 @@ Stable native-redemption failures are:
 
 Existing `INVALID_REQUEST`, `UNSUPPORTED_MEDIA_TYPE`, `METHOD_NOT_ALLOWED`, `REQUEST_TOO_LARGE`, `INVALID_JSON`, and `EXPECTED_JSON_OBJECT` errors cover request-contract failures. No failure sets a cookie or redirects.
 
-The app-side consumer remains owned by #188. It must validate the HTTPS host and `/invite/` path, keep the token ephemeral, redeem it before account/room admission, and present a join review rather than mutating membership from the universal link. Its invite transport is cookie-disabled: existing same-origin cookies are attached explicitly, while response cookies remain pending until the complete direct 200 JSON/no-store body passes byte bounds, decoding, and room/expiry semantics. A redirect, transport interruption, error status, invalid media/cache header, oversized body, malformed JSON, or invalid DTO must leave the shared access/account jar unchanged. Invite possession never replaces account authentication or room membership rules.
+The app-side consumer remains owned by #188. It must validate the HTTPS host and `/invite/` path, keep the token ephemeral, redeem it before account/room admission, and present a join review rather than mutating membership from the universal link. Its invite transport is cookie-disabled: existing same-origin cookies are attached explicitly, while response cookies remain pending until the complete direct 200 JSON/no-store body passes byte bounds, decoding, and room/expiry semantics. A redirect, transport interruption, error status, invalid media/cache header, oversized body, malformed JSON, or invalid DTO must leave the cookie jar unchanged. Invite possession never replaces account authentication or room membership rules.
 
-This additive backend does not change the invite producer, browser landing, install-code concurrency/persistence, cookie format, shared-password/account/WebSocket gates, PWA service worker, database schema, room-persistence schema, protocol 2, snapshot envelope 2, presence 1, or contract-bundle version 1. Promote it before distributing a dependent native build. A code-only rollback needs no state restore and remains PWA-safe, but it removes AASA/redemption support; cached Apple association state is a compatibility consideration, not a reason to restore data.
+Issue #202 originally added this backend without changing the then-active shared-password/account/WebSocket gates. Issue #228 later retired only the shared-password authorization decision while preserving invite validation, account authentication, room admission, cookie format for rollback compatibility, the PWA service worker, database/room schemas, protocol 2, snapshot envelope 2, presence 1, and contract-bundle version 1.
 
 ## WebSocket Admission Frames
 
@@ -358,14 +344,14 @@ Run the focused native/server gate with:
 ./scripts/ios-build-test.sh --networking-contracts
 ```
 
-The script builds `server-dist`, launches the real `server.mjs` on a dynamic `127.0.0.1` port, generates test-only session/invite secrets, and uses temporary SQLite and room-state paths. The loopback server and test target share a fixed, explicitly non-secret access fixture; the simulator environment receives only the dynamic loopback URL, never a secret or generated credential. Swift `URLSession` tests prove unauthenticated status, generic wrong-password failure, access-cookie persistence, signup/current-account/profile/password/logout, stats summary/list/detail/player requests, client recreation with both cookie layers, repeatable logout, and clearing of both cookies against that process. Canonical `contracts/v1` fixtures and `URLProtocol` tests cover strict typed success decoding, required-nullable fields, additive fields, version compatibility, known/unknown/malformed errors, redirect rejection, and streamed request/response bounds. Cleanup terminates the exact child process and deletes the validated temporary state directory and raw server log. On every trappable exit, the harness scans the raw result bundle and logs for the generated server secrets and stages only verified files into the exact CI-upload directory. A match or scan failure stages only a generic safety error and fails the gate; an untrappable exit never creates an upload-eligible directory.
+The script builds `server-dist`, launches the real `server.mjs` on a dynamic `127.0.0.1` port without an access password, generates test-only session/invite secrets, and uses temporary SQLite and room-state paths. The simulator environment receives only the dynamic loopback URL, never a secret or generated credential. Swift `URLSession` tests prove open access, direct signup/current-account/profile/password/logout, stats summary/list/detail/player requests, account-cookie client recreation, repeatable logout, legacy access-route compatibility, and clearing of both cookie names against that process. Canonical `contracts/v1` fixtures and `URLProtocol` tests cover strict typed success decoding, required-nullable fields, additive fields, version compatibility, known/unknown/malformed errors, redirect rejection, and streamed request/response bounds. Cleanup terminates the exact child process and deletes the validated temporary state directory and raw server log. On every trappable exit, the harness scans the raw result bundle and logs for the generated server secrets and stages only verified files into the exact CI-upload directory. A match or scan failure stages only a generic safety error and fails the gate; an untrappable exit never creates an upload-eligible directory.
 
 Compatibility and rollout rules:
 
-- The new server remains compatible with the existing PWA: HTML access routes and cookie format are unchanged, and every API error retains the legacy `error` string while adding `code`.
-- The native client is fail-closed against an older server. A pre-IOS-2 backend may redirect `/api/access/session` to HTML login or return an unrecognized API response; `AccessSessionClient` rejects the redirect/invalid payload instead of scraping HTML or treating it as authenticated.
-- Promote and verify server support through the immutable release pipeline before distributing a native build that requires it. Re-check `/version`, `/readyz`, the PWA account/login/invite flows, and the focused access contract against the promoted release.
-- A server rollback to a pre-IOS-2 release is safe for the PWA but removes required native access functionality. Do not perform that rollback after a dependent native build is distributed unless the native feature is disabled/fails safely and the compatibility impact is accepted. The established signed cookie format itself remains downgrade-compatible.
+- Issue #228 must be promoted before a native build that skips access status is distributed. The server remains compatible with older native clients because the bounded access endpoints report authenticated and may emit/clear the established cookie format.
+- A rollback to a gated server may return `ACCESS_REQUIRED`; the current native client treats that as upgrade-required and never restores the retired password UI.
+- Re-check `/version`, `/readyz`, open PWA/account/signup/invite flows, the legacy access compatibility route, and an account-only WebSocket against the promoted release.
+- Keep the former production access secret available only when an explicitly selected older rollback target still requires it; current startup, authorization, canary, and deployment smoke do not depend on it.
 - Source changes and local integration success are not proof of production deployment.
 
 ## Contract Change Checklist

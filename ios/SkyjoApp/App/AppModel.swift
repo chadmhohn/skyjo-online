@@ -270,14 +270,9 @@ final class AppModel {
         return
       }
 
-      let accessStatus = try await service.accessStatus()
-      guard bootstrapRequestID == requestID else { return }
-      guard accessStatus.authenticated else {
-        preferences?.clearConfirmedAccessAndAccount()
-        resetAccountState()
-        rootState = .accessRequired
-        return
-      }
+      // The shared-password gate was retired before the first external beta.
+      // A successful readiness/version check is now the service-access fence;
+      // account authentication remains independent and optional for solo play.
       preferences?.confirmAccess()
 
       let currentUser = try await service.currentAccount()
@@ -836,7 +831,7 @@ final class AppModel {
     case .accessRequired:
       preferences?.clearConfirmedAccessAndAccount()
       resetAccountState()
-      rootState = .accessRequired
+      rootState = .upgradeRequired
       return true
     case .accountAuthenticationRequired:
       let email = accountWasKnown ? user?.email : authentication.email
@@ -924,7 +919,7 @@ final class AppModel {
     case .accessRequired:
       preferences?.clearConfirmedAccessAndAccount()
       authentication.errorMessage = ""
-      rootState = .accessRequired
+      rootState = .upgradeRequired
     case .accountSessionChanged:
       preferences?.confirmSignedOut()
       authentication.errorMessage = "Your account session changed. Sign in again to resume stats delivery."

@@ -157,11 +157,16 @@ async function runOnce(baseUrl, expectedReleaseSha, { allowPreNativeInviteRollba
   assert.ok(typeof manifest.name === 'string' && manifest.name.length > 0, 'manifest name is missing');
   assert.ok(Array.isArray(manifest.icons) && manifest.icons.length > 0, 'manifest icons are missing');
 
-  const loginResponse = await fetchPublic(baseUrl, '/login');
-  assertPublicResponse(loginResponse, 'login', /^text\/html\b/i);
-  assertNoStore(loginResponse, 'login');
-  const login = await loginResponse.text();
-  assert.match(login, /<form\b[^>]*\baction=["']\/login["']/i, 'public login form is missing');
+  const loginResponse = await fetchPublic(baseUrl, '/login?next=%2Frules');
+  assert.equal(loginResponse.status, 302, 'retired shared login must redirect');
+  assert.equal(loginResponse.headers.get('location'), '/rules', 'retired shared login lost its safe continuation');
+  assert.equal(loginResponse.headers.get('set-cookie'), null, 'retired shared login must not create a session');
+  assertNoStore(loginResponse, 'retired shared login');
+
+  const appResponse = await fetchPublic(baseUrl, '/');
+  assertPublicResponse(appResponse, 'open app shell', /^text\/html\b/i);
+  assertNoStore(appResponse, 'open app shell');
+  assert.match(await appResponse.text(), /<div id="root"><\/div>/, 'open app shell root is missing');
 
   return { releaseSha: version.releaseSha, protocolVersion: version.protocolVersion };
 }

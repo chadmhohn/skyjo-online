@@ -86,56 +86,6 @@ async function waitForHealth(url) {
   throw lastError || new Error('server did not become healthy');
 }
 
-async function assertOversizedAccessPasswordRejected(repoRoot) {
-  const oversizedPassword = 'x'.repeat(4097);
-  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-access-bound-'));
-  let child;
-  try {
-    child = spawn(process.execPath, ['server.mjs'], {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        NODE_ENV: 'test',
-        HOST: '127.0.0.1',
-        PORT: '0',
-        SKYJO_ACCESS_PASSWORD: oversizedPassword,
-        SKYJO_DB_FILE: path.join(temporaryDirectory, 'skyjo.sqlite'),
-        SKYJO_INVITE_SECRET: 'oversized-access-test-invite-secret',
-        SKYJO_ROOMS_FILE: path.join(temporaryDirectory, 'rooms.json'),
-        SKYJO_SESSION_SECRET: 'oversized-access-test-session-secret',
-        SKYJO_VAPID_PRIVATE_KEY: '',
-        SKYJO_VAPID_PUBLIC_KEY: ''
-      },
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    let output = '';
-    child.stdout.on('data', (data) => { output += String(data); });
-    child.stderr.on('data', (data) => { output += String(data); });
-    const exitCode = await new Promise((resolve, reject) => {
-      let timedOut = false;
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGKILL');
-      }, 5000);
-      child.once('error', (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-      child.once('exit', (code) => {
-        clearTimeout(timeout);
-        if (timedOut) reject(new Error('oversized access-password startup check timed out'));
-        else resolve(code);
-      });
-    });
-    assert.equal(exitCode, 1, 'an access password outside the JSON contract fails startup');
-    assert.match(output, /authentication secrets are missing or invalid/i);
-    assert.equal(output.includes(oversizedPassword), false, 'startup validation never prints the configured password');
-  } finally {
-    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    await fs.rm(temporaryDirectory, { recursive: true, force: true });
-  }
-}
-
 async function assertProductionAppleIdentifierRequired(repoRoot) {
   const rejectedConfigurations = [
     { label: 'missing' },
@@ -642,7 +592,6 @@ const port = await getOpenPort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const password = 'test-password';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-await assertOversizedAccessPasswordRejected(repoRoot);
 await assertProductionAppleIdentifierRequired(repoRoot);
 const server = spawn(process.execPath, ['server.mjs'], {
   cwd: repoRoot,
@@ -683,7 +632,7 @@ try {
   const appleAssociationResponse = await fetch(`${baseUrl}/.well-known/apple-app-site-association`, {
     redirect: 'manual'
   });
-  assert.equal(appleAssociationResponse.status, 200, 'Apple association is public before the access gate');
+  assert.equal(appleAssociationResponse.status, 200, 'Apple association is public');
   assert.equal(appleAssociationResponse.headers.get('location'), null, 'Apple association is direct');
   assert.equal(appleAssociationResponse.headers.get('set-cookie'), null, 'Apple association never creates a session');
   assert.equal(appleAssociationResponse.headers.get('content-type'), 'application/json');
@@ -762,49 +711,41 @@ try {
     assert.match(response.headers.get('cache-control') || '', /no-store/i);
     assert.deepEqual(Object.keys(payload).sort(), ['code', 'error']);
   }
-  const publicLoginPage = await fetch(`${baseUrl}/login`);
-  assert.equal(publicLoginPage.status, 200);
-  assert.match(publicLoginPage.headers.get('cache-control') || '', /no-store/i);
-  assert.equal(publicLoginPage.headers.get('referrer-policy'), 'no-referrer');
-  const publicLoginCsp = publicLoginPage.headers.get('content-security-policy') || '';
-  assert.match(publicLoginCsp, /default-src 'self'/);
-  assertLocalStyleAndFontPolicy(publicLoginCsp, { label: 'login CSP', nonce: true });
-  const publicLoginHtml = await publicLoginPage.text();
-  for (const marker of ['viewport-fit=cover', 'mobile-web-app-capable', 'apple-mobile-web-app-capable', 'manifest.webmanifest', 'apple-touch-icon']) {
-    assert.match(publicLoginHtml, new RegExp(marker), `login SSR head includes ${marker}`);
-  }
+  const publicLoginPage = await fetch(`${baseUrl}/login?next=%2Frules`, { redirect: 'manual' });
+  assert.equal(publicLoginPage.status, 302, 'retired password page redirects directly into the app');
+  assert.equal(publicLoginPage.headers.get('location'), '/rules');
+  assert.equal(publicLoginPage.headers.get('set-cookie'), null);
   const publicManifest = await fetch(`${baseUrl}/manifest.webmanifest`);
-  assert.equal(publicManifest.status, 200, 'PWA manifest stays available before the site-password gate');
+  assert.equal(publicManifest.status, 200, 'PWA manifest stays publicly available');
   assert.match(publicManifest.headers.get('content-type') || '', /application\/manifest\+json/);
   const publicManifestJson = await publicManifest.json();
   assert.equal(publicManifestJson.id, '/', 'PWA manifest has a stable app id');
   assert.equal(publicManifestJson.launch_handler?.client_mode, 'navigate-existing', 'PWA manifest opts into app URL launch handling');
   const publicAppleIcon = await fetch(`${baseUrl}/skyjo-icon-180.png`);
-  assert.equal(publicAppleIcon.status, 200, 'Apple touch icon stays available before the site-password gate');
+  assert.equal(publicAppleIcon.status, 200, 'Apple touch icon stays publicly available');
   assert.match(publicAppleIcon.headers.get('content-type') || '', /image\/png/);
   const publicServiceWorker = await fetch(`${baseUrl}/sw.js`);
-  assert.equal(publicServiceWorker.status, 200, 'Service worker stays available before the site-password gate');
+  assert.equal(publicServiceWorker.status, 200, 'Service worker stays publicly available');
   assert.match(publicServiceWorker.headers.get('content-type') || '', /application\/javascript/);
-  const protectedShareLink = await fetch(`${baseUrl}/lobby?room=ABCDE`, { redirect: 'manual' });
-  assert.equal(protectedShareLink.status, 302);
-  assert.equal(protectedShareLink.headers.get('location'), '/login?next=%2Flobby%3Froom%3DABCDE');
-
-  const unauthenticatedApi = await fetch(`${baseUrl}/api/account/me?invite=invalid`, { redirect: 'manual' });
-  assert.equal(unauthenticatedApi.status, 401, 'unauthenticated APIs fail with JSON instead of redirecting');
-  assert.deepEqual(await unauthenticatedApi.json(), {
-    code: 'ACCESS_REQUIRED',
-    error: 'Skyjo access is required.'
+  const openShareLink = await fetch(`${baseUrl}/lobby?room=ABCDE`, {
+    headers: { Accept: 'text/html' },
+    redirect: 'manual'
   });
+  assert.equal(openShareLink.status, 200, 'room links reach the open app shell without a shared cookie');
+
+  const signedOutAccount = await fetch(`${baseUrl}/api/account/me?invite=invalid`, { redirect: 'manual' });
+  assert.equal(signedOutAccount.status, 200, 'account status is public but remains signed out');
+  assert.deepEqual(await signedOutAccount.json(), { user: null });
 
   const initialAccess = await accessSessionRequest(baseUrl);
   assert.equal(initialAccess.response.status, 200);
-  assert.deepEqual(initialAccess.payload, { authenticated: false });
+  assert.deepEqual(initialAccess.payload, { authenticated: true });
   assert.match(initialAccess.response.headers.get('content-type') || '', /^application\/json\b/);
   assert.match(initialAccess.response.headers.get('cache-control') || '', /no-store/i);
 
   const malformedAccess = await accessSessionRequest(baseUrl, { cookie: 'skyjo_smoke=%E0%A4%A' });
   assert.equal(malformedAccess.response.status, 200, 'malformed cookies do not escape as server errors');
-  assert.deepEqual(malformedAccess.payload, { authenticated: false });
+  assert.deepEqual(malformedAccess.payload, { authenticated: true });
 
   const unsupportedAccessMethod = await accessSessionRequest(baseUrl, { method: 'PATCH' });
   assert.equal(unsupportedAccessMethod.response.status, 405);
@@ -814,13 +755,27 @@ try {
     error: 'Method not allowed.'
   });
 
-  const unsupportedAccessMedia = await accessSessionRequest(baseUrl, {
-    method: 'POST',
-    body: JSON.stringify({ password }),
-    contentType: 'text/plain'
-  });
-  assert.equal(unsupportedAccessMedia.response.status, 415);
-  assert.equal(unsupportedAccessMedia.payload.code, 'UNSUPPORTED_MEDIA_TYPE');
+  for (const [contentType, body] of [
+    ['text/plain', JSON.stringify({ password })],
+    ['application/json', '{"password":'],
+    ['application/json', '[]'],
+    ['application/json', JSON.stringify({ password: 'wrong-password' })],
+    ['application/json', JSON.stringify({ password: 'x'.repeat(4096) })],
+    ['application/json', JSON.stringify({ password: 'x'.repeat(4097) })],
+    ['application/json', JSON.stringify({})],
+    ['application/json', JSON.stringify({ password: '' })],
+    ['application/json', JSON.stringify({ password: 123 })],
+    ['application/json', JSON.stringify({ password, unexpected: true })],
+  ]) {
+    const compatibleAccess = await accessSessionRequest(baseUrl, {
+      method: 'POST',
+      body,
+      contentType
+    });
+    assert.equal(compatibleAccess.response.status, 200, 'legacy access POST ignores password-shaped content');
+    assert.deepEqual(compatibleAccess.payload, { authenticated: true });
+    assert.equal(compatibleAccess.response.headers.getSetCookie().length, 1);
+  }
 
   for (const body of [
     {},
@@ -829,38 +784,14 @@ try {
     { password, unexpected: true },
     { password: 'x'.repeat(4097) }
   ]) {
-    const invalidAccess = await accessSessionRequest(baseUrl, {
+    const compatibleAccess = await accessSessionRequest(baseUrl, {
       method: 'POST',
       body: JSON.stringify(body),
       contentType: 'application/json; charset=utf-8'
     });
-    assert.equal(invalidAccess.response.status, 400);
-    assert.equal(invalidAccess.payload.code, 'INVALID_REQUEST');
+    assert.equal(compatibleAccess.response.status, 200);
+    assert.deepEqual(compatibleAccess.payload, { authenticated: true });
   }
-
-  const maximumLengthAccess = await accessSessionRequest(baseUrl, {
-    method: 'POST',
-    body: JSON.stringify({ password: 'x'.repeat(4096) }),
-    contentType: 'application/json'
-  });
-  assert.equal(maximumLengthAccess.response.status, 401, 'a 4096-character credential is inside the request bound');
-  assert.equal(maximumLengthAccess.payload.code, 'ACCESS_AUTHENTICATION_FAILED');
-
-  const malformedAccessJson = await accessSessionRequest(baseUrl, {
-    method: 'POST',
-    body: '{"password":',
-    contentType: 'application/json'
-  });
-  assert.equal(malformedAccessJson.response.status, 400);
-  assert.equal(malformedAccessJson.payload.code, 'INVALID_JSON');
-
-  const nonObjectAccessJson = await accessSessionRequest(baseUrl, {
-    method: 'POST',
-    body: '[]',
-    contentType: 'application/json'
-  });
-  assert.equal(nonObjectAccessJson.response.status, 400);
-  assert.equal(nonObjectAccessJson.payload.code, 'EXPECTED_JSON_OBJECT');
 
   const oversizedAccess = await accessSessionRequest(baseUrl, {
     method: 'POST',
@@ -869,18 +800,6 @@ try {
   });
   assert.equal(oversizedAccess.response.status, 413);
   assert.equal(oversizedAccess.payload.code, 'REQUEST_TOO_LARGE');
-
-  const rejectedAccess = await accessSessionRequest(baseUrl, {
-    method: 'POST',
-    body: JSON.stringify({ password: 'wrong-password' }),
-    contentType: 'application/json'
-  });
-  assert.equal(rejectedAccess.response.status, 401);
-  assert.deepEqual(rejectedAccess.payload, {
-    code: 'ACCESS_AUTHENTICATION_FAILED',
-    error: 'Authentication failed.'
-  });
-  assert.equal(rejectedAccess.response.headers.get('set-cookie'), null);
 
   const grantedAccess = await accessSessionRequest(baseUrl, {
     method: 'POST',
@@ -911,9 +830,9 @@ try {
     cookie: accessLogoutAccount.cookie
   });
   assert.equal(deletedAccess.response.status, 200);
-  assert.deepEqual(deletedAccess.payload, { authenticated: false });
+  assert.deepEqual(deletedAccess.payload, { authenticated: true });
   const expiredCookies = deletedAccess.response.headers.getSetCookie();
-  assert.equal(expiredCookies.length, 2, 'access logout expires both session layers');
+  assert.equal(expiredCookies.length, 2, 'legacy access logout expires both cookie names');
   assert.ok(expiredCookies.some((value) => /^skyjo_smoke=;/.test(value) && /Max-Age=0/.test(value)));
   assert.ok(expiredCookies.some((value) => /^skyjo_account=;/.test(value) && /Max-Age=0/.test(value)));
 
@@ -1206,15 +1125,15 @@ try {
     body: new URLSearchParams({ code: installCode }),
     redirect: 'manual'
   });
-  assert.equal(reusedInstallCode.status, 303, 'install codes are one-time use');
-  assert.equal(reusedInstallCode.headers.get('location'), '/login?inviteError=1');
+  assert.equal(reusedInstallCode.status, 400, 'install codes are one-time use');
+  assert.match(await reusedInstallCode.text(), /invite code expired or did not match/i);
   const invalidInstallCode = await fetch(`${baseUrl}/invite-code`, {
     method: 'POST',
     body: new URLSearchParams({ code: 'BADCODE' }),
     redirect: 'manual'
   });
-  assert.equal(invalidInstallCode.status, 303, 'invalid install code redirects back to login');
-  assert.equal(invalidInstallCode.headers.get('location'), '/login?inviteError=1');
+  assert.equal(invalidInstallCode.status, 400, 'invalid install code returns the gate-free invite page');
+  assert.match(await invalidInstallCode.text(), /invite code expired or did not match/i);
   const invalidInviteRoom = 'ABCDE';
   const invalidInvitePayload = Buffer.from(JSON.stringify({ room: invalidInviteRoom, exp: Date.now() + 60000 })).toString('base64url');
   const invalidInviteUrl = fixedOriginUrl(baseUrl, `/invite/${invalidInvitePayload}.bad-signature`);
@@ -1302,8 +1221,8 @@ try {
     body: new URLSearchParams({ code: resetInstallCode }),
     redirect: 'manual'
   });
-  assert.equal(staleShortInviteReplay.status, 303, 'consumed stale code becomes the generic invalid response');
-  assert.equal(staleShortInviteReplay.headers.get('location'), '/login?inviteError=1');
+  assert.equal(staleShortInviteReplay.status, 400, 'consumed stale code becomes the generic invalid response');
+  assert.match(await staleShortInviteReplay.text(), /invite code expired or did not match/i);
   const boundedNativeInviteAttempts = await Promise.all(Array.from({ length: 2 }, () => nativeInviteRequest(baseUrl, {
     body: JSON.stringify({ token: 'payload.signature' })
   })));

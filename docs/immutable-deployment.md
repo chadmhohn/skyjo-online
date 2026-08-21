@@ -193,7 +193,7 @@ CI independently verifies the tag syntax and ancestry. A separately signed produ
 6. Applies the already-proven additive migration against live state.
 7. Atomically sets `previous` to the old healthy release and `current` to the new SHA, then starts the hardened non-root service.
 8. Requires local readiness, exact release SHA, login/account identity, and authenticated WebSocket smoke.
-9. Requires the exact public Apple association document and the pre-gate native redemption contract to pass without creating an account session or changing room state.
+9. Requires the exact public Apple association document and public native redemption contract to pass without creating an account session or changing room state.
 10. Lets CI verify public health, readiness, version SHA, login HTML, the PWA manifest, and the Apple association document through Cloudflare.
 
 Failure before step 7 leaves production untouched. Failure during or after local activation switches `current` back to `previous`, restarts it, and verifies it. A public-edge failure requests the same metadata-bound code rollback. The rollback command is rejected unless the current release, failed SHA, artifact digest, tag, run ID, and controller metadata all match.
@@ -253,7 +253,7 @@ node scripts/smoke-public-release.mjs \
   --release-sha "$(git rev-parse HEAD)"
 ```
 
-The automated smoke uses only an invalid native redemption request and therefore never exposes an invite token. For the release that first enables Universal Links, separately create a disposable empty room and validate one real invite on a trusted operator terminal: send the token only in the JSON body over HTTPS, suppress response/request logging, require the exact `{roomCode,expiresAt}` response and one outer-access cookie, then confirm the room membership and seat are unchanged. Discard the terminal evidence rather than storing the token. Physical-device Universal Link validation remains the signing/device gate in native issue #188.
+The automated smoke uses only an invalid native redemption request and therefore never exposes an invite token. For the release that first enables Universal Links, separately create a disposable empty room and validate one real invite on a trusted operator terminal: send the token only in the JSON body over HTTPS, suppress response/request logging, require the exact `{roomCode,expiresAt}` response and the legacy compatibility cookie, then confirm the room membership and seat are unchanged. Discard the terminal evidence rather than storing the token. Physical-device Universal Link validation remains the signing/device gate in native issue #188.
 
 If rollback becomes necessary after this endpoint is public, perform the normal code-only rollback. Do not restore room or account state. The rollback edge proof keeps exact readiness/version validation and uses `--allow-pre-native-invite-rollback` only to accept the prior release's cookie-free redirect of the absent association path into the shared login gate; a 200 association response is still validated exactly. Apple and intermediaries may retain the association document for its bounded cache lifetime, so the prior release must continue to serve `/invite/*` safely as browser content; do not revoke or rotate invite signing material merely to roll back this code.
 
