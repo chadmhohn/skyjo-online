@@ -89,6 +89,8 @@ Native clients may display the server message only for a recognized stable code.
 - `PATCH /api/account/profile` body `{ displayName }` -> `{ user }`.
 - `POST /api/account/password` body `{ currentPassword, password, confirmPassword }` -> `{ ok: true }` and expired account cookie.
 
+Signup is limited to 10 attempts per trusted client address per hour, and login is limited to 20 attempts per trusted client address per five minutes. Exhaustion returns HTTP 429 `ACCOUNT_RATE_LIMITED` with `Retry-After`; the same generic response covers both routes.
+
 `AccountUser` currently contains:
 
 ```text

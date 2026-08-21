@@ -1379,8 +1379,42 @@ try {
     assert.equal(retainedState.includes(privateValue), false, 'invite secrets and tokens stay out of persistent state');
   }
 
+  let signupRateLimit = null;
+  for (let attempt = 0; attempt < 12 && !signupRateLimit; attempt += 1) {
+    const result = await accountRequest(baseUrl, '', '/api/account/signup', {
+      email: `rate-signup-${attempt}@example.test`,
+      displayName: 'Rate Test',
+      password: 'short',
+      confirmPassword: 'short'
+    });
+    if (result.response.status === 429) signupRateLimit = result;
+    else assert.equal(result.response.status, 400, 'bounded signup attempts fail validation before the client limit');
+  }
+  assert.ok(signupRateLimit, 'public signup has a bounded per-client attempt window');
+  assert.deepEqual(signupRateLimit.payload, {
+    code: 'ACCOUNT_RATE_LIMITED',
+    error: 'Too many account attempts. Try again later.'
+  });
+  assert.match(signupRateLimit.response.headers.get('retry-after') || '', /^\d+$/);
+
+  let loginRateLimit = null;
+  for (let attempt = 0; attempt < 22 && !loginRateLimit; attempt += 1) {
+    const result = await accountRequest(baseUrl, '', '/api/account/login', {
+      email: `missing-login-${attempt}@example.test`,
+      password: 'not-a-real-password'
+    });
+    if (result.response.status === 429) loginRateLimit = result;
+    else assert.equal(result.response.status, 401, 'bounded login attempts retain the generic credential failure');
+  }
+  assert.ok(loginRateLimit, 'public login has a bounded per-client attempt window');
+  assert.deepEqual(loginRateLimit.payload, {
+    code: 'ACCOUNT_RATE_LIMITED',
+    error: 'Too many account attempts. Try again later.'
+  });
+  assert.match(loginRateLimit.response.headers.get('retry-after') || '', /^\d+$/);
+
   console.log(
-    'chat smoke passed: public AASA, native and browser invite redemption, login redirect, account-gated rooms, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
+    'chat smoke passed: public AASA, native and browser invite redemption, login redirect, rate-limited accounts, account-gated rooms, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
   );
 } finally {
   reconnectSocket?.close();

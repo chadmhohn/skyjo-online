@@ -560,6 +560,14 @@
       }
     },
     {
+      "name": "API error ACCOUNT_RATE_LIMITED",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCOUNT_RATE_LIMITED",
+        "error": "Too many account attempts. Try again later."
+      }
+    },
+    {
       "name": "API error INVALID_REQUEST",
       "schema": "api-error.schema.json",
       "value": {

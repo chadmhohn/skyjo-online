@@ -19,6 +19,7 @@ Last reviewed by Codex: 2026-07-28 America/Denver, against the live v0.3.2 relea
 - Cloudflare zone: `groundworkrevops.com`.
 - Cloudflare DNS: `skyjo.groundworkrevops.com` is a proxied CNAME to tunnel `29eaa972-bcb7-4031-bfa3-950a9708197a.cfargotunnel.com`.
 - Cloudflare Tunnel: `groundwork-nova`, id `29eaa972-bcb7-4031-bfa3-950a9708197a`, remote config enabled. The active Cloudflare-side ingress routes `skyjo.groundworkrevops.com` to `http://localhost:4180`.
+- Account/invite attempt bounds use Cloudflare's `CF-Connecting-IP` through this loopback-only ingress by default. Set `SKYJO_TRUST_PROXY_CLIENT_IP=false` only behind a different local proxy that cannot guarantee that header.
 - Local `/etc/cloudflared/config.yml` may not show Skyjo because this tunnel uses Cloudflare remote config. Verify with the Cloudflare API before editing tunnel routes.
 
 The 2026-05-20 decoupling pass moved Skyjo out of the OpenClaw-owned workspace so OpenClaw can later move into Docker without taking Skyjo with it. Backup for that cutover lives at `/root/backups/skyjo-online-decouple-20260521T025019Z`.

@@ -57,6 +57,7 @@ import {
 import {
   cleanInviteInstallCode,
   createInviteRedemptionRateLimiter,
+  createRequestRateLimiter,
   hashInviteInstallCode
 } from './server-invite-codes.mjs';
 import {
@@ -98,7 +99,10 @@ const accountSessionTtlMs = Number(process.env.SKYJO_ACCOUNT_SESSION_TTL_HOURS |
 const adminEmail = process.env.SKYJO_ADMIN_EMAIL || 'chad.hohn@groundworkrevops.com';
 const adminInitialPassword = process.env.SKYJO_ADMIN_INITIAL_PASSWORD || '';
 const secureCookies = process.env.SKYJO_SECURE_COOKIES !== 'false';
-const trustProxyClientIp = process.env.SKYJO_TRUST_PROXY_CLIENT_IP === 'true';
+// Production binds to loopback behind the documented Cloudflare Tunnel, so its
+// client-IP header is trusted by default. Set this explicitly false only when a
+// different local proxy cannot guarantee that header.
+const trustProxyClientIp = process.env.SKYJO_TRUST_PROXY_CLIENT_IP !== 'false';
 const testPwaVariantsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_VARIANTS === 'true';
 const testPwaNetworkFaultsEnabled = process.env.NODE_ENV === 'test' && process.env.SKYJO_TEST_PWA_NETWORK_FAULTS === 'true';
 // One fixed pre-click clock leaves a 500ms diagnostic margin inside the product's 8s deadline.
@@ -129,6 +133,8 @@ const lifecycleTickMs = positiveDurationFromEnvironment('SKYJO_LIFECYCLE_TICK_MS
 const aiActionDelayMs = positiveDurationFromEnvironment('SKYJO_AI_ACTION_DELAY_MS', 650, true);
 const inviteRedemptionRateLimiter = createInviteRedemptionRateLimiter();
 const nativeInviteRedemptionRateLimiter = createInviteRedemptionRateLimiter();
+const accountSignupRateLimiter = createRequestRateLimiter({ limit: 10, windowMs: 60 * 60 * 1000 });
+const accountLoginRateLimiter = createRequestRateLimiter({ limit: 20, windowMs: 5 * 60 * 1000 });
 const apnsRegistrationRateLimiter = createAPNSRegistrationRateLimiter();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
@@ -1779,6 +1785,14 @@ async function handleApiRequest(req, res, url) {
     }
 
     if (url.pathname === '/api/account/signup' && req.method === 'POST') {
+      const rate = accountSignupRateLimiter.consume(inviteRedemptionClientKey(req, 'account-signup'));
+      if (!rate.allowed) {
+        const publicError = publicApiErrorResponse(new PublicApiError('ACCOUNT_RATE_LIMITED'));
+        sendApiError(res, publicError.status, publicError.code, publicError.message, {
+          'Retry-After': String(rate.retryAfterSeconds)
+        });
+        return true;
+      }
       const body = await readJsonBody(req);
       if (body.password !== body.confirmPassword) throw new PublicApiError('PASSWORDS_MUST_MATCH');
       const user = await accountStore.createUser({
@@ -1793,6 +1807,14 @@ async function handleApiRequest(req, res, url) {
     }
 
     if (url.pathname === '/api/account/login' && req.method === 'POST') {
+      const rate = accountLoginRateLimiter.consume(inviteRedemptionClientKey(req, 'account-login'));
+      if (!rate.allowed) {
+        const publicError = publicApiErrorResponse(new PublicApiError('ACCOUNT_RATE_LIMITED'));
+        sendApiError(res, publicError.status, publicError.code, publicError.message, {
+          'Retry-After': String(rate.retryAfterSeconds)
+        });
+        return true;
+      }
       const body = await readJsonBody(req);
       const user = await accountStore.authenticate(body.email, body.password);
       if (!user) {
