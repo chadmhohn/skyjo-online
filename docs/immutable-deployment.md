@@ -194,7 +194,7 @@ CI independently verifies the tag syntax and ancestry. A separately signed produ
 7. Atomically sets `previous` to the old healthy release and `current` to the new SHA, then starts the hardened non-root service.
 8. Requires local readiness, exact release SHA, login/account identity, and authenticated WebSocket smoke.
 9. Requires the exact public Apple association document and public native redemption contract to pass without creating an account session or changing room state.
-10. Lets CI verify public health, readiness, version SHA, login HTML, the PWA manifest, and the Apple association document through Cloudflare.
+10. Lets CI verify public health, readiness, version SHA, the safe login redirect and open app shell, account authentication, the PWA manifest, and the Apple association document through Cloudflare.
 
 Failure before step 7 leaves production untouched. Failure during or after local activation switches `current` back to `previous`, restarts it, and verifies it. A public-edge failure requests the same metadata-bound code rollback. The rollback command is rejected unless the current release, failed SHA, artifact digest, tag, run ID, and controller metadata all match.
 

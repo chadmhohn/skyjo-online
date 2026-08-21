@@ -198,7 +198,11 @@ try {
   const landing = await fetch(`${baseUrl}${invite.path}`);
   assert.equal(landing.status, 200);
   const landingHtml = await landing.text();
-  assert.match(landingHtml, new RegExp(`id="room-code" readonly value="${roomCode}"`));
+  assert.equal(
+    landingHtml.includes(`id="room-code" readonly value="${roomCode}"`),
+    true,
+    'Invite landing presents its exact reusable room code.'
+  );
   assert.equal(landingHtml.includes('id="invite-code"'), false, 'Open-access landing minted an obsolete install code.');
   assert.equal(landingHtml.includes(invite.path), false, 'Invite landing duplicated the signed token in response HTML.');
   const persistedRoomInstanceId = await waitForPersistedRoom(roomCode);

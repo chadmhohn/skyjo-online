@@ -81,6 +81,7 @@ public struct SkyjoAPIErrorCode: RawRepresentable, Equatable, Hashable, Sendable
     .accessAuthenticationFailed,
     .accountAuthenticationFailed,
     .accountAuthenticationRequired,
+    .accountRateLimited,
     .accountExists,
     .accountNotFound,
     .accountSessionChanged,

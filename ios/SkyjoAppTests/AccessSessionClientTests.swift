@@ -8,6 +8,11 @@ import Testing
 
 @Suite("Access, account, and stats HTTP clients", .serialized)
 struct AccessSessionClientTests {
+  @Test("Account throttling is a recognized safe server error")
+  func accountRateLimitCode() {
+    #expect(SkyjoAPIErrorCode.accountRateLimited.isKnown)
+  }
+
   @Test("Status requires its typed field and tolerates additive fields")
   func statusResponseCompatibility() async throws {
     let fixture = makeFixture { request in

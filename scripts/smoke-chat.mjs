@@ -1081,18 +1081,18 @@ try {
   assert.equal(inviteLandingHtml.includes(`Join Room ${parkingRoomCode}`), true, 'invite landing shows the room code');
   assert.match(inviteLandingHtml, /Add Skyjo to your Home Screen/, 'invite landing explains the home screen path');
   assert.match(inviteLandingHtml, /Open in Browser/, 'invite landing keeps the browser path available');
-  assert.match(
-    inviteLandingHtml,
-    new RegExp(`id="room-code" readonly value="${parkingRoomCode}"`),
+  assert.equal(
+    inviteLandingHtml.includes(`id="room-code" readonly value="${parkingRoomCode}"`),
+    true,
     'invite landing preserves the reusable room code for Home Screen players'
   );
   assert.equal(inviteLandingHtml.includes('id="invite-code"'), false, 'invite landing does not mint an obsolete install code');
   const secondInviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(secondInviteLanding.status, 200, 'the same group invite can be opened by another player');
   const secondInviteLandingHtml = await secondInviteLanding.text();
-  assert.match(
-    secondInviteLandingHtml,
-    new RegExp(`id="room-code" readonly value="${parkingRoomCode}"`),
+  assert.equal(
+    secondInviteLandingHtml.includes(`id="room-code" readonly value="${parkingRoomCode}"`),
+    true,
     'the reusable group invite keeps the same room code'
   );
   assert.equal(secondInviteLandingHtml.includes('id="invite-code"'), false, 'a repeated landing still mints no install code');
@@ -1157,9 +1157,9 @@ try {
   const resetInviteLanding = await fetch(`${baseUrl}${resetRoomInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(resetInviteLanding.status, 200);
   const resetInviteHtml = await resetInviteLanding.text();
-  assert.match(
-    resetInviteHtml,
-    new RegExp(`id="room-code" readonly value="${resetOldRoomCode}"`),
+  assert.equal(
+    resetInviteHtml.includes(`id="room-code" readonly value="${resetOldRoomCode}"`),
+    true,
     'pre-reset invite presents the current reusable room code'
   );
   assert.equal(resetInviteHtml.includes('id="invite-code"'), false, 'pre-reset invite mints no install code');
@@ -1377,6 +1377,19 @@ try {
   ]) {
     assert.equal(retainedServerLogs.includes(privateValue), false, 'invite secrets and tokens stay out of server logs');
     assert.equal(retainedState.includes(privateValue), false, 'invite secrets and tokens stay out of persistent state');
+  }
+
+  for (const path of ['/api/account/signup', '/api/account/login']) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ email: 'cross-site@example.test', password: 'cross-site-password' })
+    });
+    assert.equal(response.status, 415, `${path} rejects simple cross-site media types before authentication work`);
+    assert.deepEqual(await response.json(), {
+      code: 'UNSUPPORTED_MEDIA_TYPE',
+      error: 'Content-Type must be application/json.'
+    });
   }
 
   let signupRateLimit = null;

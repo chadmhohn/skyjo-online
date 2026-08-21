@@ -5,8 +5,8 @@ Multiplayer online version of the popular card game Skyjo.
 ## Features
 - Real-time multiplayer rooms (2-8 players)
 - Single player mode vs AI
-- Password protected access
-- Optional user accounts with saved stats, game history, and admin password resets
+- Open guest single-player access
+- Self-service user accounts for multiplayer, saved stats, game history, and admin password resets
 - Built with React + Vite + TypeScript + Tailwind + a VPS-native WebSocket server
 
 ## Requirements
@@ -18,7 +18,7 @@ Multiplayer online version of the popular card game Skyjo.
 1. Clone the repo
 2. Select Node 24 (the repository's `.node-version` is supported by common version managers)
 3. `npm ci`
-4. Copy `.env.example` to `.env` and set the shared access password
+4. Copy `.env.example` to `.env` and replace the sample session/invite secrets and temporary admin password
 5. `npm run dev`
 
 ## VPS Deployment
@@ -27,11 +27,10 @@ Production uses a CI-built, checksummed, attested runtime archive and atomic rel
 
 Create root-only `/etc/skyjo-online.env` with:
 
-- `SKYJO_ACCESS_PASSWORD`
 - `SKYJO_SESSION_SECRET`
 - `SKYJO_INVITE_SECRET` for signed friend invite links
 - `SKYJO_INVITE_TTL_HOURS=168` or your preferred invite lifetime
-- `SKYJO_INVITE_CODE_TTL_MINUTES=30` for short Home Screen install-code handoff
+- `SKYJO_TRUST_PROXY_CLIENT_IP=true` for the documented loopback-only Cloudflare Tunnel
 - `SKYJO_ROOMS_FILE=/var/lib/skyjo-online/rooms.json`
 - `SKYJO_DB_FILE=/var/lib/skyjo-online/skyjo.sqlite`
 - `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com`
@@ -40,7 +39,7 @@ Create root-only `/etc/skyjo-online.env` with:
 - `HOST=127.0.0.1`
 - `PORT=4180`
 
-The hardened service runs as non-login user `skyjo` with the isolated runtime at `/opt/skyjo-online/node/bin/node`, reads immutable code through `/srv/skyjo-online/current`, and writes only `/var/lib/skyjo-online`. Cloudflare Tunnel remains in front of `127.0.0.1:4180`. The app server handles the friend-facing password screen and signed, HttpOnly cookies. Keep passwords, invite/session secrets, smoke credentials, and state out of git and GitHub.
+The hardened service runs as non-login user `skyjo` with the isolated runtime at `/opt/skyjo-online/node/bin/node`, reads immutable code through `/srv/skyjo-online/current`, and writes only `/var/lib/skyjo-online`. Cloudflare Tunnel remains in front of `127.0.0.1:4180`. The app is open for guest single-player; account cookies authorize multiplayer and saved state, and signed links hand off reusable room codes. Keep account passwords, invite/session secrets, smoke credentials, and state out of git and GitHub.
 
 Public service checks do not require cookies and are never cached:
 

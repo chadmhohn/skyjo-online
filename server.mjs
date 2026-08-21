@@ -1785,6 +1785,7 @@ async function handleApiRequest(req, res, url) {
     }
 
     if (url.pathname === '/api/account/signup' && req.method === 'POST') {
+      if (!requestUsesJson(req)) throw new PublicApiError('UNSUPPORTED_MEDIA_TYPE');
       const rate = accountSignupRateLimiter.consume(inviteRedemptionClientKey(req, 'account-signup'));
       if (!rate.allowed) {
         const publicError = publicApiErrorResponse(new PublicApiError('ACCOUNT_RATE_LIMITED'));
@@ -1807,6 +1808,7 @@ async function handleApiRequest(req, res, url) {
     }
 
     if (url.pathname === '/api/account/login' && req.method === 'POST') {
+      if (!requestUsesJson(req)) throw new PublicApiError('UNSUPPORTED_MEDIA_TYPE');
       const rate = accountLoginRateLimiter.consume(inviteRedemptionClientKey(req, 'account-login'));
       if (!rate.allowed) {
         const publicError = publicApiErrorResponse(new PublicApiError('ACCOUNT_RATE_LIMITED'));
