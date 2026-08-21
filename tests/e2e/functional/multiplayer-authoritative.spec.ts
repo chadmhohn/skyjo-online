@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserContext, Page } from '@playwright/test';
-import { expect, test } from '../fixtures';
+import { expect, test, testClientIpHeaders } from '../fixtures';
 
 type WireAudit = {
   dropped: string[];
@@ -403,7 +403,9 @@ test('protocol v2 keeps private multiplayer state out of wire frames, DOM, stora
   const roomCode = await page.locator('.skyjo-room-code').innerText();
   const hostPlayerId = await page.evaluate(() => localStorage.getItem('skyjo-player-id') || '');
 
-  const guestContext = await browser.newContext();
+  const guestContext = await browser.newContext({
+    extraHTTPHeaders: testClientIpHeaders(`wire-guest-${suffix}`)
+  });
   try {
     await createAuthenticatedContext(guestContext, skyjoServer.baseURL, skyjoServer.accessPassword);
     const guestPage = await guestContext.newPage();

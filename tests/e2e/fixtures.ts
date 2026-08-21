@@ -131,6 +131,22 @@ export const test = base.extend<object, WorkerFixtures>({
   ]
 });
 
+export function testClientIpHeaders(identity: string): Record<string, string> {
+  let hash = 0x811c9dc5;
+  for (const character of identity) {
+    hash ^= character.codePointAt(0) || 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  const host = hash % (256 * 254);
+  return { 'CF-Connecting-IP': `198.18.${Math.floor(host / 254)}.${(host % 254) + 1}` };
+}
+
+test.beforeEach(async ({ context }, testInfo) => {
+  await context.setExtraHTTPHeaders(testClientIpHeaders(
+    `${testInfo.project.name}:${testInfo.testId}:retry-${testInfo.retry}`
+  ));
+});
+
 export async function installSeededBrowserRuntime(page: Page, seed = 42) {
   await page.addInitScript((initialSeed: number) => {
     let value = initialSeed >>> 0;

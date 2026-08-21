@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, CDPSession, Page } from '@playwright/test';
-import { expect, installSeededBrowserRuntime, test } from '../fixtures';
+import { expect, installSeededBrowserRuntime, test, testClientIpHeaders } from '../fixtures';
 import { startFreshSoloGame } from '../helpers/soloFlow';
 
 const phoneViewport = { width: 390, height: 844 };
@@ -343,6 +343,7 @@ async function openMultiplayerClients(
   try {
     for (let index = 0; index < 4; index += 1) {
       const context = await browser.newContext({
+        extraHTTPHeaders: testClientIpHeaders(`rail-retention-${suffix}-${index}`),
         isMobile: false,
         serviceWorkers: 'allow',
         viewport: phoneViewport

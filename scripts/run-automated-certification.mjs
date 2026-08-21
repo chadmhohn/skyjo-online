@@ -217,7 +217,7 @@ async function createRecoveryAccount(baseUrl, trial) {
     email: `recovery-trial-${trial}@example.test`,
     displayName: `Recovery Trial ${trial}`,
     password: 'recovery-certification-password'
-  }, 'Recovery');
+  }, 'Recovery', certificationClientIp(65_000 + trial));
   return `${siteCookie}; ${accountCookie}`;
 }
 
@@ -231,10 +231,21 @@ async function createSiteAccessCookie(baseUrl, stage) {
   return cookieFrom(access, siteCookieName);
 }
 
-async function createAccountSession(baseUrl, siteCookie, account, stage) {
+function certificationClientIp(index) {
+  if (!Number.isSafeInteger(index) || index < 0 || index >= 256 * 254) {
+    throw new Error('Certification client index is outside the reserved benchmark address range.');
+  }
+  return `198.19.${Math.floor(index / 254)}.${(index % 254) + 1}`;
+}
+
+async function createAccountSession(baseUrl, siteCookie, account, stage, clientIp) {
   const signup = await fetch(`${baseUrl}/api/account/signup`, {
     method: 'POST',
-    headers: { Cookie: siteCookie, 'Content-Type': 'application/json' },
+    headers: {
+      'CF-Connecting-IP': clientIp,
+      Cookie: siteCookie,
+      'Content-Type': 'application/json'
+    },
     body: JSON.stringify({
       email: account.email,
       displayName: account.displayName,
@@ -591,7 +602,7 @@ async function bootstrapLoadAuthentication(dataDirectory, sourceSha, authenticat
         email: `cert-${String(room).padStart(2, '0')}-${String(seat).padStart(2, '0')}@example.test`,
         displayName: `R${String(room).padStart(2, '0')} Seat ${seat}`,
         password: 'certification-account-password'
-      }, 'Load bootstrap');
+      }, 'Load bootstrap', certificationClientIp(index));
       clientCookies.push(`${siteCookie}; ${accountCookie}`);
     }
     const stage = await sampler.stop();

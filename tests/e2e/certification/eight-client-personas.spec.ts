@@ -14,7 +14,7 @@ import {
   summarizePropagationSamples,
   type PropagationProbe
 } from '../../helpers/propagationArrival';
-import { expect, test } from '../fixtures';
+import { expect, test, testClientIpHeaders } from '../fixtures';
 
 type PersonaFrame = {
   playerId?: string;
@@ -379,6 +379,7 @@ test('eight independent clients cover the release persona matrix without state o
   try {
     for (const profile of profiles) {
       const context = await browser.newContext({
+        extraHTTPHeaders: testClientIpHeaders(`persona-${sourceSha}-${clients.length}`),
         viewport: profile.viewport,
         hasTouch: profile.hasTouch,
         isMobile: profile.isMobile,

@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures';
+import { expect, test, testClientIpHeaders } from '../fixtures';
 
 async function expectCompletePwaHead(page: import('@playwright/test').Page): Promise<void> {
   await expect(page.locator('meta[charset]')).toHaveAttribute('charset', /utf-8/i);
@@ -48,7 +48,10 @@ test('a live room invite hands off through browser and open-access Home Screen p
   expect(invite.path).toMatch(/^\/invite\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
 
   const landingContext = await browser.newContext({ serviceWorkers: 'block' });
-  const codeContext = await browser.newContext({ serviceWorkers: 'block' });
+  const codeContext = await browser.newContext({
+    extraHTTPHeaders: testClientIpHeaders(`invite-code-${roomCode}`),
+    serviceWorkers: 'block'
+  });
   try {
     const landingPage = await landingContext.newPage();
     const landingResponse = await landingPage.goto(`${skyjoServer.baseURL}${invite.path}`, {
