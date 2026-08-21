@@ -1678,7 +1678,7 @@ struct RoomConnectionNodeIntegrationTests {
   )
   func nativeCreateAndPWAJoin() async throws {
     let control = try MixedPWAControlClient.requiredFromEnvironment()
-    var connectionToDispose: RoomConnection?
+    let cleanup = MixedNativeClientCleanup()
     do {
     #expect(await control.hasCredentiallessSessionConfiguration())
     try await control.health()
@@ -1689,10 +1689,7 @@ struct RoomConnectionNodeIntegrationTests {
     let baseURL = try #require(URL(string: rawBaseURL))
     let cookies = realtimeCookieStorage(label: "native-host")
     let session = mixedRealtimeSession(cookieStorage: cookies, clientIndex: 20)
-    defer {
-      session.invalidateAndCancel()
-      clearRealtimeCookies(cookies)
-    }
+    await cleanup.retain(session: session, cookies: cookies)
     let api = SkyjoAPIClient(
       environment: SkyjoNetworkEnvironment(baseURL: baseURL),
       session: session
@@ -1705,7 +1702,7 @@ struct RoomConnectionNodeIntegrationTests {
       confirmPassword: accountPassword
     )
     let connection = try await api.makeRoomConnection(confirmedAccount: account)
-    connectionToDispose = connection
+    await cleanup.retain(connection: connection)
 
     try await connection.connect(.create(displayName: "Native Host"))
     #expect(await eventually(attempts: 5_000) { await connection.status().synchronized })
@@ -1779,11 +1776,11 @@ struct RoomConnectionNodeIntegrationTests {
     try await control.waitChat(.maximumAstral)
 
     } catch {
-      await connectionToDispose?.dispose()
+      await cleanup.dispose()
       await control.dispose()
       throw error
     }
-    await connectionToDispose?.dispose()
+    await cleanup.dispose()
     await control.dispose()
   }
 
@@ -1796,7 +1793,7 @@ struct RoomConnectionNodeIntegrationTests {
   )
   func pwaCreateAndNativeJoin() async throws {
     let control = try MixedPWAControlClient.requiredFromEnvironment()
-    var connectionToDispose: RoomConnection?
+    let cleanup = MixedNativeClientCleanup()
     do {
     try await control.health()
     try await control.reset()
@@ -1807,10 +1804,7 @@ struct RoomConnectionNodeIntegrationTests {
     let baseURL = try #require(URL(string: rawBaseURL))
     let cookies = realtimeCookieStorage(label: "native-guest")
     let session = mixedRealtimeSession(cookieStorage: cookies, clientIndex: 21)
-    defer {
-      session.invalidateAndCancel()
-      clearRealtimeCookies(cookies)
-    }
+    await cleanup.retain(session: session, cookies: cookies)
     let api = SkyjoAPIClient(
       environment: SkyjoNetworkEnvironment(baseURL: baseURL),
       session: session
@@ -1823,7 +1817,7 @@ struct RoomConnectionNodeIntegrationTests {
       confirmPassword: accountPassword
     )
     let connection = try await api.makeRoomConnection(confirmedAccount: account)
-    connectionToDispose = connection
+    await cleanup.retain(connection: connection)
     try await connection.connect(.join(code: roomCode, displayName: "Native Guest"))
     #expect(await eventually(attempts: 5_000) { await connection.status().synchronized })
     let joined = try #require(await connection.snapshot())
@@ -1944,11 +1938,11 @@ struct RoomConnectionNodeIntegrationTests {
     )
 
     } catch {
-      await connectionToDispose?.dispose()
+      await cleanup.dispose()
       await control.dispose()
       throw error
     }
-    await connectionToDispose?.dispose()
+    await cleanup.dispose()
     await control.dispose()
   }
 }
