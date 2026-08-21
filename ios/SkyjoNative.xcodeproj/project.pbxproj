@@ -46,6 +46,8 @@
 		C20000000000000000000009 /* SoloFeatureModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000009 /* SoloFeatureModelTests.swift */; };
 		C2000000000000000000000A /* SkyjoDomain in Frameworks */ = {isa = PBXBuildFile; productRef = C90000000000000000000001 /* SkyjoDomain */; };
 		C2000000000000000000000B /* SkyjoPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = C90000000000000000000002 /* SkyjoPersistence */; };
+		E20000000000000000000189 /* NativeNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000189 /* NativeNotifications.swift */; };
+		E20000000000000000000190 /* NativeNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000190 /* NativeNotificationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -113,6 +115,8 @@
 		C10000000000000000000007 /* card-pickup.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = "card-pickup.mp3"; sourceTree = "<group>"; };
 		C10000000000000000000008 /* card-place.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = "card-place.mp3"; sourceTree = "<group>"; };
 		C10000000000000000000009 /* SoloFeatureModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoloFeatureModelTests.swift; sourceTree = "<group>"; };
+		E10000000000000000000189 /* NativeNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNotifications.swift; sourceTree = "<group>"; };
+		E10000000000000000000190 /* NativeNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeNotificationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -199,6 +203,7 @@
 				B10000000000000000000002 /* AppConfiguration.swift */,
 				B10000000000000000000019 /* AppModel.swift */,
 				C10000000000000000000001 /* AppDependencies.swift */,
+				E10000000000000000000189 /* NativeNotifications.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -325,6 +330,7 @@
 				B10000000000000000000020 /* MixedPWAControlClient.swift */,
 				B10000000000000000000024 /* RoomInviteClientTests.swift */,
 				B10000000000000000000025 /* RoomSessionModelTests.swift */,
+				E10000000000000000000190 /* NativeNotificationTests.swift */,
 			);
 			path = SkyjoAppTests;
 			sourceTree = "<group>";
@@ -516,6 +522,7 @@
 				B20000000000000000000018 /* RoomSessionModel.swift in Sources */,
 				B20000000000000000000019 /* RoomViews.swift in Sources */,
 				D20000000000000000000188 /* RoomUITestFixtures.swift in Sources */,
+				E20000000000000000000189 /* NativeNotifications.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -531,6 +538,7 @@
 				B20000000000000000000016 /* MixedPWAControlClient.swift in Sources */,
 				B2000000000000000000001A /* RoomInviteClientTests.swift in Sources */,
 				B2000000000000000000001B /* RoomSessionModelTests.swift in Sources */,
+				E20000000000000000000190 /* NativeNotificationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

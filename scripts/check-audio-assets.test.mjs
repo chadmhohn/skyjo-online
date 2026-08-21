@@ -607,6 +607,8 @@ test('public inventory rejects media anywhere outside the exact published allowl
 
 test('clean native application inventory rejects every nested or disguised addition', () => {
   const approved = [
+    'AppIcon60x60@2x.png',
+    'AppIcon76x76@2x~ipad.png',
     'Assets.car',
     'Info.plist',
     'PkgInfo',

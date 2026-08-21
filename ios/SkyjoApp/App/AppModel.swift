@@ -15,7 +15,7 @@ protocol SkyjoService: Sendable {
     confirmPassword: String
   ) async throws -> AccountUser
   func loginAccount(email: String, password: String) async throws -> AccountUser
-  func logoutAccount() async throws
+  func logoutAccount(apnsInstallationID: UUID?) async throws
   func updateProfile(displayName: String) async throws -> AccountUser
   func changePassword(
     currentPassword: String,
@@ -184,6 +184,7 @@ final class AppModel {
   private let service: any SkyjoService
   private let preferences: SoloPreferencesStore?
   private let sessionInvalidation: SessionInvalidationRelay?
+  private let logoutInstallationID: () -> UUID?
   private var accountGeneration = 0
   private var bootstrapRequestID: UUID?
   private var statsRequestID: UUID?
@@ -217,11 +218,13 @@ final class AppModel {
     service: any SkyjoService,
     baseURL: URL,
     preferences: SoloPreferencesStore? = nil,
-    sessionInvalidation: SessionInvalidationRelay? = nil
+    sessionInvalidation: SessionInvalidationRelay? = nil,
+    logoutInstallationID: @escaping () -> UUID? = { nil }
   ) {
     self.service = service
     self.preferences = preferences
     self.sessionInvalidation = sessionInvalidation
+    self.logoutInstallationID = logoutInstallationID
     adminURL = baseURL.appending(path: "admin")
   }
 
@@ -230,7 +233,8 @@ final class AppModel {
       service: dependencies.apiClient,
       baseURL: baseURL,
       preferences: dependencies.preferences,
-      sessionInvalidation: dependencies.sessionInvalidation
+      sessionInvalidation: dependencies.sessionInvalidation,
+      logoutInstallationID: { dependencies.notifications.installationID }
     )
   }
 
@@ -614,7 +618,7 @@ final class AppModel {
       }
     }
     do {
-      try await service.logoutAccount()
+      try await service.logoutAccount(apnsInstallationID: logoutInstallationID())
       guard
         isCurrentAccount(expectedUser.id, generation: expectedGeneration),
         logoutRequestID == requestID

@@ -3,6 +3,7 @@ import SwiftUI
 
 @main
 struct SkyjoNativeApp: App {
+  @UIApplicationDelegateAdaptor(SkyjoAppDelegate.self) private var appDelegate
   private let configuration: Result<AppConfiguration, AppConfigurationError>
 
   init() {
@@ -19,13 +20,13 @@ struct SkyjoNativeApp: App {
     WindowGroup {
 #if DEBUG
       if ProcessInfo.processInfo.arguments.contains("--ui-layout-direction=rtl") {
-        BootstrapHomeView(configuration: configuration)
+        BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
           .environment(\.layoutDirection, .rightToLeft)
       } else {
-        BootstrapHomeView(configuration: configuration)
+        BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
       }
 #else
-      BootstrapHomeView(configuration: configuration)
+      BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
 #endif
     }
   }

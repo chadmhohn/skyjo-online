@@ -6,6 +6,19 @@ public enum AccountRole: String, Decodable, Equatable, Sendable {
   case player
 }
 
+public enum APNSDeviceEnvironment: String, Encodable, Equatable, Sendable {
+  case development
+  case production
+}
+
+public struct APNSConfiguration: Decodable, Equatable, Sendable {
+  public let enabled: Bool
+
+  public init(enabled: Bool) {
+    self.enabled = enabled
+  }
+}
+
 public struct AccountUser: Decodable, Equatable, Identifiable, Sendable {
   public let id: UUID
   public let email: String
@@ -709,10 +722,60 @@ public actor SkyjoAPIClient {
     return response.user
   }
 
-  public func logoutAccount() async throws {
+  public func logoutAccount(apnsInstallationID: UUID? = nil) async throws {
+    let response: OKEnvelope
+    if let apnsInstallationID {
+      response = try await request(
+        path: "api/account/logout",
+        method: "POST",
+        body: APNSLogoutRequest(
+          installationId: apnsInstallationID.uuidString.lowercased()
+        ),
+        successStatusCodes: [200]
+      )
+    } else {
+      response = try await request(
+        path: "api/account/logout",
+        method: "POST",
+        successStatusCodes: [200]
+      )
+    }
+    guard response.ok else { throw SkyjoHTTPClientError.invalidSuccessPayload }
+  }
+
+  public func apnsConfiguration() async throws -> APNSConfiguration {
+    try await request(
+      path: "api/push/apns/config",
+      method: "GET",
+      successStatusCodes: [200]
+    )
+  }
+
+  public func registerAPNSDevice(
+    installationID: UUID,
+    deviceToken: String,
+    environment: APNSDeviceEnvironment,
+    appVersion: String,
+    locale: String
+  ) async throws {
     let response: OKEnvelope = try await request(
-      path: "api/account/logout",
-      method: "POST",
+      path: "api/push/apns/devices/\(installationID.uuidString.lowercased())",
+      method: "PUT",
+      body: APNSRegistrationRequest(
+        deviceToken: deviceToken,
+        environment: environment,
+        appVersion: appVersion,
+        locale: locale
+      ),
+      successStatusCodes: [200]
+    )
+    guard response.ok else { throw SkyjoHTTPClientError.invalidSuccessPayload }
+  }
+
+  public func deleteAPNSDevice(installationID: UUID) async throws {
+    let response: OKEnvelope = try await request(
+      path: "api/push/apns/devices/\(installationID.uuidString.lowercased())",
+      method: "DELETE",
       successStatusCodes: [200]
     )
     guard response.ok else { throw SkyjoHTTPClientError.invalidSuccessPayload }
@@ -1132,6 +1195,17 @@ private struct PasswordRequest: Encodable, Sendable {
   let currentPassword: String
   let password: String
   let confirmPassword: String
+}
+
+private struct APNSLogoutRequest: Encodable, Sendable {
+  let installationId: String
+}
+
+private struct APNSRegistrationRequest: Encodable, Sendable {
+  let deviceToken: String
+  let environment: APNSDeviceEnvironment
+  let appVersion: String
+  let locale: String
 }
 
 private struct AccountEnvelope: Decodable, Sendable {

@@ -896,6 +896,28 @@ final class RoomSessionModel {
     joinCode = Self.cleanRoomCode(joinCode)
   }
 
+  func prepareNotificationRoute(roomCode: String) {
+    let cleanedCode = Self.cleanRoomCode(roomCode)
+    guard cleanedCode == roomCode, cleanedCode.count == 5 else { return }
+    if room?.code == cleanedCode {
+      banner = RoomBanner(
+        title: "Room opened",
+        message: "Review your current multiplayer table before continuing.",
+        tone: .information
+      )
+      return
+    }
+    joinCode = cleanedCode
+    banner = RoomBanner(
+      title: "Notification opened",
+      message: room == nil
+        ? "Review the room before choosing Join Room."
+        : "This alert belongs to another room. Leave your current room before reviewing it.",
+      tone: room == nil ? .information : .warning,
+      survivesAuthoritativeSnapshot: room != nil
+    )
+  }
+
   func createRoom() async {
     guard let operationID = beginAdmissionOperation() else { return }
     defer { finishAdmissionOperation(operationID) }

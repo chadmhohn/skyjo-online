@@ -190,6 +190,7 @@ final class AppDependencies {
   let apiClient: SkyjoAPIClient
   let inviteClient: RoomInviteClient
   let rooms: RoomAppCoordinator
+  let notifications: NativeNotificationCoordinator
   let preferences: SoloPreferencesStore
   let sessionInvalidation: SessionInvalidationRelay
   let persistenceStore: SoloPersistenceStore
@@ -198,7 +199,11 @@ final class AppDependencies {
   let solo: SoloFeatureModel
   let persistenceWarning: SoloPersistenceWarning?
 
-  init(configuration: AppConfiguration, defaults: UserDefaults = .standard) throws {
+  init(
+    configuration: AppConfiguration,
+    notificationSystem: any NativeNotificationOperatingSystem,
+    defaults: UserDefaults = .standard
+  ) throws {
     preferences = SoloPreferencesStore(defaults: defaults)
     let statsOutboxAuthorization = StatsOutboxAuthorizationController()
     sessionInvalidation = SessionInvalidationRelay(
@@ -211,6 +216,11 @@ final class AppDependencies {
       persistentCookieStorage: cookieStorage
     )
     self.apiClient = apiClient
+    notifications = NativeNotificationCoordinator(
+      service: apiClient,
+      operatingSystem: notificationSystem,
+      defaults: defaults
+    )
     let inviteClient = RoomInviteClient(
       environment: networkEnvironment,
       persistentCookieStorage: cookieStorage

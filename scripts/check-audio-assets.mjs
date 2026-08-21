@@ -59,6 +59,8 @@ const approvedPublicResourceFiles = new Set([
 // explicit review and gate update before it enters the native target.
 const approvedNativeResourceFiles = new Set([
   'Assets.xcassets/AccentColor.colorset/Contents.json',
+  'Assets.xcassets/AppIcon.appiconset/Contents.json',
+  'Assets.xcassets/AppIcon.appiconset/Skyjo-Internal-1024.png',
   'Assets.xcassets/Contents.json',
   'Audio/README.md',
   ...requiredNativeAudioResources,
@@ -72,6 +74,8 @@ const approvedNativeProjectResourceNames = [
   ...requiredCueFiles
 ].sort();
 const approvedBuiltNativeApplicationFiles = [
+  'AppIcon60x60@2x.png',
+  'AppIcon76x76@2x~ipad.png',
   'Assets.car',
   'Info.plist',
   'PkgInfo',
