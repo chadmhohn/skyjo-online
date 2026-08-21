@@ -256,7 +256,7 @@ async function ensureAccountStore({ force = false } = {}) {
     candidate.pruneAPNSDevices();
     const bootstrappedAdmin = await candidate.bootstrapAdmin({ email: adminEmail, password: adminInitialPassword });
     if (bootstrappedAdmin) {
-      console.log(`Admin account ready for ${bootstrappedAdmin.email}`);
+      console.log('Admin account ready.');
     } else {
       console.warn('No admin account was bootstrapped. Set SKYJO_ADMIN_INITIAL_PASSWORD before first production account setup.');
     }

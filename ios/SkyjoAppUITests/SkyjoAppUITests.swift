@@ -18,6 +18,79 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
+  func testIOS10ColdLaunchPerformance() throws {
+    try XCTSkipUnless(
+      releasePerformanceMetricsEnabled,
+      "Release metrics run only when SKYJO_RUN_RELEASE_PERFORMANCE=1."
+    )
+    let options = XCTMeasureOptions.default
+    options.iterationCount = 3
+    measure(
+      metrics: [XCTApplicationLaunchMetric(waitUntilResponsive: true)],
+      options: options
+    ) {
+      let app = XCUIApplication()
+      app.launchArguments = ["--ui-state=authenticated-admin"]
+      app.launch()
+      XCTAssertTrue(app.staticTexts["home.welcome"].waitForExistence(timeout: 8))
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testIOS10EightPlayerRenderPerformance() throws {
+    try XCTSkipUnless(
+      releasePerformanceMetricsEnabled,
+      "Release metrics run only when SKYJO_RUN_RELEASE_PERFORMANCE=1."
+    )
+    let options = XCTMeasureOptions.default
+    options.iterationCount = 3
+    measure(
+      metrics: [XCTClockMetric(), XCTCPUMetric(), XCTMemoryMetric()],
+      options: options
+    ) {
+      let app = XCUIApplication()
+      app.launchArguments = [
+        "--ui-state=authenticated-admin",
+        "--ui-room-fixture=active",
+        "-UIPreferredContentSizeCategoryName",
+        "UICTContentSizeCategoryL",
+      ]
+      app.launch()
+      XCTAssertTrue(element(in: app, identifier: "rooms.table").waitForExistence(timeout: 8))
+      app.terminate()
+    }
+  }
+
+  @MainActor
+  func testIOS10ReconnectInteractionPerformance() throws {
+    try XCTSkipUnless(
+      releasePerformanceMetricsEnabled,
+      "Release metrics run only when SKYJO_RUN_RELEASE_PERFORMANCE=1."
+    )
+    let app = launchRoomFixture("resync")
+    defer { app.terminate() }
+    let table = element(in: app, identifier: "rooms.table")
+    let deck = app.buttons["rooms.action.deck"]
+    let banner = element(in: app, identifier: "rooms.banner")
+    XCTAssertTrue(table.waitForExistence(timeout: 8))
+    XCTAssertTrue(deck.waitForExistence(timeout: 5))
+
+    let options = XCTMeasureOptions.default
+    options.iterationCount = 5
+    measure(
+      metrics: [XCTClockMetric(), XCTCPUMetric(), XCTMemoryMetric()],
+      options: options
+    ) {
+      deck.tap()
+      XCTAssertTrue(banner.waitForExistence(timeout: 3))
+      XCTAssertTrue(banner.label.contains("Table resynchronized"))
+      app.buttons["rooms.banner"].tap()
+      XCTAssertTrue(deck.waitForExistence(timeout: 3))
+    }
+  }
+
+  @MainActor
   func testOpenSignupRelaunchProfilePasswordAndLogout() throws {
     XCUIDevice.shared.orientation = .portrait
     let app = XCUIApplication()
@@ -3295,6 +3368,10 @@ final class SkyjoAppUITests: XCTestCase {
     }
     solo.tap()
     return app
+  }
+
+  private var releasePerformanceMetricsEnabled: Bool {
+    ProcessInfo.processInfo.environment["SKYJO_RUN_RELEASE_PERFORMANCE"] == "1"
   }
 
   @MainActor

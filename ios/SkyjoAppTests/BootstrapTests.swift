@@ -85,6 +85,37 @@ struct BootstrapTests {
     #expect(UIColor(named: "AccentColor", in: .main, compatibleWith: nil) != nil)
   }
 
+  @Test("The embedded privacy manifest matches the account, room, and notification data inventory")
+  func privacyManifestDataInventory() throws {
+    let url = try #require(Bundle.main.url(forResource: "PrivacyInfo", withExtension: "xcprivacy"))
+    let data = try Data(contentsOf: url)
+    let root = try #require(
+      PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+    )
+    let entries = try #require(root["NSPrivacyCollectedDataTypes"] as? [[String: Any]])
+    let expectedTypes: Set<String> = [
+      "NSPrivacyCollectedDataTypeName",
+      "NSPrivacyCollectedDataTypeEmailAddress",
+      "NSPrivacyCollectedDataTypeEmailsOrTextMessages",
+      "NSPrivacyCollectedDataTypeGameplayContent",
+      "NSPrivacyCollectedDataTypeUserID",
+      "NSPrivacyCollectedDataTypeDeviceID",
+      "NSPrivacyCollectedDataTypeProductInteraction",
+      "NSPrivacyCollectedDataTypeOtherDataTypes",
+    ]
+
+    #expect(entries.count == expectedTypes.count)
+    #expect(Set(entries.compactMap { $0["NSPrivacyCollectedDataType"] as? String }) == expectedTypes)
+    #expect(entries.allSatisfy { $0["NSPrivacyCollectedDataTypeLinked"] as? Bool == true })
+    #expect(entries.allSatisfy { $0["NSPrivacyCollectedDataTypeTracking"] as? Bool == false })
+    #expect(entries.allSatisfy {
+      ($0["NSPrivacyCollectedDataTypePurposes"] as? [String])
+        == ["NSPrivacyCollectedDataTypePurposeAppFunctionality"]
+    })
+    #expect(root["NSPrivacyTracking"] as? Bool == false)
+    #expect((root["NSPrivacyTrackingDomains"] as? [String])?.isEmpty == true)
+  }
+
   private func expectConfigurationError(
     _ expectedError: AppConfigurationError,
     for infoDictionary: [String: Any]

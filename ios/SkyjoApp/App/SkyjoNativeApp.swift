@@ -18,16 +18,19 @@ struct SkyjoNativeApp: App {
 
   var body: some Scene {
     WindowGroup {
+      Group {
 #if DEBUG
-      if ProcessInfo.processInfo.arguments.contains("--ui-layout-direction=rtl") {
-        BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
-          .environment(\.layoutDirection, .rightToLeft)
-      } else {
-        BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
-      }
+        if ProcessInfo.processInfo.arguments.contains("--ui-layout-direction=rtl") {
+          BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
+            .environment(\.layoutDirection, .rightToLeft)
+        } else {
+          BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
+        }
 #else
-      BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
+        BootstrapHomeView(configuration: configuration, notificationSystem: appDelegate)
 #endif
+      }
+      .preferredColorScheme(.dark)
     }
   }
 }

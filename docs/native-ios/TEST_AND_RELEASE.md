@@ -93,6 +93,10 @@ For IOS-8, retain focused XCUITest evidence for an eight-player waiting room and
 - Connection status visible <=500 ms; half-open detected by the server <=35 seconds; ordinary recovered resync <=10 seconds.
 - No unbounded task, timer, socket, observer, audio engine, or model retention after leaving a game.
 
+IOS-10 keeps the recurring gate proportional: normal PR CI builds the three performance tests but skips their repeated samples. Before a TestFlight candidate, enable `SKYJO_RUN_RELEASE_PERFORMANCE=1` in the selected simulator's `launchctl` environment and run only `SkyjoAppUITests/testIOS10ColdLaunchPerformance`, `SkyjoAppUITests/testIOS10EightPlayerRenderPerformance`, and `SkyjoAppUITests/testIOS10ReconnectInteractionPerformance` on the standard-phone simulator. Use a Release-optimized test build with code coverage disabled, `ENABLE_TESTABILITY=YES`, and an explicit test-build `SWIFT_ACTIVE_COMPILATION_CONDITIONS="$(inherited) DEBUG"`; this exposes deterministic fixtures without putting them in the normal archive. Cold launch and table presentation each record three XCTMetric samples, and the resync interaction records five. Treat cold launch above 3 seconds, full app-launch-to-eight-player-table presentation above 5 seconds, the complete resync-action UI round trip above 4 seconds, or rising memory across the in-process resync samples as a release defect; compare absolute CPU/memory values only on the same device/runtime. The table has no blocking opening animation, so its animation budget is satisfied by construction, including Reduce Motion. Existing deterministic realtime and room-model tests remain the faster task/socket regression gate.
+
+The 2026-08-21 Release-optimized fixture baseline on stable Xcode 26.6, iOS 26.5, and an iPhone 17 Pro Max simulator passed all three metric tests. Responsive cold launch averaged 0.974 seconds (0.967, 0.971, and 0.983); full launch-to-eight-player-table averaged 4.438 seconds (4.466, 4.427, and 4.420); the complete resync-action UI round trip averaged 2.983 seconds across five in-process samples. Peak physical memory stayed within 41.5-41.7 MB. These measurements exercise optimized production sources through deterministic test-only transport, but they are not the signed TestFlight archive. Pair them with the physical TestFlight session and a ten-minute Allocations/Leaks check; keep sanitized `.xcresult` and `.trace` evidence local rather than making them recurring CI artifacts.
+
 ## Security And Privacy Gates
 
 - No hidden card, deck order, non-viewer drawn card, cookie, password, invite token, device token, or APNs key in model debug descriptions, OSLog, crash output, UI tree, notifications, pasteboard, persistence, or artifacts.
@@ -100,7 +104,7 @@ For IOS-8, retain focused XCUITest evidence for an eight-player waiting room and
 - No production HTTP or ATS exception.
 - No secret in source, Info.plist, asset catalog, `.xcconfig`, build log, archive, or Git history.
 - Dependency additions use SPM, are pinned/resolved, license-reviewed, privacy-manifest-reviewed, and justified in an ADR when architectural.
-- `PrivacyInfo.xcprivacy` and App Store privacy disclosures match actual APIs/data.
+- `PrivacyInfo.xcprivacy` and the [`PRIVACY.md`](PRIVACY.md) App Store privacy-answer draft match actual APIs/data.
 - Account creation must have an in-app deletion path before public App Store release.
 
 ## Simulator Matrix
