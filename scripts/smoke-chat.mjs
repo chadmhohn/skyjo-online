@@ -861,7 +861,7 @@ try {
   assert.equal(compiledCss.includes('@import'), false, 'critical CSS has no imported stylesheets');
   assert.equal(compiledCss.includes('url('), false, 'critical CSS has no external resource references');
   const cardAudio = await fetch(`${baseUrl}/audio/card-flip.mp3`, { headers: { Cookie: cookie } });
-  assert.equal(cardAudio.status, 200, 'card audio assets are served after shared-password login');
+  assert.equal(cardAudio.status, 200, 'card audio assets are served from the open app');
   assert.match(cardAudio.headers.get('content-type') || '', /audio\/mpeg/);
   await assert.rejects(openSocket(baseUrl, cookie), /Unexpected server response|401/, 'multiplayer sockets require account auth');
   const hostAccount = await createAccount(baseUrl, cookie, 'ada@example.com', 'Ada');
@@ -1041,7 +1041,7 @@ try {
   const nativeInvite = await nativeInviteRequest(baseUrl, {
     body: JSON.stringify({ token: signedInviteToken })
   });
-  assert.equal(nativeInvite.response.status, 200, 'native invite redeems before the shared-password gate');
+  assert.equal(nativeInvite.response.status, 200, 'native invite redeems without a shared-password gate');
   assert.equal(nativeInvite.response.headers.get('location'), null, 'native invite success is direct');
   assert.match(nativeInvite.response.headers.get('cache-control') || '', /no-store/i);
   assert.equal(
@@ -1068,7 +1068,7 @@ try {
     headers: { Accept: 'text/html', Cookie: nativeInviteCookies[0].split(';', 1)[0] },
     redirect: 'manual'
   });
-  assert.equal(nativeInviteLobby.status, 200, 'native invite cookie grants only outer lobby access');
+  assert.equal(nativeInviteLobby.status, 200, 'native invite compatibility cookie can load the open lobby');
   const inviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(inviteLanding.status, 200, 'valid room invite opens the install/browser choice page');
   assert.match(inviteLanding.headers.get('cache-control') || '', /no-store/i);
@@ -1081,52 +1081,31 @@ try {
   assert.equal(inviteLandingHtml.includes(`Join Room ${parkingRoomCode}`), true, 'invite landing shows the room code');
   assert.match(inviteLandingHtml, /Add Skyjo to your Home Screen/, 'invite landing explains the home screen path');
   assert.match(inviteLandingHtml, /Open in Browser/, 'invite landing keeps the browser path available');
-  const installCode = inviteLandingHtml.match(/id="invite-code" readonly value="([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{7})"/)?.[1];
-  assert.ok(installCode, 'invite landing includes a short install code');
+  assert.match(
+    inviteLandingHtml,
+    new RegExp(`id="room-code" readonly value="${parkingRoomCode}"`),
+    'invite landing preserves the reusable room code for Home Screen players'
+  );
+  assert.equal(inviteLandingHtml.includes('id="invite-code"'), false, 'invite landing does not mint an obsolete install code');
   const secondInviteLanding = await fetch(`${baseUrl}${hostInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(secondInviteLanding.status, 200, 'the same group invite can be opened by another player');
   const secondInviteLandingHtml = await secondInviteLanding.text();
-  const secondInstallCode = secondInviteLandingHtml.match(/id="invite-code" readonly value="([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{7})"/)?.[1];
-  assert.ok(secondInstallCode, 'a second invite landing includes a short install code');
-  assert.notEqual(secondInstallCode, installCode, 'each invite landing mints its own install code');
+  assert.match(
+    secondInviteLandingHtml,
+    new RegExp(`id="room-code" readonly value="${parkingRoomCode}"`),
+    'the reusable group invite keeps the same room code'
+  );
+  assert.equal(secondInviteLandingHtml.includes('id="invite-code"'), false, 'a repeated landing still mints no install code');
   const redeemedInvite = await fetch(`${baseUrl}${hostInvite.payload.path}?open=browser`, { redirect: 'manual' });
-  assert.equal(redeemedInvite.status, 303, 'valid room invite can still redeem in browser before the password gate');
+  assert.equal(redeemedInvite.status, 303, 'valid room invite can continue directly into the open browser app');
   assert.equal(redeemedInvite.headers.get('location'), `/lobby?room=${parkingRoomCode}`);
   const inviteCookie = redeemedInvite.headers.get('set-cookie');
-  assert.ok(inviteCookie, 'valid room invite sets the shared gate cookie');
+  assert.ok(inviteCookie, 'valid room invite retains the rollback-compatibility cookie');
   const inviteLobby = await fetch(`${baseUrl}/lobby?room=${parkingRoomCode}`, {
     headers: { Accept: 'text/html', Cookie: inviteCookie.split(';')[0] },
     redirect: 'manual'
   });
   assert.equal(inviteLobby.status, 200, 'redeemed invite cookie can load the lobby');
-  const installCodeRedeem = await fetch(`${baseUrl}/invite-code`, {
-    method: 'POST',
-    body: new URLSearchParams({ code: installCode }),
-    redirect: 'manual'
-  });
-  assert.equal(installCodeRedeem.status, 303, 'install code redeems before the password gate');
-  assert.equal(installCodeRedeem.headers.get('location'), `/lobby?room=${parkingRoomCode}`);
-  const installCodeCookie = installCodeRedeem.headers.get('set-cookie');
-  assert.ok(installCodeCookie, 'install code redemption sets the shared gate cookie');
-  const installCodeLobby = await fetch(`${baseUrl}/lobby?room=${parkingRoomCode}`, {
-    headers: { Accept: 'text/html', Cookie: installCodeCookie.split(';')[0] },
-    redirect: 'manual'
-  });
-  assert.equal(installCodeLobby.status, 200, 'install code cookie can load the lobby');
-  const secondInstallCodeRedeem = await fetch(`${baseUrl}/invite-code`, {
-    method: 'POST',
-    body: new URLSearchParams({ code: secondInstallCode }),
-    redirect: 'manual'
-  });
-  assert.equal(secondInstallCodeRedeem.status, 303, 'second install code from the same invite also redeems');
-  assert.equal(secondInstallCodeRedeem.headers.get('location'), `/lobby?room=${parkingRoomCode}`);
-  const reusedInstallCode = await fetch(`${baseUrl}/invite-code`, {
-    method: 'POST',
-    body: new URLSearchParams({ code: installCode }),
-    redirect: 'manual'
-  });
-  assert.equal(reusedInstallCode.status, 400, 'install codes are one-time use');
-  assert.match(await reusedInstallCode.text(), /invite code expired or did not match/i);
   const invalidInstallCode = await fetch(`${baseUrl}/invite-code`, {
     method: 'POST',
     body: new URLSearchParams({ code: 'BADCODE' }),
@@ -1178,8 +1157,12 @@ try {
   const resetInviteLanding = await fetch(`${baseUrl}${resetRoomInvite.payload.path}`, { redirect: 'manual' });
   assert.equal(resetInviteLanding.status, 200);
   const resetInviteHtml = await resetInviteLanding.text();
-  const resetInstallCode = resetInviteHtml.match(/id="invite-code" readonly value="([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{7})"/)?.[1];
-  assert.ok(resetInstallCode, 'pre-reset invite creates a persistent short code');
+  assert.match(
+    resetInviteHtml,
+    new RegExp(`id="room-code" readonly value="${resetOldRoomCode}"`),
+    'pre-reset invite presents the current reusable room code'
+  );
+  assert.equal(resetInviteHtml.includes('id="invite-code"'), false, 'pre-reset invite mints no install code');
   const resetGuestNoticePromise = waitForMessage(
     resetGuestSocket,
     (message) => message.type === 'error' && message.code === 'room-reset',
@@ -1209,20 +1192,6 @@ try {
   const staleLongInvite = await fetch(`${baseUrl}${resetRoomInvite.payload.path}?open=browser`, { redirect: 'manual' });
   assert.equal(staleLongInvite.status, 410, 'long invite is stale after the room instance is replaced');
   assert.equal(staleLongInvite.headers.get('set-cookie'), null, 'stale long invite cannot grant access');
-  const staleShortInvite = await fetch(`${baseUrl}/invite-code`, {
-    method: 'POST',
-    body: new URLSearchParams({ code: resetInstallCode }),
-    redirect: 'manual'
-  });
-  assert.equal(staleShortInvite.status, 410, 'short invite is consumed and rejected after room replacement');
-  assert.equal(staleShortInvite.headers.get('set-cookie'), null, 'stale short invite cannot grant access');
-  const staleShortInviteReplay = await fetch(`${baseUrl}/invite-code`, {
-    method: 'POST',
-    body: new URLSearchParams({ code: resetInstallCode }),
-    redirect: 'manual'
-  });
-  assert.equal(staleShortInviteReplay.status, 400, 'consumed stale code becomes the generic invalid response');
-  assert.match(await staleShortInviteReplay.text(), /invite code expired or did not match/i);
   const boundedNativeInviteAttempts = await Promise.all(Array.from({ length: 2 }, () => nativeInviteRequest(baseUrl, {
     body: JSON.stringify({ token: 'payload.signature' })
   })));

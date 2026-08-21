@@ -128,7 +128,7 @@ Reusable signed HTTPS invites are returned by:
 
 - `POST /api/rooms/invite` body `{ roomCode }` -> `{ roomCode, path, expiresAt }`.
 
-The caller must be an account member of the room. `path` is `/invite/<signed-token>`. The existing web landing still mints short, one-use install codes. An explicit `?open=browser` redemption still emits the legacy compatibility cookie and redirects to the lobby. Neither path grants an account session, room membership, or a player seat.
+The caller must be an account member of the room. `path` is `/invite/<signed-token>`. The web landing presents the ordinary reusable five-character room code for the Home Screen path and no longer mints short install codes. An explicit `?open=browser` redemption still emits the legacy compatibility cookie and redirects to the lobby. The retired `/invite-code` consumer remains bounded only for an already-minted rollback code. Neither current path grants an account session, room membership, or a player seat.
 
 Issue #202 adds the backend-only native handoff in repository source. This is not evidence that production has been promoted or that Apple has accepted the Associated Domains configuration.
 
