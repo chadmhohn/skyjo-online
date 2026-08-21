@@ -237,6 +237,7 @@ class MixedPWADriver {
     this.displayName = null;
     this.rememberedSeat = null;
     this.heldMessageBox = null;
+    this.contextSequence = 0;
   }
 
   async dispose() {
@@ -251,8 +252,14 @@ class MixedPWADriver {
 
   async reset() {
     await this.dispose();
+    const contextIndex = this.contextSequence;
+    this.contextSequence += 1;
+    if (contextIndex >= 256 * 254) throw new Error('context-limit-exceeded');
     this.context = await this.browser.newContext({
       baseURL: this.serverOrigin,
+      extraHTTPHeaders: {
+        'CF-Connecting-IP': `198.18.${Math.floor(contextIndex / 254)}.${(contextIndex % 254) + 1}`,
+      },
       serviceWorkers: 'block',
       viewport: { width: 1280, height: 800 },
     });

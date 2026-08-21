@@ -164,6 +164,7 @@ extension SkyjoHTTPClientError: LocalizedError {
 public enum SkyjoURLSessionFactory: Sendable {
   public static func makeDedicated(
     cookieStorage: HTTPCookieStorage = .shared,
+    additionalHTTPHeaders: [String: String] = [:],
     protocolClasses: [AnyClass]? = nil
   ) -> URLSession {
     let configuration = URLSessionConfiguration.default
@@ -173,6 +174,9 @@ public enum SkyjoURLSessionFactory: Sendable {
     configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
     configuration.urlCache = nil
     configuration.urlCredentialStorage = nil
+    if !additionalHTTPHeaders.isEmpty {
+      configuration.httpAdditionalHeaders = additionalHTTPHeaders
+    }
     if let protocolClasses {
       configuration.protocolClasses = protocolClasses
     }
