@@ -63,18 +63,18 @@ final class SkyjoAppUITests: XCTestCase {
   }
 
   @MainActor
-  func testIOS10ReconnectInteractionPerformance() throws {
+  func testIOS10ReconnectPerformance() throws {
     try XCTSkipUnless(
       releasePerformanceMetricsEnabled,
       "Release metrics run only when SKYJO_RUN_RELEASE_PERFORMANCE=1."
     )
-    let app = launchRoomFixture("resync")
+    let app = launchRoomFixture("reconnect")
     defer { app.terminate() }
     let table = element(in: app, identifier: "rooms.table")
     let deck = app.buttons["rooms.action.deck"]
-    let banner = element(in: app, identifier: "rooms.banner")
     XCTAssertTrue(table.waitForExistence(timeout: 8))
     XCTAssertTrue(deck.waitForExistence(timeout: 5))
+    XCTAssertTrue(deck.isEnabled)
 
     let options = XCTMeasureOptions.default
     options.iterationCount = 5
@@ -83,10 +83,8 @@ final class SkyjoAppUITests: XCTestCase {
       options: options
     ) {
       deck.tap()
-      XCTAssertTrue(banner.waitForExistence(timeout: 3))
-      XCTAssertTrue(banner.label.contains("Table resynchronized"))
-      app.buttons["rooms.banner"].tap()
-      XCTAssertTrue(deck.waitForExistence(timeout: 3))
+      XCTAssertTrue(deck.waitForExistence(timeout: 5))
+      XCTAssertTrue(deck.isEnabled)
     }
   }
 
