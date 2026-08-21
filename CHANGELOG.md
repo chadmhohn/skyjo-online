@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.6 - 2026-08-21
+
+- Removed the shared site-password gate so browser and native clients open directly to guest play and ordinary account signup/sign-in, while multiplayer, stats, profile, push, and account state remain account-authenticated.
+- Preserved backward compatibility for already-installed native clients, reusable room invites, cached PWA upgrades, and rollback configuration without accepting or logging the retired shared password.
+- Added bounded JSON-only account authentication, trusted-proxy-aware signup/login rate limits, stable native error handling, and mixed native/PWA verification for the open-access rollout.
+
 ## 0.3.5 - 2026-08-19
 
 - Added authenticated native-notification configuration, device registration, rotation, deletion, and logout cleanup while keeping the public database migration ledger at schema 2.

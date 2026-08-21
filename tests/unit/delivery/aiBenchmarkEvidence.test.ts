@@ -23,7 +23,7 @@ const execFileAsync = promisify(execFile);
 const root = path.resolve(import.meta.dirname, '..', '..', '..');
 const sourceSha = 'a'.repeat(40);
 const otherSha = 'b'.repeat(40);
-const releaseVersion = '0.3.5';
+const releaseVersion = '0.3.6';
 const temporaryRoots: string[] = [];
 
 function profile(benefit: number, regret: number) {
