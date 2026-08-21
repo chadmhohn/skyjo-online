@@ -43,8 +43,9 @@ Always re-read public `/version`, `/readyz`, this repository's latest tag, and A
 6. [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for dependency order and issue acceptance gates.
 7. [`TEST_AND_RELEASE.md`](TEST_AND_RELEASE.md) before marking an issue complete or distributing a build.
 8. [`PRIVACY.md`](PRIVACY.md) before changing collected data, logging, SDKs, or App Store privacy answers.
-9. [`handoff-manifest.json`](handoff-manifest.json) for the machine-readable baseline and source paths.
-10. Root [`contracts/README.md`](../../contracts/README.md) before changing schemas, DTOs, protocol frames, or deterministic fixtures.
+9. [`BRANDING_AND_RIGHTS.md`](BRANDING_AND_RIGHTS.md) before preparing external TestFlight metadata or builds.
+10. [`handoff-manifest.json`](handoff-manifest.json) for the machine-readable baseline and source paths.
+11. Root [`contracts/README.md`](../../contracts/README.md) before changing schemas, DTOs, protocol frames, or deterministic fixtures.
 
 The implementation workspace is documented at [`ios/README.md`](../../ios/README.md). The checked-in project, schemes, entitlements templates, test plans, and Swift packages are part of this repository; they must not live only in a developer's local Xcode state.
 
