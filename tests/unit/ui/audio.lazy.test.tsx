@@ -77,7 +77,7 @@ describe('lazy audio activation', () => {
       await vi.dynamicImportSettled();
     });
     expect(LazyAudio.instances.map((instance) => instance.src)).toEqual([
-      '/audio/card-flip.mp3',
+      '/audio/card-flip.wav',
       '/audio/card-pickup.mp3',
       '/audio/card-place.mp3'
     ]);

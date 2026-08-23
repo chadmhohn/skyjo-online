@@ -114,7 +114,7 @@ test('manifest and service worker assets are release-build reachable', async ({ 
     .map((match) => `/${match[1]}`)
     .sort();
   expect(precachedAudioPaths).toEqual([
-    '/audio/card-flip.mp3',
+    '/audio/card-flip.wav',
     '/audio/card-pickup.mp3',
     '/audio/card-place.mp3'
   ]);

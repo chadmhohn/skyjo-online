@@ -28,8 +28,8 @@ function manifestFingerprint(entries) {
 const cacheName = `${cachePrefix}${manifestFingerprint(precacheEntries)}`;
 const offlineShellPath = '/offline.html';
 const hashedAssetPattern = /^\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/;
-const audioCuePattern = /^\/audio\/card-(?:flip|pickup|place)\.mp3$/;
-const iconPattern = /^\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg)$/;
+const audioCuePattern = /^\/audio\/card-(?:flip\.wav|(?:pickup|place)\.mp3)$/;
+const iconPattern = /^\/skyjo-icon-v2-(?:180|192|512)\.png$/;
 const precachePaths = new Set(precacheEntries.map((entry) => {
   const value = typeof entry === 'string' ? entry : entry.url;
   const url = new URL(value, self.location.origin);
@@ -56,8 +56,8 @@ function expectedContentType(pathname) {
   if (pathname.endsWith('.css')) return /^text\/css\b/i;
   if (pathname.endsWith('.js')) return /^(?:application|text)\/javascript\b/i;
   if (pathname.endsWith('.mp3')) return /^audio\/mpeg\b/i;
+  if (pathname.endsWith('.wav')) return /^audio\/wav\b/i;
   if (pathname.endsWith('.png')) return /^image\/png\b/i;
-  if (pathname.endsWith('.svg')) return /^image\/svg\+xml\b/i;
   return /$a/;
 }
 

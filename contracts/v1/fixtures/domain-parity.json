@@ -27942,7 +27942,7 @@
             ],
             "id": "ai-1",
             "kind": "ai",
-            "name": "Spock",
+            "name": "Dune",
             "roundScore": 0,
             "totalScore": 0
           }
@@ -28822,7 +28822,7 @@
             ],
             "id": "ai-1",
             "kind": "ai",
-            "name": "Rogue",
+            "name": "Ridge",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -28903,7 +28903,7 @@
             ],
             "id": "ai-2",
             "kind": "ai",
-            "name": "Okoye",
+            "name": "Maple",
             "roundScore": 0,
             "totalScore": 0
           }
@@ -29712,7 +29712,7 @@
             ],
             "id": "ai-1",
             "kind": "ai",
-            "name": "Scotty",
+            "name": "Ember",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -29793,7 +29793,7 @@
             ],
             "id": "ai-2",
             "kind": "ai",
-            "name": "Athena",
+            "name": "Heather",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -29874,7 +29874,7 @@
             ],
             "id": "ai-3",
             "kind": "ai",
-            "name": "Apollo",
+            "name": "Harbor",
             "roundScore": 0,
             "totalScore": 0
           }
@@ -30612,7 +30612,7 @@
             ],
             "id": "ai-1",
             "kind": "ai",
-            "name": "Anders",
+            "name": "Lake",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -30693,7 +30693,7 @@
             ],
             "id": "ai-2",
             "kind": "ai",
-            "name": "Kira",
+            "name": "Canyon",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -30774,7 +30774,7 @@
             ],
             "id": "ai-3",
             "kind": "ai",
-            "name": "Ororo",
+            "name": "Reef",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -30855,7 +30855,7 @@
             ],
             "id": "ai-4",
             "kind": "ai",
-            "name": "Sulu",
+            "name": "Elm",
             "roundScore": 0,
             "totalScore": 0
           }
@@ -31522,7 +31522,7 @@
             ],
             "id": "ai-1",
             "kind": "ai",
-            "name": "Tuvok",
+            "name": "Dahlia",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -31603,7 +31603,7 @@
             ],
             "id": "ai-2",
             "kind": "ai",
-            "name": "Beverly",
+            "name": "Bramble",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -31684,7 +31684,7 @@
             ],
             "id": "ai-3",
             "kind": "ai",
-            "name": "Tyrol",
+            "name": "Ivy",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -31765,7 +31765,7 @@
             ],
             "id": "ai-4",
             "kind": "ai",
-            "name": "Six",
+            "name": "Kestrel",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -31846,7 +31846,7 @@
             ],
             "id": "ai-5",
             "kind": "ai",
-            "name": "Doom",
+            "name": "Sage",
             "roundScore": 0,
             "totalScore": 0
           }
@@ -32442,7 +32442,7 @@
             ],
             "id": "ai-1",
             "kind": "ai",
-            "name": "Doom",
+            "name": "Sage",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -32523,7 +32523,7 @@
             ],
             "id": "ai-2",
             "kind": "ai",
-            "name": "Janeway",
+            "name": "Cove",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -32604,7 +32604,7 @@
             ],
             "id": "ai-3",
             "kind": "ai",
-            "name": "Thor",
+            "name": "Moss",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -32685,7 +32685,7 @@
             ],
             "id": "ai-4",
             "kind": "ai",
-            "name": "Leia",
+            "name": "Terra",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -32766,7 +32766,7 @@
             ],
             "id": "ai-5",
             "kind": "ai",
-            "name": "Shuri",
+            "name": "Lotus",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -32847,7 +32847,7 @@
             ],
             "id": "ai-6",
             "kind": "ai",
-            "name": "Peter",
+            "name": "Poppy",
             "roundScore": 0,
             "totalScore": 0
           }
@@ -33372,7 +33372,7 @@
             ],
             "id": "ai-1",
             "kind": "ai",
-            "name": "Tigh",
+            "name": "Jade",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -33453,7 +33453,7 @@
             ],
             "id": "ai-2",
             "kind": "ai",
-            "name": "Scotty",
+            "name": "Ember",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -33534,7 +33534,7 @@
             ],
             "id": "ai-3",
             "kind": "ai",
-            "name": "Strange",
+            "name": "Pebble",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -33615,7 +33615,7 @@
             ],
             "id": "ai-4",
             "kind": "ai",
-            "name": "Sue",
+            "name": "Sequoia",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -33696,7 +33696,7 @@
             ],
             "id": "ai-5",
             "kind": "ai",
-            "name": "Miles",
+            "name": "Prairie",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -33777,7 +33777,7 @@
             ],
             "id": "ai-6",
             "kind": "ai",
-            "name": "Doom",
+            "name": "Sage",
             "roundScore": 0,
             "totalScore": 0
           },
@@ -33858,7 +33858,7 @@
             ],
             "id": "ai-7",
             "kind": "ai",
-            "name": "Ripley",
+            "name": "Sol",
             "roundScore": 0,
             "totalScore": 0
           }

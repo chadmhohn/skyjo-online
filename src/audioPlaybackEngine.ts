@@ -58,7 +58,7 @@ const cueProfiles: Record<AudioCue, CueProfile> = {
     kind: 'asset',
     minGapMs: 180,
     priority: 1,
-    src: '/audio/card-flip.mp3',
+    src: '/audio/card-flip.wav',
     stopAfterMs: 520,
     volumeScale: 0.24
   },

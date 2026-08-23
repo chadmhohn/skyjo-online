@@ -178,6 +178,7 @@ const mimeTypes = new Map([
   ['.json', 'application/json; charset=utf-8'],
   ['.webmanifest', 'application/manifest+json; charset=utf-8'],
   ['.mp3', 'audio/mpeg'],
+  ['.wav', 'audio/wav'],
   ['.png', 'image/png'],
   ['.svg', 'image/svg+xml; charset=utf-8'],
   ['.txt', 'text/plain; charset=utf-8'],
@@ -1569,7 +1570,7 @@ function renderPwaHead(title) {
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Skyjo" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" type="image/svg+xml" href="/skyjo-icon-v2.svg" />
+    <link rel="icon" type="image/png" href="/skyjo-icon-v2-192.png" />
     <link rel="apple-touch-icon" href="/skyjo-icon-v2-180.png" />
     <title>${escapeHtml(title)}</title>`;
 }

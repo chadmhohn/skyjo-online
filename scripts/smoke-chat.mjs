@@ -721,7 +721,7 @@ try {
   const publicManifestJson = await publicManifest.json();
   assert.equal(publicManifestJson.id, '/', 'PWA manifest has a stable app id');
   assert.equal(publicManifestJson.launch_handler?.client_mode, 'navigate-existing', 'PWA manifest opts into app URL launch handling');
-  const publicAppleIcon = await fetch(`${baseUrl}/skyjo-icon-180.png`);
+  const publicAppleIcon = await fetch(`${baseUrl}/skyjo-icon-v2-180.png`);
   assert.equal(publicAppleIcon.status, 200, 'Apple touch icon stays publicly available');
   assert.match(publicAppleIcon.headers.get('content-type') || '', /image\/png/);
   const publicServiceWorker = await fetch(`${baseUrl}/sw.js`);
@@ -860,9 +860,9 @@ try {
   const compiledCss = await compiledStylesheet.text();
   assert.equal(compiledCss.includes('@import'), false, 'critical CSS has no imported stylesheets');
   assert.equal(compiledCss.includes('url('), false, 'critical CSS has no external resource references');
-  const cardAudio = await fetch(`${baseUrl}/audio/card-flip.mp3`, { headers: { Cookie: cookie } });
+  const cardAudio = await fetch(`${baseUrl}/audio/card-flip.wav`, { headers: { Cookie: cookie } });
   assert.equal(cardAudio.status, 200, 'card audio assets are served from the open app');
-  assert.match(cardAudio.headers.get('content-type') || '', /audio\/mpeg/);
+  assert.match(cardAudio.headers.get('content-type') || '', /audio\/wav/);
   await assert.rejects(openSocket(baseUrl, cookie), /Unexpected server response|401/, 'multiplayer sockets require account auth');
   const hostAccount = await createAccount(baseUrl, cookie, 'ada@example.com', 'Ada');
   const guestAccount = await createAccount(baseUrl, cookie, 'grace@example.com', 'Grace');

@@ -1989,19 +1989,19 @@ struct SoloFeatureModelTests {
     #expect(SoloAIDifficultySelection.mixed.explanation.contains("Deterministically"))
   }
 
-  @Test("Approved CC0 cues are present and pinned in the native app bundle")
+  @Test("Approved original and CC0 cues are present and pinned in the native app bundle")
   func nativeAudioResourcesArePinned() throws {
     let expected = [
-      "card-flip": (24_004, "dc9c08e4b172d404ce2f1ba8380d552fdd1d302419e2872f067f0d761147df90"),
-      "card-pickup": (4_225, "5d6b866eb280804f86aae1d5d795da1a2260075a5c18b11472b84b33d31f68de"),
-      "card-place": (3_702, "37f3fb1cd7a08f741eb7431de2cde4ad5eef129aa18496d379221461926373b8"),
+      "card-flip": ("wav", 21_212, "cd39c3d5f749b84b73db28ed581ef34fb37bd539eeb1a2389713350ca96d2ad3"),
+      "card-pickup": ("mp3", 4_225, "5d6b866eb280804f86aae1d5d795da1a2260075a5c18b11472b84b33d31f68de"),
+      "card-place": ("mp3", 3_702, "37f3fb1cd7a08f741eb7431de2cde4ad5eef129aa18496d379221461926373b8"),
     ]
     for (name, artifact) in expected {
-      let url = try #require(Bundle.main.url(forResource: name, withExtension: "mp3"))
+      let url = try #require(Bundle.main.url(forResource: name, withExtension: artifact.0))
       let data = try Data(contentsOf: url)
       let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-      #expect(data.count == artifact.0)
-      #expect(digest == artifact.1)
+      #expect(data.count == artifact.1)
+      #expect(digest == artifact.2)
     }
 
   }

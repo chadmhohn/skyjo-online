@@ -4,16 +4,15 @@ public enum GameEngine {
   public static let singlePlayerAIOpponentRange = 1...7
   public static let soloAIOpeningSeatDelayMilliseconds = 225
   public static let singlePlayerAINames = [
-    "Picard", "Riker", "Data", "Worf", "Geordi", "Beverly", "Troi", "Sisko", "Kira",
-    "Dax", "Odo", "Quark", "Janeway", "Seven", "Tuvok", "Kirk", "Spock", "Uhura",
-    "Sulu", "Scotty", "Bones", "Pike", "Saru", "Burnham", "Mariner", "Boimler", "Adama",
-    "Roslin", "Starbuck", "Apollo", "Boomer", "Athena", "Helo", "Tyrol", "Tigh", "Baltar",
-    "Six", "Anders", "Gaeta", "Dualla", "TChalla", "Shuri", "Okoye", "Wanda", "Vision",
-    "Natasha", "Clint", "Thor", "Loki", "Valkyrie", "Carol", "Monica", "Kamala", "Strange",
-    "Wong", "Peter", "Miles", "Gwen", "Logan", "Ororo", "Rogue", "Gambit", "Jean", "Scott",
-    "Hank", "Doom", "Reed", "Sue", "Ben", "Johnny", "Ripley", "Hicks", "Vasquez", "Sarah",
-    "Neo", "Trinity", "Morpheus", "Luke", "Leia", "Han", "Chewie", "Lando", "Rey", "Finn",
-    "Poe", "Ahsoka", "Grogu",
+    "Acorn", "Alder", "Aster", "Aspen", "Birch", "Bramble", "Breeze", "Brook", "Canyon",
+    "Cedar", "Clover", "Coral", "Cove", "Cypress", "Dahlia", "Dawn", "Dune", "Echo", "Elm",
+    "Ember", "Fawn", "Fern", "Finch", "Fjord", "Flint", "Forest", "Gale", "Garnet", "Glade",
+    "Harbor", "Hazel", "Heather", "Indigo", "Ivy", "Jade", "Juniper", "Kestrel", "Lake", "Lark",
+    "Laurel", "Linden", "Lotus", "Maple", "Marigold", "Meadow", "Mica", "Mist", "Moss", "Moon",
+    "Olive", "Onyx", "Opal", "Orchid", "Pebble", "Pine", "Poppy", "Prairie", "Quartz", "Rain",
+    "Reef", "Ridge", "River", "Robin", "Rowan", "Ruby", "Sage", "Saffron", "Sequoia", "Sky",
+    "Slate", "Sol", "Sparrow", "Spruce", "Starling", "Stone", "Storm", "Summit", "Sunny", "Terra",
+    "Thistle", "Tide", "Topaz", "Vale", "Violet", "Willow", "Wren", "Zephyr",
   ]
 
   public static var defaultSinglePlayerAIOpponents: [PlayerSeed] {

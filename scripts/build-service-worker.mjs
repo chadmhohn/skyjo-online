@@ -11,8 +11,9 @@ const manifestOptions = {
   globPatterns: [
     'offline.html',
     'assets/*.{css,js}',
-    'audio/card-{flip,pickup,place}.mp3',
-    'skyjo-icon*.{png,svg}'
+    'audio/card-flip.wav',
+    'audio/card-{pickup,place}.mp3',
+    'skyjo-icon-v2-*.png'
   ],
   maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
   dontCacheBustURLsMatching: /^assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/
@@ -20,7 +21,7 @@ const manifestOptions = {
 const manifest = await getManifest(manifestOptions);
 const sourcePath = path.resolve('src/service-worker.js');
 const outputPath = path.resolve('dist/sw.js');
-const safePathPattern = /^(?:offline\.html|assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|audio\/card-(?:flip|pickup|place)\.mp3|skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
+const safePathPattern = /^(?:offline\.html|assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|audio\/card-(?:flip\.wav|(?:pickup|place)\.mp3)|skyjo-icon-v2-(?:180|192|512)\.png)$/;
 const precacheUrls = manifest.manifestEntries.map((entry) => entry.url).sort();
 if (!precacheUrls.includes('offline.html') || precacheUrls.some((url) => !safePathPattern.test(url))) {
   throw new Error(`Unsafe service-worker precache manifest: ${precacheUrls.join(', ')}`);

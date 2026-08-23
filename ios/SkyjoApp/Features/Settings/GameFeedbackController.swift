@@ -72,15 +72,19 @@ final class GameFeedbackController {
 
   private func playSound(for event: GameFeedbackEvent) {
     let resource: String
+    let fileExtension: String
     switch event {
     case .flip, .columnClear:
       resource = "card-flip"
+      fileExtension = "wav"
     case .pickup, .localTurn:
       resource = "card-pickup"
+      fileExtension = "mp3"
     case .place, .roundEnd, .gameEnd:
       resource = "card-place"
+      fileExtension = "mp3"
     }
-    guard let url = Bundle.main.url(forResource: resource, withExtension: "mp3") else { return }
+    guard let url = Bundle.main.url(forResource: resource, withExtension: fileExtension) else { return }
     do {
       let player = try AVAudioPlayer(contentsOf: url)
       player.prepareToPlay()

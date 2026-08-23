@@ -68,7 +68,7 @@ describe('HTML Audio playback', () => {
     await expect(audio.primeAudio()).resolves.toBe(true);
 
     expect(FakeAudio.instances.map((instance) => instance.src)).toEqual([
-      '/audio/card-flip.mp3',
+      '/audio/card-flip.wav',
       '/audio/card-pickup.mp3',
       '/audio/card-place.mp3'
     ]);
@@ -104,7 +104,7 @@ describe('HTML Audio playback', () => {
 
     audio.playAudioCue('flip');
     await flushPromises();
-    const flip = bySource('card-flip.mp3');
+    const flip = bySource('card-flip.wav');
 
     expect(flip.play).toHaveBeenCalledOnce();
     expect(flip.volume).toBeCloseTo(0.72 * 0.24);
@@ -166,7 +166,7 @@ describe('HTML Audio playback', () => {
 
     audio.playAudioTestCue();
     await flushPromises();
-    expect(bySource('card-flip.mp3').play).toHaveBeenCalledOnce();
+    expect(bySource('card-flip.wav').play).toHaveBeenCalledOnce();
     expect(bySource('card-pickup.mp3').play).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(170);

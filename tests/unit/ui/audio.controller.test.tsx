@@ -305,7 +305,7 @@ describe('root audio controller', () => {
       event('mute:2', 'roundEnd', 100)
     ]);
     await flushPromises();
-    const playing = ControllerAudio.instances.find((instance) => instance.src.endsWith('card-flip.mp3'));
+    const playing = ControllerAudio.instances.find((instance) => instance.src.endsWith('card-flip.wav'));
     expect(playing?.paused).toBe(false);
 
     audio.setAudioSettings({ soundEffects: false });
