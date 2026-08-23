@@ -160,10 +160,23 @@ test('parseAppleAudioInfo accepts one MP3 track and preserves measured metadata'
   });
 });
 
-test('parseAppleAudioInfo rejects non-MP3 and ambiguous track reports', () => {
+test('parseAppleAudioInfo accepts linear PCM WAVE and rejects unsupported or ambiguous reports', () => {
+  assert.deepEqual(
+    parseAppleAudioInfo(
+      validAppleAudioInfo.replace("'MPG3'", "'WAVE'").replace('<format_type>.mp3</format_type>', '<format_type>lpcm</format_type>'),
+      21_212
+    ),
+    {
+      channels: 1,
+      codec: 'pcm_s16le',
+      durationSeconds: 0.391837,
+      sampleRate: 44_100,
+      sizeBytes: 21_212
+    }
+  );
   assert.throws(
-    () => parseAppleAudioInfo(validAppleAudioInfo.replace("'MPG3'", "'WAVE'"), 4_225),
-    /audio format must be MP3/
+    () => parseAppleAudioInfo(validAppleAudioInfo.replace("'MPG3'", "'AIFF'"), 4_225),
+    /audio format must be MP3 or linear PCM WAVE/
   );
   assert.throws(
     () => parseAppleAudioInfo(validAppleAudioInfo.replace('</tracks>', '<track track_id="2"></track></tracks>'), 4_225),
@@ -532,7 +545,7 @@ test('bounded regular-file reads do not close a descriptor when opening fails', 
 test('native resource inventory rejects alternate or disguised media outside the exact allowlist', () => {
   assert.deepEqual(
     unexpectedNativeResources([
-      'Audio/card-flip.mp3',
+      'Audio/card-flip.wav',
       'Audio/card-pickup.mp3',
       'Audio/card-place.mp3',
       'Audio/README.md',
@@ -570,7 +583,7 @@ test('public inventory rejects media anywhere outside the exact published allowl
   assert.deepEqual(
     unexpectedPublicResources([
       'audio/README.md',
-      'audio/card-flip.mp3',
+      'audio/card-flip.wav',
       'audio/card-pickup.mp3',
       'audio/card-place.mp3',
       'manifest.webmanifest',
@@ -580,18 +593,15 @@ test('public inventory rejects media anywhere outside the exact published allowl
       'theme.bin',
       'nested/voice.caf'
     ]),
-    ['audio/theme.m4v', 'music/theme.m4v', 'nested/voice.caf', 'theme.bin']
+    ['audio/theme.m4v', 'music/theme.m4v', 'nested/voice.caf', 'skyjo-icon.svg', 'theme.bin']
   );
   assert.deepEqual(
     publicResourceInventoryFailures([
       'audio/README.md',
-      'audio/card-flip.mp3',
+      'audio/card-flip.wav',
       'audio/card-pickup.mp3',
       'audio/card-place.mp3',
       'manifest.webmanifest',
-      'skyjo-icon-180.png',
-      'skyjo-icon-192.png',
-      'skyjo-icon-512.png',
       'skyjo-icon-v2-180.png',
       'skyjo-icon-v2-192.png',
       'skyjo-icon-v2-512.png',
@@ -599,8 +609,8 @@ test('public inventory rejects media anywhere outside the exact published allowl
       'music/theme.m4v'
     ]),
     [
-      'Missing approved public resource skyjo-icon.svg.',
-      'Unexpected public resource music/theme.m4v.'
+      'Unexpected public resource music/theme.m4v.',
+      'Unexpected public resource skyjo-icon-v2.svg.'
     ]
   );
 });
@@ -614,7 +624,7 @@ test('clean native application inventory rejects every nested or disguised addit
     'PkgInfo',
     'PrivacyInfo.xcprivacy',
     'SkyjoNative',
-    'card-flip.mp3',
+    'card-flip.wav',
     'card-pickup.mp3',
     'card-place.mp3'
   ];
@@ -649,14 +659,14 @@ test('Xcode application resource phase inventory fails closed on added build res
       isa = PBXResourcesBuildPhase;
       files = (
         B20000000000000000000005 /* Assets.xcassets in Resources */,
-        C20000000000000000000006 /* card-flip.mp3 in Resources */,
+        C20000000000000000000006 /* card-flip.wav in Resources */,
         D20000000000000000000001 /* theme.m4v in Resources */,
       );
     };
 /* End PBXResourcesBuildPhase section */`;
   assert.deepEqual(
     nativeApplicationResourceNames(project),
-    ['Assets.xcassets', 'card-flip.mp3', 'theme.m4v']
+    ['Assets.xcassets', 'card-flip.wav', 'theme.m4v']
   );
   assert.throws(
     () => nativeApplicationResourceNames(project.replace(' in Resources */', ' */')),

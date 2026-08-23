@@ -11,7 +11,7 @@ extension RoomInviteContractError: LocalizedError {
   public var errorDescription: String? {
     switch self {
     case .invalidInviteURL, .invalidInviteToken:
-      "This Skyjo invite link is invalid."
+      "This Flipvale invite link is invalid."
     case .invalidRoomCode, .invalidExpiry:
       "The server returned an invalid room invite."
     }

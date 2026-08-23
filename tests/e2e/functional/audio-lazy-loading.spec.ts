@@ -2,7 +2,7 @@ import { expect, test } from '../fixtures';
 import { startFreshSoloGame } from '../helpers/soloFlow';
 
 const audioSettingsKey = 'skyjo-audio-settings-v3';
-const cuePaths = ['/audio/card-flip.mp3', '/audio/card-pickup.mp3', '/audio/card-place.mp3'];
+const cuePaths = ['/audio/card-flip.wav', '/audio/card-pickup.mp3', '/audio/card-place.mp3'];
 
 test.describe('lazy audio loading', () => {
   test.use({ serviceWorkers: 'block' });
@@ -12,7 +12,7 @@ test.describe('lazy audio loading', () => {
       const audioRequests: string[] = [];
       page.on('request', (request) => {
         const pathname = new URL(request.url()).pathname;
-        if (pathname.endsWith('.mp3')) audioRequests.push(pathname);
+        if (/\.(?:mp3|wav)$/.test(pathname)) audioRequests.push(pathname);
       });
 
       await page.goto(`${skyjoServer.baseURL}${path}`);
@@ -55,11 +55,11 @@ test.describe('lazy audio loading', () => {
     const audioRequests: string[] = [];
     page.on('request', (request) => {
       const pathname = new URL(request.url()).pathname;
-      if (pathname.endsWith('.mp3')) audioRequests.push(pathname);
+      if (/\.(?:mp3|wav)$/.test(pathname)) audioRequests.push(pathname);
     });
 
     await page.goto(skyjoServer.baseURL);
-    await expect(page.getByRole('heading', { name: 'Skyjo', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Flipvale', exact: true })).toBeVisible();
     expect(audioRequests).toEqual([]);
 
     await page.getByText('Sound', { exact: true }).click();
@@ -77,7 +77,7 @@ test.describe('lazy audio loading', () => {
     await page.waitForTimeout(250);
     expect([...audioRequests].sort()).toEqual([...cuePaths].sort());
 
-    await page.getByRole('heading', { name: 'Skyjo', exact: true }).click();
+    await page.getByRole('heading', { name: 'Flipvale', exact: true }).click();
     await page.waitForTimeout(250);
     expect([...audioRequests].sort()).toEqual([...cuePaths].sort());
   });
@@ -92,7 +92,7 @@ test.describe('lazy audio loading', () => {
     const audioRequests: string[] = [];
     page.on('request', (request) => {
       const pathname = new URL(request.url()).pathname;
-      if (pathname.endsWith('.mp3')) audioRequests.push(pathname);
+      if (/\.(?:mp3|wav)$/.test(pathname)) audioRequests.push(pathname);
     });
 
     await startFreshSoloGame(page, skyjoServer.baseURL);

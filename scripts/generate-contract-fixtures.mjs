@@ -865,8 +865,8 @@ function createProtocolFixtures(states) {
     fixtureCase('room left acknowledgement', 'protocol-v2-server-frame.schema.json', { type: 'ack', protocolVersion: 2, commandId: commandIds[24], revision: 8, result: 'room-left' }),
     fixtureCase('correlated error', 'protocol-v2-server-frame.schema.json', { type: 'error', protocolVersion: 2, code: 'illegal-move', message: 'That move is not legal.', commandId: commandIds[25] }),
     fixtureCase('uncorrelated error', 'protocol-v2-server-frame.schema.json', { type: 'error', protocolVersion: 2, code: 'room-required', message: 'Join or create a room first.' }),
-    fixtureCase('upgrade required', 'protocol-v2-server-frame.schema.json', { type: 'upgrade-required', protocolVersion: 2, message: 'Refresh Skyjo to use multiplayer protocol 2.' }),
-    fixtureCase('correlated upgrade required', 'protocol-v2-server-frame.schema.json', { type: 'upgrade-required', protocolVersion: 2, message: 'Refresh Skyjo to use multiplayer protocol 2.', commandId: commandIds[26] })
+    fixtureCase('upgrade required', 'protocol-v2-server-frame.schema.json', { type: 'upgrade-required', protocolVersion: 2, message: 'Refresh Flipvale to use multiplayer protocol 2.' }),
+    fixtureCase('correlated upgrade required', 'protocol-v2-server-frame.schema.json', { type: 'upgrade-required', protocolVersion: 2, message: 'Refresh Flipvale to use multiplayer protocol 2.', commandId: commandIds[26] })
   ];
 
   const oversizedCreate = { type: 'create-room', protocolVersion: 2, name: 'X'.repeat(17_000) };
@@ -1179,8 +1179,8 @@ async function createHttpFixtures(gameOverState) {
   const unavailable = createVersionResult(null).payload;
 
   const manualErrors = [
-    ['ACCESS_REQUIRED', 'Skyjo access is required.'],
-    ['ACCOUNT_AUTHENTICATION_REQUIRED', 'Sign in to your Skyjo account.'],
+    ['ACCESS_REQUIRED', 'Flipvale access is required.'],
+    ['ACCOUNT_AUTHENTICATION_REQUIRED', 'Sign in to your Flipvale account.'],
     ['ACCOUNT_AUTHENTICATION_FAILED', 'Email or password did not match.'],
     ['ADMIN_REQUIRED', 'Admin privileges are required.'],
     ['PUSH_NOT_CONFIGURED', 'Push notifications are not configured.'],

@@ -40,6 +40,7 @@ export const RUNTIME_ROOT_FILES = Object.freeze([
   'server-apns-rollback-proof.mjs',
   'server-game-state-validation.mjs',
   'server-invite-codes.mjs',
+  'server-legacy-ai-branding.mjs',
   'server-persistence-health.mjs',
   'server-push.mjs',
   'server-readiness.mjs',

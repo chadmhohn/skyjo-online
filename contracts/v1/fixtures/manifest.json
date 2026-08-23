@@ -1,15 +1,15 @@
 {
   "contractVersion": 1,
   "files": {
-    "domain-parity.json": "10a2ff268b81aef6a39b6fd4857210fb6a575b9ec0e79441a8d0d73e6fc43d90",
+    "domain-parity.json": "26c3f3110372eca9e3b0243fcaf73d9acac02d319a4091934da83fe075b5c435",
     "game-state.invalid.json": "6c69584c39db733571776e0b752b43b42599f615d2feeb74657ee4b95074ee90",
     "game-state.valid.json": "7e9b9eed8a52a5eb2c4d0630f59752f6c79b9cc02d05723445476b6862c2b0ef",
     "http.invalid.json": "d55f9ec4c23f1d3d98adc0d2d22b0bdeddcec3087a6bfccc334f25087e928b54",
-    "http.valid.json": "5a1232018d493344aa37c0453ea595dd75ae2a8f0d6035b50d4d07aee9ab8528",
+    "http.valid.json": "d60f9ba4271f5e0807f19655cd6f0eb29894b99a65bf0ee57fd1ca5d9ceb6eed",
     "protocol-client.invalid.json": "a2247757524ce8d601c4424bd8734a2dd52990747269288a6e373a4dec0a25a1",
     "protocol-client.valid.json": "5f917db953d753bd4c1a0a1dea5170a5560c726305659cbac17b6083063358b1",
     "protocol-server.invalid.json": "5c2211c56daa7d1e0977e344d7f2de4379dc5742a31dc215c03f0d8ff9d3666c",
-    "protocol-server.valid.json": "41d54ccd3f67589914cfe716937c99594bdd380698a6f550afd18ce2fea339dd",
+    "protocol-server.valid.json": "01d71c335523190bab5c1d2ccc7804df07a7a8246a3c73c033b843c36e3988d7",
     "protocol-transcripts.json": "1af556ee5f594d7faaac01aaca837b928e0630cc0edeff2f03b95cb7c9e9d35f"
   },
   "generator": "scripts/generate-contract-fixtures.mjs"

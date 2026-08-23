@@ -252,7 +252,7 @@ export function createProtocolV2MessageHandler(options: ProtocolV2HandlerOptions
     sendJson(ws, {
       type: 'upgrade-required',
       protocolVersion: MULTIPLAYER_PROTOCOL_VERSION,
-      message: 'Refresh Skyjo to use multiplayer protocol 2.',
+      message: 'Refresh Flipvale to use multiplayer protocol 2.',
       ...(commandId ? { commandId } : {})
     });
   }

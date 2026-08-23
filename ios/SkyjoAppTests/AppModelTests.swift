@@ -685,7 +685,7 @@ struct AppModelTests {
     #expect(cleanupFailureModel.selectedTab == .account)
     #expect(cleanupFailureModel.rootState == .guest)
     #expect(cleanupFailureModel.user == nil)
-    #expect(cleanupFailureModel.authentication.errorMessage.contains("reinstall Skyjo"))
+    #expect(cleanupFailureModel.authentication.errorMessage.contains("reinstall Flipvale"))
   }
 
   @Test("A disabled profile response ends the account session and clears stale state")
@@ -1051,7 +1051,7 @@ private actor MockSkyjoService: SkyjoService {
       throw SkyjoHTTPClientError.server(
         statusCode: 401,
         code: .accountAuthenticationRequired,
-        message: "Sign in to your Skyjo account."
+        message: "Sign in to your Flipvale account."
       )
     }
     if scenario == .statsOfflineRetry {
@@ -1084,7 +1084,7 @@ private actor MockSkyjoService: SkyjoService {
       throw SkyjoHTTPClientError.server(
         statusCode: 401,
         code: .accountAuthenticationRequired,
-        message: "Sign in to your Skyjo account."
+        message: "Sign in to your Flipvale account."
       )
     }
     if scenario == .loadedStats || scenario == .statsOfflineRetry || scenario == .deferredStatsRefresh {

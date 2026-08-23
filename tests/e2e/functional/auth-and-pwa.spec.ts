@@ -61,7 +61,7 @@ async function statsOutboxAttempts(page: import('@playwright/test').Page, ownerK
 
 test('home, account signup, safe return paths, and authenticated account shell work together', async ({ page, skyjoServer }) => {
   await page.goto(skyjoServer.baseURL);
-  await expect(page.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Flipvale' })).toBeVisible();
   await expect(page.getByRole('link', { name: /^Start Solo Game/ })).toBeVisible();
 
   await page.goto(`${skyjoServer.baseURL}/account?next=/account`);
@@ -110,11 +110,11 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   expect(serviceWorkerSource).toContain("addEventListener('push'");
   expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
   expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
-  const precachedAudioPaths = [...serviceWorkerSource.matchAll(/"url":"(audio\/[^"]+\.mp3)"/g)]
+  const precachedAudioPaths = [...serviceWorkerSource.matchAll(/"url":"(audio\/[^"]+\.(?:mp3|wav))"/g)]
     .map((match) => `/${match[1]}`)
     .sort();
   expect(precachedAudioPaths).toEqual([
-    '/audio/card-flip.mp3',
+    '/audio/card-flip.wav',
     '/audio/card-pickup.mp3',
     '/audio/card-place.mp3'
   ]);
@@ -167,7 +167,7 @@ test('single-player stats deduplicate one UUID without collapsing an equal-score
   expect(missingExpectedAccount.status()).toBe(426);
   expect(await missingExpectedAccount.json()).toEqual({
     code: 'STATS_CLIENT_UPGRADE_REQUIRED',
-    error: 'Update Skyjo before syncing saved game stats.'
+    error: 'Update Flipvale before syncing saved game stats.'
   });
   expect(malformedExpectedAccount.status()).toBe(426);
   expect(changedAccount.status()).toBe(409);

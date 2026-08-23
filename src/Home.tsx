@@ -86,7 +86,7 @@ export default function Home() {
       <section className="skyjo-shell skyjo-home-shell flex min-h-screen flex-col justify-center px-4 py-7 sm:px-5 sm:py-10">
         <div className="skyjo-home-hero max-w-3xl">
           <p className="skyjo-kicker mb-3">Private game table</p>
-          <h1 className="skyjo-title text-6xl sm:text-8xl">Skyjo</h1>
+          <h1 className="skyjo-title text-6xl sm:text-8xl">Flipvale</h1>
           <p className="mt-4 max-w-xl text-base leading-7 text-[#f5e6c8]/70 sm:text-lg sm:leading-8">
             Play solo against the house AI or create a private room for friends at the multiplayer table.
           </p>

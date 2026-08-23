@@ -1,17 +1,24 @@
-Skyjo audio assets
-==================
+# Audio asset provenance
 
-The source recordings are Creative Commons 0 Freesound previews. Attribution is
-not required, but the source and processing trail is retained for reproducibility.
+The app ships three short, music-free feedback cues. The reveal cue is original and reproducibly
+synthesized from repository code. The pickup and placement cues are trimmed Creative Commons Zero
+Freesound previews; attribution is not required, but their source and processing trail is retained.
 
-- `card-flip.mp3`: "flipCard.wav" by Splashdust, Freesound sound 84322, CC0.
+- `card-flip.wav`: original deterministic synthesis created for this repository.
 - `card-pickup.mp3`: "Index Card Flip Manipulation" by ROBAMOS, Freesound sound
-  339015, CC0. The production cue uses a dry card slide/lift from the source.
+  [339015](https://freesound.org/people/ROBAMOS/sounds/339015/), CC0.
 - `card-place.mp3`: "Pounding Cards On Table" by HogantheLogan, Freesound sound
-  466789, CC0. The production cue uses the quieter third felt/table landing.
+  [466789](https://freesound.org/people/HogantheLogan/sounds/466789/), CC0.
 
-Cue build provenance
---------------------
+## Original reveal cue
+
+Run `npm run generate:audio` from the repository root. The committed
+`scripts/generate-original-card-flip.mjs` writes the exact same 44.1 kHz, mono, signed 16-bit PCM
+WAVE bytes to the public and native resource directories. Its deterministic seeded noise, descending
+tone, and short second transient were authored for this app; it uses no recording, sample, or model
+output from a third party.
+
+## CC0 cue build provenance
 
 The unedited source previews are the versions in release commit
 `1209b172b7580cb5ede570a9e88283cddcaafbb1`:
@@ -21,9 +28,8 @@ The unedited source previews are the versions in release commit
 - Place source SHA-256:
   `82CFC4CC7C82B9759E67917BBE495A6A18C77826948579E5B327F3182FD8C29F`
 
-Stage those previews as `card-pickup-source.mp3` and `card-place-source.mp3`.
-The production files were rendered with
-`ffmpeg 8.1.1-full_build-www.gyan.dev` using:
+Stage those previews as `card-pickup-source.mp3` and `card-place-source.mp3`. The production files
+were rendered with `ffmpeg 8.1.1-full_build-www.gyan.dev` using:
 
 ```powershell
 ffmpeg -hide_banner -y -i card-pickup-source.mp3 `
@@ -35,37 +41,14 @@ ffmpeg -hide_banner -y -i card-place-source.mp3 `
   -map_metadata -1 -ac 1 -ar 44100 -c:a libmp3lame -b:a 80k card-place.mp3
 ```
 
-Production evidence
--------------------
+## Committed production evidence
 
-Onset is the end of initial silence reported by
-`silencedetect=noise=-30dB:d=0.002`. True peak is from `ebur128=peak=true`.
+| Asset | Format | Duration | Onset | Bytes | SHA-256 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `card-flip.wav` | PCM WAVE, 44.1 kHz mono, signed 16-bit | 0.2400 s | 0 ms | 21,212 | `CD39C3D5F749B84B73DB28ED581EF34FB37BD539EEB1A2389713350CA96D2AD3` |
+| `card-pickup.mp3` | MP3, 44.1 kHz mono, 80 kbps | 0.3918 s | 30.1 ms | 4,225 | `5D6B866EB280804F86AAE1D5D795DA1A2260075A5C18B11472B84B33D31F68DE` |
+| `card-place.mp3` | MP3, 44.1 kHz mono, 80 kbps | 0.3396 s | 25.1 ms | 3,702 | `37F3FB1CD7A08F741EB7431DE2CDE4AD5EEF129AA18496D379221461926373B8` |
 
-| Asset | Format | Duration | Onset | Mean | True peak | Bytes | SHA-256 |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `card-flip.mp3` | MP3, 44.1 kHz mono | 0.940408 s | unchanged | unchanged | unchanged | 24,004 | `DC9C08E4B172D404CE2F1BA8380D552FDD1D302419E2872F067F0D761147DF90` |
-| `card-pickup.mp3` | MP3, 44.1 kHz mono, 80 kbps | 0.360000 s | 19.0703 ms | -18.8 dB | -3.2 dBFS | 4,225 | `5D6B866EB280804F86AAE1D5D795DA1A2260075A5C18B11472B84B33D31F68DE` |
-| `card-place.mp3` | MP3, 44.1 kHz mono, 80 kbps | 0.300000 s | 16.6893 ms | -29.4 dB | -6.4 dBFS | 3,702 | `37F3FB1CD7A08F741EB7431DE2CDE4AD5EEF129AA18496D379221461926373B8` |
-
-The three effect cues total 31,931 bytes. `card-flip.mp3` was preserved
-byte-for-byte.
-
-Verification commands:
-
-```powershell
-ffprobe -v error -show_entries format=duration,size,bit_rate `
-  -show_entries stream=codec_name,sample_rate,channels,channel_layout `
-  -of default=noprint_wrappers=1 card-pickup.mp3
-ffmpeg -hide_banner -i card-pickup.mp3 `
-  -af "silencedetect=noise=-30dB:d=0.002,ebur128=peak=true" -f null NUL
-ffmpeg -hide_banner -i card-pickup.mp3 -af volumedetect -f null NUL
-
-ffprobe -v error -show_entries format=duration,size,bit_rate `
-  -show_entries stream=codec_name,sample_rate,channels,channel_layout `
-  -of default=noprint_wrappers=1 card-place.mp3
-ffmpeg -hide_banner -i card-place.mp3 `
-  -af "silencedetect=noise=-30dB:d=0.002,ebur128=peak=true" -f null NUL
-ffmpeg -hide_banner -i card-place.mp3 -af volumedetect -f null NUL
-
-Get-FileHash card-flip.mp3,card-pickup.mp3,card-place.mp3 -Algorithm SHA256
-```
+The three effect cues total 29,139 bytes. `npm run check:audio` verifies their exact hashes, bounded
+size, mono sample format, short duration, prompt onset, clean tail, byte-identical native copies, and
+the absence of unreviewed bundled media.

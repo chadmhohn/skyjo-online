@@ -1,12 +1,12 @@
 # Native Privacy Inventory
 
-This file is the repository-owned draft for the native app privacy manifest and App Store Connect privacy answers. It describes Skyjo Online v0.1.0 behavior; it is not a substitute for the public privacy policy required before a public App Store listing.
+This file is the repository-owned draft for the native app privacy manifest and App Store Connect privacy answers. It describes Flipvale v0.1.0 behavior; it is not a substitute for the public privacy policy required before a public App Store listing.
 
 ## Collected Data
 
-The native app and first-party Skyjo server use the following data only for app functionality. Every category is linked to the account or device that supplied it, none is used for tracking, advertising, marketing, analytics, or sale, and there are no tracking domains.
+The native app and first-party Flipvale server use the following data only for app functionality. Every category is linked to the account or device that supplied it, none is used for tracking, advertising, marketing, analytics, or sale, and there are no tracking domains.
 
-| Apple category | Skyjo data | App functionality |
+| Apple category | Flipvale data | App functionality |
 | --- | --- | --- |
 | Name | Player display name | Account profile, room roster, scoring, and history |
 | Email Address | Account email address | Authentication and account recovery/administration |
@@ -21,11 +21,11 @@ Passwords are transmitted only to authenticate or change credentials and are sto
 
 ## Data Not Collected
 
-Skyjo v0.1.0 contains no advertising, third-party analytics, crash-reporting SDK, location, contacts, photos, audio recording, health, financial, purchase, browsing, or search collection. It does not use App Tracking Transparency because it does not track users across companies' apps, sites, or offline properties.
+Flipvale v0.1.0 contains no advertising, third-party analytics, crash-reporting SDK, location, contacts, photos, audio recording, health, financial, purchase, browsing, or search collection. It does not use App Tracking Transparency because it does not track users across companies' apps, sites, or offline properties.
 
 ## Accessed APIs And Dependencies
 
-- `UserDefaults` is declared with required-reason code `CA92.1` for preferences that are available only inside Skyjo.
+- `UserDefaults` is declared with required-reason code `CA92.1` for preferences that are available only inside Flipvale.
 - Native production code uses Apple frameworks and repository-local Swift packages only. There are no remote Swift Package Manager, binary, advertising, analytics, or crash-reporting dependencies.
 - Runtime SBOM generation remains available through `npm run release:sbom`; it describes the server artifact and does not change the native privacy answers.
 

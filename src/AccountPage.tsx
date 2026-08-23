@@ -119,7 +119,7 @@ export default function AccountPage() {
       <section className="skyjo-shell mx-auto max-w-3xl space-y-5">
         <Link className="skyjo-back-link text-sm font-bold text-[#f5e6c8]/65 hover:text-[#f5e6c8]" to="/">Back</Link>
         <div className="skyjo-panel p-5">
-          <p className="skyjo-kicker">Skyjo account</p>
+          <p className="skyjo-kicker">Flipvale account</p>
           <h1 className="skyjo-serif mt-2 text-4xl font-black text-[#f5e6c8]">{account.user ? 'Account' : mode === 'login' ? 'Sign In' : 'Create Account'}</h1>
           {account.user ? (
             <div className="mt-5 space-y-4">

@@ -5,7 +5,7 @@ import AudioSettingsControls from './AudioSettingsControls';
 import type { GameState } from './types';
 
 const RulesHelpPanel = lazy(() => import('./RulesHelpPanel').catch(() => ({
-  default: () => <p className="skyjo-disabled-note" role="alert">Rules could not load. Reload Skyjo to try again.</p>
+  default: () => <p className="skyjo-disabled-note" role="alert">Rules could not load. Reload Flipvale to try again.</p>
 })));
 export interface GameSettingsDialogProps {
   aiOpponentCount?: number;

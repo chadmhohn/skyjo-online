@@ -13,7 +13,7 @@ async function expectNoBlockingViolations(page: Page) {
 
 test('home page has no serious or critical Axe violations', async ({ page, skyjoServer }) => {
   await page.goto(skyjoServer.baseURL);
-  await expect(page.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Flipvale' })).toBeVisible();
   await expectNoBlockingViolations(page);
 });
 

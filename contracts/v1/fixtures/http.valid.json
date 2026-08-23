@@ -460,7 +460,7 @@
       "schema": "api-error.schema.json",
       "value": {
         "code": "ACCESS_REQUIRED",
-        "error": "Skyjo access is required."
+        "error": "Flipvale access is required."
       }
     },
     {
@@ -468,7 +468,7 @@
       "schema": "api-error.schema.json",
       "value": {
         "code": "ACCOUNT_AUTHENTICATION_REQUIRED",
-        "error": "Sign in to your Skyjo account."
+        "error": "Sign in to your Flipvale account."
       }
     },
     {
@@ -732,7 +732,7 @@
       "schema": "api-error.schema.json",
       "value": {
         "code": "STATS_CLIENT_UPGRADE_REQUIRED",
-        "error": "Update Skyjo before syncing saved game stats."
+        "error": "Update Flipvale before syncing saved game stats."
       }
     },
     {

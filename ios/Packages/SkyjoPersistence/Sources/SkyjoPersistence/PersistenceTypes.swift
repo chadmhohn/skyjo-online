@@ -89,7 +89,7 @@ public struct SoloPersistenceWarning: Equatable, Sendable {
 
   static let quota = SoloPersistenceWarning(
     kind: .quota,
-    message: "This device is low on storage. You can keep playing, but this game may not restore after closing Skyjo."
+    message: "This device is low on storage. You can keep playing, but this game may not restore after closing Flipvale."
   )
 
   static let unavailable = SoloPersistenceWarning(

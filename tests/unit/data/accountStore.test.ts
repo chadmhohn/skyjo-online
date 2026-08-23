@@ -43,6 +43,28 @@ function completedState() {
   };
 }
 
+function legacySoloState() {
+  const state = completedState();
+  return {
+    ...state,
+    players: state.players.map((player) =>
+      player.id === 'player-1'
+        ? { ...player, name: 'Data' }
+        : { ...player, kind: 'ai', name: 'Picard' }
+    ),
+    log: ['Data drew a card.', 'Picard replaced a card.'],
+    winnerId: 'player-2',
+    roundHistory: state.roundHistory.map((round) => ({
+      ...round,
+      scores: round.scores.map((score) =>
+        score.playerId === 'player-1'
+          ? { ...score, name: 'Data' }
+          : { ...score, name: 'Picard' }
+      )
+    }))
+  };
+}
+
 const fixedNow = Date.parse('2026-07-11T12:00:00Z');
 
 describe('account and stats persistence', () => {
@@ -193,6 +215,50 @@ describe('account and stats persistence', () => {
       completedAt: past
     });
     expect(multiplayer.completedAt).toBe(currentTime);
+  });
+
+  it('migrates legacy solo AI branding on ingest and database reopen without touching a matching human', async () => {
+    const state = legacySoloState();
+    const game = store!.recordCompletedGame({
+      mode: 'single',
+      state,
+      sourceKey: 'single:legacy-branding',
+      completedAt: fixedNow
+    });
+    expect(game.winnerName).toBe('Acorn');
+    expect(game.participants.find((participant: { kind: string }) => participant.kind === 'human')?.displayName).toBe('Data');
+    expect(game.participants.find((participant: { kind: string }) => participant.kind === 'ai')?.displayName).toBe('Acorn');
+    expect(game.rounds
+      .filter((score: { playerId: string }) => score.playerId === 'player-2')
+      .every((score: { displayName: string }) => score.displayName === 'Acorn')).toBe(true);
+    const insertedState = JSON.parse(
+      store!.db.prepare('SELECT final_state_json FROM games WHERE id = ?').get(game.id).final_state_json
+    );
+    expect(insertedState.players.find((player: { kind: string }) => player.kind === 'human').name).toBe('Data');
+    expect(insertedState.players.find((player: { kind: string }) => player.kind === 'ai').name).toBe('Acorn');
+
+    store!.db.prepare('UPDATE games SET winner_name = ?, final_state_json = ? WHERE id = ?')
+      .run('Picard', JSON.stringify(state), game.id);
+    store!.db.prepare("UPDATE game_participants SET display_name = 'Picard' WHERE game_id = ? AND kind = 'ai'")
+      .run(game.id);
+    store!.db.prepare("UPDATE game_round_scores SET display_name = 'Picard' WHERE game_id = ? AND player_id = 'player-2'")
+      .run(game.id);
+    store!.close();
+    store = await createAccountStore({ filePath: dbFile, now: () => currentTime });
+
+    const migrated = store.getGame(game.id);
+    expect(migrated.winnerName).toBe('Acorn');
+    expect(migrated.participants.find((participant: { kind: string }) => participant.kind === 'human')?.displayName).toBe('Data');
+    expect(migrated.participants.find((participant: { kind: string }) => participant.kind === 'ai')?.displayName).toBe('Acorn');
+    expect(migrated.rounds
+      .filter((score: { playerId: string }) => score.playerId === 'player-2')
+      .every((score: { displayName: string }) => score.displayName === 'Acorn')).toBe(true);
+    const migratedState = JSON.parse(
+      store.db.prepare('SELECT final_state_json FROM games WHERE id = ?').get(game.id).final_state_json
+    );
+    expect(migratedState.players.find((player: { kind: string }) => player.kind === 'human').name).toBe('Data');
+    expect(migratedState.players.find((player: { kind: string }) => player.kind === 'ai').name).toBe('Acorn');
+    expect(migratedState.log).toEqual(['Earlier game activity was cleared during a Flipvale update.']);
   });
 
   it('orders games with equal completion times by stable insertion order', async () => {

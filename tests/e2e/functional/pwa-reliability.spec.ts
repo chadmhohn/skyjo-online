@@ -5,8 +5,8 @@ import type { BrowserContext, Page } from '@playwright/test';
 import { expect, test } from '../fixtures';
 import { configureSoloSetup, finishSoloSetup, startFreshSoloGame } from '../helpers/soloFlow';
 
-const audioCuePaths = ['/audio/card-flip.mp3', '/audio/card-pickup.mp3', '/audio/card-place.mp3'];
-const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/audio\/card-(?:flip|pickup|place)\.mp3|\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg))$/;
+const audioCuePaths = ['/audio/card-flip.wav', '/audio/card-pickup.mp3', '/audio/card-place.mp3'];
+const safeCachedPath = /^(?:\/offline\.html|\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)|\/audio\/card-(?:flip\.wav|(?:pickup|place)\.mp3)|\/skyjo-icon-v2-(?:180|192|512)\.png)$/;
 type TestPwaWorkerVariant = 'A' | 'B' | 'C' | 'D' | 'E';
 type TestPwaWorkerIdentity = {
   variant: TestPwaWorkerVariant;
@@ -444,7 +444,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     const precacheEntries = JSON.parse(manifestMatch?.[1] || '[]') as Array<{ revision?: string | null; url: string }>;
     const audioManifestEntries = precacheEntries
       .map((entry) => ({ ...entry, path: `/${entry.url.replace(/^\/+/, '')}` }))
-      .filter((entry) => entry.path.endsWith('.mp3'))
+      .filter((entry) => /\.(?:mp3|wav)$/.test(entry.path))
       .sort((left, right) => left.path.localeCompare(right.path));
     expect(audioManifestEntries.map((entry) => entry.path)).toEqual([...audioCuePaths].sort());
     for (const entry of audioManifestEntries) {
@@ -499,7 +499,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     expect(cacheEvidence.keys.filter((key) => key.startsWith('skyjo-pwa-v2-'))).toHaveLength(1);
     expect(cacheEvidence.entries.length).toBeGreaterThan(4);
     const cachedAudioPaths = cacheEvidence.entries
-      .filter((entry) => entry.path.endsWith('.mp3'))
+      .filter((entry) => /\.(?:mp3|wav)$/.test(entry.path))
       .map((entry) => entry.path)
       .sort();
     expect(cachedAudioPaths).toEqual([...audioCuePaths].sort());
@@ -510,6 +510,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
       if (entry.path.endsWith('.js')) expect(entry.contentType).toMatch(/javascript/);
       if (entry.path.endsWith('.css')) expect(entry.contentType).toMatch(/^text\/css/);
       if (entry.path.endsWith('.mp3')) expect(entry.contentType).toMatch(/^audio\/mpeg/);
+      if (entry.path.endsWith('.wav')) expect(entry.contentType).toMatch(/^audio\/wav/);
     }
 
     const sanitizedExactPath = await page.evaluate(async () => {
@@ -547,7 +548,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     expect(offlineResponse?.headers()['content-security-policy']).toContain("form-action 'self'");
     expect(offlineResponse?.headers()['content-security-policy']).toContain("media-src 'self' data:");
     expect(offlineResponse?.headers()['content-security-policy']).not.toContain("'unsafe-inline'");
-    await expect(offlineStart.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
+    await expect(offlineStart.getByRole('heading', { name: 'Flipvale' })).toBeVisible();
     const offlineAudioResults = await offlineStart.evaluate(async (paths) => Promise.all(paths.map(async (audioPath) => {
       const response = await fetch(audioPath, {
         credentials: 'omit',
@@ -582,7 +583,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     })), cachedAudioPaths);
     for (const result of offlineAudioResults) {
       expect(result).toMatchObject({
-        contentType: expect.stringMatching(/^audio\/mpeg/),
+        contentType: expect.stringMatching(/^audio\/(?:mpeg|wav)/),
         ok: true,
         redirected: false
       });
@@ -626,7 +627,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
       const sensitiveResponse = await sensitiveNavigation.goto(sensitiveUrl, { waitUntil: 'domcontentloaded' });
       expect(sensitiveResponse?.status()).toBe(503);
       expect(sensitiveResponse?.headers()['cache-control']).toBe('no-store');
-      await expect(sensitiveNavigation.getByRole('heading', { name: 'Skyjo' })).toHaveCount(0);
+      await expect(sensitiveNavigation.getByRole('heading', { name: 'Flipvale' })).toHaveCount(0);
     } else {
       await expect(sensitiveNavigation.goto(sensitiveUrl, {
         waitUntil: 'domcontentloaded',

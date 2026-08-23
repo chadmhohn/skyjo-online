@@ -160,7 +160,7 @@ extension SkyjoHTTPClientError: LocalizedError {
     case .transport:
       "The server could not be reached."
     case .unsupportedServerVersion:
-      "Update Skyjo to connect to this server."
+      "Update Flipvale to connect to this server."
     }
   }
 }

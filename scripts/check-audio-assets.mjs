@@ -23,19 +23,19 @@ const nativeResourcesDirectory = path.join(repoRoot, 'ios', 'SkyjoApp', 'Resourc
 const nativeAudioDirectory = path.join(repoRoot, 'ios', 'SkyjoApp', 'Resources', 'Audio');
 const nativeProjectPath = path.join(repoRoot, 'ios', 'SkyjoNative.xcodeproj', 'project.pbxproj');
 
-export const acceptedFlipSha256 = 'dc9c08e4b172d404ce2f1ba8380d552fdd1d302419e2872f067f0d761147df90';
+export const acceptedFlipSha256 = 'cd39c3d5f749b84b73db28ed581ef34fb37bd539eeb1a2389713350ca96d2ad3';
 export const acceptedCueSha256 = Object.freeze({
-  'card-flip.mp3': acceptedFlipSha256,
+  'card-flip.wav': acceptedFlipSha256,
   'card-pickup.mp3': '5d6b866eb280804f86aae1d5d795da1a2260075a5c18b11472b84b33d31f68de',
   'card-place.mp3': '37f3fb1cd7a08f741eb7431de2cde4ad5eef129aa18496d379221461926373b8'
 });
 export const requiredCueFiles = [
-  'card-flip.mp3',
+  'card-flip.wav',
   'card-pickup.mp3',
   'card-place.mp3'
 ];
 const acceptedCueSizeBytes = Object.freeze({
-  'card-flip.mp3': 24_004,
+  'card-flip.wav': 21_212,
   'card-pickup.mp3': 4_225,
   'card-place.mp3': 3_702
 });
@@ -44,14 +44,9 @@ const approvedPublicResourceFiles = new Set([
   'audio/README.md',
   ...requiredCueFiles.map((file) => `audio/${file}`),
   'manifest.webmanifest',
-  'skyjo-icon-180.png',
-  'skyjo-icon-192.png',
-  'skyjo-icon-512.png',
   'skyjo-icon-v2-180.png',
   'skyjo-icon-v2-192.png',
-  'skyjo-icon-v2-512.png',
-  'skyjo-icon-v2.svg',
-  'skyjo-icon.svg'
+  'skyjo-icon-v2-512.png'
 ]);
 // Exact resource inventory is deliberately broader than an audio-extension
 // list. AVFoundation can decode audio from evolving containers and from bytes
@@ -60,7 +55,7 @@ const approvedPublicResourceFiles = new Set([
 const approvedNativeResourceFiles = new Set([
   'Assets.xcassets/AccentColor.colorset/Contents.json',
   'Assets.xcassets/AppIcon.appiconset/Contents.json',
-  'Assets.xcassets/AppIcon.appiconset/Skyjo-Internal-1024.png',
+  'Assets.xcassets/AppIcon.appiconset/Original-External-1024.png',
   'Assets.xcassets/Contents.json',
   'Audio/README.md',
   ...requiredNativeAudioResources,
@@ -392,13 +387,20 @@ export function parseAppleAudioInfo(xml, sizeBytes) {
 
   const fileType = requiredXmlValue(xml, 'file_type').replaceAll("'", '');
   const formatType = requiredXmlValue(xml, 'format_type');
-  if (fileType !== 'MPG3' || formatType !== '.mp3') {
-    throw new Error(`audio format must be MP3; afinfo reported ${fileType || 'unknown'}/${formatType || 'unknown'}.`);
+  const codec = fileType === 'MPG3' && formatType === '.mp3'
+    ? 'mp3'
+    : fileType === 'WAVE' && formatType === 'lpcm'
+      ? 'pcm_s16le'
+      : undefined;
+  if (!codec) {
+    throw new Error(
+      `audio format must be MP3 or linear PCM WAVE; afinfo reported ${fileType || 'unknown'}/${formatType || 'unknown'}.`
+    );
   }
 
   return {
     channels: Number(requiredXmlValue(xml, 'num_channels')),
-    codec: 'mp3',
+    codec,
     durationSeconds: Number(requiredXmlValue(xml, 'duration')),
     sampleRate: Number(requiredXmlValue(xml, 'sample_rate')),
     sizeBytes
@@ -665,7 +667,7 @@ export async function auditAudioAssets() {
   const cueFiles = publicResourceFiles
     .filter((file) => file.startsWith('audio/') && !file.slice('audio/'.length).includes('/'))
     .map((file) => file.slice('audio/'.length))
-    .filter((file) => file.toLowerCase().endsWith('.mp3'))
+    .filter((file) => /\.(?:mp3|wav)$/i.test(file))
     .sort();
   const failures = [];
 
@@ -733,7 +735,10 @@ export async function auditAudioAssets() {
     transferredBytes += bytes.length;
     decodedPcmBytes += pcm.decodedBytes;
 
-    if (probe.codec !== 'mp3') failures.push(`${fileName}: codec must be MP3, received ${probe.codec || 'unknown'}.`);
+    const expectedCodec = fileName.endsWith('.wav') ? 'pcm_s16le' : 'mp3';
+    if (probe.codec !== expectedCodec) {
+      failures.push(`${fileName}: codec must be ${expectedCodec}, received ${probe.codec || 'unknown'}.`);
+    }
     if (!Number.isFinite(probe.durationSeconds) || probe.durationSeconds <= 0) {
       failures.push(`${fileName}: duration must be a positive finite value.`);
     }
@@ -745,36 +750,34 @@ export async function auditAudioAssets() {
       failures.push(`${fileName}: ffprobe size ${probe.sizeBytes} does not match file size ${bytes.length}.`);
     }
 
-    if (fileName !== 'card-flip.mp3') {
-      if (probe.durationSeconds > maxReplacementDurationSeconds) {
+    if (probe.durationSeconds > maxReplacementDurationSeconds) {
         failures.push(
           `${fileName}: duration ${probe.durationSeconds.toFixed(3)}s exceeds ${maxReplacementDurationSeconds.toFixed(3)}s.`
         );
-      }
-      if (pcm.onsetSeconds > maxMeaningfulOnsetSeconds) {
+    }
+    if (pcm.onsetSeconds > maxMeaningfulOnsetSeconds) {
         failures.push(
           `${fileName}: first meaningful transient at ${pcm.onsetSeconds.toFixed(3)}s exceeds ` +
           `${maxMeaningfulOnsetSeconds.toFixed(3)}s.`
         );
-      }
-      if (pcm.tailRmsDbfs > dbfs(maximumTailRms)) {
+    }
+    if (pcm.tailRmsDbfs > dbfs(maximumTailRms)) {
         failures.push(
           `${fileName}: final ${Math.round(tailWindowSeconds * 1000)}ms RMS is ` +
           `${pcm.tailRmsDbfs.toFixed(1)} dBFS; expected at most ${dbfs(maximumTailRms).toFixed(1)} dBFS.`
         );
-      }
-      if (pcm.tailPeakDbfs > dbfs(maximumTailPeak)) {
+    }
+    if (pcm.tailPeakDbfs > dbfs(maximumTailPeak)) {
         failures.push(
           `${fileName}: final ${Math.round(tailWindowSeconds * 1000)}ms peak is ` +
           `${pcm.tailPeakDbfs.toFixed(1)} dBFS; expected at most ${dbfs(maximumTailPeak).toFixed(1)} dBFS.`
         );
-      }
-      if (pcm.finalSampleDbfs > dbfs(maximumFinalSample)) {
+    }
+    if (pcm.finalSampleDbfs > dbfs(maximumFinalSample)) {
         failures.push(
           `${fileName}: final sample is ${pcm.finalSampleDbfs.toFixed(1)} dBFS; ` +
           `expected at most ${dbfs(maximumFinalSample).toFixed(1)} dBFS for a clean tail.`
         );
-      }
     }
 
     report.push({

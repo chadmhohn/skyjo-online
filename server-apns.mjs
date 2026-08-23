@@ -244,9 +244,9 @@ export function createAPNSPayload({ kind, roomCode }) {
     throw new TypeError('APNs notification event is invalid.');
   }
   const copy = {
-    turn: ['Your turn in Skyjo', 'Open Skyjo to take your turn.'],
-    'round-ended': ['Skyjo round ended', 'Open Skyjo to review the round.'],
-    'game-ended': ['Skyjo game finished', 'Open Skyjo to review the game.']
+    turn: ['Your turn in Flipvale', 'Open Flipvale to take your turn.'],
+    'round-ended': ['Flipvale round ended', 'Open Flipvale to review the round.'],
+    'game-ended': ['Flipvale game finished', 'Open Flipvale to review the game.']
   }[kind];
   return Object.freeze({
     aps: Object.freeze({

@@ -169,10 +169,10 @@ final class SoloFeatureModel {
       return "Guest game complete. Account stats were not recorded."
     }
     if !persistenceIsDurable, outboxStatus.queued > 0 {
-      return "This result is queued only for the current app session. Recover or deliver it before closing Skyjo."
+      return "This result is queued only for the current app session. Recover or deliver it before closing Flipvale."
     }
     if !persistenceIsDurable, outboxWarning != nil {
-      return "Account stats delivery status is unavailable. Any recoverable result lasts only while Skyjo remains open; try again before closing the app."
+      return "Account stats delivery status is unavailable. Any recoverable result lasts only while Flipvale remains open; try again before closing the app."
     }
     if let blockedHeadKind = outboxStatus.blockedHeadKind {
       let attention = blockedHeadKind == .terminal
@@ -200,10 +200,10 @@ final class SoloFeatureModel {
       return "Guest games do not save account stats. Sign in before starting a game to queue its completed result."
     }
     if !persistenceIsDurable, outboxStatus.queued > 0 {
-      return "Pending stats exist only for the current app session. Keep Skyjo open and restore connectivity before relying on delivery."
+      return "Pending stats exist only for the current app session. Keep Flipvale open and restore connectivity before relying on delivery."
     }
     if !persistenceIsDurable, outboxWarning != nil {
-      return "Account stats delivery status is unavailable. Any recoverable results last only while Skyjo remains open; try again before closing the app."
+      return "Account stats delivery status is unavailable. Any recoverable results last only while Flipvale remains open; try again before closing the app."
     }
     if let blockedHeadKind = outboxStatus.blockedHeadKind {
       let attention = blockedHeadKind == .terminal
@@ -1145,7 +1145,7 @@ final class SoloFeatureModel {
     sessionReconciliationRequired = true
     if let warning { self.autosaveWarning = warning }
     operationWarning = sessionReconciliationWarning
-    lastActionError = "Skyjo could not verify which saved game is authoritative. Reload Saved Game before continuing."
+    lastActionError = "Flipvale could not verify which saved game is authoritative. Reload Saved Game before continuing."
     isReplacementReviewPresented = false
   }
 
@@ -1719,7 +1719,7 @@ final class SoloFeatureModel {
   private var sessionReconciliationWarning: SoloPersistenceWarning {
     SoloPersistenceWarning(
       kind: .unavailable,
-      message: "Skyjo cannot verify the authoritative saved game while device storage is unavailable. Reload it before continuing."
+      message: "Flipvale cannot verify the authoritative saved game while device storage is unavailable. Reload it before continuing."
     )
   }
 
@@ -1803,7 +1803,7 @@ final class SoloFeatureModel {
       )
       sessionReconciliationRequired = true
       operationWarning = sessionReconciliationWarning
-      lastActionError = "Skyjo could not verify which saved game is authoritative. Reload Saved Game before continuing."
+      lastActionError = "Flipvale could not verify which saved game is authoritative. Reload Saved Game before continuing."
     case "solo-setup":
       clearVisibleSession()
       screen = .setup

@@ -316,14 +316,13 @@ struct StatsOutboxTests {
     let row = try #require(context.fetch(FetchDescriptor<StatsOutboxRecord>()).first)
     row.attempts = PersistenceEnvelopeCodec.maximumOutboxAttempts
     try context.save()
-    let item = try #require(
-      try await store.eligibleOutboxItems(
-        accountID: accountID,
-        nowMilliseconds: 20,
-        force: true,
-        limit: 1
-      ).first
+    let items = try await store.eligibleOutboxItems(
+      accountID: accountID,
+      nowMilliseconds: 20,
+      force: true,
+      limit: 1
     )
+    let item = try #require(items.first)
     #expect(item.attempts == PersistenceEnvelopeCodec.maximumOutboxAttempts)
     #expect(
       try await store.markOutboxFailed(
@@ -969,6 +968,59 @@ struct StatsOutboxTests {
     #expect(try await store.pendingOutboxCount(accountID: accountID) == 0)
     #expect(await delivery.calls == 2)
     #expect(await delivery.requests == [gameID.uuidString.lowercased(), gameID.uuidString.lowercased()])
+  }
+
+  @Test("A legacy-branded outbox item is migrated durably before delivery")
+  func legacyBrandingOutboxMigration() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let accountID = PersistenceTestSupport.aliceID
+    let gameID = PersistenceTestSupport.guestGameID
+    let state = try PersistenceTestSupport.legacyBrandedState(PersistenceTestSupport.terminalState())
+    let setup = try PersistenceTestSupport.setup(for: state, gameID: gameID)
+    let envelope = StatsSubmissionEnvelopeV1(
+      accountID: accountID,
+      gameID: gameID,
+      state: state,
+      setup: setup,
+      completedAtMilliseconds: 10
+    )
+    let context = ModelContext(container)
+    context.autosaveEnabled = false
+    context.insert(
+      StatsOutboxRecord(
+        recordID: UUID().uuidString.lowercased(),
+        ownerKey: SoloOwnerPartition.account(accountID).storageKey,
+        gameID: gameID.uuidString.lowercased(),
+        payloadVersion: PersistenceEnvelopeCodec.currentVersion,
+        payload: try PersistenceEnvelopeCodec.encode(envelope),
+        attempts: 0,
+        createdAtMilliseconds: 10,
+        updatedAtMilliseconds: 10,
+        nextAttemptAtMilliseconds: 10
+      )
+    )
+    try context.save()
+
+    let store = SoloPersistenceStore(modelContainer: container)
+    let item = try #require(
+      try await store.eligibleOutboxItems(
+        accountID: accountID,
+        nowMilliseconds: 20,
+        force: true,
+        limit: 1
+      ).first
+    )
+    #expect(item.request.state.players.first(where: { $0.kind == .human })?.name == "Data")
+    #expect(item.request.state.players.first(where: { $0.kind == .ai })?.name == "Acorn")
+    #expect(item.request.state.log == [LegacyAiBranding.migrationLog])
+
+    let verification = ModelContext(container)
+    let persisted = try #require(verification.fetch(FetchDescriptor<StatsOutboxRecord>()).first)
+    let persistedEnvelope = try PersistenceEnvelopeCodec.decode(
+      StatsSubmissionEnvelopeV1.self,
+      from: persisted.payload
+    )
+    #expect(persistedEnvelope.request.state == item.request.state)
   }
 }
 }

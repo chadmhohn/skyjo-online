@@ -882,7 +882,7 @@ for (const portrait of iphonePortraits) test(`issue #138 keeps the ${portrait.la
       await expect(deferredUpdateBanner).toHaveCount(1);
       await expect(deferredUpdateBanner).toBeHidden();
       await expect(active.page.getByTestId('active-room-toolbar')).toContainText('Update ready');
-      await expect(active.page.getByRole('status').filter({ hasText: 'Skyjo update ready' })).toBeAttached();
+      await expect(active.page.getByRole('status').filter({ hasText: 'Flipvale update ready' })).toBeAttached();
     }
     await testInfo.attach(`issue-138-${portrait.width}x${portrait.height}-drawn-card`, {
       body: await active.page.screenshot({ fullPage: false }),

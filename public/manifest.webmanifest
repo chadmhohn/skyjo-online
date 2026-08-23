@@ -1,7 +1,7 @@
 {
-  "name": "Skyjo Online",
-  "short_name": "Skyjo",
-  "description": "Private Skyjo table for solo and multiplayer games.",
+  "name": "Flipvale",
+  "short_name": "Flipvale",
+  "description": "A friendly low-score card table for solo and multiplayer games.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
@@ -12,12 +12,6 @@
   "background_color": "#060c0a",
   "theme_color": "#0a1410",
   "icons": [
-    {
-      "src": "/skyjo-icon-v2.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    },
     {
       "src": "/skyjo-icon-v2-192.png",
       "sizes": "192x192",

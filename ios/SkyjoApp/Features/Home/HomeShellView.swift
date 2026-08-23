@@ -82,11 +82,11 @@ struct HomeShellView: View {
     if solo.owner.accountID != nil {
       return solo.sessionStorageIsPersistent
         ? "Account-owned solo results stay on this device and wait for sign-in confirmation before syncing to account stats."
-        : "Account-owned solo results exist only while Skyjo remains open and require sign-in confirmation before delivery."
+        : "Account-owned solo results exist only while Flipvale remains open and require sign-in confirmation before delivery."
     }
     return solo.sessionStorageIsPersistent
       ? "Guest solo games stay on this device and do not add account stats."
-      : "Guest solo games are available only while Skyjo remains open and do not add account stats."
+      : "Guest solo games are available only while Flipvale remains open and do not add account stats."
   }
 }
 
@@ -111,7 +111,7 @@ private struct HomeView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 24) {
         VStack(alignment: .leading, spacing: 6) {
-          Text(user.map { "Welcome, \($0.displayName)" } ?? "Welcome to Skyjo")
+          Text(user.map { "Welcome, \($0.displayName)" } ?? "Welcome to Flipvale")
             .font(.largeTitle.bold())
             .accessibilityIdentifier("home.welcome")
           Text(homeSubtitle)
@@ -148,7 +148,7 @@ private struct HomeView: View {
                 ? "Start a native offline game with 1–7 bots."
                 : (solo.activeSessionIsPersistent
                   ? "Continue your saved round or review a new setup."
-                  : "Continue this temporary round before closing Skyjo."),
+                  : "Continue this temporary round before closing Flipvale."),
               systemImage: "person.fill"
             )
           }
@@ -185,7 +185,7 @@ private struct HomeView: View {
                   ? (solo.savedGameSummary == nil
                     ? "Guest solo games save on this device while in progress. Completed guest games are not uploaded to account stats."
                     : "Your active guest save restores on this device. Completed guest games are not uploaded to account stats.")
-                  : "Guest games exist only while Skyjo remains open because device storage is unavailable. They are not uploaded to account stats."
+                  : "Guest games exist only while Flipvale remains open because device storage is unavailable. They are not uploaded to account stats."
               )
                 .foregroundStyle(.secondary)
             } else if user == nil {
@@ -194,7 +194,7 @@ private struct HomeView: View {
                   ? (solo.savedGameSummary == nil
                     ? "Account-owned solo games remain available offline. Completed results wait on this device until the account is confirmed online."
                     : "This account-owned solo save remains available offline. Completed results stay on this device until the account is confirmed online.")
-                  : "Account-owned games exist only while Skyjo remains open. Pending results cannot survive termination until device storage recovers."
+                  : "Account-owned games exist only while Flipvale remains open. Pending results cannot survive termination until device storage recovers."
               )
                 .foregroundStyle(.secondary)
             } else if let summary = model.statsSummary {
@@ -239,16 +239,16 @@ private struct HomeView: View {
   }
 
   private var homeSubtitle: String {
-    if user != nil { return "Your native Skyjo table is ready." }
+    if user != nil { return "Your native Flipvale table is ready." }
     if solo.owner.accountID != nil {
       if solo.savedGameSummary != nil {
         return solo.activeSessionIsPersistent
           ? "Continue your account-owned solo save offline; results will sync after account confirmation."
-          : "Continue this temporary account game while Skyjo remains open."
+          : "Continue this temporary account game while Flipvale remains open."
       }
       return solo.sessionStorageIsPersistent
         ? "Start an account-owned solo game offline; results will sync after account confirmation."
-        : "Start a temporary account game while Skyjo remains open."
+        : "Start a temporary account game while Flipvale remains open."
     }
     return "Play solo as a guest, or sign in when you want account stats."
   }

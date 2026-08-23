@@ -642,7 +642,7 @@ describe('multiplayer lobby', () => {
     await user.click(screen.getByRole('button', { name: 'Reset Room' }));
 
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'Skyjo could not save reset recovery data. The room was not reset.'
+      'Flipvale could not save reset recovery data. The room was not reset.'
     );
     expect(socket.sent.filter((frame) =>
       (frame as ClientCommand).action?.type === 'reset-room'
@@ -730,7 +730,7 @@ describe('multiplayer lobby', () => {
     await user.click(screen.getByRole('button', { name: 'Share' }));
     await waitFor(() =>
       expect(clipboardWrite).toHaveBeenCalledWith(
-        'Join my Skyjo room ABCDE: http://localhost:3000/invite/secure-token'
+        'Join my Flipvale room ABCDE: http://localhost:3000/invite/secure-token'
       )
     );
     expect(await screen.findByText('Link copied')).toBeInTheDocument();
@@ -1078,7 +1078,7 @@ describe('multiplayer lobby', () => {
       return response({ user: accountUser });
     });
     await user.click(screen.getByRole('button', { name: 'Share' }));
-    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith('Skyjo room code: A1B2C'));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith('Flipvale room code: A1B2C'));
     expect(await screen.findByText('Invite service unavailable. Room code copied instead.')).toBeInTheDocument();
   });
 
@@ -1311,7 +1311,7 @@ describe('multiplayer lobby', () => {
     expect(screen.getAllByRole('button', { name: 'Put the discard card back.' })[0]).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Reset Room' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: /Replace with the discard card/ })).not.toBeInTheDocument();
-    expect(screen.getAllByRole('gridcell', { name: /row 1, column 1, SKYJO face-down\. Not currently actionable/ })[0]).toBeInTheDocument();
+    expect(screen.getAllByRole('gridcell', { name: /row 1, column 1, Flipvale face-down\. Not currently actionable/ })[0]).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Table Chat/ }));
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
@@ -1393,7 +1393,7 @@ describe('multiplayer game table', () => {
     const { socket, user } = await createJoinedRoom(makeRoom({ state: openingState, status: 'playing' }));
 
     expect(screen.getAllByText('Choose two face-down cards').length).toBeGreaterThan(0);
-    await user.click(screen.getAllByRole('button', { name: /row 1, column 1, SKYJO face-down\. Reveal this opening card/ })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 1, Flipvale face-down\. Reveal this opening card/ })[0]);
     const openingCommand = expectCommand(socket, { type: 'reveal-opening-card', cardIndex: 0 }, 0);
     const openingAfterReveal = makeState({
       players: [
@@ -1452,7 +1452,7 @@ describe('multiplayer game table', () => {
     expect(screen.getAllByRole('region', { name: 'Drawn card decision' }).length).toBeGreaterThan(0);
     await user.click(screen.getAllByRole('button', { name: /Discard \+ reveal/ })[0]);
     expect(screen.getAllByText('Discard + reveal selected. Choose a highlighted hidden card.').length).toBeGreaterThan(0);
-    await user.click(screen.getAllByRole('button', { name: /row 1, column 3, SKYJO face-down\. Reveal after discarding the drawn card/ })[0]);
+    await user.click(screen.getAllByRole('button', { name: /row 1, column 3, Flipvale face-down\. Reveal after discarding the drawn card/ })[0]);
     const discardRevealCommand = expectCommand(socket, { type: 'discard-and-reveal', cardIndex: 2 }, 5);
     convergeCommand(
       socket,

@@ -126,6 +126,10 @@ try {
     'The packaged artifact must include the persistent invite-code module imported at production startup.'
   );
   assert.ok(
+    controllerContract.entries.has('server-legacy-ai-branding.mjs'),
+    'The packaged artifact must include the legacy solo AI branding migration imported at production startup.'
+  );
+  assert.ok(
     controllerContract.entries.has('server-room-invites.mjs'),
     'The packaged artifact must include the signed room-invite module imported at production startup.'
   );

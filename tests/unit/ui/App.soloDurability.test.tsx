@@ -277,7 +277,7 @@ describe('solo durability integration', () => {
     await waitFor(() => expect(launcherHeading).toHaveFocus());
     await actor.keyboard('{Escape}');
 
-    expect(await screen.findByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Flipvale' })).toBeInTheDocument();
     expect((await loadSoloSession('guest')).session?.gameId).toBe(savedGameId);
   });
 

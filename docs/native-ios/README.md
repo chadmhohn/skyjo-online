@@ -17,7 +17,7 @@ This directory is the portable source of truth for building a native Skyjo clien
 - Issue #204 repository support creates that frozen table idempotently, stores only encrypted token material, exposes authenticated config/register/delete routes, and fans authoritative post-commit room events independently to Web Push and APNs through a bounded provider. It is source support until its own immutable production promotion and sanitized provider proof complete; native permission and device behavior remain #189.
 - Issue #202 repository support includes the backend-only invite handoff: exact public AASA hosting plus public JSON redemption of the existing signed/current-room invite. Redemption may emit only the legacy compatibility cookie and never an account session. It deliberately does not claim the production application identifier, immutable promotion, Apple CDN propagation, Associated Domains signing, native routing/UI, or physical-device proof owned by #188.
 - IOS-8 repository support includes strict production-host URL routing through the app coordinator, real isolated-Node redemption and stale-room evidence, the exact Associated Domains declaration, and a fail-closed audit of the entitlement embedded in every architecture of an Xcode-signed Release simulator product. This proves the repository-owned consumer and built product, not operating-system universal-link selection: the confirmed production application identifier, immutable #202 promotion, Apple CDN propagation, Apple-team-signed device archive, and installed/uninstalled physical-device behavior remain release gates.
-- IOS-7 repository support includes the native solo launcher, explicit recoverable replacement, 1-7-bot setup, stable board-first iPhone/iPad table, scoring/settings/recovery states, pinned CC0 cues, haptics, typed durable stats delivery, and multi-device UI/accessibility gate described in [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`TEST_AND_RELEASE.md`](TEST_AND_RELEASE.md). This is source and CI evidence only; it does not claim a production promotion, signed build, TestFlight distribution, or App Store release.
+- IOS-7 repository support includes the native solo launcher, explicit recoverable replacement, 1-7-bot setup, stable board-first iPhone/iPad table, scoring/settings/recovery states, original and pinned CC0 cues, haptics, typed durable stats delivery, and multi-device UI/accessibility gate described in [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`TEST_AND_RELEASE.md`](TEST_AND_RELEASE.md). This is source and CI evidence only; it does not claim a production promotion, signed build, TestFlight distribution, or App Store release.
 - Native targets: iPhone and iPad. A Mac Catalyst or visionOS target is not part of v0.1.0.
 - Deployment target: iOS/iPadOS 18.0. Build and submission use the latest stable Xcode accepted by App Store Connect; as of this review, that is Xcode 26 and the iOS/iPadOS 26 SDK or later.
 
@@ -43,8 +43,10 @@ Always re-read public `/version`, `/readyz`, this repository's latest tag, and A
 6. [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for dependency order and issue acceptance gates.
 7. [`TEST_AND_RELEASE.md`](TEST_AND_RELEASE.md) before marking an issue complete or distributing a build.
 8. [`PRIVACY.md`](PRIVACY.md) before changing collected data, logging, SDKs, or App Store privacy answers.
-9. [`handoff-manifest.json`](handoff-manifest.json) for the machine-readable baseline and source paths.
-10. Root [`contracts/README.md`](../../contracts/README.md) before changing schemas, DTOs, protocol frames, or deterministic fixtures.
+9. [`BRANDING_AND_RIGHTS.md`](BRANDING_AND_RIGHTS.md) before preparing external TestFlight metadata or builds.
+10. [`APP_ICON_PROVENANCE.md`](APP_ICON_PROVENANCE.md) before replacing or repurposing the external app icon.
+11. [`handoff-manifest.json`](handoff-manifest.json) for the machine-readable baseline and source paths.
+12. Root [`contracts/README.md`](../../contracts/README.md) before changing schemas, DTOs, protocol frames, or deterministic fixtures.
 
 The implementation workspace is documented at [`ios/README.md`](../../ios/README.md). The checked-in project, schemes, entitlements templates, test plans, and Swift packages are part of this repository; they must not live only in a developer's local Xcode state.
 

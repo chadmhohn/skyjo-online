@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "generate:audio": "node scripts/generate-original-card-flip.mjs",
     "build": "tsc && npm run build:server && vite build && node scripts/create-offline-shell.mjs && node scripts/build-service-worker.mjs",
     "postbuild": "node scripts/write-release-json.mjs",
     "build:server": "node scripts/clean-server-dist.mjs && tsc -p tsconfig.server.json",

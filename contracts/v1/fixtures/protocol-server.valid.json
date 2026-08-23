@@ -8321,7 +8321,7 @@
       "name": "upgrade required",
       "schema": "protocol-v2-server-frame.schema.json",
       "value": {
-        "message": "Refresh Skyjo to use multiplayer protocol 2.",
+        "message": "Refresh Flipvale to use multiplayer protocol 2.",
         "protocolVersion": 2,
         "type": "upgrade-required"
       }
@@ -8331,7 +8331,7 @@
       "schema": "protocol-v2-server-frame.schema.json",
       "value": {
         "commandId": "40000000-0000-4000-8000-000000000027",
-        "message": "Refresh Skyjo to use multiplayer protocol 2.",
+        "message": "Refresh Flipvale to use multiplayer protocol 2.",
         "protocolVersion": 2,
         "type": "upgrade-required"
       }

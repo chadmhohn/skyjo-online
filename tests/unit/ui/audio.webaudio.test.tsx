@@ -199,7 +199,7 @@ describe('WebAudio playback', () => {
 
     expect(audio.getAudioStatus()).toBe('ready');
     expect(FakeBufferSource.instances).toHaveLength(0);
-    expect(AmbienceAudio.instances.find((instance) => instance.src.endsWith('card-flip.mp3'))?.play).toHaveBeenCalledOnce();
+    expect(AmbienceAudio.instances.find((instance) => instance.src.endsWith('card-flip.wav'))?.play).toHaveBeenCalledOnce();
   });
 
   it('recreates a context that was closed between primes', async () => {

@@ -151,7 +151,7 @@ struct AccountView: View {
         .buttonStyle(AccessibleBorderedButtonStyle())
         .accessibilityIdentifier("account.logout")
 
-        Text("If a session expires or an account is disabled, Skyjo returns to a safe sign-in recovery screen.")
+        Text("If a session expires or an account is disabled, Flipvale returns to a safe sign-in recovery screen.")
           .font(.footnote)
           .foregroundStyle(.primary)
           .fixedSize(horizontal: false, vertical: true)
@@ -278,15 +278,15 @@ struct AccountView: View {
   private var notificationDetail: String {
     switch notifications.state {
     case .enabled:
-      "This device can alert you when a multiplayer turn needs attention. Skyjo hides alerts while the app is open."
+      "This device can alert you when a multiplayer turn needs attention. Flipvale hides alerts while the app is open."
     case .denied:
-      "Allow notifications in iOS Settings, then return to Skyjo."
+      "Allow notifications in iOS Settings, then return to Flipvale."
     case .unavailable:
-      "The Skyjo service has not enabled native notifications yet. Multiplayer still works normally."
+      "The Flipvale service has not enabled native notifications yet. Multiplayer still works normally."
     case .failed:
-      "Skyjo could not finish notification setup. Multiplayer still works normally."
+      "Flipvale could not finish notification setup. Multiplayer still works normally."
     case .off, .checking:
-      "Skyjo asks only after you tap Enable. Alerts contain no cards, chat, scores, email, or invite links."
+      "Flipvale asks only after you tap Enable. Alerts contain no cards, chat, scores, email, or invite links."
     }
   }
 

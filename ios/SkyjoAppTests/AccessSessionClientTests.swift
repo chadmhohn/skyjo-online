@@ -1502,7 +1502,7 @@ struct AccessSessionClientTests {
       try stubResponse(
         for: request,
         statusCode: 401,
-        body: #"{"code":"ACCOUNT_AUTHENTICATION_REQUIRED","error":"Sign in to your Skyjo account."}"#
+        body: #"{"code":"ACCOUNT_AUTHENTICATION_REQUIRED","error":"Sign in to your Flipvale account."}"#
       )
     }
     let session = SkyjoURLSessionFactory.makeDedicated(
@@ -1523,7 +1523,7 @@ struct AccessSessionClientTests {
       .server(
         statusCode: 401,
         code: .accountAuthenticationRequired,
-        message: "Sign in to your Skyjo account."
+        message: "Sign in to your Flipvale account."
       )
     ) {
       _ = try await client.statsGames()

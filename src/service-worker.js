@@ -28,13 +28,13 @@ function manifestFingerprint(entries) {
 const cacheName = `${cachePrefix}${manifestFingerprint(precacheEntries)}`;
 const offlineShellPath = '/offline.html';
 const hashedAssetPattern = /^\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/;
-const audioCuePattern = /^\/audio\/card-(?:flip|pickup|place)\.mp3$/;
-const iconPattern = /^\/skyjo-icon(?:-v2)?(?:-(?:180|192|512))?\.(?:png|svg)$/;
+const audioCuePattern = /^\/audio\/card-(?:flip\.wav|(?:pickup|place)\.mp3)$/;
+const iconPattern = /^\/skyjo-icon-v2-(?:180|192|512)\.png$/;
 const precachePaths = new Set(precacheEntries.map((entry) => {
   const value = typeof entry === 'string' ? entry : entry.url;
   const url = new URL(value, self.location.origin);
   if (url.origin !== self.location.origin || !safePrecachePath(url.pathname) || url.search || url.hash) {
-    throw new Error('Unsafe URL reached the injected Skyjo manifest.');
+    throw new Error('Unsafe URL reached the injected Flipvale manifest.');
   }
   return url.pathname;
 }));
@@ -56,8 +56,8 @@ function expectedContentType(pathname) {
   if (pathname.endsWith('.css')) return /^text\/css\b/i;
   if (pathname.endsWith('.js')) return /^(?:application|text)\/javascript\b/i;
   if (pathname.endsWith('.mp3')) return /^audio\/mpeg\b/i;
+  if (pathname.endsWith('.wav')) return /^audio\/wav\b/i;
   if (pathname.endsWith('.png')) return /^image\/png\b/i;
-  if (pathname.endsWith('.svg')) return /^image\/svg\+xml\b/i;
   return /$a/;
 }
 
@@ -75,7 +75,7 @@ function safeResponse(response, expectedUrl) {
 }
 
 async function cacheSafeResource(cache, value) {
-  if (!safePrecacheUrl(value)) throw new Error('Unsafe URL reached the Skyjo precache.');
+  if (!safePrecacheUrl(value)) throw new Error('Unsafe URL reached the Flipvale precache.');
   const url = new URL(value, self.location.origin);
   const request = new Request(url.href, {
     cache: 'reload',
@@ -83,7 +83,7 @@ async function cacheSafeResource(cache, value) {
     redirect: 'error'
   });
   const response = await fetch(request);
-  if (!safeResponse(response, url)) throw new Error('Unsafe response reached the Skyjo precache.');
+  if (!safeResponse(response, url)) throw new Error('Unsafe response reached the Flipvale precache.');
   await cache.put(url.pathname, response);
 }
 
@@ -199,10 +199,10 @@ self.addEventListener('push', (event) => {
   } catch {
     payload = {};
   }
-  const title = payload.title || 'Skyjo';
+  const title = payload.title || 'Flipvale';
   const options = {
     badge: '/skyjo-icon-v2-192.png',
-    body: payload.body || 'There is a Skyjo update.',
+    body: payload.body || 'There is a Flipvale update.',
     data: { url: payload.url || '/' },
     icon: '/skyjo-icon-v2-192.png',
     tag: payload.tag || 'skyjo',

@@ -59,7 +59,7 @@ private struct SoloSessionReconciliationView: View {
       VStack(alignment: .leading, spacing: 18) {
         SkyjoStatusBanner(
           title: "Saved game status unknown",
-          message: "Skyjo must reload the authoritative saved game before play can continue.",
+          message: "Flipvale must reload the authoritative saved game before play can continue.",
           systemImage: "externaldrive.badge.exclamationmark"
         )
         if let error = model.lastActionError {
@@ -325,7 +325,7 @@ private struct SoloReplacementReviewView: View {
           Text(
             model.activeSessionIsPersistent
               ? "The current save is removed only after the replacement is fully validated and saved. A failure leaves the current game recoverable."
-              : "The temporary game changes only after the replacement is fully validated in memory. It will not survive closing Skyjo while device storage is unavailable."
+              : "The temporary game changes only after the replacement is fully validated in memory. It will not survive closing Flipvale while device storage is unavailable."
           )
             .foregroundStyle(Color.primary)
             .accessibilityIdentifier("solo.replace.recovery-copy")
@@ -1654,7 +1654,7 @@ private struct SoloSettingsView: View {
           .accessibilityLabel("System accessibility adaptations")
           .accessibilityValue(accessibilityAdaptationSummary)
           .accessibilityIdentifier("solo.settings.accessibility-adaptations")
-          Text("Skyjo follows the system settings for motion, contrast, and color-independent card markers.")
+          Text("Flipvale follows the system settings for motion, contrast, and color-independent card markers.")
             .font(.footnote)
             .foregroundStyle(.primary)
             .fixedSize(horizontal: false, vertical: true)

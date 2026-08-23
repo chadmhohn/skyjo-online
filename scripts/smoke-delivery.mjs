@@ -45,7 +45,7 @@ async function withPublicFixture({ legacy = false, nativeInviteHandoff = true } 
     }
     if (request.url === '/manifest.webmanifest') {
       response.writeHead(200, { ...noStore, 'content-type': 'application/manifest+json' });
-      response.end(JSON.stringify({ id: '/', name: 'Skyjo Online', icons: [{ src: '/icon.png' }] }));
+      response.end(JSON.stringify({ id: '/', name: 'Flipvale', icons: [{ src: '/icon.png' }] }));
       return;
     }
     if (!legacy && nativeInviteHandoff && request.url === '/login?next=%2Frules') {

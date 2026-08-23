@@ -210,7 +210,7 @@ private struct RoomJoinView: View {
         VStack(alignment: .leading, spacing: 6) {
           Text("Play with friends")
             .font(.largeTitle.bold())
-          Text("Create a room or enter a five-character code. Every move is confirmed by the shared Skyjo server.")
+          Text("Create a room or enter a five-character code. Every move is confirmed by the shared Flipvale server.")
             .foregroundStyle(.secondary)
         }
 
@@ -917,13 +917,13 @@ private struct RoomConnectionBanner: View {
         )
         return "The table is read-only. Retrying in \(delaySeconds) seconds."
       }
-      return "The table is read-only while Skyjo reconnects."
+      return "The table is read-only while Flipvale reconnects."
     case .offline: return "The last table remains visible and read-only until the network returns."
     case .error:
       return model.savedSeatKnownAbsent
         ? "That room was not confirmed. Create or join again."
         : "The last table is read-only. Retry the saved seat."
-    case .upgradeRequired: return "Install a compatible Skyjo version before continuing."
+    case .upgradeRequired: return "Install a compatible Flipvale version before continuing."
     }
   }
 
@@ -1389,7 +1389,7 @@ private struct RoomInviteReviewView: View {
   var body: some View {
     NavigationStack {
       VStack(alignment: .leading, spacing: 20) {
-        Label("Skyjo room invite", systemImage: "person.3.fill")
+        Label("Flipvale room invite", systemImage: "person.3.fill")
           .font(.largeTitle.bold())
         if let invite = model.pendingInviteReview {
           if let banner = model.banner {
@@ -1397,7 +1397,7 @@ private struct RoomInviteReviewView: View {
           }
           Text("Room \(invite.roomCode)")
             .font(.title.monospaced().bold())
-          Text("This link grants Skyjo access only. Your signed-in account and the room server still decide whether you may join or reclaim a seat.")
+          Text("This link grants Flipvale access only. Your signed-in account and the room server still decide whether you may join or reclaim a seat.")
             .foregroundStyle(.secondary)
           if let currentRoom = model.room, currentRoom.code != invite.roomCode {
             Text(
@@ -1468,12 +1468,12 @@ private struct RoomShareView: View {
         if let invite = model.shareInvite {
           Label("Invite to room \(invite.roomCode)", systemImage: "link")
             .font(.title.bold())
-          Text("Friends with the app installed can open this link in Skyjo. Everyone else keeps the existing browser fallback.")
+          Text("Friends with the app installed can open this link in Flipvale. Everyone else keeps the existing browser fallback.")
             .foregroundStyle(.secondary)
           ShareLink(
             item: invite.url,
-            subject: Text("Skyjo room \(invite.roomCode)"),
-            message: Text("Join my Skyjo room \(invite.roomCode).")
+            subject: Text("Flipvale room \(invite.roomCode)"),
+            message: Text("Join my Flipvale room \(invite.roomCode).")
           ) {
             Label("Share Invite", systemImage: "square.and.arrow.up")
               .frame(maxWidth: .infinity, minHeight: 44)

@@ -56,7 +56,7 @@ struct BootstrapHomeView: View {
             message: configurationErrorMessage ?? "The app is not configured.",
             accessibilityIdentifier: "bootstrap.configuration-error"
           )
-          .navigationTitle("Skyjo")
+          .navigationTitle("Flipvale")
         }
       }
     }
@@ -106,14 +106,14 @@ private struct NativeRootView: View {
           VStack(spacing: 20) {
             ProgressView()
               .controlSize(.large)
-            Text("Loading Skyjo")
+            Text("Loading Flipvale")
               .font(.headline)
             Text("Checking service and session status.")
               .foregroundStyle(.secondary)
           }
           .accessibilityElement(children: .combine)
           .accessibilityIdentifier("state.loading")
-          .navigationTitle("Skyjo")
+          .navigationTitle("Flipvale")
         }
       case .accessRequired:
         NavigationStack {
@@ -127,7 +127,7 @@ private struct NativeRootView: View {
               .buttonStyle(.borderedProminent)
               .accessibilityIdentifier("state.retry")
           }
-          .navigationTitle("Skyjo")
+          .navigationTitle("Flipvale")
         }
       case .accountRequired:
         AuthenticationView(model: model)
@@ -163,7 +163,7 @@ private struct NativeRootView: View {
               .buttonStyle(.borderedProminent)
               .accessibilityIdentifier("state.retry")
           }
-          .navigationTitle("Skyjo")
+          .navigationTitle("Flipvale")
         }
       case .offlineReady(let message):
         HomeShellView(
@@ -180,28 +180,28 @@ private struct NativeRootView: View {
           StateMessageView(
             title: "Service not ready",
             systemImage: "wrench.and.screwdriver",
-            message: "Skyjo is temporarily unavailable while the service recovers.",
+            message: "Flipvale is temporarily unavailable while the service recovers.",
             accessibilityIdentifier: "state.not-ready"
           ) {
             Button("Try Again") { Task { await model.bootstrap() } }
               .buttonStyle(.borderedProminent)
               .accessibilityIdentifier("state.retry")
           }
-          .navigationTitle("Skyjo")
+          .navigationTitle("Flipvale")
         }
       case .upgradeRequired:
         NavigationStack {
           StateMessageView(
             title: "Update required",
             systemImage: "arrow.down.app",
-            message: "This Skyjo app version is not compatible with the current service. Update the app before trying again.",
+            message: "This Flipvale app version is not compatible with the current service. Update the app before trying again.",
             accessibilityIdentifier: "state.upgrade-required"
           ) {
             Button("Try Again") { Task { await model.bootstrap() } }
               .buttonStyle(.borderedProminent)
               .accessibilityIdentifier("state.retry")
           }
-          .navigationTitle("Skyjo")
+          .navigationTitle("Flipvale")
         }
       case .accountEnded:
         NavigationStack {
@@ -217,12 +217,12 @@ private struct NativeRootView: View {
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("state.continue-sign-in")
           }
-          .navigationTitle("Skyjo")
+          .navigationTitle("Flipvale")
         }
       case .failed(let message):
         NavigationStack {
           StateMessageView(
-            title: "Skyjo couldn't load",
+            title: "Flipvale couldn't load",
             systemImage: "exclamationmark.triangle",
             message: message,
             accessibilityIdentifier: "state.failed"
@@ -231,7 +231,7 @@ private struct NativeRootView: View {
               .buttonStyle(.borderedProminent)
               .accessibilityIdentifier("state.retry")
           }
-          .navigationTitle("Skyjo")
+          .navigationTitle("Flipvale")
         }
       }
     }
@@ -321,7 +321,7 @@ private struct NativeRootView: View {
     ) {
       Button("OK") { rooms.dismissInviteHandoff() }
     } message: {
-      Text(rooms.inviteFailureMessage ?? "Skyjo could not open this invite.")
+      Text(rooms.inviteFailureMessage ?? "Flipvale could not open this invite.")
     }
     .onChange(of: dependencies.sessionInvalidation.generation) {
       guard let invalidation = dependencies.sessionInvalidation.pendingInvalidation else { return }
@@ -379,7 +379,7 @@ private struct InviteHandoffStatusView: View {
     case .redeeming:
       HStack(spacing: 10) {
         ProgressView()
-        Text("Opening Skyjo invite…")
+        Text("Opening Flipvale invite…")
           .font(.subheadline.weight(.semibold))
       }
       .frame(maxWidth: .infinity, minHeight: 44)

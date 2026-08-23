@@ -686,7 +686,7 @@ final class AppModel {
       else { return }
       resetAccountState()
       authentication.errorMessage = localCleanupFailed
-        ? "Account deleted online. This device could not remove its saved account game data; reinstall Skyjo to finish local cleanup."
+        ? "Account deleted online. This device could not remove its saved account game data; reinstall Flipvale to finish local cleanup."
         : "Account deleted. Retained multiplayer results now identify you only as Deleted player."
       preferences?.confirmSignedOut()
       selectedTab = localCleanupFailed ? .account : .home
@@ -712,7 +712,7 @@ final class AppModel {
     case "loading":
       rootState = .loading
     case "offline":
-      rootState = .offline(message: "Skyjo could not reach the service. Check your connection and try again.")
+      rootState = .offline(message: "Flipvale could not reach the service. Check your connection and try again.")
     case "guest":
       resetAccountState()
       rootState = .guest
@@ -732,15 +732,15 @@ final class AppModel {
           )
         )
         routeUnavailableForLocalSolo(
-          fallback: .offline(message: "Skyjo could not reach the service."),
-          message: "Skyjo could not reach the service. Your account-owned solo save remains available."
+          fallback: .offline(message: "Flipvale could not reach the service."),
+          message: "Flipvale could not reach the service. Your account-owned solo save remains available."
         )
       } else {
         resetAccountState()
         preferences?.confirmAccess()
         preferences?.confirmAccount(accountID)
         rootState = .offlineReady(
-          message: "Skyjo could not reach the service. Your account-owned solo save remains available."
+          message: "Flipvale could not reach the service. Your account-owned solo save remains available."
         )
       }
     case "solo-setup-blocked-outbox", "solo-setup-corrupt-outbox",
@@ -884,8 +884,8 @@ final class AppModel {
       rootState = .upgradeRequired
     } else if isOffline(error) {
       routeUnavailableForLocalSolo(
-        fallback: .offline(message: "Skyjo could not reach the service. Check your connection and try again."),
-        message: "Skyjo could not reach the service. You can continue a local solo game; account stats will wait for a confirmed session."
+        fallback: .offline(message: "Flipvale could not reach the service. Check your connection and try again."),
+        message: "Flipvale could not reach the service. You can continue a local solo game; account stats will wait for a confirmed session."
       )
     } else if isServiceUnavailable(error) {
       routeUnavailableForLocalSolo(

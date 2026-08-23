@@ -111,12 +111,12 @@ export interface GameTableLayoutProps {
 function cardLabel(card: Card) {
   if (card.removed) return '';
   if (card.faceUp) return card.value < 0 ? `-${Math.abs(card.value)}` : String(card.value);
-  return 'SKYJO';
+  return 'FV';
 }
 
 function visibleCardState(card: Card): string {
   if (card.removed) return 'cleared';
-  if (!card.faceUp) return 'SKYJO face-down';
+  if (!card.faceUp) return 'Flipvale face-down';
   return `face-up ${card.value < 0 ? `minus ${Math.abs(card.value)}` : card.value}`;
 }
 
@@ -1018,7 +1018,7 @@ function TableControls({
           type="button"
         >
           <div className="skyjo-kicker">Deck</div>
-          <div className="skyjo-card skyjo-card-hidden skyjo-table-card mx-auto">SKYJO</div>
+          <div className="skyjo-card skyjo-card-hidden skyjo-table-card mx-auto">FV</div>
           <div className="skyjo-table-count text-sm font-bold tabular-nums text-[#f5e6c8]/65">{state.drawPile.length} cards</div>
         </button>
         <button
