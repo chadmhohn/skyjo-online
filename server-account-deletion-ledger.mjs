@@ -1,3 +1,4 @@
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { atomicWriteJson } from './server-room-persistence.mjs';
@@ -56,22 +57,27 @@ export function resolveAccountDeletionLedgerPath(env = process.env) {
 
 export async function loadAccountDeletionLedger(filePath = resolveAccountDeletionLedgerPath(), options = {}) {
   const resolved = path.resolve(filePath);
-  let stat;
+  let handle;
   try {
-    stat = await fs.lstat(resolved);
+    handle = await fs.open(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   } catch (error) {
     if (error?.code === 'ENOENT' && options.allowMissing !== false) return [];
     if (error?.code === 'ENOENT') throw new Error('Account deletion ledger file is missing.');
-    throw error;
-  }
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > maximumLedgerBytes) {
     throw new Error('Account deletion ledger file is invalid.');
   }
   let decoded;
   try {
-    decoded = JSON.parse(await fs.readFile(resolved, 'utf8'));
-  } catch {
-    throw new Error('Account deletion ledger file is invalid.');
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maximumLedgerBytes) {
+      throw new Error('Account deletion ledger file is invalid.');
+    }
+    try {
+      decoded = JSON.parse(await handle.readFile({ encoding: 'utf8' }));
+    } catch {
+      throw new Error('Account deletion ledger file is invalid.');
+    }
+  } finally {
+    await handle.close();
   }
   return normalizeLedger(decoded);
 }

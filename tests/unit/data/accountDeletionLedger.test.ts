@@ -49,4 +49,15 @@ describe('external account deletion ledger', () => {
     await fs.rm(ledgerPath);
     await expect(loadAccountDeletionLedger(ledgerPath, { allowMissing: false })).rejects.toThrow(/missing/i);
   });
+
+  it('reads through one no-follow descriptor and rejects linked ledger files', async () => {
+    const targetPath = path.join(directory, 'target.json');
+    await fs.writeFile(targetPath, JSON.stringify({
+      format: ACCOUNT_DELETION_LEDGER_FORMAT,
+      version: ACCOUNT_DELETION_LEDGER_VERSION,
+      entries: []
+    }));
+    await fs.symlink(targetPath, ledgerPath);
+    await expect(loadAccountDeletionLedger(ledgerPath)).rejects.toThrow(/invalid/i);
+  });
 });
