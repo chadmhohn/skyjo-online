@@ -554,6 +554,9 @@ describe('verified state backups', () => {
   it('verifies and restores a checksum-valid historical migration prefix for long-term retention', async () => {
     const backup = await createBackup('historical-prefix');
     await rewriteBackupAsHistoricalSchemaOne(backup.backupDirectory);
+    const deletionLedgerPath = path.join(tempDirectory, 'historical-account-deletions.json');
+    const ledger = await createAccountDeletionLedger({ filePath: deletionLedgerPath, now: () => 123 });
+    await ledger.recordDeletion('10000000-0000-4000-8000-000000000099');
 
     const verified = await verifyStateBackup(backup.backupDirectory);
     expect(verified.metadata.schemaVersion).toBe(1);
@@ -565,6 +568,7 @@ describe('verified state backups', () => {
 
     const restored = await restoreStateBackup(backup.backupDirectory, {
       destinationDirectory: path.join(tempDirectory, 'historical-restore'),
+      deletionLedgerPath,
       livePaths: []
     });
     expect(inspectSqliteState(restored.databasePath, { requireCurrentSchema: false }).schemaVersion).toBe(1);

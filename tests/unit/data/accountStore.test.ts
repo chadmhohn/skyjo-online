@@ -312,4 +312,24 @@ describe('account and stats persistence', () => {
     })).toBeNull();
     expect(store!.getUserRowByEmail('surviving-admin@example.com')?.role).toBe('admin');
   });
+
+  it('keeps a tombstoned sole bootstrap administrator deleted across restarts', async () => {
+    const admin = await store!.bootstrapAdmin({ email: 'admin@example.com', password: 'admin-secret-123' });
+    expect(store!.reconcileDeletedAccounts([admin.id])).toBe(1);
+    expect(await store!.bootstrapAdmin({
+      email: 'admin@example.com',
+      password: 'admin-secret-123',
+      allowCreate: false
+    })).toBeNull();
+
+    store!.close();
+    store = await createAccountStore({ filePath: dbFile, now: () => currentTime });
+    expect(store!.reconcileDeletedAccounts([admin.id])).toBe(0);
+    expect(await store!.bootstrapAdmin({
+      email: 'admin@example.com',
+      password: 'admin-secret-123',
+      allowCreate: false
+    })).toBeNull();
+    expect(store!.getUserRowByEmail('admin@example.com')).toBeUndefined();
+  });
 });

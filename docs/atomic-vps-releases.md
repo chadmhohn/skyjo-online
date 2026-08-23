@@ -85,7 +85,7 @@ Missing smoke credentials fail the canary before activation without printing the
 
 Canary stop/certification/environment cleanup and root-owned run-directory removal are release gates. Every temporary unit must match its exact template, have no drop-ins, use `CollectMode=inactive`, retain no process or job, and finish inactive/dead/success; state probes retain empty properties with `systemctl show --all`. Exact failed or active residue is remediated narrowly and reinspected, but the anomalous run still fails. Ambiguous or unsafe final state preserves its run root for incident repair. Run-directory removal is complete only after a post-removal `lstat` proves `ENOENT`. A cleanup failure marks the signed authorization failed and never reports verification or promotion success.
 
-The controller retains five release directories including `current` and `previous`. Scheduled daily/monthly backup retention and restore drills use separate namespaces described in [Repository governance and production operations](operations-governance.md); they never prune pre-activation or bootstrap backups.
+The controller retains five release directories including `current` and `previous`. Scheduled daily/monthly backup retention and restore drills use separate namespaces described in [Repository governance and production operations](operations-governance.md); they never prune pre-activation or bootstrap backups. Any such exceptional copy that contains account source data is therefore operator-inventoried and manually destroyed before the global 12-month maximum.
 
 ## Local controller tests
 

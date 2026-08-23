@@ -5,7 +5,7 @@ import path from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import {
   SCHEMA_MIGRATIONS,
-  createAccountStore,
+  reconcileDeletedAccountRows,
   validateOptionalAPNSDeviceStorageEnvelope
 } from './server-account-store.mjs';
 import {
@@ -552,12 +552,13 @@ async function reconcileRestoredAccountDeletions(directoryPath, entries) {
   }
   const userIds = entries.map((entry) => entry.userId);
   const databasePath = path.join(directoryPath, STATE_BACKUP_FILES.database);
-  const store = await createAccountStore({ filePath: databasePath });
+  const database = new DatabaseSync(databasePath);
   let databaseAccounts;
   try {
-    databaseAccounts = store.reconcileDeletedAccounts(userIds);
+    database.exec('PRAGMA foreign_keys = ON');
+    databaseAccounts = reconcileDeletedAccountRows(database, userIds);
   } finally {
-    store.close();
+    database.close();
   }
 
   const roomsPath = path.join(directoryPath, STATE_BACKUP_FILES.rooms);

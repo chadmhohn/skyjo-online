@@ -653,6 +653,25 @@ function deleteAccountRows(database, userId) {
   };
 }
 
+export function reconcileDeletedAccountRows(database, userIds) {
+  const uniqueIds = [...new Set((Array.isArray(userIds) ? userIds : []).filter(Boolean).map(String))];
+  if (uniqueIds.length === 0) return 0;
+  let reconciled = 0;
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    for (const userId of uniqueIds) {
+      if (!database.prepare('SELECT 1 AS found FROM users WHERE id = ?').get(userId)) continue;
+      deleteAccountRows(database, userId);
+      reconciled += 1;
+    }
+    database.exec('COMMIT');
+    return reconciled;
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 function normalizeBool(value) {
   return value === true || value === 1 ? 1 : 0;
 }
@@ -809,12 +828,15 @@ export class AccountStore {
     }
   }
 
-  async bootstrapAdmin({ email, password }) {
+  async bootstrapAdmin({ email, password, allowCreate = true }) {
     const normalizedEmail = normalizeEmail(email);
     if (!normalizedEmail) return null;
     assertEmail(normalizedEmail);
     const existing = this.getUserRowByEmail(normalizedEmail);
     if (existing) return existing.role === 'admin' && existing.disabled === 0 ? publicUser(existing) : null;
+    // A durable deletion ledger means this is no longer a pristine account
+    // state, even if reconciliation made an old restored database empty.
+    if (!allowCreate) return null;
     // Initial credentials are a one-time empty-database bootstrap, not an
     // account repair loop. Once any account exists, a previously deleted
     // bootstrap email must stay deleted across service restarts.
@@ -987,22 +1009,7 @@ export class AccountStore {
   }
 
   reconcileDeletedAccounts(userIds) {
-    const uniqueIds = [...new Set((Array.isArray(userIds) ? userIds : []).filter(Boolean).map(String))];
-    if (uniqueIds.length === 0) return 0;
-    let reconciled = 0;
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      for (const userId of uniqueIds) {
-        if (!this.getUserRowById(userId)) continue;
-        deleteAccountRows(this.db, userId);
-        reconciled += 1;
-      }
-      this.db.exec('COMMIT');
-      return reconciled;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    return reconcileDeletedAccountRows(this.db, userIds);
   }
 
   async setUserPassword(userId, nextPassword) {

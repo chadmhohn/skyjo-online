@@ -12,9 +12,9 @@ The native app and first-party Skyjo server use the following data only for app 
 | Email Address | Account email address | Authentication and account recovery/administration |
 | Emails or Text Messages | In-room chat messages | Friend-facing multiplayer chat |
 | Gameplay Content | Solo saves delivered for account stats, multiplayer state, results, and history | Resume games, enforce rules, synchronize rooms, and show stats |
-| User ID | Server account ID | Own sessions, seats, saves, history, and administrative state |
+| User ID | Server account ID, including the deletion-safety tombstone | Own sessions, seats, saves, history, administrative state, and prevent deleted-account resurrection during restore |
 | Device ID | Random installation ID and APNs device token | Register and retire per-installation turn notifications |
-| Product Interaction | Successful-login timestamp | Protect accounts and operate authenticated sessions |
+| Product Interaction | Successful-login and account-deletion timestamps | Protect accounts, operate authenticated sessions, and enforce deletion across restores |
 | Other Data Types | Notification environment, app version, and locale | Route APNs correctly and diagnose registration compatibility |
 
 Passwords are transmitted only to authenticate or change credentials and are stored by the server as password hashes. Session cookies, invite tokens, APNs device tokens, and encrypted notification registration fields are security credentials, not analytics identifiers; they must remain absent from logs and artifacts.
@@ -34,7 +34,7 @@ Skyjo v0.1.0 contains no advertising, third-party analytics, crash-reporting SDK
 - Logs and evidence redact email addresses, cookies, passwords, invitation tokens, APNs tokens/fingerprints, provider credentials, room frames, hidden cards, and non-viewer drawn cards.
 - Account, multiplayer, chat, game-history, and APNs retention are server-owned. Guest solo saves remain local and are not included in the App Store collection disclosure unless later delivered under an authenticated account.
 - A player can permanently delete an account in the native app or web app without contacting support. Deletion removes the profile, email, password verifier, sessions, push registrations, account-owned solo history, and that account's native or browser solo/outbox partition. Active-room messages authored by the account are removed.
-- Completed multiplayer scores shared with other players are retained only after the account ID is removed and the copied display name is replaced with `Deleted player`. Production backups can retain deleted source data until the access-controlled 30-daily and 12-monthly rotation expires; disaster-recovery restores must reapply the external deletion ledger before use. See [`ACCOUNT_DELETION.md`](ACCOUNT_DELETION.md).
+- Completed multiplayer scores shared with other players are retained only after the account ID is removed and the copied display name is replaced with `Deleted player`. Any production backup containing account source data has a 12-month maximum retention; the 30-daily/12-monthly scheduler prunes its namespaces, while privileged recovery copies outside those namespaces require manual inventory and destruction by the same deadline. The external deletion-safety ledger retains only account UUIDs and deletion timestamps for the life of the service with no automatic expiration, and every disaster-recovery restore must reapply it before use. See [`ACCOUNT_DELETION.md`](ACCOUNT_DELETION.md).
 - APNs registrations are deleted on opt-out/logout and safely retired after permanent provider rejection. Account deletion also fences queued Web Push and APNs work before the server commits deletion.
 
 ## App Store Connect Answer Draft

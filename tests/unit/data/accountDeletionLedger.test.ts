@@ -22,7 +22,7 @@ describe('external account deletion ledger', () => {
     await fs.rm(directory, { recursive: true, force: true });
   });
 
-  it('durably records an idempotent non-PII tombstone outside rollback state', async () => {
+  it('durably records an idempotent minimal tombstone outside rollback state', async () => {
     const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const ledger = await createAccountDeletionLedger({ filePath: ledgerPath, now: () => 1234 });
     expect(ledger.entries()).toEqual([]);

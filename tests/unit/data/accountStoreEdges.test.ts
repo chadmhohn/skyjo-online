@@ -33,6 +33,12 @@ describe('account store defensive and fallback behavior', () => {
   it('validates account inputs, one-time bootstrap, uniqueness, and last-admin safety', async () => {
     expect(await store.bootstrapAdmin({ email: '', password: '' })).toBeNull();
     expect(await store.bootstrapAdmin({ email: 'nobody@example.com', password: '' })).toBeNull();
+    expect(await store.bootstrapAdmin({
+      email: 'blocked@example.com',
+      password: 'blocked-password',
+      allowCreate: false
+    })).toBeNull();
+    expect(store.getUserRowByEmail('blocked@example.com')).toBeUndefined();
     await expect(store.createUser({ email: '', displayName: '', password: 'password-123' })).rejects.toThrow(/valid email/i);
     await expect(
       store.createUser({ email: `${'a'.repeat(255)}@example.com`, displayName: '', password: 'password-123' })
@@ -45,6 +51,11 @@ describe('account store defensive and fallback behavior', () => {
 
     const admin = await store.bootstrapAdmin({ email: 'admin@example.com', password: 'admin-password' });
     expect((await store.bootstrapAdmin({ email: 'ADMIN@example.com', password: 'ignored-password' })).id).toBe(admin.id);
+    expect((await store.bootstrapAdmin({
+      email: 'admin@example.com',
+      password: 'ignored-password',
+      allowCreate: false
+    })).id).toBe(admin.id);
     expect(() => store.patchUser(admin.id, { role: 'player' })).toThrow(/one active admin/i);
     expect(() => store.patchUser(admin.id, { disabled: true })).toThrow(/one active admin/i);
 

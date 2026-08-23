@@ -270,9 +270,14 @@ async function ensureAccountStore({ force = false } = {}) {
   let candidate = null;
   try {
     candidate = await createAccountStore({ filePath: accountDatabaseFile });
-    candidate.reconcileDeletedAccounts(accountDeletionLedger.entries().map((entry) => entry.userId));
+    const accountDeletionEntries = accountDeletionLedger.entries();
+    candidate.reconcileDeletedAccounts(accountDeletionEntries.map((entry) => entry.userId));
     candidate.pruneAPNSDevices();
-    const bootstrappedAdmin = await candidate.bootstrapAdmin({ email: adminEmail, password: adminInitialPassword });
+    const bootstrappedAdmin = await candidate.bootstrapAdmin({
+      email: adminEmail,
+      password: adminInitialPassword,
+      allowCreate: accountDeletionEntries.length === 0
+    });
     if (bootstrappedAdmin) {
       console.log('Admin account ready.');
     } else {
