@@ -1124,6 +1124,7 @@ test('exact artifact inventory satisfies the stable controller server-module gra
   const serverModules = RUNTIME_ROOT_FILES.filter((entry) => entry.endsWith('.mjs'));
   assert.ok(serverModules.includes('server.mjs'));
   assert.ok(serverModules.includes('server-invite-codes.mjs'));
+  assert.ok(serverModules.includes('server-legacy-ai-branding.mjs'));
   assert.ok(serverModules.includes('server-room-invites.mjs'));
   assert.ok(serverModules.includes('server-push.mjs'));
   assert.ok(serverModules.includes('server-unicode.mjs'));

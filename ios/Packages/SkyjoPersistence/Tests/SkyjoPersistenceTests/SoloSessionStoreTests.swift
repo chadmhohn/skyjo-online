@@ -512,6 +512,48 @@ struct SoloSessionStoreTests {
     #expect(data.count < PersistenceEnvelopeCodec.maximumPayloadBytes)
   }
 
+  @Test("Loading a legacy-branded save migrates AI names durably without renaming a human")
+  func legacyBrandingSessionMigration() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let gameID = PersistenceTestSupport.guestGameID
+    let state = try PersistenceTestSupport.legacyBrandedState(PersistenceTestSupport.activeState())
+    let setup = try PersistenceTestSupport.setup(for: state, gameID: gameID)
+    let snapshot = SoloSessionSnapshot(
+      owner: .guest,
+      gameID: gameID,
+      saveSequence: 0,
+      state: state,
+      setup: setup,
+      savedAtMilliseconds: 10
+    )
+    let context = ModelContext(container)
+    context.autosaveEnabled = false
+    context.insert(
+      SoloSessionRecord(
+        recordID: UUID().uuidString.lowercased(),
+        ownerKey: SoloOwnerPartition.guest.storageKey,
+        gameID: gameID.uuidString.lowercased(),
+        payloadVersion: PersistenceEnvelopeCodec.currentVersion,
+        payload: try PersistenceEnvelopeCodec.encode(SoloSnapshotEnvelopeV1(snapshot: snapshot)),
+        updatedAtMilliseconds: 10,
+        saveSequence: 0
+      )
+    )
+    try context.save()
+
+    let store = SoloPersistenceStore(modelContainer: container)
+    let result = try await store.loadSession(for: .guest)
+    let restored = try #require(result.session)
+    #expect(restored.state.players.first(where: { $0.kind == .human })?.name == "Data")
+    #expect(restored.state.players.first(where: { $0.kind == .ai })?.name == "Acorn")
+    #expect(restored.state.log == [LegacyAiBranding.migrationLog])
+
+    let verification = ModelContext(container)
+    let persisted = try #require(verification.fetch(FetchDescriptor<SoloSessionRecord>()).first)
+    let envelope = try PersistenceEnvelopeCodec.decode(SoloSnapshotEnvelopeV1.self, from: persisted.payload)
+    #expect(envelope.state == restored.state)
+  }
+
   @Test("Two MiB envelope limit counts four-byte UTF-8 scalars on disk")
   func fourByteUTF8PayloadBoundary() async throws {
     let emptyEnvelopeBytes = try JSONEncoder().encode(FourBytePayload(value: "")).count

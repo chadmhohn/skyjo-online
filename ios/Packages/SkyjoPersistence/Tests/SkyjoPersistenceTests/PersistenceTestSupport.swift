@@ -53,6 +53,25 @@ enum PersistenceTestSupport {
     )
   }
 
+  static func legacyBrandedState(_ source: GameState) throws -> GameState {
+    var state = source
+    let humanID = try #require(state.players.first(where: { $0.kind == .human })?.id)
+    let aiID = try #require(state.players.first(where: { $0.kind == .ai })?.id)
+    for index in state.players.indices {
+      if state.players[index].id == humanID { state.players[index].name = "Data" }
+      if state.players[index].id == aiID { state.players[index].name = "Picard" }
+    }
+    for roundIndex in state.roundHistory.indices {
+      for scoreIndex in state.roundHistory[roundIndex].scores.indices {
+        let playerID = state.roundHistory[roundIndex].scores[scoreIndex].playerId
+        if playerID == humanID { state.roundHistory[roundIndex].scores[scoreIndex].name = "Data" }
+        if playerID == aiID { state.roundHistory[roundIndex].scores[scoreIndex].name = "Picard" }
+      }
+    }
+    state.log = ["Data drew a card.", "Picard replaced a card."]
+    return state
+  }
+
   static func store(
     environment: SoloPersistenceEnvironment = SoloPersistenceEnvironment()
   ) throws -> (ModelContainer, SoloPersistenceStore) {

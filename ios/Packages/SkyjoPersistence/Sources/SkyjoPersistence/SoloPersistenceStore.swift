@@ -30,9 +30,14 @@ public actor SoloPersistenceStore: ModelActor {
 
       var selected: SoloSessionSnapshot?
       var recordsToDelete: [SoloSessionRecord] = []
+      var migratedPayloads: [(record: SoloSessionRecord, payload: Data)] = []
       for record in records {
         do {
           let candidate = try decodeSession(record, expectedOwner: owner)
+          let normalizedPayload = try PersistenceEnvelopeCodec.encode(SoloSnapshotEnvelopeV1(snapshot: candidate))
+          if normalizedPayload != record.payload {
+            migratedPayloads.append((record, normalizedPayload))
+          }
           guard candidate.state.phase != .gameOver, selected == nil else {
             recordsToDelete.append(record)
             continue
@@ -44,8 +49,9 @@ public actor SoloPersistenceStore: ModelActor {
       }
 
       let hadDeletions = !recordsToDelete.isEmpty
-      if hadDeletions {
+      if hadDeletions || !migratedPayloads.isEmpty {
         try modelContext.transaction {
+          for migration in migratedPayloads { migration.record.payload = migration.payload }
           for record in recordsToDelete { modelContext.delete(record) }
         }
       }
@@ -176,7 +182,7 @@ public actor SoloPersistenceStore: ModelActor {
           throw SoloPersistenceError.staleAutosave
         }
         if saveSequence == persisted.saveSequence {
-          guard state == persisted.state, setup == persisted.setup else {
+          guard snapshot.state == persisted.state, setup == persisted.setup else {
             throw SoloPersistenceError.staleAutosave
           }
           result = persisted
@@ -204,17 +210,18 @@ public actor SoloPersistenceStore: ModelActor {
     saveSequence: Int64,
     completedAtMilliseconds: Int64? = nil
   ) throws {
+    let sanitizedState = LegacyAiBranding.sanitized(state)
     let completionTime = completedAtMilliseconds ?? environment.nowMilliseconds()
     guard saveSequence >= 0,
           saveSequence <= PersistenceEnvelopeCodec.javascriptSafeIntegerMaximum,
           completionTime > 0,
           completionTime <= PersistenceEnvelopeCodec.javascriptSafeIntegerMaximum,
-          state.phase == .gameOver
+          sanitizedState.phase == .gameOver
     else {
       throw SoloPersistenceError.invalidSnapshot
     }
     do {
-      try SoloGameStateValidator.validate(state, setup: setup, gameID: gameID)
+      try SoloGameStateValidator.validate(sanitizedState, setup: setup, gameID: gameID)
     } catch {
       throw SoloPersistenceError.invalidSnapshot
     }
@@ -229,8 +236,8 @@ public actor SoloPersistenceStore: ModelActor {
         }
         if let session = sessions.first {
           let persisted = try decodeSession(session, expectedOwner: owner)
-          let sameRoster = persisted.state.players.count == state.players.count
-            && zip(persisted.state.players, state.players).allSatisfy { previous, completed in
+          let sameRoster = persisted.state.players.count == sanitizedState.players.count
+            && zip(persisted.state.players, sanitizedState.players).allSatisfy { previous, completed in
               previous.id == completed.id
                 && previous.name == completed.name
                 && previous.kind == completed.kind
@@ -250,14 +257,14 @@ public actor SoloPersistenceStore: ModelActor {
             // A transaction may commit even when its acknowledgement is interrupted. A retry
             // must preserve the first immutable request (including its original completedAt)
             // while accepting the same logical completion with a newly sampled clock value.
-            guard existing.request.state == state, existing.setup == setup else {
+            guard existing.request.state == sanitizedState, existing.setup == setup else {
               throw SoloPersistenceError.sessionConflict
             }
           } else {
             let envelope = StatsSubmissionEnvelopeV1(
               accountID: accountID,
               gameID: gameID,
-              state: state,
+              state: sanitizedState,
               setup: setup,
               completedAtMilliseconds: completionTime
             )
@@ -337,12 +344,22 @@ public actor SoloPersistenceStore: ModelActor {
     do {
       let records = try outboxRecords(ownerKey: owner.storageKey)
       var valid: [StatsOutboxItem] = []
+      var migratedPayloads: [(record: StatsOutboxRecord, payload: Data)] = []
       for record in records {
         do {
-          valid.append(try decodeOutbox(record, expectedAccountID: accountID))
+          let item = try decodeOutbox(record, expectedAccountID: accountID)
+          valid.append(item)
+          if item.envelopeData != record.payload {
+            migratedPayloads.append((record, item.envelopeData))
+          }
         } catch {
           // A corrupt FIFO row remains as a safe, owner-scoped blocker until explicit recovery.
           break
+        }
+      }
+      if !migratedPayloads.isEmpty {
+        try modelContext.transaction {
+          for migration in migratedPayloads { migration.record.payload = migration.payload }
         }
       }
 
@@ -378,11 +395,21 @@ public actor SoloPersistenceStore: ModelActor {
       let records = try outboxRecords(ownerKey: ownerKey)
       var valid: [StatsOutboxItem] = []
       var corruptRecords = 0
+      var migratedPayloads: [(record: StatsOutboxRecord, payload: Data)] = []
       for record in records {
         do {
-          valid.append(try decodeOutbox(record, expectedAccountID: accountID))
+          let item = try decodeOutbox(record, expectedAccountID: accountID)
+          valid.append(item)
+          if item.envelopeData != record.payload {
+            migratedPayloads.append((record, item.envelopeData))
+          }
         } catch {
           corruptRecords += 1
+        }
+      }
+      if !migratedPayloads.isEmpty {
+        try modelContext.transaction {
+          for migration in migratedPayloads { migration.record.payload = migration.payload }
         }
       }
       let terminalFailures = valid.filter(\.isTerminalFailure).count
@@ -701,16 +728,17 @@ public actor SoloPersistenceStore: ModelActor {
     savedAtMilliseconds: Int64?
   ) throws -> SoloSessionSnapshot {
     let timestamp = savedAtMilliseconds ?? environment.nowMilliseconds()
+    let sanitizedState = LegacyAiBranding.sanitized(state)
     guard saveSequence >= 0,
           saveSequence <= PersistenceEnvelopeCodec.javascriptSafeIntegerMaximum,
           timestamp > 0,
           timestamp <= PersistenceEnvelopeCodec.javascriptSafeIntegerMaximum,
-          state.phase != .gameOver
+          sanitizedState.phase != .gameOver
     else {
       throw SoloPersistenceError.invalidSnapshot
     }
     do {
-      try SoloGameStateValidator.validate(state, setup: setup, gameID: gameID)
+      try SoloGameStateValidator.validate(sanitizedState, setup: setup, gameID: gameID)
     } catch {
       throw SoloPersistenceError.invalidSnapshot
     }
@@ -718,7 +746,7 @@ public actor SoloPersistenceStore: ModelActor {
       owner: owner,
       gameID: gameID,
       saveSequence: saveSequence,
-      state: state,
+      state: sanitizedState,
       setup: setup,
       savedAtMilliseconds: timestamp
     )
@@ -790,12 +818,21 @@ public actor SoloPersistenceStore: ModelActor {
     else {
       throw SoloPersistenceError.incompatibleRecord
     }
+    let sanitizedState = LegacyAiBranding.sanitized(snapshot.state)
+    let sanitizedSnapshot = SoloSessionSnapshot(
+      owner: snapshot.owner,
+      gameID: snapshot.gameID,
+      saveSequence: snapshot.saveSequence,
+      state: sanitizedState,
+      setup: snapshot.setup,
+      savedAtMilliseconds: snapshot.savedAtMilliseconds
+    )
     do {
-      try SoloGameStateValidator.validate(snapshot.state, setup: snapshot.setup, gameID: snapshot.gameID)
+      try SoloGameStateValidator.validate(sanitizedState, setup: snapshot.setup, gameID: snapshot.gameID)
     } catch {
       throw SoloPersistenceError.incompatibleRecord
     }
-    return snapshot
+    return sanitizedSnapshot
   }
 
   private func decodeOutbox(
@@ -833,22 +870,33 @@ public actor SoloPersistenceStore: ModelActor {
     else {
       throw SoloPersistenceError.incompatibleRecord
     }
+    let sanitizedState = LegacyAiBranding.sanitized(envelope.request.state)
     do {
       try SoloGameStateValidator.validate(
-        envelope.request.state,
+        sanitizedState,
         setup: envelope.setup,
         gameID: envelope.gameID
       )
     } catch {
       throw SoloPersistenceError.incompatibleRecord
     }
+    let migratedEnvelope = StatsSubmissionEnvelopeV1(
+      accountID: expectedAccountID,
+      gameID: gameID,
+      state: sanitizedState,
+      setup: envelope.setup,
+      completedAtMilliseconds: envelope.request.completedAt
+    )
+    let migratedPayload = sanitizedState == envelope.request.state
+      ? record.payload
+      : try PersistenceEnvelopeCodec.encode(migratedEnvelope)
     return StatsOutboxItem(
       recordID: recordID,
       ownerID: expectedAccountID,
       gameID: gameID,
-      envelopeData: record.payload,
+      envelopeData: migratedPayload,
       setup: envelope.setup,
-      request: envelope.request,
+      request: migratedEnvelope.request,
       attempts: record.attempts,
       createdAtMilliseconds: record.createdAtMilliseconds,
       nextAttemptAtMilliseconds: record.nextAttemptAtMilliseconds,

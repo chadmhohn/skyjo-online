@@ -1,4 +1,5 @@
 import type { Card, GameState, Player } from './types';
+import { sanitizeLegacySoloAiNames } from './legacyAiBranding';
 import {
   createSoloGameSetup,
   isResolvedSoloGameSetup,
@@ -526,11 +527,13 @@ function normalizeSoloSessionRecord(value: unknown): SoloSessionRecord | null {
   ) {
     return null;
   }
+  const state = sanitizeLegacySoloAiNames(value.state);
+  if (!isCompatibleSoloGameState(state)) return null;
   // `setup` remains the v0.2.2 Hard-only rollback contract. New profile
   // metadata lives in the additive `aiSetup` sibling and is preferred when
   // present; malformed new metadata is never silently reassigned.
   const setup = normalizeSoloGameSetup(
-    value.state,
+    state,
     value.aiOpponentCount,
     value.aiSetup === undefined ? value.setup : value.aiSetup
   );
@@ -539,28 +542,43 @@ function normalizeSoloSessionRecord(value: unknown): SoloSessionRecord | null {
     ownerKey: value.ownerKey,
     gameId: value.gameId,
     schemaVersion: recordSchemaVersion,
-    state: value.state,
+    state,
     aiOpponentCount: setup.aiOpponentCount,
     setup,
     updatedAt: value.updatedAt
   };
 }
 
-function isStatsOutboxRecord(value: unknown): value is StatsOutboxRecord {
-  return (
-    isRecord(value) &&
-    value.schemaVersion === recordSchemaVersion &&
-    isOwnerKey(value.ownerKey) &&
-    isUuid(value.gameId) &&
-    Number.isInteger(value.attempts) &&
-    Number(value.attempts) >= 0 &&
-    isValidTimestamp(value.createdAt) &&
-    isValidTimestamp(value.updatedAt) &&
-    isValidTimestamp(value.nextAttemptAt) &&
-    typeof value.lastError === 'string' &&
-    isCompatibleSoloGameState(value.state) &&
-    value.state.phase === 'game-over'
-  );
+function normalizeStatsOutboxRecord(value: unknown): StatsOutboxRecord | null {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== recordSchemaVersion ||
+    !isOwnerKey(value.ownerKey) ||
+    !isUuid(value.gameId) ||
+    !Number.isInteger(value.attempts) ||
+    Number(value.attempts) < 0 ||
+    !isValidTimestamp(value.createdAt) ||
+    !isValidTimestamp(value.updatedAt) ||
+    !isValidTimestamp(value.nextAttemptAt) ||
+    typeof value.lastError !== 'string' ||
+    !isCompatibleSoloGameState(value.state) ||
+    value.state.phase !== 'game-over'
+  ) {
+    return null;
+  }
+  const state = sanitizeLegacySoloAiNames(value.state);
+  if (!isCompatibleSoloGameState(state) || state.phase !== 'game-over') return null;
+  return {
+    ownerKey: value.ownerKey,
+    gameId: value.gameId,
+    schemaVersion: recordSchemaVersion,
+    state,
+    attempts: Number(value.attempts),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    nextAttemptAt: value.nextAttemptAt,
+    lastError: value.lastError
+  };
 }
 
 function isOwnerKey(value: unknown): value is SoloOwnerKey {
@@ -694,6 +712,9 @@ export async function loadSoloSession(ownerKey: SoloOwnerKey): Promise<SoloSessi
       for (const { value: candidate, primaryKey } of records) {
         const normalized = normalizeSoloSessionRecord(candidate);
         if (normalized && normalized.ownerKey === ownerKey && normalized.state.phase !== 'game-over') {
+          if (normalized.state !== (candidate as SoloSessionRecord).state) {
+            await requestResult(store.put({ ...(candidate as Record<string, unknown>), ...normalized }));
+          }
           return { session: normalized, warning: recovered ? recoveredSessionWarning() : null };
         }
         recovered = true;
@@ -720,11 +741,12 @@ export async function saveSoloSession(
   now = Date.now
 ): Promise<SoloPersistenceWarning | null> {
   try {
+    const sanitizedState = sanitizeLegacySoloAiNames(state);
     const setup =
       typeof setupInput === 'number'
-        ? normalizeSoloGameSetup(state, setupInput, undefined)
-        : normalizeSoloGameSetup(state, setupInput.aiOpponentCount, setupInput);
-    if (!isUuid(gameId) || !isCompatibleSoloGameState(state) || !setup) {
+        ? normalizeSoloGameSetup(sanitizedState, setupInput, undefined)
+        : normalizeSoloGameSetup(sanitizedState, setupInput.aiOpponentCount, setupInput);
+    if (!isUuid(gameId) || !isCompatibleSoloGameState(sanitizedState) || !setup) {
       throw new Error('Invalid solo session.');
     }
     const updatedAt = now();
@@ -741,7 +763,7 @@ export async function saveSoloSession(
           ownerKey,
           gameId,
           schemaVersion: recordSchemaVersion,
-          state,
+          state: sanitizedState,
           aiOpponentCount: setup.aiOpponentCount,
           setup: { aiOpponentCount: setup.aiOpponentCount, difficulty: 'hard' },
           aiSetup: setup,
@@ -767,12 +789,13 @@ export async function replaceSoloSession(
   now = Date.now
 ): Promise<SoloPersistenceWarning | null> {
   try {
-    const normalizedSetup = normalizeSoloGameSetup(state, setup.aiOpponentCount, setup);
+    const sanitizedState = sanitizeLegacySoloAiNames(state);
+    const normalizedSetup = normalizeSoloGameSetup(sanitizedState, setup.aiOpponentCount, setup);
     if (
       !isUuid(previousGameId) ||
       !isUuid(gameId) ||
       previousGameId === gameId ||
-      !isCompatibleSoloGameState(state) ||
+      !isCompatibleSoloGameState(sanitizedState) ||
       !normalizedSetup
     ) {
       throw new Error('Invalid solo session replacement.');
@@ -796,7 +819,7 @@ export async function replaceSoloSession(
           ownerKey,
           gameId,
           schemaVersion: recordSchemaVersion,
-          state,
+          state: sanitizedState,
           aiOpponentCount: normalizedSetup.aiOpponentCount,
           setup: { aiOpponentCount: normalizedSetup.aiOpponentCount, difficulty: 'hard' },
           aiSetup: normalizedSetup,
@@ -824,7 +847,8 @@ export async function enqueueCompletedGame(
   now = Date.now
 ): Promise<SoloPersistenceWarning | null> {
   try {
-    if (!isUuid(gameId) || !isCompatibleSoloGameState(state) || state.phase !== 'game-over') {
+    const sanitizedState = sanitizeLegacySoloAiNames(state);
+    if (!isUuid(gameId) || !isCompatibleSoloGameState(sanitizedState) || sanitizedState.phase !== 'game-over') {
       throw new Error('Only completed solo games can be queued.');
     }
     await withStore(statsOutboxStoreName, 'readwrite', async (store) => {
@@ -834,12 +858,11 @@ export async function enqueueCompletedGame(
       }
       const key = [ownerKey, gameId];
       const existing = await requestResult(store.get(key));
-      if (
-        isStatsOutboxRecord(existing) &&
-        existing.ownerKey === ownerKey &&
-        existing.gameId === gameId &&
-        existing.state.phase === 'game-over'
-      ) {
+      const normalizedExisting = normalizeStatsOutboxRecord(existing);
+      if (normalizedExisting?.ownerKey === ownerKey && normalizedExisting.gameId === gameId) {
+        if (normalizedExisting.state !== (existing as StatsOutboxRecord).state) {
+          await requestResult(store.put(normalizedExisting));
+        }
         return;
       }
       const timestamp = now();
@@ -848,7 +871,7 @@ export async function enqueueCompletedGame(
           ownerKey,
           gameId,
           schemaVersion: recordSchemaVersion,
-          state,
+          state: sanitizedState,
           attempts: 0,
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -872,8 +895,13 @@ export async function listStatsOutbox(ownerKey: SoloOwnerKey): Promise<StatsOutb
     const records = (values as unknown[]).map((value, index) => ({ value, primaryKey: keys[index] }));
     const valid: StatsOutboxRecord[] = [];
     for (const { value: record, primaryKey } of records) {
-      if (isStatsOutboxRecord(record) && record.ownerKey === ownerKey) valid.push(record);
-      else await requestResult(store.delete(primaryKey));
+      const normalized = normalizeStatsOutboxRecord(record);
+      if (normalized && normalized.ownerKey === ownerKey) {
+        valid.push(normalized);
+        if (normalized.state !== (record as StatsOutboxRecord).state) {
+          await requestResult(store.put(normalized));
+        }
+      } else await requestResult(store.delete(primaryKey));
     }
     return valid;
   });

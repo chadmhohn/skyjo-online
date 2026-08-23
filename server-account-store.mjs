@@ -4,6 +4,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { wellFormedUTF16Prefix } from './server-unicode.mjs';
+import { legacyAiNameMap, sanitizeLegacySoloAiNames } from './server-legacy-ai-branding.mjs';
 
 const scryptAsync = promisify(crypto.scrypt);
 const defaultDbFile = path.join('.data', 'skyjo.sqlite');
@@ -53,6 +54,52 @@ const publicApiErrors = new Map([
   ['INVITE_RATE_LIMITED', Object.freeze({ status: 429, message: 'Too many invite attempts. Try again later.' })]
 ]);
 const unknownApiError = Object.freeze({ status: 500, code: 'REQUEST_FAILED', message: 'Request failed.' });
+
+function normalizeLegacySoloGameRows(db) {
+  const games = db
+    .prepare("SELECT id, winner_player_id, final_state_json FROM games WHERE mode = 'single'")
+    .all();
+  const updateState = db.prepare('UPDATE games SET final_state_json = ? WHERE id = ?');
+  const updateWinner = db.prepare('UPDATE games SET winner_name = ? WHERE id = ? AND winner_player_id = ?');
+  const updateParticipant = db.prepare(
+    "UPDATE game_participants SET display_name = ? WHERE game_id = ? AND player_id = ? AND kind = 'ai'"
+  );
+  const updateRoundScores = db.prepare(
+    `UPDATE game_round_scores
+     SET display_name = ?
+     WHERE game_id = ? AND player_id = ?
+       AND EXISTS (
+         SELECT 1 FROM game_participants
+         WHERE game_participants.game_id = game_round_scores.game_id
+           AND game_participants.player_id = game_round_scores.player_id
+           AND game_participants.kind = 'ai'
+       )`
+  );
+  const participants = db.prepare(
+    "SELECT player_id, display_name FROM game_participants WHERE game_id = ? AND kind = 'ai'"
+  );
+
+  for (const game of games) {
+    let state = null;
+    try {
+      state = JSON.parse(game.final_state_json);
+    } catch {
+      // Existing invalid state remains governed by the normal read/backup checks.
+    }
+    const sanitized = sanitizeLegacySoloAiNames(state);
+    if (sanitized !== state) updateState.run(JSON.stringify(sanitized), game.id);
+
+    for (const participant of participants.all(game.id)) {
+      const replacement = legacyAiNameMap.get(participant.display_name);
+      if (!replacement) continue;
+      updateParticipant.run(replacement, game.id, participant.player_id);
+      updateRoundScores.run(replacement, game.id, participant.player_id);
+      if (participant.player_id === game.winner_player_id) {
+        updateWinner.run(replacement, game.id, participant.player_id);
+      }
+    }
+  }
+}
 
 export class PublicApiError extends Error {
   constructor(code) {
@@ -804,6 +851,7 @@ export class AccountStore {
       validateMigrationRows(rows);
       if (rows.length !== CURRENT_SCHEMA_VERSION) throw new Error('Database schema is not current.');
       validateCurrentSchema(this.db);
+      normalizeLegacySoloGameRows(this.db);
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -1408,6 +1456,8 @@ export class AccountStore {
       if (existing?.id) return this.getGame(existing.id);
     }
 
+    const persistedState = mode === 'single' ? sanitizeLegacySoloAiNames(state) : state;
+
     const gameId = this.randomUuid();
     const receivedAt = this.now();
     let completedAt = receivedAt;
@@ -1417,16 +1467,16 @@ export class AccountStore {
       }
       completedAt = Math.min(requestedCompletedAt, receivedAt);
     }
-    const rankedPlayers = [...state.players].sort((left, right) => left.totalScore - right.totalScore || left.roundScore - right.roundScore);
-    const winner = state.winnerId ? state.players.find((player) => player.id === state.winnerId) : rankedPlayers[0];
+    const rankedPlayers = [...persistedState.players].sort((left, right) => left.totalScore - right.totalScore || left.roundScore - right.roundScore);
+    const winner = persistedState.winnerId ? persistedState.players.find((player) => player.id === persistedState.winnerId) : rankedPlayers[0];
     const winnerUserId = winner ? playerAccounts[winner.id] || null : null;
-    const roundHistory = Array.isArray(state.roundHistory) && state.roundHistory.length > 0
-      ? state.roundHistory
+    const roundHistory = Array.isArray(persistedState.roundHistory) && persistedState.roundHistory.length > 0
+      ? persistedState.roundHistory
       : [
           {
-            round: Number(state.round) || 1,
+            round: Number(persistedState.round) || 1,
             closerId: '',
-            scores: state.players.map((player) => ({
+            scores: persistedState.players.map((player) => ({
               playerId: player.id,
               name: player.name,
               roundScore: Number(player.roundScore) || 0,
@@ -1455,7 +1505,7 @@ export class AccountStore {
           winnerUserId,
           winner?.name || 'Unknown',
           createdByUserId,
-          JSON.stringify(state),
+          JSON.stringify(persistedState),
           normalizeBool(finishedByAi)
         );
 

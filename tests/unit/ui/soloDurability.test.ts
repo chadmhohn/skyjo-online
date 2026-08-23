@@ -45,6 +45,28 @@ function completedState(): GameState {
   return completedSoloGameState(1, () => 0.25);
 }
 
+function legacyBrandedState(source: GameState): GameState {
+  const human = source.players.find((player) => player.kind === 'human')!;
+  const ai = source.players.find((player) => player.kind === 'ai')!;
+  return {
+    ...source,
+    players: source.players.map((player) => {
+      if (player.id === human.id) return { ...player, name: 'Data' };
+      if (player.id === ai.id) return { ...player, name: 'Picard' };
+      return player;
+    }),
+    log: ['Data drew a card.', 'Picard replaced a card.'],
+    roundHistory: source.roundHistory.map((round) => ({
+      ...round,
+      scores: round.scores.map((score) => {
+        if (score.playerId === human.id) return { ...score, name: 'Data' };
+        if (score.playerId === ai.id) return { ...score, name: 'Picard' };
+        return score;
+      })
+    }))
+  };
+}
+
 function chooseSourceState(): GameState {
   let state = activeState();
   while (state.phase === 'opening-reveal') {
@@ -536,6 +558,30 @@ describe('solo IndexedDB durability', () => {
     database.close();
   });
 
+  it('durably migrates legacy AI branding in a save without renaming a matching human', async () => {
+    const ownerKey = soloOwnerKey('legacy-branding');
+    const state = legacyBrandedState(activeState());
+    await loadSoloSession(ownerKey);
+    await putRaw(soloSessionStoreName, {
+      ownerKey,
+      gameId: gameA,
+      schemaVersion: 1,
+      state,
+      aiOpponentCount: 1,
+      updatedAt: 21
+    });
+
+    const restored = (await loadSoloSession(ownerKey)).session!;
+    expect(restored.state.players.find((player) => player.kind === 'human')?.name).toBe('Data');
+    expect(restored.state.players.find((player) => player.kind === 'ai')?.name).toBe('Acorn');
+    expect(restored.state.log).toEqual(['Earlier game activity was cleared during a Flipvale update.']);
+
+    const [raw] = (await rawRecordsForOwner(soloSessionStoreName, ownerKey)) as Array<{
+      state: GameState;
+    }>;
+    expect(raw.state).toEqual(restored.state);
+  });
+
   it('writes setup as additive v1 metadata that a v0.2.2 reader can ignore', async () => {
     const state = activeState();
     await saveSoloSession('guest', gameA, state, createSoloGameSetup(1), () => 30);
@@ -749,6 +795,36 @@ describe('solo IndexedDB durability', () => {
 });
 
 describe('solo stats outbox', () => {
+  it('durably migrates legacy AI branding before a queued result is delivered', async () => {
+    const ownerKey = soloOwnerKey('legacy-branding');
+    const state = legacyBrandedState(completedState());
+    await listStatsOutbox(ownerKey);
+    await putRaw(statsOutboxStoreName, {
+      ownerKey,
+      gameId: gameA,
+      schemaVersion: 1,
+      state,
+      attempts: 0,
+      createdAt: 9,
+      updatedAt: 9,
+      nextAttemptAt: 9,
+      lastError: ''
+    });
+
+    const [queued] = await listStatsOutbox(ownerKey);
+    expect(queued.state.players.find((player) => player.kind === 'human')?.name).toBe('Data');
+    expect(queued.state.players.find((player) => player.kind === 'ai')?.name).toBe('Acorn');
+    expect(queued.state.roundHistory.every((round) =>
+      round.scores.find((score) => score.playerId === queued.state.players.find((player) => player.kind === 'ai')!.id)?.name === 'Acorn'
+    )).toBe(true);
+    expect(queued.state.log).toEqual(['Earlier game activity was cleared during a Flipvale update.']);
+
+    const [raw] = (await rawRecordsForOwner(statsOutboxStoreName, ownerKey)) as Array<{
+      state: GameState;
+    }>;
+    expect(raw.state).toEqual(queued.state);
+  });
+
   it('keeps equal-score games distinct by UUID and makes duplicate enqueue idempotent', async () => {
     const ownerKey = soloOwnerKey('alice');
     const equalScores = completedState();
