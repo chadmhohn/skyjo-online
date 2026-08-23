@@ -84,6 +84,7 @@ const port = await availablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const accessPassword = crypto.randomBytes(24).toString('base64url');
 const accountPassword = crypto.randomBytes(24).toString('base64url');
+const adminEmail = 'apns-admin-canary@example.invalid';
 const deviceToken = 'ab'.repeat(32);
 const rotatedToken = 'cd'.repeat(48);
 const installationId = '1000000a-0000-4000-8000-000000000001';
@@ -106,7 +107,7 @@ const server = spawn(process.execPath, ['server.mjs'], {
     SKYJO_SECURE_COOKIES: 'false',
     SKYJO_DB_FILE: databaseFile,
     SKYJO_ROOMS_FILE: roomsFile,
-    SKYJO_ADMIN_EMAIL: 'apns-admin@example.invalid',
+    SKYJO_ADMIN_EMAIL: adminEmail,
     SKYJO_ADMIN_INITIAL_PASSWORD: accountPassword,
     SKYJO_VAPID_PUBLIC_KEY: '',
     SKYJO_VAPID_PRIVATE_KEY: '',
@@ -240,7 +241,10 @@ try {
   }
 } finally {
   await stopChild(server).catch(() => server.kill('SIGKILL'));
-  assert.doesNotMatch(logs, new RegExp(`${deviceToken}|${rotatedToken}|TEAMID1234|KEYID12345`, 'i'));
+  assert.doesNotMatch(
+    logs,
+    new RegExp(`${deviceToken}|${rotatedToken}|TEAMID1234|KEYID12345|${adminEmail}`, 'i')
+  );
   await fs.rm(temporaryDirectory, { recursive: true, force: true });
 }
 

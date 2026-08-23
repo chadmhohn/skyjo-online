@@ -16,6 +16,7 @@ enum RoomUITestFixtureMode: String, Sendable {
   case pending
   case offline
   case resync
+  case reconnect
 
   static func launchMode(arguments: [String]) -> Self? {
     guard let argument = arguments.first(where: { $0.hasPrefix("--ui-room-fixture=") }) else {
@@ -70,7 +71,7 @@ enum RoomUITestFixtureFactory {
       account: account,
       environment: RoomSessionEnvironment(
         makeConnection: {
-          let socket = RoomUITestFixtureSocket(mode: mode, localPlayerID: playerID)
+          let sockets = RoomUITestFixtureSocketFactory(mode: mode, localPlayerID: playerID)
           let connection = try RoomConnection(
             webSocketURL: URL(string: "wss://fixture.invalid/rooms")!,
             confirmedAccount: try ConfirmedRoomAccount(
@@ -78,7 +79,7 @@ enum RoomUITestFixtureFactory {
               displayName: account.displayName
             ),
             environment: RoomConnectionEnvironment(
-              makeSocket: { _ in socket },
+              makeSocket: { _ in sockets.makeSocket() },
               random: { 0.5 },
               makeUUID: {
                 UUID(uuidString: "40000000-0000-4000-8000-000000000188")!
@@ -204,6 +205,32 @@ private actor RoomUITestFixtureConnection: RoomSessionConnection {
   }
 }
 
+private final class RoomUITestFixtureSocketFactory: @unchecked Sendable {
+  private let mode: RoomUITestFixtureMode
+  private let localPlayerID: String
+  private let lock = NSLock()
+  private var socketIndex = 0
+
+  init(mode: RoomUITestFixtureMode, localPlayerID: String) {
+    self.mode = mode
+    self.localPlayerID = localPlayerID
+  }
+
+  func makeSocket() -> RoomUITestFixtureSocket {
+    lock.lock()
+    let index = socketIndex
+    socketIndex += 1
+    lock.unlock()
+    return RoomUITestFixtureSocket(
+      mode: mode,
+      localPlayerID: localPlayerID,
+      initialRevision: RoomUITestFixtureSnapshot.initialRevision + Int64(index),
+      commandsBeforeInterruption: mode == .reconnect ? (index == 0 ? 0 : 1) : nil,
+      includesFollowupSnapshot: mode != .reconnect || index == 0
+    )
+  }
+}
+
 private actor RoomUITestFixtureSocket: RoomWebSocket {
   private let mode: RoomUITestFixtureMode
   private let localPlayerID: String
@@ -213,10 +240,22 @@ private actor RoomUITestFixtureSocket: RoomWebSocket {
   private var queuedMessages: [RoomWebSocketMessage] = []
   private var receiver: CheckedContinuation<RoomWebSocketMessage, Error>?
   private var isClosed = false
+  private let commandsBeforeInterruption: Int?
+  private let includesFollowupSnapshot: Bool
+  private var acceptedCommandCount = 0
 
-  init(mode: RoomUITestFixtureMode, localPlayerID: String) {
+  init(
+    mode: RoomUITestFixtureMode,
+    localPlayerID: String,
+    initialRevision: Int64 = RoomUITestFixtureSnapshot.initialRevision,
+    commandsBeforeInterruption: Int? = nil,
+    includesFollowupSnapshot: Bool = true
+  ) {
     self.mode = mode
     self.localPlayerID = localPlayerID
+    revision = initialRevision
+    self.commandsBeforeInterruption = commandsBeforeInterruption
+    self.includesFollowupSnapshot = includesFollowupSnapshot
     readyPlayerIDs = mode.startsScoring
       ? RoomUITestFixtureSnapshot.playerIDs(localPlayerID: localPlayerID).filter {
         $0 != localPlayerID
@@ -248,7 +287,7 @@ private actor RoomUITestFixtureSocket: RoomWebSocket {
           includesChat: mode == .offline
         )
       )
-      if mode != .offline {
+      if mode != .offline, includesFollowupSnapshot {
         revision += 1
         try enqueue(
           RoomUITestFixtureSnapshot.frame(
@@ -263,6 +302,14 @@ private actor RoomUITestFixtureSocket: RoomWebSocket {
     case "set-presence":
       break
     case "command":
+      if commandsBeforeInterruption == acceptedCommandCount {
+        isClosed = true
+        let waitingReceiver = receiver
+        receiver = nil
+        waitingReceiver?.resume(throwing: RoomUITestFixtureError.socketClosed)
+        throw RoomUITestFixtureError.socketClosed
+      }
+      acceptedCommandCount += 1
       try receiveCommand(frame)
     default:
       throw RoomUITestFixtureError.invalidClientFrame
