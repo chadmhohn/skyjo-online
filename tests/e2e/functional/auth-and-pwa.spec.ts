@@ -110,7 +110,7 @@ test('manifest and service worker assets are release-build reachable', async ({ 
   expect(serviceWorkerSource).toContain("addEventListener('push'");
   expect(serviceWorkerSource).toContain("addEventListener('notificationclick'");
   expect(serviceWorkerSource).toContain('Navigation request was unavailable.');
-  const precachedAudioPaths = [...serviceWorkerSource.matchAll(/"url":"(audio\/[^"]+\.mp3)"/g)]
+  const precachedAudioPaths = [...serviceWorkerSource.matchAll(/"url":"(audio\/[^"]+\.(?:mp3|wav))"/g)]
     .map((match) => `/${match[1]}`)
     .sort();
   expect(precachedAudioPaths).toEqual([
