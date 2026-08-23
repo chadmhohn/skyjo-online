@@ -1,6 +1,6 @@
 # Account Deletion And Retention
 
-Skyjo lets a signed-in player permanently delete an account from both the native Account screen and the web Account page. Support contact is not required.
+Flipvale lets a signed-in player permanently delete an account from both the native Account screen and the web Account page. Support contact is not required.
 
 ## Confirmation Contract
 

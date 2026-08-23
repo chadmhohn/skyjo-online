@@ -138,7 +138,7 @@ function RequireAccountPanel({ next, title = 'Sign in to continue' }: { next: st
         <div className="skyjo-panel w-full p-6">
           <p className="skyjo-kicker">Account required</p>
           <h1 className="skyjo-serif mt-2 text-3xl font-black text-[#f5e6c8]">{title}</h1>
-          <p className="mt-3 leading-7 text-[#f5e6c8]/68">Single-player is open for casual play, but multiplayer and saved stats need a Skyjo account.</p>
+          <p className="mt-3 leading-7 text-[#f5e6c8]/68">Single-player is open for casual play, but multiplayer and saved stats need a Flipvale account.</p>
           <div className="mt-5 flex flex-wrap gap-2">
             <Link className="skyjo-button skyjo-button-primary px-4 py-2" to={accountPath(next)}>
               Sign In
@@ -747,7 +747,7 @@ function SinglePlayer() {
         () => {
           if (cancelled) return;
           setPersistenceWarning(statsSyncUnavailableWarning());
-          setStatsSaveStatus('Game stats sync is unavailable. Play can continue and Skyjo will retry later.');
+          setStatsSaveStatus('Game stats sync is unavailable. Play can continue and Flipvale will retry later.');
         }
       );
     };
@@ -841,7 +841,7 @@ function SinglePlayer() {
           if (cancelled) return;
           setPersistenceWarning({
             kind: 'unavailable',
-            message: 'AI opponents could not load on this device. Reload Skyjo to retry safely.'
+            message: 'AI opponents could not load on this device. Reload Flipvale to retry safely.'
           });
         }
       );
@@ -927,7 +927,7 @@ function SinglePlayer() {
         () => {
           if (cancelled) return;
           setPersistenceWarning(statsSyncUnavailableWarning());
-          setStatsSaveStatus('Game stats sync is unavailable. Play can continue and Skyjo will retry later.');
+          setStatsSaveStatus('Game stats sync is unavailable. Play can continue and Flipvale will retry later.');
         }
       );
     });
@@ -1688,7 +1688,7 @@ function Lobby() {
 
   function connect(action: 'create-room' | 'join-room', codeOverride?: string) {
     if (!accountUser) {
-      setError('Sign in to your Skyjo account before joining multiplayer.');
+      setError('Sign in to your Flipvale account before joining multiplayer.');
       return;
     }
     const cleanedName = accountUser.displayName || name.trim() || 'Player';
@@ -1769,7 +1769,7 @@ function Lobby() {
       return;
     }
     if (message.type === 'upgrade-required') {
-      setError(typeof message.message === 'string' ? message.message : 'Refresh Skyjo to continue multiplayer.');
+      setError(typeof message.message === 'string' ? message.message : 'Refresh Flipvale to continue multiplayer.');
       return;
     }
     if (message.type === 'error') {
@@ -1882,7 +1882,7 @@ function Lobby() {
         );
         resetRecoveryHintRef.current = resetRecoveryHint;
       } catch {
-        setError('Skyjo could not save reset recovery data. The room was not reset.');
+        setError('Flipvale could not save reset recovery data. The room was not reset.');
         return;
       }
     }
@@ -1994,21 +1994,21 @@ function Lobby() {
   async function shareRoomLink() {
     if (!room) return;
     setError('');
-    let fallbackText = `Skyjo room code: ${room.code}`;
+    let fallbackText = `Flipvale room code: ${room.code}`;
     let fallbackStatus = 'Room code copied';
     let inviteCreated = false;
 
     try {
       const invite = await createRoomInvite(room.code);
       const url = absoluteShareUrl(invite.path);
-      const text = `Join my Skyjo room ${room.code}: ${url}`;
+      const text = `Join my Flipvale room ${room.code}: ${url}`;
       fallbackText = text;
       fallbackStatus = 'Link copied';
       inviteCreated = true;
       if (navigator.share) {
         await navigator.share({
-          title: 'Skyjo room',
-          text: `Join my Skyjo room ${room.code}.`,
+          title: 'Flipvale room',
+          text: `Join my Flipvale room ${room.code}.`,
           url
         });
         setTemporaryShareStatus('Share opened');
@@ -2150,7 +2150,7 @@ function Lobby() {
 
         {activePhoneLayout && room ? (
           <header className="skyjo-active-room-toolbar" data-connection-state={connection} data-testid="active-room-toolbar">
-            <h1 className="sr-only">Skyjo multiplayer room {room.code}</h1>
+            <h1 className="sr-only">Flipvale multiplayer room {room.code}</h1>
             <Link aria-label="Back to home" className="skyjo-back-link" to="/">
               Back
             </Link>
@@ -2160,7 +2160,7 @@ function Lobby() {
                 {multiplayerConnectionCopy[connection].label}{pwaUpdate.available ? ' · Update ready' : ''}
               </span>
               <span aria-live="polite" className="sr-only" role="status">
-                {pwaUpdate.available ? 'Skyjo update ready. This active game will not reload.' : ''}
+                {pwaUpdate.available ? 'Flipvale update ready. This active game will not reload.' : ''}
               </span>
             </div>
             <button

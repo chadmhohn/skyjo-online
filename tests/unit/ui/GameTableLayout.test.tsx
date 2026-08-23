@@ -96,7 +96,7 @@ describe('GameTableLayout', () => {
     expect(table.querySelectorAll('[role="gridcell"]')).toHaveLength(playerCount * 12);
     expect(opponentRail.querySelectorAll('button')).toHaveLength(0);
     expect(localBoard.querySelectorAll('button')).toHaveLength(12);
-    expect(opponentRail.querySelector('[role="gridcell"]')).toHaveAccessibleName(/Opponent 1, row 1, column 1, SKYJO face-down/);
+    expect(opponentRail.querySelector('[role="gridcell"]')).toHaveAccessibleName(/Opponent 1, row 1, column 1, Flipvale face-down/);
     expect(opponentRail.querySelector('[role="gridcell"]')).not.toHaveAccessibleName(/minus 2/);
     expect(
       within(screen.getByRole('region', { name: 'Action guidance' })).getByRole('heading', {
@@ -245,7 +245,7 @@ describe('GameTableLayout', () => {
       />
     );
 
-    await user.click(screen.getByRole('button', { name: /You, row 1, column 1, SKYJO face-down\. Reveal this opening card/ }));
+    await user.click(screen.getByRole('button', { name: /You, row 1, column 1, Flipvale face-down\. Reveal this opening card/ }));
     expect(actions.onCardClick).toHaveBeenCalledWith(0);
 
     const chooseSource = stateFor(2, {

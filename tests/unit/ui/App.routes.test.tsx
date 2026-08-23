@@ -185,7 +185,7 @@ describe('application routes and solo controls', () => {
   it('renders guest and signed-in home choices with audio controls', async () => {
     const actor = userEvent.setup();
     const view = renderRoute('/');
-    expect(await screen.findByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Flipvale' })).toBeInTheDocument();
     expect(await screen.findByText(/Sign in to save stats/)).toBeInTheDocument();
 
     await actor.click(screen.getByRole('checkbox', { name: /Game sounds/ }));
@@ -338,7 +338,7 @@ describe('application routes and solo controls', () => {
     await actor.click(await screen.findByRole('button', { name: 'Start Solo Game' }));
     expect(await screen.findByRole('heading', { name: 'Single Player' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /Reveal this opening card/ }).length).toBeGreaterThan(0);
-    await actor.click(screen.getAllByRole('button', { name: /row 1, column 1, SKYJO face-down\. Reveal this opening card/ })[0]);
+    await actor.click(screen.getAllByRole('button', { name: /row 1, column 1, Flipvale face-down\. Reveal this opening card/ })[0]);
     expect(mocks.playAudioCue).not.toHaveBeenCalled();
 
     await actor.click(screen.getByRole('button', { name: 'Open game settings' }));

@@ -78,7 +78,7 @@ describe('server security helpers', () => {
     expect(publicApiErrorResponse(new PublicApiError('STATS_CLIENT_UPGRADE_REQUIRED'))).toEqual({
       status: 426,
       code: 'STATS_CLIENT_UPGRADE_REQUIRED',
-      message: 'Update Skyjo before syncing saved game stats.'
+      message: 'Update Flipvale before syncing saved game stats.'
     });
     expect(publicApiErrorResponse(new PublicApiError('ACCOUNT_SESSION_CHANGED'))).toEqual({
       status: 409,

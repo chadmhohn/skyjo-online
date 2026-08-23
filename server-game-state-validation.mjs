@@ -291,7 +291,7 @@ function validatePhysicalCards(players, drawPile, discardPile, drawnCard, scorin
     actualValueCounts.set(card.value, (actualValueCounts.get(card.value) ?? 0) + 1);
   }
   for (const [value, expectedCount] of EXPECTED_CARD_VALUE_COUNTS) {
-    if (actualValueCounts.get(value) !== expectedCount) fail('Live card values do not match the Skyjo deck.');
+    if (actualValueCounts.get(value) !== expectedCount) fail('Live card values do not match the game deck.');
   }
 }
 

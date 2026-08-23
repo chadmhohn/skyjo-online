@@ -548,7 +548,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
     expect(offlineResponse?.headers()['content-security-policy']).toContain("form-action 'self'");
     expect(offlineResponse?.headers()['content-security-policy']).toContain("media-src 'self' data:");
     expect(offlineResponse?.headers()['content-security-policy']).not.toContain("'unsafe-inline'");
-    await expect(offlineStart.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
+    await expect(offlineStart.getByRole('heading', { name: 'Flipvale' })).toBeVisible();
     const offlineAudioResults = await offlineStart.evaluate(async (paths) => Promise.all(paths.map(async (audioPath) => {
       const response = await fetch(audioPath, {
         credentials: 'omit',
@@ -627,7 +627,7 @@ test('a fresh credentialless install caches only the data-free offline solo allo
       const sensitiveResponse = await sensitiveNavigation.goto(sensitiveUrl, { waitUntil: 'domcontentloaded' });
       expect(sensitiveResponse?.status()).toBe(503);
       expect(sensitiveResponse?.headers()['cache-control']).toBe('no-store');
-      await expect(sensitiveNavigation.getByRole('heading', { name: 'Skyjo' })).toHaveCount(0);
+      await expect(sensitiveNavigation.getByRole('heading', { name: 'Flipvale' })).toHaveCount(0);
     } else {
       await expect(sensitiveNavigation.goto(sensitiveUrl, {
         waitUntil: 'domcontentloaded',

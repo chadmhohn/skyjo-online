@@ -239,7 +239,7 @@ test('200% text remains operable without horizontal scroll on a short 320px view
   await installSeededBrowserRuntime(page, 77);
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto(skyjoServer.baseURL);
-  await expect(page.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Flipvale' })).toBeVisible();
   await expect(page.getByRole('link', { name: /Solo Game/ })).toBeVisible();
   await enableDoubleText(page);
   await expectTouchTargets(page, 'home at 200% text and 320x568');

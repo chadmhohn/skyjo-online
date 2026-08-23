@@ -24,7 +24,7 @@ describe('application shell', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Skyjo' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Flipvale' })).toBeInTheDocument();
     await user.click(await screen.findByRole('link', { name: /Start Solo Game/ }));
     expect(await screen.findByRole('heading', { name: 'Set up your solo table' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Start Solo Game' }));

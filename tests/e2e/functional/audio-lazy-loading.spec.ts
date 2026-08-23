@@ -59,7 +59,7 @@ test.describe('lazy audio loading', () => {
     });
 
     await page.goto(skyjoServer.baseURL);
-    await expect(page.getByRole('heading', { name: 'Skyjo', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Flipvale', exact: true })).toBeVisible();
     expect(audioRequests).toEqual([]);
 
     await page.getByText('Sound', { exact: true }).click();
@@ -77,7 +77,7 @@ test.describe('lazy audio loading', () => {
     await page.waitForTimeout(250);
     expect([...audioRequests].sort()).toEqual([...cuePaths].sort());
 
-    await page.getByRole('heading', { name: 'Skyjo', exact: true }).click();
+    await page.getByRole('heading', { name: 'Flipvale', exact: true }).click();
     await page.waitForTimeout(250);
     expect([...audioRequests].sort()).toEqual([...cuePaths].sort());
   });

@@ -1,7 +1,7 @@
 {
-  "name": "Skyjo Online",
-  "short_name": "Skyjo",
-  "description": "Private Skyjo table for solo and multiplayer games.",
+  "name": "Flipvale",
+  "short_name": "Flipvale",
+  "description": "A friendly low-score card table for solo and multiplayer games.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

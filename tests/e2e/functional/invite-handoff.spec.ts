@@ -7,7 +7,7 @@ async function expectCompletePwaHead(page: import('@playwright/test').Page): Pro
   await expect(page.locator('meta[name="mobile-web-app-capable"]')).toHaveAttribute('content', 'yes');
   await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveAttribute('content', 'yes');
   await expect(page.locator('meta[name="apple-mobile-web-app-status-bar-style"]')).toHaveAttribute('content', 'black-translucent');
-  await expect(page.locator('meta[name="apple-mobile-web-app-title"]')).toHaveAttribute('content', 'Skyjo');
+  await expect(page.locator('meta[name="apple-mobile-web-app-title"]')).toHaveAttribute('content', 'Flipvale');
   await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest');
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/skyjo-icon-v2-192.png');
   await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/skyjo-icon-v2-180.png');

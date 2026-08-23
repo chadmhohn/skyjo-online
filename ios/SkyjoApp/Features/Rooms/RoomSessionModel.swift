@@ -575,7 +575,7 @@ final class RoomSessionModel {
       eventTask = nil
       banner = RoomBanner(
         title: "Room connection unavailable",
-        message: "Skyjo could not initialize multiplayer. Try again.",
+        message: "Flipvale could not initialize multiplayer. Try again.",
         tone: .warning
       )
       return
@@ -634,7 +634,7 @@ final class RoomSessionModel {
       requireResetRecoveryCleanup()
       banner = RoomBanner(
         title: "Room reset recovery unavailable",
-        message: "Skyjo could not safely finish the pending room reset. Reopen multiplayer and try again.",
+        message: "Flipvale could not safely finish the pending room reset. Reopen multiplayer and try again.",
         tone: .error,
         survivesAuthoritativeSnapshot: true
       )
@@ -831,7 +831,7 @@ final class RoomSessionModel {
       requireResetRecoveryCleanup()
       banner = RoomBanner(
         title: "Saved room cleanup needed",
-        message: "Skyjo canceled the room connection, but saved reset recovery still needs explicit cleanup.",
+        message: "Flipvale canceled the room connection, but saved reset recovery still needs explicit cleanup.",
         tone: .error,
         survivesAuthoritativeSnapshot: true
       )
@@ -874,7 +874,7 @@ final class RoomSessionModel {
     guard !inviteRequiresLeavingCurrentRoom else {
       banner = RoomBanner(
         title: "Leave the waiting room first",
-        message: "Cancel this review, leave the current waiting room, then accept the invite. Skyjo will keep the reviewed invite ready.",
+        message: "Cancel this review, leave the current waiting room, then accept the invite. Flipvale will keep the reviewed invite ready.",
         tone: .warning
       )
       return
@@ -1099,7 +1099,7 @@ final class RoomSessionModel {
     } else {
       banner = RoomBanner(
         title: "Saved room cleanup needed",
-        message: "Skyjo disconnected, but could not clear all saved routing data. Try forgetting the seat again.",
+        message: "Flipvale disconnected, but could not clear all saved routing data. Try forgetting the seat again.",
         tone: .error
       )
     }
@@ -1302,7 +1302,7 @@ final class RoomSessionModel {
     guard connectionStatus.phase != .upgradeRequired else {
       banner = RoomBanner(
         title: "Update required",
-        message: "Update Skyjo before creating or joining a multiplayer room.",
+        message: "Update Flipvale before creating or joining a multiplayer room.",
         tone: .error
       )
       return false
@@ -1445,7 +1445,7 @@ final class RoomSessionModel {
       guard admissionOperationIsCurrent(operationID) else { return false }
       banner = RoomBanner(
         title: "Saved room could not be replaced",
-        message: "Skyjo kept the current room because its saved routing data could not be cleared. Try again.",
+        message: "Flipvale kept the current room because its saved routing data could not be cleared. Try again.",
         tone: .error,
         survivesAuthoritativeSnapshot: true
       )
@@ -1721,7 +1721,7 @@ final class RoomSessionModel {
       clearVisibleRoom()
       banner = RoomBanner(
         title: "Update required",
-        message: "Update Skyjo before continuing multiplayer.",
+        message: "Update Flipvale before continuing multiplayer.",
         tone: .error
       )
     case .invalidServerResponse:
@@ -1741,7 +1741,7 @@ final class RoomSessionModel {
     case .transportInterrupted:
       banner = RoomBanner(
         title: "Connection interrupted",
-        message: "Skyjo is reconnecting to the authoritative table.",
+        message: "Flipvale is reconnecting to the authoritative table.",
         tone: .information
       )
     case .resetRecoveryPersistenceFailed:
@@ -1854,7 +1854,7 @@ final class RoomSessionModel {
     savedSeatKnownAbsent = true
     banner = RoomBanner(
       title: "Room not confirmed",
-      message: "Skyjo could not confirm that room. Create or join again.",
+      message: "Flipvale could not confirm that room. Create or join again.",
       tone: .warning
     )
   }

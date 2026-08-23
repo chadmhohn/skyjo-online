@@ -1708,8 +1708,8 @@ struct SoloFeatureModelTests {
 
     #expect(harness.model.outboxStatus.queued == 0)
     #expect(harness.model.persistenceWarning?.kind == .unavailable)
-    #expect(harness.model.completedStatsMessage.contains("only while Skyjo remains open"))
-    #expect(harness.model.settingsStatsMessage.contains("only while Skyjo remains open"))
+    #expect(harness.model.completedStatsMessage.contains("only while Flipvale remains open"))
+    #expect(harness.model.settingsStatsMessage.contains("only while Flipvale remains open"))
     #expect(!harness.model.completedStatsMessage.contains("Keep this result on this device"))
     #expect(!harness.model.settingsStatsMessage.contains("will remain on this device"))
     #expect(harness.model.statsDeliverySystemImage == "exclamationmark.triangle.fill")

@@ -151,7 +151,7 @@ test('exact production release cold-launches and restores a disposable guest sol
     await context.setOffline(true);
     const offlineStart = await context.newPage();
     await offlineStart.goto(`${baseURL}/`, { waitUntil: 'domcontentloaded' });
-    await expect(offlineStart.getByRole('heading', { name: 'Skyjo' })).toBeVisible();
+    await expect(offlineStart.getByRole('heading', { name: 'Flipvale' })).toBeVisible();
     await offlineStart.getByRole('link', { name: /^Start Solo Game/ }).click();
     await expect(offlineStart.getByTestId('solo-game-setup')).toBeVisible();
     await offlineStart.getByRole('button', { name: 'Start Solo Game' }).click();

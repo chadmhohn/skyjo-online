@@ -977,7 +977,7 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElementFullyVisible(dynamicRecoveryFooter, in: dynamicTypeApp)
     XCTAssertEqual(
       dynamicRecoveryFooter.label,
-      "If a session expires or an account is disabled, Skyjo returns to a safe sign-in recovery screen."
+      "If a session expires or an account is disabled, Flipvale returns to a safe sign-in recovery screen."
     )
     attachScreenshot(dynamicTypeApp, name: "ios5-account-recovery-accessibility-xxxl")
   }
@@ -1155,7 +1155,7 @@ final class SkyjoAppUITests: XCTestCase {
       volatileHome.staticTexts.matching(
         NSPredicate(
           format: "label == %@",
-          "Guest games exist only while Skyjo remains open because device storage is unavailable. They are not uploaded to account stats."
+          "Guest games exist only while Flipvale remains open because device storage is unavailable. They are not uploaded to account stats."
         )
       ).firstMatch.waitForExistence(timeout: 5)
     )
@@ -1164,7 +1164,7 @@ final class SkyjoAppUITests: XCTestCase {
       volatileHome.staticTexts.matching(
         NSPredicate(
           format: "label == %@",
-          "Guest solo games are available only while Skyjo remains open and do not add account stats."
+          "Guest solo games are available only while Flipvale remains open and do not add account stats."
         )
       ).firstMatch.waitForExistence(timeout: 5)
     )
@@ -2313,7 +2313,7 @@ final class SkyjoAppUITests: XCTestCase {
     XCTAssertTrue(reconciliation.waitForExistence(timeout: 8))
     let reconciliationHeading = reconciliationApp.staticTexts["Saved game status unknown"]
     let reconciliationMessage = reconciliationApp.staticTexts[
-      "Skyjo must reload the authoritative saved game before play can continue."
+      "Flipvale must reload the authoritative saved game before play can continue."
     ]
     XCTAssertTrue(reconciliationHeading.exists)
     XCTAssertTrue(reconciliationMessage.exists)
@@ -2552,7 +2552,7 @@ final class SkyjoAppUITests: XCTestCase {
       ),
       (
         "solo.settings.accessibility-explanation",
-        "Skyjo follows the system settings for motion, contrast, and color-independent card markers.",
+        "Flipvale follows the system settings for motion, contrast, and color-independent card markers.",
         .footnote,
         8
       ),

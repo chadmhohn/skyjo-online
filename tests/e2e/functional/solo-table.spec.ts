@@ -1111,7 +1111,7 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
   expect(snapshot.gameStatusOverflowY, `${variant.label} status should have bounded internal overflow`).toBe('auto');
   expect(snapshot.gameStatusRole, `${variant.label} persistence warning should remain a VoiceOver status`).toBe('status');
   expect(snapshot.gameStatusText, `${variant.label} persistence warning text should remain in the accessibility tree`).toBe(
-    'This device is low on storage. You can keep playing, but this game may not restore after closing Skyjo.'
+    'This device is low on storage. You can keep playing, but this game may not restore after closing Flipvale.'
   );
   expect(snapshot.gameStatusScrollWidth, `${variant.label} status text should wrap without horizontal clipping`).toBeLessThanOrEqual(
     snapshot.gameStatusClientWidth + 1
@@ -1189,7 +1189,7 @@ function expectSoloDrawnCardLayout(snapshot: SoloDrawnCardLayoutSnapshot, varian
     'Deck',
     'Discard'
   ]);
-  expect(snapshot.pileTypography[0]?.cardText, `${variant.label} deck face should remain visibly identified`).toBe('SKYJO');
+  expect(snapshot.pileTypography[0]?.cardText, `${variant.label} deck face should remain visibly identified`).toBe('FV');
   expect(snapshot.pileTypography[1]?.cardText, `${variant.label} discard value should remain visible`).toMatch(/^-?\d+$/);
   expect(
     snapshot.pileTypography.every(({ cardContained, labelContained }) => cardContained && labelContained),
@@ -1451,7 +1451,7 @@ test('solo drawn-card decisions stay visible and fixed across the supported phon
       }
       await expect(
         page.getByText(
-          'This device is low on storage. You can keep playing, but this game may not restore after closing Skyjo.'
+          'This device is low on storage. You can keep playing, but this game may not restore after closing Flipvale.'
         )
       ).toBeVisible();
       await expect(table).not.toHaveAttribute('data-phase', 'opening-reveal', { timeout: 5_000 });
@@ -1622,7 +1622,7 @@ test('deferred guidance survives same-page rotation and width changes without hi
     }
     await expect(
       page.getByText(
-        'This device is low on storage. You can keep playing, but this game may not restore after closing Skyjo.'
+        'This device is low on storage. You can keep playing, but this game may not restore after closing Flipvale.'
       )
     ).toBeVisible();
     await expect(table).not.toHaveAttribute('data-phase', 'opening-reveal', { timeout: 5_000 });

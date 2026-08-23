@@ -36,7 +36,7 @@ final class RoomInviteCoordinator {
     } catch {
       guard Self.isSkyjoInviteRoute(url) else { return false }
       requestID = nil
-      state = .failed(message: "This Skyjo invite link is invalid. Ask the host for a new link.")
+      state = .failed(message: "This Flipvale invite link is invalid. Ask the host for a new link.")
       return true
     }
 
@@ -92,7 +92,7 @@ final class RoomInviteCoordinator {
     if let error = error as? RoomInviteContractError {
       return error.localizedDescription
     }
-    return "Skyjo could not open this invite. Ask the host for a new link."
+    return "Flipvale could not open this invite. Ask the host for a new link."
   }
 
   private static func isSkyjoInviteRoute(_ url: URL) -> Bool {

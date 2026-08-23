@@ -190,7 +190,7 @@ if (
   typeof inviteSecret !== 'string' ||
   inviteSecret.length < 16
 ) {
-  console.error('Skyjo authentication secrets are missing or invalid.');
+  console.error('Flipvale authentication secrets are missing or invalid.');
   console.error('Set the session and invite secrets before running npm start.');
   process.exit(1);
 }
@@ -1492,7 +1492,7 @@ function notifyAwayPlayersAfterMove(room, actor, nextState) {
       room,
       room.players.filter((player) => player.id !== actor.id).map((player) => player.id)
     );
-    const title = nextState.phase === 'game-over' ? 'Skyjo game finished' : 'Skyjo round ended';
+    const title = nextState.phase === 'game-over' ? 'Flipvale game finished' : 'Flipvale round ended';
     const kind = nextState.phase === 'game-over' ? 'game-ended' : 'round-ended';
     scheduleNotificationToUsers(targetUserIds, {
       title,
@@ -1507,7 +1507,7 @@ function notifyAwayPlayersAfterMove(room, actor, nextState) {
   if (!activePlayer || activePlayer.id === actor.id) return;
   const targetUserIds = awayUserIdsForPlayers(room, [activePlayer.id]);
   scheduleNotificationToUsers(targetUserIds, {
-    title: 'Your turn in Skyjo',
+    title: 'Your turn in Flipvale',
     body: `${actor.name} played. Tap to take your turn.`,
     tag: `skyjo-${room.code}-turn`,
     url
@@ -1568,7 +1568,7 @@ function renderPwaHead(title) {
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Skyjo" />
+    <meta name="apple-mobile-web-app-title" content="Flipvale" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/png" href="/skyjo-icon-v2-192.png" />
     <link rel="apple-touch-icon" href="/skyjo-icon-v2-180.png" />
@@ -1579,7 +1579,7 @@ function renderInviteUnavailable(message, nonce) {
   return `<!doctype html>
 <html lang="en">
   <head>
-    ${renderPwaHead('Skyjo invite unavailable')}
+    ${renderPwaHead('Flipvale invite unavailable')}
     <style nonce="${nonce}">
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
@@ -1590,7 +1590,7 @@ function renderInviteUnavailable(message, nonce) {
       a { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; border-radius: 8px; padding: 0 16px; color: #0a1410; background: #f5e6c8; font-weight: 900; text-decoration: none; }
     </style>
   </head>
-  <body><main><h1>Invite unavailable</h1><p>${escapeHtml(message)}</p><a href="/">Open Skyjo</a></main></body>
+  <body><main><h1>Invite unavailable</h1><p>${escapeHtml(message)}</p><a href="/">Open Flipvale</a></main></body>
 </html>`;
 }
 
@@ -1619,7 +1619,7 @@ function renderInviteLanding({ invite, nonce }) {
   return `<!doctype html>
 <html lang="en">
   <head>
-    ${renderPwaHead('Join Skyjo')}
+    ${renderPwaHead('Join Flipvale')}
     <style nonce="${nonce}">
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
@@ -1690,15 +1690,15 @@ function renderInviteLanding({ invite, nonce }) {
   <body>
     <main class="shell">
       <section>
-        <div class="eyebrow">Skyjo invite</div>
+        <div class="eyebrow">Flipvale invite</div>
         <h1>Join Room ${safeRoom}</h1>
         <p class="lead">Choose where to play. Browser is fastest; Home Screen is better for repeat games.</p>
         <div class="room">${safeRoom}</div>
       </section>
 
       <section class="choice">
-        <h2>Add Skyjo to your Home Screen</h2>
-        <p>Copy the room code, then add Skyjo from Safari.</p>
+        <h2>Add Flipvale to your Home Screen</h2>
+        <p>Copy the room code, then add Flipvale from Safari.</p>
         <div class="code-row">
           <input id="room-code" readonly value="${safeRoom}" />
           <button class="button" id="copy-code" type="button">Copy Code</button>
@@ -1707,7 +1707,7 @@ function renderInviteLanding({ invite, nonce }) {
         <ol>
           <li>Tap the Safari share button.</li>
           <li>Choose Add to Home Screen.</li>
-          <li>Open Skyjo, create or sign in to your account, then join this room code.</li>
+          <li>Open Flipvale, create or sign in to your account, then join this room code.</li>
         </ol>
         <p class="note">The host can share the same room code with everyone playing.</p>
       </section>
@@ -1765,7 +1765,7 @@ function accountSessionHeaders(session) {
 function requireAccountForApi(req, res) {
   const user = currentAccountUser(req);
   if (!user) {
-    sendApiError(res, 401, 'ACCOUNT_AUTHENTICATION_REQUIRED', 'Sign in to your Skyjo account.');
+    sendApiError(res, 401, 'ACCOUNT_AUTHENTICATION_REQUIRED', 'Sign in to your Flipvale account.');
     return null;
   }
   return user;
@@ -2335,7 +2335,7 @@ function renderInviteCodePage(inviteCodeError = false, inviteRateLimited = false
   return `<!doctype html>
 <html lang="en">
   <head>
-    ${renderPwaHead('Skyjo Online')}
+    ${renderPwaHead('Flipvale')}
     <style nonce="${nonce}">
       :root { color-scheme: dark; }
       body {
@@ -2371,12 +2371,12 @@ function renderInviteCodePage(inviteCodeError = false, inviteRateLimited = false
   </head>
   <body>
     <main>
-      <h1>SKYJO</h1>
+      <h1>FLIPVALE</h1>
       <p>The game is open. Play as a guest or create your own account.</p>
-      <a class="home-link" href="/">Open Skyjo</a>
+      <a class="home-link" href="/">Open Flipvale</a>
       <section class="invite-panel">
         <h2>Have an invite code?</h2>
-        <p>Paste the code from a Skyjo invite to open that room.</p>
+        <p>Paste the code from a Flipvale invite to open that room.</p>
         <form method="post" action="/invite-code">
           <input name="code" autocomplete="one-time-code" inputmode="text" placeholder="ABCD123" required />
           <button type="submit">Open Invite</button>
@@ -2790,7 +2790,7 @@ setInterval(() => {
 server.listen(port, host, () => {
   const address = server.address();
   const listeningPort = typeof address === 'object' && address ? address.port : port;
-  console.log(`Skyjo Online serving ${distDir}`);
+  console.log(`Flipvale serving ${distDir}`);
   console.log(`Listening on http://${host}:${listeningPort}`);
 });
 

@@ -582,7 +582,7 @@ function persistenceWarning(error: unknown): SoloPersistenceWarning {
   if (name === 'QuotaExceededError') {
     return {
       kind: 'quota',
-      message: 'This device is low on storage. You can keep playing, but this game may not restore after closing Skyjo.'
+      message: 'This device is low on storage. You can keep playing, but this game may not restore after closing Flipvale.'
     };
   }
   return {

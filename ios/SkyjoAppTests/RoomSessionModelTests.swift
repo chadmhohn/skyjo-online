@@ -50,7 +50,7 @@ struct RoomSessionModelTests {
     #expect(await coordinator.accept(malformed))
     #expect(
       coordinator.state
-        == .failed(message: "This Skyjo invite link is invalid. Ask the host for a new link.")
+        == .failed(message: "This Flipvale invite link is invalid. Ask the host for a new link.")
     )
     #expect(await probe.count() == 0)
     #expect(!String(reflecting: coordinator.state).contains("private"))
@@ -1223,7 +1223,7 @@ struct RoomSessionModelTests {
       admissionAttemptID: admissionAttemptID
     )))
     #expect(await modelEventually(attempts: 200) { model.banner?.title == "Room not confirmed" })
-    #expect(model.banner?.message == "Skyjo could not confirm that room. Create or join again.")
+    #expect(model.banner?.message == "Flipvale could not confirm that room. Create or join again.")
     #expect(model.savedSeatKnownAbsent)
     #expect(!model.shouldShowRetrySavedSeat)
     #expect(!model.shouldShowForgetSavedSeat)

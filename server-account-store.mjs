@@ -16,7 +16,7 @@ export const APNS_DEVICE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 export const APNS_MAX_ACTIVE_INSTALLATIONS_PER_ACCOUNT = 8;
 const publicApiErrors = new Map([
   ['ACCESS_AUTHENTICATION_FAILED', Object.freeze({ status: 401, message: 'Authentication failed.' })],
-  ['ACCOUNT_AUTHENTICATION_REQUIRED', Object.freeze({ status: 401, message: 'Sign in to your Skyjo account.' })],
+  ['ACCOUNT_AUTHENTICATION_REQUIRED', Object.freeze({ status: 401, message: 'Sign in to your Flipvale account.' })],
   ['ACCOUNT_RATE_LIMITED', Object.freeze({ status: 429, message: 'Too many account attempts. Try again later.' })],
   ['INVALID_REQUEST', Object.freeze({ status: 400, message: 'Request did not match the expected contract.' })],
   ['UNSUPPORTED_MEDIA_TYPE', Object.freeze({ status: 415, message: 'Content-Type must be application/json.' })],
@@ -41,7 +41,7 @@ const publicApiErrors = new Map([
   ['PASSWORDS_MUST_MATCH', Object.freeze({ status: 400, message: 'Passwords must match.' })],
   ['MISSING_HUMAN_PLAYER', Object.freeze({ status: 400, message: 'Single-player game is missing a human player.' })],
   ['ACCOUNT_SESSION_CHANGED', Object.freeze({ status: 409, message: 'Account changed. Sign in again before syncing this game.' })],
-  ['STATS_CLIENT_UPGRADE_REQUIRED', Object.freeze({ status: 426, message: 'Update Skyjo before syncing saved game stats.' })],
+  ['STATS_CLIENT_UPGRADE_REQUIRED', Object.freeze({ status: 426, message: 'Update Flipvale before syncing saved game stats.' })],
   ['INVALID_COMPLETED_AT', Object.freeze({ status: 400, message: 'Game completion time is invalid.' })],
   ['REQUEST_TOO_LARGE', Object.freeze({ status: 413, message: 'Request body too large.' })],
   ['INVALID_JSON', Object.freeze({ status: 400, message: 'Request body must be valid JSON.' })],

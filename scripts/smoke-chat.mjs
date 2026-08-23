@@ -1079,7 +1079,7 @@ try {
     assert.match(inviteLandingHtml, new RegExp(marker), `invite SSR head includes ${marker}`);
   }
   assert.equal(inviteLandingHtml.includes(`Join Room ${parkingRoomCode}`), true, 'invite landing shows the room code');
-  assert.match(inviteLandingHtml, /Add Skyjo to your Home Screen/, 'invite landing explains the home screen path');
+  assert.match(inviteLandingHtml, /Add Flipvale to your Home Screen/, 'invite landing explains the home screen path');
   assert.match(inviteLandingHtml, /Open in Browser/, 'invite landing keeps the browser path available');
   assert.equal(
     inviteLandingHtml.includes(`id="room-code" readonly value="${parkingRoomCode}"`),
