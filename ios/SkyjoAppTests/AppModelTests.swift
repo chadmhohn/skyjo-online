@@ -577,6 +577,11 @@ struct AppModelTests {
     account.password = composed(8)
     account.confirmPassword = account.password
     #expect(account.canChangePassword)
+    account.deletionPassword = "current-password"
+    account.deletionConfirmation = "delete"
+    #expect(!account.canDeleteAccount)
+    account.deletionConfirmation = "DELETE"
+    #expect(account.canDeleteAccount)
     account.currentPassword = composed(1_025)
     #expect(!account.canChangePassword)
     account.currentPassword = composed(1)
@@ -645,6 +650,42 @@ struct AppModelTests {
     #expect(logoutModel.rootState == .guest)
     #expect(logoutModel.selectedTab == .home)
     #expect(logoutModel.user == nil)
+
+    let deletionModel = makeModel(scenario: .normal)
+    await deletionModel.bootstrap()
+    deletionModel.selectedTab = .account
+    deletionModel.accountSettings.deletionPassword = "current-password"
+    deletionModel.accountSettings.deletionConfirmation = "DELETE"
+    await deletionModel.deleteAccount()
+    #expect(deletionModel.rootState == .guest)
+    #expect(deletionModel.selectedTab == .home)
+    #expect(deletionModel.user == nil)
+    #expect(deletionModel.accountSettings.deletionPassword.isEmpty)
+    #expect(deletionModel.accountSettings.deletionConfirmation.isEmpty)
+    #expect(deletionModel.authentication.errorMessage.contains("Account deleted"))
+
+    let rejectedDeletionModel = makeModel(scenario: .accountDeletionUnavailable)
+    await rejectedDeletionModel.bootstrap()
+    rejectedDeletionModel.accountSettings.deletionPassword = "current-password"
+    rejectedDeletionModel.accountSettings.deletionConfirmation = "DELETE"
+    await rejectedDeletionModel.deleteAccount()
+    #expect(rejectedDeletionModel.rootState == .authenticated)
+    #expect(rejectedDeletionModel.user != nil)
+    #expect(rejectedDeletionModel.accountSettings.deletionMessage.contains("could not be completed safely"))
+
+    let cleanupFailureModel = AppModel(
+      service: MockSkyjoService(scenario: .normal),
+      baseURL: URL(string: "https://skyjo.example.invalid")!,
+      deleteLocalAccountData: { _ in throw SkyjoHTTPClientError.transport(.cannotWriteToFile) }
+    )
+    await cleanupFailureModel.bootstrap()
+    cleanupFailureModel.accountSettings.deletionPassword = "current-password"
+    cleanupFailureModel.accountSettings.deletionConfirmation = "DELETE"
+    await cleanupFailureModel.deleteAccount()
+    #expect(cleanupFailureModel.selectedTab == .account)
+    #expect(cleanupFailureModel.rootState == .guest)
+    #expect(cleanupFailureModel.user == nil)
+    #expect(cleanupFailureModel.authentication.errorMessage.contains("reinstall Skyjo"))
   }
 
   @Test("A disabled profile response ends the account session and clears stale state")
@@ -865,6 +906,7 @@ private actor MockSkyjoService: SkyjoService {
     case disabledProfileUpdate
     case profileServiceUnavailable
     case passwordAccountNotFound
+    case accountDeletionUnavailable
     case mismatchedIdentifiers
   }
 
@@ -990,6 +1032,16 @@ private actor MockSkyjoService: SkyjoService {
         statusCode: 404,
         code: .accountNotFound,
         message: "Account not found."
+      )
+    }
+  }
+
+  func deleteAccount(currentPassword: String, confirmation: String) async throws {
+    if scenario == .accountDeletionUnavailable {
+      throw SkyjoHTTPClientError.server(
+        statusCode: 503,
+        code: .accountDeletionUnavailable,
+        message: "Account deletion could not be completed safely. Try again."
       )
     }
   }

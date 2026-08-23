@@ -582,10 +582,14 @@ export async function deliverAPNSNotifications({
   provider,
   deleteDevice,
   reportFailure,
-  reportCleanupFailure
+  reportCleanupFailure,
+  shouldDeliver = () => true
 }) {
   const entries = Array.isArray(devices) ? devices : [];
   return Promise.all(entries.map(async (device) => {
+    if (!(await shouldDeliver(device))) {
+      return { delivered: false, deleted: false, cleanupFailed: false, cancelled: true };
+    }
     let deviceToken;
     try {
       deviceToken = tokenCodec.decrypt(device);
@@ -593,6 +597,9 @@ export async function deliverAPNSNotifications({
       const diagnostic = Object.freeze({ statusCode: null, providerReason: null, environment: null, stage: 'decrypt' });
       safeReport(reportFailure, diagnostic);
       return { delivered: false, deleted: false, cleanupFailed: false, diagnostic };
+    }
+    if (!(await shouldDeliver(device))) {
+      return { delivered: false, deleted: false, cleanupFailed: false, cancelled: true };
     }
     let result;
     try {

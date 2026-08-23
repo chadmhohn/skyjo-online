@@ -13,7 +13,8 @@ Last reviewed by Codex: 2026-07-28 America/Denver, against the live v0.3.2 relea
 - Signed room invites use `SKYJO_INVITE_SECRET` and `SKYJO_INVITE_TTL_HOURS`. The public app no longer has a shared site-password gate; invites still grant neither account identity nor room membership. The retired one-time install-code endpoint remains only for already-minted rollback compatibility.
 - Room persistence file: `/var/lib/skyjo-online/rooms.json`, via `SKYJO_ROOMS_FILE`.
 - Account and game-history database: `/var/lib/skyjo-online/skyjo.sqlite`, via `SKYJO_DB_FILE`.
-- Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. Treat that password as temporary.
+- External account-deletion ledger: `/var/lib/skyjo-online/account-deletions.json`, via optional `SKYJO_ACCOUNT_DELETION_LEDGER_FILE`. It is not a rollback/backup payload; startup, canaries, and isolated restores reapply its account-UUID and deletion-time tombstones. The privacy inventory discloses their indefinite security retention.
+- Initial admin bootstrap: `SKYJO_ADMIN_EMAIL=chad.hohn@groundworkrevops.com` plus `SKYJO_ADMIN_INITIAL_PASSWORD` for first setup. This is an empty-database-only bootstrap and never recreates or re-promotes an account after any user exists. Any durable account-deletion tombstone disables new bootstrap creation, including after an old restore is reconciled to an empty database. Treat that password as temporary.
 - App bind address: `127.0.0.1:4180`.
 - Public hostname: `skyjo.groundworkrevops.com`.
 - Cloudflare zone: `groundworkrevops.com`.
@@ -48,6 +49,7 @@ The repository-owned native handoff starts at [`docs/native-ios/README.md`](docs
 - `server-room-invites.mjs`: signed invite parsing/verification plus strict `SKYJO_APPLE_APPLICATION_IDENTIFIER` validation and exact Apple association-document generation. Production requires the confirmed full App ID; isolated test/canary runs use the fixed non-production identifier.
 - `server-account-store.mjs`: SQLite account/session/game-history store using `node:sqlite`. Owns password hashing, admin bootstrap, account sessions, saved game records, stats visibility, admin user operations, and the exact frozen APNs table plus encrypted, capped, retained device registrations while public schema remains 2.
 - `server-apns.mjs`: native notification boundary. Owns strict registration validation, server-only key loading, AES-256-GCM token protection and keyed fingerprints, ES256 provider tokens, bounded fixed-host HTTP/2 delivery, generic payloads, retry classification, and race-safe invalid-token retirement.
+- `server-account-deletion-ledger.mjs`: external account-UUID and deletion-time tombstones. It prevents verified pre-deletion backups, copied canary state, or startup reconciliation from resurrecting deleted accounts and related private state.
 - `server-room-persistence.mjs`: versioned JSON persistence for rooms with strict legacy readers and durable atomic v2 writes. Production uses `/var/lib/skyjo-online/rooms.json` through `SKYJO_ROOMS_FILE`; local/dev defaults to `.data/rooms.json`.
 - `server-release.mjs` and `server-readiness.mjs`: checksum-validated build identity and sanitized public readiness/version contracts. The current baseline is schema 2 and protocol 2.
 - `server-state-backup.mjs`: online SQLite backup, fixed-file checksum manifest verification, and fresh isolated restore safeguards.

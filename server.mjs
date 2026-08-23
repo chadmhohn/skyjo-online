@@ -41,6 +41,7 @@ import {
 import { wellFormedUTF16Prefix } from './server-unicode.mjs';
 import {
   loadRoomsSnapshotFromDisk,
+  prepareAccountDeletionRoomScrub,
   reconcileCompletedRoomJournals,
   resolveRoomsFilePath,
   ROOM_STALE_MS,
@@ -54,6 +55,10 @@ import {
   publicApiErrorResponse,
   resolveAccountDatabasePath
 } from './server-account-store.mjs';
+import {
+  createAccountDeletionLedger,
+  resolveAccountDeletionLedgerPath
+} from './server-account-deletion-ledger.mjs';
 import {
   cleanInviteInstallCode,
   createInviteRedemptionRateLimiter,
@@ -70,6 +75,7 @@ import {
 } from './server-room-invites.mjs';
 import { createPersistenceHealthTracker } from './server-persistence-health.mjs';
 import {
+  createAccountNotificationDeliveryFence,
   createWebPushDeliveryDiagnostic,
   deliverWebPushNotifications,
   resolveWebPushConfiguration
@@ -118,6 +124,7 @@ const vapidSubject = process.env.SKYJO_VAPID_SUBJECT || `mailto:${adminEmail}`;
 const rooms = new Map();
 const roomsFile = resolveRoomsFilePath();
 const accountDatabaseFile = resolveAccountDatabasePath();
+const accountDeletionLedgerFile = resolveAccountDeletionLedgerPath();
 const databaseRetryDelayMs = Math.max(100, Number(process.env.SKYJO_DATABASE_RETRY_MS || 5000));
 const roomsSaveDebounceMs = 250;
 const maxRoomChatMessages = 80;
@@ -136,12 +143,15 @@ const nativeInviteRedemptionRateLimiter = createInviteRedemptionRateLimiter();
 const accountSignupRateLimiter = createRequestRateLimiter({ limit: 10, windowMs: 60 * 60 * 1000 });
 const accountLoginRateLimiter = createRequestRateLimiter({ limit: 20, windowMs: 5 * 60 * 1000 });
 const apnsRegistrationRateLimiter = createAPNSRegistrationRateLimiter();
+const notificationDeliveryFence = createAccountNotificationDeliveryFence();
 let roomsSaveTimer = null;
 let roomsSaveQueue = Promise.resolve();
 let shuttingDown = false;
 let accountStore = null;
+let accountDeletionLedger = null;
 let nextDatabaseRetryAt = 0;
 let databaseFailureLogged = false;
+let accountDeletionInProgress = false;
 let releaseIdentity = null;
 let appleAppSiteAssociation = null;
 let apnsConfiguration = null;
@@ -241,7 +251,14 @@ try {
   console.error('Release identity validation failed; readiness and version endpoints will remain unavailable.');
 }
 
+try {
+  accountDeletionLedger = await createAccountDeletionLedger({ filePath: accountDeletionLedgerFile });
+} catch {
+  console.error('Account deletion ledger is unavailable; account state will remain in health-only mode.');
+}
+
 async function ensureAccountStore({ force = false } = {}) {
+  if (!accountDeletionLedger) return null;
   if (accountStore?.checkReadiness()) return accountStore;
   accountStore?.close();
   accountStore = null;
@@ -253,8 +270,14 @@ async function ensureAccountStore({ force = false } = {}) {
   let candidate = null;
   try {
     candidate = await createAccountStore({ filePath: accountDatabaseFile });
+    const accountDeletionEntries = accountDeletionLedger.entries();
+    candidate.reconcileDeletedAccounts(accountDeletionEntries.map((entry) => entry.userId));
     candidate.pruneAPNSDevices();
-    const bootstrappedAdmin = await candidate.bootstrapAdmin({ email: adminEmail, password: adminInitialPassword });
+    const bootstrappedAdmin = await candidate.bootstrapAdmin({
+      email: adminEmail,
+      password: adminInitialPassword,
+      allowCreate: accountDeletionEntries.length === 0
+    });
     if (bootstrappedAdmin) {
       console.log('Admin account ready.');
     } else {
@@ -1397,6 +1420,9 @@ async function sendPushToUsers(userIds, payload) {
       payload,
       sendNotification: (subscription, serializedPayload) => webPush.sendNotification(subscription, serializedPayload),
       deleteSubscription: (endpoint) => store.deletePushSubscription(endpoint),
+      shouldDeliver: (subscription) =>
+        notificationDeliveryFence.canDeliver(subscription.userId)
+          && store.isPushSubscriptionCurrent(subscription),
       reportFailure: (diagnostic) => reportWebPushFailure('Web Push delivery failed.', diagnostic),
       reportCleanupFailure: (diagnostic) => reportWebPushFailure('Web Push subscription cleanup failed.', diagnostic)
     });
@@ -1430,6 +1456,9 @@ async function sendAPNSToUsers(userIds, event) {
       tokenCodec: apnsConfiguration.tokenCodec,
       provider: apnsProvider,
       deleteDevice: (device) => store.deleteAPNSDeviceIfCurrent(device),
+      shouldDeliver: (device) =>
+        notificationDeliveryFence.canDeliver(device.userId)
+          && store.isAPNSDeviceCurrent(device),
       reportFailure: (diagnostic) => reportAPNSFailure('APNs delivery failed.', diagnostic),
       reportCleanupFailure: (diagnostic) => reportAPNSFailure('APNs device cleanup failed.', diagnostic)
     });
@@ -1439,10 +1468,12 @@ async function sendAPNSToUsers(userIds, event) {
 }
 
 function scheduleNotificationToUsers(userIds, webPayload, apnsEvent) {
-  void Promise.allSettled([
-    sendPushToUsers(userIds, webPayload),
-    sendAPNSToUsers(userIds, apnsEvent)
-  ]);
+  for (const userId of new Set(userIds.filter(Boolean).map(String))) {
+    void notificationDeliveryFence.track(userId, () => Promise.allSettled([
+      sendPushToUsers([userId], webPayload),
+      sendAPNSToUsers([userId], apnsEvent)
+    ])).catch(() => {});
+  }
 }
 
 function awayUserIdsForPlayers(room, playerIds) {
@@ -1851,11 +1882,95 @@ async function handleApiRequest(req, res, url) {
     if (url.pathname === '/api/account/password' && req.method === 'POST') {
       const user = requireAccountForApi(req, res);
       if (!user) return true;
+      if (accountDeletionInProgress) throw new PublicApiError('ACCOUNT_DELETION_UNAVAILABLE');
       const body = await readJsonBody(req);
       if (body.password !== body.confirmPassword) throw new PublicApiError('PASSWORDS_MUST_MATCH');
       await accountStore.changePassword(user.id, body.currentPassword, body.password);
       sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
       return true;
+    }
+
+    if (url.pathname === '/api/account' && req.method === 'DELETE') {
+      const user = requireAccountForApi(req, res);
+      if (!user) return true;
+      if (url.search) throw new PublicApiError('INVALID_REQUEST');
+      if (!requestUsesJson(req)) throw new PublicApiError('UNSUPPORTED_MEDIA_TYPE');
+      const body = await readJsonBody(req);
+      const keys = Object.keys(body).sort();
+      if (
+        keys.length !== 2 ||
+        keys[0] !== 'confirmation' ||
+        keys[1] !== 'currentPassword' ||
+        body.confirmation !== 'DELETE' ||
+        typeof body.currentPassword !== 'string' ||
+        [...body.currentPassword].length < 1 ||
+        [...body.currentPassword].length > 1_024
+      ) {
+        throw new PublicApiError('INVALID_REQUEST');
+      }
+
+      if (accountDeletionInProgress) throw new PublicApiError('ACCOUNT_DELETION_UNAVAILABLE');
+      accountDeletionInProgress = true;
+      let notificationsBlocked = false;
+      let roomScrub = null;
+      let deletionRecorded = false;
+      let deletionCommitted = false;
+      try {
+        const authorization = await accountStore.authorizeAccountDeletion(user.id, body.currentPassword);
+        await notificationDeliveryFence.blockAndDrain(user.id);
+        notificationsBlocked = true;
+        // Prove the room store is writable before the external tombstone makes
+        // deletion irreversible. No room state has changed at this point.
+        await flushRoomPersistence();
+        // Recheck after the awaited preflight. No other account deletion,
+        // password reset, or admin mutation can pass the server gate meanwhile.
+        accountStore.assertAccountDeletionAuthorization(authorization);
+        await accountDeletionLedger.recordDeletion(user.id);
+        deletionRecorded = true;
+        // The ledger is now the durable deletion commit point. A crash or any
+        // later failure is completed by startup reconciliation rather than
+        // leaving an active account beside partially scrubbed room state.
+        roomScrub = prepareAccountDeletionRoomScrub(rooms, user.id);
+        await flushRoomPersistence();
+        accountStore.deleteAccount(authorization);
+        deletionCommitted = true;
+        roomScrub.commit();
+        for (const room of roomScrub.changedRooms) broadcastRoom(room);
+        sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
+        return true;
+      } catch (error) {
+        if (!deletionCommitted && deletionRecorded) {
+          try {
+            roomScrub ||= prepareAccountDeletionRoomScrub(rooms, user.id);
+            accountStore.reconcileDeletedAccounts([user.id]);
+            deletionCommitted = true;
+            roomScrub.commit();
+            try {
+              await flushRoomPersistence();
+            } catch {
+              console.error('Failed to persist a reconciled account deletion; the durable ledger will retry it at startup.');
+            }
+            for (const room of roomScrub.changedRooms) broadcastRoom(room);
+            sendJsonResponse(res, 200, { ok: true }, { 'Set-Cookie': accountCookieHeader('', 0) });
+            return true;
+          } catch {
+            console.error('Failed to reconcile a durably recorded account deletion.');
+          }
+        }
+        if (!deletionCommitted && roomScrub) {
+          roomScrub.rollback();
+          try {
+            await flushRoomPersistence();
+          } catch {
+            console.error('Failed to restore room persistence after account deletion rollback.');
+          }
+        }
+        if (error instanceof PublicApiError) throw error;
+        throw new PublicApiError('ACCOUNT_DELETION_UNAVAILABLE');
+      } finally {
+        if (!deletionCommitted && notificationsBlocked) notificationDeliveryFence.unblock(user.id);
+        accountDeletionInProgress = false;
+      }
     }
 
     if (url.pathname === '/api/push/config' && req.method === 'GET') {
@@ -2066,6 +2181,7 @@ async function handleApiRequest(req, res, url) {
     const adminPasswordMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/password$/);
     if (adminPasswordMatch && req.method === 'POST') {
       if (!requireAdminForApi(req, res)) return true;
+      if (accountDeletionInProgress) throw new PublicApiError('ACCOUNT_DELETION_UNAVAILABLE');
       const body = await readJsonBody(req);
       if (body.password !== body.confirmPassword) throw new PublicApiError('PASSWORDS_MUST_MATCH');
       await accountStore.setUserPassword(adminPasswordMatch[1], body.password);
@@ -2077,6 +2193,7 @@ async function handleApiRequest(req, res, url) {
     if (adminUserMatch && req.method === 'PATCH') {
       const adminUser = requireAdminForApi(req, res);
       if (!adminUser) return true;
+      if (accountDeletionInProgress) throw new PublicApiError('ACCOUNT_DELETION_UNAVAILABLE');
       const body = await readJsonBody(req);
       if (adminUser.id === adminUserMatch[1] && (body.disabled === true || body.disabled === 1 || body.role === 'player')) {
         sendApiError(res, 400, 'ADMIN_SELF_REVOKE_FORBIDDEN', 'You cannot revoke your own admin access.');
@@ -2392,21 +2509,27 @@ try {
     loadRoomsSnapshotFromDisk(roomsFile, { staleMs: ROOM_STALE_MS })
   );
   const restoredRoomMap = new Map(snapshot.rooms.map((room) => [room.code, room]));
+  let reconciledAccountRooms = 0;
+  for (const entry of accountDeletionLedger?.entries() || []) {
+    const scrub = prepareAccountDeletionRoomScrub(restoredRoomMap, entry.userId, { now: entry.deletedAt });
+    reconciledAccountRooms += scrub.changedRoomCount;
+    scrub.commit();
+  }
   const reconciledCompletions = accountStore
     ? reconcileCompletedRoomJournals(
         restoredRoomMap,
         (sourceKey) => accountStore.getCompletedGameJournalBySourceKey(sourceKey)
       )
     : 0;
-  if (snapshot.missing || snapshot.legacy || reconciledCompletions > 0) {
+  if (snapshot.missing || snapshot.legacy || reconciledCompletions > 0 || reconciledAccountRooms > 0) {
     await roomPersistenceHealth.track(() => saveRoomsToDisk(restoredRoomMap, roomsFile));
   }
-  for (const room of snapshot.rooms) {
+  for (const room of restoredRoomMap.values()) {
     rooms.set(room.code, room);
   }
   roomPersistenceLoadAccepted = true;
-  if (snapshot.rooms.length > 0) {
-    console.log(`Restored ${snapshot.rooms.length} persisted room(s) from ${roomsFile}`);
+  if (restoredRoomMap.size > 0) {
+    console.log(`Restored ${restoredRoomMap.size} persisted room(s) from ${roomsFile}`);
   }
 } catch {
   console.error('Persisted room state was rejected; room writes are disabled to protect the source file.');

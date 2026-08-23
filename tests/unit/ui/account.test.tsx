@@ -2,7 +2,9 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
+import AccountPage from '../../../src/AccountPage';
 import {
   AccountProvider,
   createAdminUser,
@@ -52,6 +54,7 @@ function ContextHarness() {
       <button onClick={() => void account.signup('new@example.test', 'New Player', 'secret', 'secret').catch(() => undefined)}>signup</button>
       <button onClick={() => void account.updateProfile('Renamed').catch(() => undefined)}>profile</button>
       <button onClick={() => void account.changePassword('old', 'new', 'new').catch(() => undefined)}>password</button>
+      <button onClick={() => void account.deleteAccount('current-secret', 'DELETE').catch(() => undefined)}>delete</button>
       <button onClick={() => void account.logout().catch(() => undefined)}>logout</button>
       <button onClick={() => account.clearError()}>clear</button>
       <button onClick={() => void account.refresh()}>refresh</button>
@@ -93,7 +96,7 @@ describe('account API and provider', () => {
         const path = String(input);
         calls.push({ path, init });
         if (path === '/api/account/me') return jsonResponse({ user: currentMeUser });
-        if (path === '/api/account/logout' || path === '/api/account/password') return jsonResponse({ ok: true });
+        if (path === '/api/account/logout' || path === '/api/account/password' || path === '/api/account') return jsonResponse({ ok: true });
         if (path.includes('/password')) return jsonResponse({ ok: true });
         if (path === '/api/rooms/invite') return jsonResponse({ roomCode: 'ABCDE', path: '/invite/token', expiresAt: 99 });
         if (path === '/api/stats/summary') return jsonResponse({ self: {}, coPlayers: [], recentGames: [], admin: null });
@@ -217,6 +220,47 @@ describe('account API and provider', () => {
     await waitFor(() => expect(screen.getByTestId('solo-owner')).toHaveTextContent('no-owner'));
     expect(screen.getByText('guest')).toBeInTheDocument();
     expect(window.localStorage.getItem(lastConfirmedSoloOwnerStorageKey)).toBeNull();
+  });
+
+  it('requires the explicit account deletion request and clears local identity only after success', async () => {
+    currentMeUser = user;
+    const actor = userEvent.setup();
+    render(<ContextHarness />, { wrapper: Wrapper });
+    await screen.findByText('Player One');
+
+    await actor.click(screen.getByRole('button', { name: 'delete' }));
+    await screen.findByText('guest');
+    expect(screen.getByTestId('solo-owner')).toHaveTextContent('no-owner');
+    expect(window.localStorage.getItem(lastConfirmedSoloOwnerStorageKey)).toBeNull();
+    expect(calls.find(({ path }) => path === '/api/account')?.init).toMatchObject({
+      method: 'DELETE',
+      body: JSON.stringify({ currentPassword: 'current-secret', confirmation: 'DELETE' })
+    });
+  });
+
+  it('exposes a cancellable destructive web flow with password and exact confirmation', async () => {
+    currentMeUser = user;
+    const actor = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={['/account']}>
+        <AccountProvider><AccountPage /></AccountProvider>
+      </MemoryRouter>
+    );
+    await screen.findByText('Player One');
+
+    await actor.click(screen.getByRole('button', { name: 'Delete Account' }));
+    const permanent = screen.getByRole('button', { name: 'Permanently Delete Account' });
+    expect(permanent).toBeDisabled();
+    await actor.type(screen.getAllByLabelText('Current password').at(-1)!, 'current-secret');
+    await actor.type(screen.getByLabelText('Type DELETE to confirm'), 'delete');
+    expect(permanent).toBeDisabled();
+    await actor.clear(screen.getByLabelText('Type DELETE to confirm'));
+    await actor.type(screen.getByLabelText('Type DELETE to confirm'), 'DELETE');
+    expect(permanent).toBeEnabled();
+    await actor.click(permanent);
+
+    await waitFor(() => expect(calls.some(({ path }) => path === '/api/account')).toBe(true));
+    expect(calls.find(({ path }) => path === '/api/account')?.init?.method).toBe('DELETE');
   });
 
   it('uses the generic error when a failed response is not JSON', async () => {

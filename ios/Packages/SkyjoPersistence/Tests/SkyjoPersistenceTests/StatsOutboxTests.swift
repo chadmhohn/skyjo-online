@@ -8,6 +8,39 @@ import Testing
 extension SkyjoPersistenceTestSuite {
 @Suite("Durable idempotent stats outbox")
 struct StatsOutboxTests {
+  @Test("Account deletion removes only that account's local save and outbox partition")
+  func accountDeletionPurgesLocalPartition() async throws {
+    let container = try SkyjoPersistenceContainer.makeInMemory()
+    let store = SoloPersistenceStore(modelContainer: container)
+    let active = try PersistenceTestSupport.activeState()
+    let gameID = PersistenceTestSupport.guestGameID
+    let activeSetup = try PersistenceTestSupport.setup(for: active, gameID: gameID)
+    _ = try await store.startSession(
+      owner: .account(PersistenceTestSupport.bobID),
+      gameID: gameID,
+      state: active,
+      setup: activeSetup,
+      savedAtMilliseconds: 10
+    )
+
+    let terminal = try PersistenceTestSupport.terminalState()
+    let outboxGameID = PersistenceTestSupport.secondGameID
+    try await store.completeSession(
+      owner: .account(PersistenceTestSupport.aliceID),
+      gameID: outboxGameID,
+      state: terminal,
+      setup: try PersistenceTestSupport.setup(for: terminal, gameID: outboxGameID),
+      saveSequence: 1,
+      completedAtMilliseconds: 20
+    )
+    #expect(try await store.pendingOutboxCount(accountID: PersistenceTestSupport.aliceID) == 1)
+
+    try await store.deleteAccountData(accountID: PersistenceTestSupport.aliceID)
+
+    #expect(try await store.pendingOutboxCount(accountID: PersistenceTestSupport.aliceID) == 0)
+    #expect(try await store.loadSession(for: .account(PersistenceTestSupport.bobID)).session != nil)
+  }
+
   @Test("Guest completion deletes the session and never creates an outbox row")
   func guestCompletion() async throws {
     let container = try SkyjoPersistenceContainer.makeInMemory()

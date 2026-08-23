@@ -7,6 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { createAccountDeletionLedger } from '../../server-account-deletion-ledger.mjs';
 import { createAccountStore } from '../../server-account-store.mjs';
 import { saveRoomsToDisk } from '../../server-room-persistence.mjs';
 import { CURRENT_PROTOCOL_VERSION, writeReleaseIdentity } from '../../server-release.mjs';
@@ -929,8 +930,10 @@ async function backupFixture(root) {
   await fs.mkdir(state, { recursive: true });
   const databasePath = path.join(state, 'skyjo.sqlite');
   const roomsPath = path.join(state, 'rooms.json');
+  const deletionLedgerPath = path.join(state, 'account-deletions.json');
   const store = await createAccountStore({ filePath: databasePath });
   store.close();
+  await createAccountDeletionLedger({ filePath: deletionLedgerPath });
   await saveRoomsToDisk(new Map(), roomsPath);
   await writeReleaseIdentity(dist, {
     formatVersion: 1,
@@ -942,6 +945,7 @@ async function backupFixture(root) {
   return {
     SKYJO_DB_FILE: databasePath,
     SKYJO_ROOMS_FILE: roomsPath,
+    SKYJO_ACCOUNT_DELETION_LEDGER_FILE: deletionLedgerPath,
     SKYJO_RELEASE_FILE: path.join(dist, 'release.json')
   };
 }

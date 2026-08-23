@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { createAccountStore } from '../../../server-account-store.mjs';
 import {
   createWebPushDeliveryDiagnostic,
+  createAccountNotificationDeliveryFence,
   deliverWebPushNotifications,
   resolveWebPushConfiguration,
   validateVapidSubject
@@ -141,6 +142,35 @@ describe('Web Push configuration', () => {
 });
 
 describe('Web Push delivery diagnostics', () => {
+  it('drains provider work before deletion and cancels work queued behind the fence', async () => {
+    const fence = createAccountNotificationDeliveryFence();
+    const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    let releaseDelivery!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      void fence.track(userId, async (canDeliver: () => boolean) => {
+        expect(canDeliver()).toBe(true);
+        resolve();
+        await new Promise<void>((release) => { releaseDelivery = release; });
+      });
+    });
+    await providerStarted;
+    let drained = false;
+    const deletionFence = fence.blockAndDrain(userId).then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    expect(fence.canDeliver(userId)).toBe(false);
+    const queuedProvider = vi.fn();
+    const queued = fence.track(userId, (canDeliver: () => boolean) => {
+      if (canDeliver()) queuedProvider();
+    });
+    releaseDelivery();
+    await Promise.all([deletionFence, queued]);
+    expect(drained).toBe(true);
+    expect(queuedProvider).not.toHaveBeenCalled();
+    fence.unblock(userId);
+    expect(fence.canDeliver(userId)).toBe(true);
+  });
+
   it('delivers serialized payloads without invoking cleanup or diagnostics', async () => {
     const sendNotification = vi.fn().mockResolvedValue({ statusCode: 201 });
     const deleteSubscription = vi.fn();
@@ -159,6 +189,28 @@ describe('Web Push delivery diagnostics', () => {
     expect(sendNotification).toHaveBeenCalledWith(subscription, JSON.stringify({ title: 'Your turn', roomId: 'private-room-id' }));
     expect(deleteSubscription).not.toHaveBeenCalled();
     expect(reportFailure).not.toHaveBeenCalled();
+  });
+
+  it('cancels a snapshotted subscription when account deletion fences delivery', async () => {
+    const sendNotification = vi.fn();
+    const shouldDeliver = vi.fn().mockResolvedValue(false);
+    await expect(deliverWebPushNotifications({
+      subscriptions: [{
+        endpoint: 'https://web.push.apple.com/device/deleting-account',
+        subscription: { endpoint: 'https://web.push.apple.com/device/deleting-account' }
+      }],
+      payload: { title: 'Your turn' },
+      sendNotification,
+      deleteSubscription: vi.fn(),
+      shouldDeliver
+    })).resolves.toEqual([{
+      delivered: false,
+      deleted: false,
+      cleanupFailed: false,
+      cancelled: true
+    }]);
+    expect(shouldDeliver).toHaveBeenCalledOnce();
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 
   it('deletes only 404/410 subscriptions and reports fixed, redacted diagnostics', async () => {
@@ -249,6 +301,15 @@ describe('Web Push delivery diagnostics', () => {
       diagnostic: { statusCode: 410, providerReason: 'Unregistered', endpointOrigin: 'https://web.push.apple.com' }
     }]);
     expect(deleteSubscription).toHaveBeenCalledWith('https://web.push.apple.com/device/stale-secret');
+
+    await expect(deliverWebPushNotifications({
+      subscriptions: [{ endpoint: 'https://push.example.test/reporter-failure', subscription: {} }],
+      payload: { title: 'Your turn' },
+      sendNotification: async () => { throw { statusCode: 503 }; },
+      deleteSubscription: vi.fn(),
+      reportFailure: async () => { throw new Error('reporter unavailable'); }
+    })).resolves.toHaveLength(1);
+    await Promise.resolve();
   });
 
   it('contains stale cleanup and payload serialization failures without exposing their errors', async () => {

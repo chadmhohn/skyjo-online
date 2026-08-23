@@ -45,6 +45,14 @@
       }
     },
     {
+      "name": "account deletion request",
+      "schema": "account-http.schema.json",
+      "value": {
+        "confirmation": "DELETE",
+        "currentPassword": "current-password"
+      }
+    },
+    {
       "name": "recorded stats game",
       "schema": "stats-http.schema.json",
       "value": {
@@ -637,6 +645,22 @@
       "value": {
         "code": "CURRENT_PASSWORD_MISMATCH",
         "error": "Current password did not match."
+      }
+    },
+    {
+      "name": "API error ACCOUNT_DELETION_STALE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCOUNT_DELETION_STALE",
+        "error": "Account changed. Sign in again before deleting it."
+      }
+    },
+    {
+      "name": "API error ACCOUNT_DELETION_UNAVAILABLE",
+      "schema": "api-error.schema.json",
+      "value": {
+        "code": "ACCOUNT_DELETION_UNAVAILABLE",
+        "error": "Account deletion could not be completed safely. Try again."
       }
     },
     {

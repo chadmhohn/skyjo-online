@@ -201,10 +201,10 @@ function safeReport(reporter, diagnostic) {
 function subscriptionEntry(value) {
   try {
     return value && typeof value === 'object'
-      ? { endpoint: value.endpoint, subscription: value.subscription }
-      : { endpoint: null, subscription: null };
+      ? { endpoint: value.endpoint, userId: value.userId, subscription: value.subscription }
+      : { endpoint: null, userId: null, subscription: null };
   } catch {
-    return { endpoint: null, subscription: null };
+    return { endpoint: null, userId: null, subscription: null };
   }
 }
 
@@ -217,13 +217,55 @@ function failedDeliveryResult(diagnostic, { cleanupFailed = false } = {}) {
   };
 }
 
+export function createAccountNotificationDeliveryFence() {
+  const blockedUserIds = new Set();
+  const tasksByUserId = new Map();
+
+  function canDeliver(userId) {
+    return typeof userId === 'string' && userId.length > 0 && !blockedUserIds.has(userId);
+  }
+
+  function track(userId, taskFactory) {
+    if (typeof userId !== 'string' || userId.length === 0 || typeof taskFactory !== 'function') {
+      throw new TypeError('Notification delivery tracking input is invalid.');
+    }
+    const tasks = tasksByUserId.get(userId) || new Set();
+    tasksByUserId.set(userId, tasks);
+    // Defer provider work by one microtask so the task is registered before an
+    // account-deletion request can wait on the in-flight set.
+    const task = Promise.resolve().then(() => taskFactory(() => canDeliver(userId)));
+    tasks.add(task);
+    void task.finally(() => {
+      tasks.delete(task);
+      if (tasks.size === 0) tasksByUserId.delete(userId);
+    }).catch(() => {});
+    return task;
+  }
+
+  async function blockAndDrain(userId) {
+    blockedUserIds.add(userId);
+    while (true) {
+      const tasks = [...(tasksByUserId.get(userId) || [])];
+      if (tasks.length === 0) return;
+      await Promise.allSettled(tasks);
+    }
+  }
+
+  function unblock(userId) {
+    blockedUserIds.delete(userId);
+  }
+
+  return Object.freeze({ blockAndDrain, canDeliver, track, unblock });
+}
+
 export async function deliverWebPushNotifications({
   subscriptions,
   payload,
   sendNotification,
   deleteSubscription,
   reportFailure,
-  reportCleanupFailure
+  reportCleanupFailure,
+  shouldDeliver = () => true
 }) {
   const entries = Array.isArray(subscriptions) ? subscriptions.map(subscriptionEntry) : [];
   let serializedPayload;
@@ -237,7 +279,10 @@ export async function deliverWebPushNotifications({
       return failedDeliveryResult(diagnostic);
     });
   }
-  return Promise.all(entries.map(async ({ endpoint, subscription }) => {
+  return Promise.all(entries.map(async ({ endpoint, userId, subscription }) => {
+    if (!(await shouldDeliver({ endpoint, userId, subscription }))) {
+      return { delivered: false, deleted: false, cleanupFailed: false, cancelled: true };
+    }
     try {
       await sendNotification(subscription, serializedPayload);
       return { delivered: true, deleted: false, cleanupFailed: false };

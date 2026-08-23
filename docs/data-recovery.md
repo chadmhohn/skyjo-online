@@ -33,7 +33,7 @@ node scripts/restore-state.mjs \
   --destination /var/tmp/skyjo-restore-check-YYYYMMDDTHHMMSSZ
 ```
 
-The restore command refuses live data locations, non-empty destinations, symlinks/junctions, nested or escaping paths, and any backup that fails verification. It never writes to `SKYJO_DB_FILE` or `SKYJO_ROOMS_FILE` and has no force/overwrite option.
+The restore command refuses live data locations, non-empty destinations, symlinks/junctions, nested or escaping paths, and any backup that fails verification. It never writes to `SKYJO_DB_FILE` or `SKYJO_ROOMS_FILE` and has no force/overwrite option. After checksum verification, it automatically reapplies the external `SKYJO_ACCOUNT_DELETION_LEDGER_FILE` (defaulting to `account-deletions.json` beside the live database) to the isolated SQLite and room copies. The runtime materializes an empty ledger on first startup, and the ledger is deliberately excluded from rollback payloads and backups; an operator restore fails closed if that expected file is missing, unreadable, or invalid.
 
 Start a canary against the isolated copies and run `npm run smoke:deployed` before considering the backup usable. Delete the isolated test directory only after the canary has stopped.
 
@@ -45,4 +45,4 @@ There is intentionally no automatic live database restore. If production has acc
 
 The governance release installs staged daily/monthly systemd assets. They remain disabled until the immutable release readiness contract, one daily backup, and one monthly isolated restore drill all pass during explicit activation. See [Repository governance and production operations](operations-governance.md).
 
-Scheduled backups have isolated namespaces and cannot prune deployment or bootstrap backups. The service retains 30 verified daily snapshots, 12 verified monthly snapshots, and 12 monthly drill records. Verification and isolated restore accept known checksum-valid historical migration/protocol prefixes; new backups from live state still require the exact current migration and release identity.
+Scheduled backups have isolated namespaces and cannot prune deployment, bootstrap, migration, or incident backups. The service retains 30 verified daily snapshots, 12 verified monthly snapshots, and 12 monthly drill records. Every production copy containing account source data has a 12-month maximum retention; exceptional copies outside the scheduled namespaces require an operator-owned inventory and manual destruction before that deadline. Verification and isolated restore accept known checksum-valid historical migration/protocol prefixes; new backups from live state still require the exact current migration and release identity.

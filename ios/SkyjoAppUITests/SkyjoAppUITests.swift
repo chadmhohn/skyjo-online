@@ -911,12 +911,20 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElement(app.staticTexts["account.admin-web-only"], in: app)
     XCTAssertTrue(app.staticTexts["account.admin-web-only"].exists)
     XCTAssertTrue(element(in: app, identifier: "account.admin-link").exists)
-    scrollToElement(app.staticTexts["account.deletion-gate"], in: app)
-    XCTAssertTrue(app.staticTexts["account.deletion-gate"].exists)
-    let deletionLink = element(in: app, identifier: "account.deletion-link")
-    scrollToElementFullyVisible(deletionLink, in: app)
-    XCTAssertTrue(deletionLink.exists)
+    let deletionSummary = app.staticTexts["account.deletion-summary"]
+    scrollToElement(deletionSummary, in: app)
+    XCTAssertTrue(deletionSummary.exists)
+    let deleteAccount = app.buttons["account.delete"]
+    scrollToElementFullyVisible(deleteAccount, in: app)
+    XCTAssertTrue(deleteAccount.isHittable)
+    XCTAssertGreaterThanOrEqual(deleteAccount.frame.height, 44)
+    deleteAccount.tap()
+    XCTAssertTrue(element(in: app, identifier: "account.delete-sheet").waitForExistence(timeout: 5))
+    XCTAssertTrue(app.secureTextFields["account.delete-password"].exists)
+    XCTAssertTrue(app.textFields["account.delete-confirmation"].exists)
+    XCTAssertFalse(app.buttons["account.delete-confirm"].isEnabled)
     attachScreenshot(app, name: "ios5-account-admin-deletion-portrait")
+    app.buttons["Cancel"].tap()
     let recoveryFooter = element(in: app, identifier: "account.recovery-footer")
     scrollToElementFullyVisible(recoveryFooter, in: app)
     let logout = app.buttons["account.logout"]
@@ -960,10 +968,10 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElement(dynamicAdminBoundary, in: dynamicTypeApp)
     XCTAssertTrue(dynamicAdminBoundary.exists)
     XCTAssertEqual(dynamicAdminBoundary.label, "Native admin tools are intentionally out of scope for v0.1.0.")
-    let dynamicDeletionBoundary = dynamicTypeApp.staticTexts["account.deletion-gate"]
+    let dynamicDeletionBoundary = dynamicTypeApp.staticTexts["account.deletion-summary"]
     scrollToElement(dynamicDeletionBoundary, in: dynamicTypeApp)
     XCTAssertTrue(dynamicDeletionBoundary.exists)
-    XCTAssertEqual(dynamicDeletionBoundary.label, "Required before public App Store release")
+    XCTAssertEqual(dynamicDeletionBoundary.label, "Permanent account deletion")
     attachScreenshot(dynamicTypeApp, name: "ios5-account-accessibility-xxxl")
     let dynamicRecoveryFooter = element(in: dynamicTypeApp, identifier: "account.recovery-footer")
     scrollToElementFullyVisible(dynamicRecoveryFooter, in: dynamicTypeApp)

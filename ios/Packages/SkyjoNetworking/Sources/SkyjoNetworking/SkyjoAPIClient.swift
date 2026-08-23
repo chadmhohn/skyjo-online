@@ -809,6 +809,19 @@ public actor SkyjoAPIClient {
     guard response.ok else { throw SkyjoHTTPClientError.invalidSuccessPayload }
   }
 
+  public func deleteAccount(currentPassword: String, confirmation: String) async throws {
+    let response: OKEnvelope = try await request(
+      path: "api/account",
+      method: "DELETE",
+      body: AccountDeletionRequest(
+        currentPassword: currentPassword,
+        confirmation: confirmation
+      ),
+      successStatusCodes: [200]
+    )
+    guard response.ok else { throw SkyjoHTTPClientError.invalidSuccessPayload }
+  }
+
   public func statsSummary() async throws -> StatsSummary {
     try await request(path: "api/stats/summary", method: "GET", successStatusCodes: [200])
   }
@@ -1195,6 +1208,11 @@ private struct PasswordRequest: Encodable, Sendable {
   let currentPassword: String
   let password: String
   let confirmPassword: String
+}
+
+private struct AccountDeletionRequest: Encodable, Sendable {
+  let currentPassword: String
+  let confirmation: String
 }
 
 private struct APNSLogoutRequest: Encodable, Sendable {

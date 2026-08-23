@@ -82,7 +82,7 @@ try {
   assert.equal(await store.authenticate('ada@example.com', 'ada-secret-123'), null, 'old password no longer works');
   assert.equal((await store.authenticate('ada@example.com', 'ada-secret-456')).id, ada.id, 'new password works');
 
-  store.recordCompletedGame({
+  const multiplayer = store.recordCompletedGame({
     mode: 'multi',
     state: completedState(),
     roomCode: 'ABCDE',
@@ -116,8 +116,18 @@ try {
   store.patchUser(grace.id, { disabled: false });
   assert.equal((await store.authenticate('grace@example.com', 'reset-secret-123')).id, grace.id, 'admin-set password works');
 
-  assert.equal(store.listUsers().length, 4);
-  console.log('accounts smoke passed: auth, admin bootstrap, sessions, password reset, history, stats visibility, and duplicate safety');
+  await assert.rejects(
+    store.authorizeAccountDeletion(ada.id, 'wrong-password'),
+    (error) => error?.code === 'CURRENT_PASSWORD_MISMATCH'
+  );
+  const deletion = await store.authorizeAccountDeletion(ada.id, 'ada-secret-456');
+  assert.deepEqual(store.deleteAccount(deletion), { deletedSoloGames: 0, anonymizedMultiplayerGames: 1 });
+  assert.equal(await store.authenticate('ada@example.com', 'ada-secret-456'), null, 'deleted account cannot authenticate');
+  const retained = store.getVisibleGame(grace, multiplayer.id);
+  assert.equal(retained.roomCode, null, 'retained multiplayer history drops the private room code');
+  assert.equal(retained.participants[0].displayName, 'Deleted player', 'retained history is anonymized');
+  assert.equal(store.listUsers().length, 3);
+  console.log('accounts smoke passed: auth, sessions, history, stats visibility, and verified account deletion');
 } finally {
   store.close();
   await fs.rm(tempDir, { recursive: true, force: true });

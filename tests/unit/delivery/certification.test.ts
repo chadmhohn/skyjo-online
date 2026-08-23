@@ -1242,8 +1242,9 @@ describe('v0.3.6 workflow governance', () => {
     expect(apnsRollbackProof).not.toMatch(/console\.(?:error|log)\(logs\)/);
     expect(serverEntrypoint).not.toContain('server-apns-rollback-proof');
     expect(serverEntrypoint).toMatch(
-      /candidate = await createAccountStore\(\{ filePath: accountDatabaseFile \}\);\s+candidate\.pruneAPNSDevices\(\);/
+      /candidate = await createAccountStore\(\{ filePath: accountDatabaseFile \}\);\s+const accountDeletionEntries = accountDeletionLedger\.entries\(\);\s+candidate\.reconcileDeletedAccounts\(accountDeletionEntries\.map\(\(entry\) => entry\.userId\)\);\s+candidate\.pruneAPNSDevices\(\);/
     );
+    expect(serverEntrypoint).toContain('allowCreate: accountDeletionEntries.length === 0');
     expect(serverEntrypoint).toContain('accountStore?.pruneAPNSDevices();');
     expect(serverEntrypoint).toContain(
       "console.error('APNs device retention pruning failed.');"

@@ -960,6 +960,15 @@ struct AccessSessionClientTests {
           ]
         )
         return try stubResponse(for: request, body: #"{"ok":true}"#)
+      case "/api/account":
+        try requireJSONBody(
+          request,
+          expected: [
+            "currentPassword": "new-synthetic-password",
+            "confirmation": "DELETE",
+          ]
+        )
+        return try stubResponse(for: request, body: #"{"ok":true}"#)
       case "/api/account/logout":
         return try stubResponse(for: request, body: #"{"ok":true}"#)
       default:
@@ -1000,6 +1009,10 @@ struct AccessSessionClientTests {
       password: "new-synthetic-password",
       confirmPassword: "new-synthetic-password"
     )
+    try await client.deleteAccount(
+      currentPassword: "new-synthetic-password",
+      confirmation: "DELETE"
+    )
     try await client.logoutAccount()
 
     #expect(requests.get() == [
@@ -1008,6 +1021,7 @@ struct AccessSessionClientTests {
       "POST /api/account/login",
       "PATCH /api/account/profile",
       "POST /api/account/password",
+      "DELETE /api/account",
       "POST /api/account/logout",
     ])
   }
@@ -1665,6 +1679,38 @@ struct AccessSessionNodeIntegrationTests {
     try await relaunchedClient.logoutAccount()
     #expect(try await relaunchedClient.currentAccount() == nil)
     #expect(try await relaunchedClient.accessStatus().authenticated)
+
+    #expect(
+      try await relaunchedClient.loginAccount(email: email, password: replacementPassword).id
+        == createdUser.id
+    )
+    await expectError(
+      .server(
+        statusCode: 400,
+        code: .currentPasswordMismatch,
+        message: "Current password did not match."
+      )
+    ) {
+      try await relaunchedClient.deleteAccount(
+        currentPassword: "wrong-(replacementPassword)",
+        confirmation: "DELETE"
+      )
+    }
+    #expect(try await relaunchedClient.currentAccount()?.id == createdUser.id)
+    try await relaunchedClient.deleteAccount(
+      currentPassword: replacementPassword,
+      confirmation: "DELETE"
+    )
+    #expect(try await relaunchedClient.currentAccount() == nil)
+    await expectError(
+      .server(
+        statusCode: 401,
+        code: .accountAuthenticationFailed,
+        message: "Email or password did not match."
+      )
+    ) {
+      _ = try await relaunchedClient.loginAccount(email: email, password: replacementPassword)
+    }
   }
 }
 

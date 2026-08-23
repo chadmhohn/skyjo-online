@@ -19,6 +19,7 @@ import {
   loadRoomsSnapshotFromDisk,
   normalizeRoomsDocument,
   parseRoomsDocument,
+  prepareAccountDeletionRoomScrub,
   reconcileCompletedRoomJournals,
   resolveRoomsFilePath,
   saveRoomsToDisk,
@@ -178,6 +179,59 @@ describe('room persistence', () => {
   it('resolves production paths without sharing state between tests', () => {
     expect(resolveRoomsFilePath({})).toBe(path.resolve(DEFAULT_ROOMS_FILE));
     expect(resolveRoomsFilePath({ SKYJO_ROOMS_FILE: roomsFile })).toBe(roomsFile);
+  });
+
+  it('stages account room scrubbing, rolls back failures, and disconnects only on commit', () => {
+    const value = roomWithState(activeBlindDrawState());
+    const deletedClient = { playerId: 'host-1', close: vi.fn(), readyState: 1 };
+    const retainedClient = { playerId: 'player-2', close: vi.fn(), readyState: 1 };
+    value.clients = new Set([deletedClient, retainedClient]);
+    const rooms = new Map([[value.code, value]]);
+    const originalPlayers = value.players;
+    const originalState = value.state;
+    const originalMessages = value.chatMessages;
+
+    const failed = prepareAccountDeletionRoomScrub(rooms, 'user-1', { now: fixedNow + 10 });
+    expect(value.players[0]).toMatchObject({ userId: undefined, name: 'Deleted player', controller: 'ai' });
+    expect(value.chatMessages).toEqual([]);
+    expect(value.state?.players[0].name).toBe('Deleted player');
+    expect(() => serializeRooms(rooms, fixedNow + 10)).not.toThrow();
+    failed.rollback();
+
+    expect(value.players).toBe(originalPlayers);
+    expect(value.state).toBe(originalState);
+    expect(value.chatMessages).toBe(originalMessages);
+    expect(deletedClient.close).not.toHaveBeenCalled();
+    expect(value.clients.has(deletedClient)).toBe(true);
+
+    const committed = prepareAccountDeletionRoomScrub(rooms, 'user-1', { now: fixedNow + 20 });
+    committed.commit();
+    expect(value.clients.has(deletedClient)).toBe(false);
+    expect(value.clients.has(retainedClient)).toBe(true);
+    expect(deletedClient.close).toHaveBeenCalledWith(1000, 'Account deleted');
+    expect(retainedClient.close).not.toHaveBeenCalled();
+  });
+
+  it('removes deleted waiting seats without persisting an invalid AI and can restore a sole room', () => {
+    const sharedWaiting = room();
+    const sharedRooms = new Map([[sharedWaiting.code, sharedWaiting]]);
+    const sharedDeletion = prepareAccountDeletionRoomScrub(sharedRooms, 'user-1', { now: fixedNow + 1 });
+    expect(sharedWaiting.players).toEqual([
+      expect.objectContaining({ id: 'player-2', host: true })
+    ]);
+    expect(sharedWaiting.players[0]).not.toHaveProperty('controller');
+    expect(() => serializeRooms(sharedRooms, fixedNow + 1)).not.toThrow();
+    sharedDeletion.commit();
+
+    const soleWaiting = room();
+    soleWaiting.players = [soleWaiting.players[0]];
+    soleWaiting.clients = new Set();
+    const soleRooms = new Map([[soleWaiting.code, soleWaiting]]);
+    const soleDeletion = prepareAccountDeletionRoomScrub(soleRooms, 'user-1', { now: fixedNow + 2 });
+    expect(soleRooms.size).toBe(0);
+    soleDeletion.rollback();
+    expect(soleRooms.get(soleWaiting.code)).toBe(soleWaiting);
+    expect(soleWaiting.players).toHaveLength(1);
   });
 
   it('uses one explicit runtime-readable protocol compatibility set', () => {

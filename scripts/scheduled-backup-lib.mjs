@@ -7,6 +7,7 @@ import {
   restoreStateBackup,
   verifyStateBackup
 } from '../server-state-backup.mjs';
+import { resolveAccountDeletionLedgerPath } from '../server-account-deletion-ledger.mjs';
 
 export const RETENTION = Object.freeze({ daily: 30, monthly: 12 });
 const backupNamePattern = /^(daily|monthly)-([0-9]{8}T[0-9]{6}Z)$/;
@@ -127,6 +128,7 @@ export async function runScheduledBackup(options = {}) {
     ? await ensurePrivateDirectory(options.restoreRoot || '/var/tmp/skyjo-restore-drills')
     : null;
   const sourcePaths = resolveStateSourcePaths(options.env || process.env);
+  const deletionLedgerPath = resolveAccountDeletionLedgerPath(options.env || process.env);
   const destinationDirectory = path.join(categoryDirectory, name);
 
   const manifest = await createStateBackup({
@@ -143,7 +145,8 @@ export async function runScheduledBackup(options = {}) {
     try {
       const restored = await restoreStateBackup(destinationDirectory, {
         destinationDirectory: restoreDirectory,
-        livePaths: Object.values(sourcePaths)
+        deletionLedgerPath,
+        livePaths: [...Object.values(sourcePaths), deletionLedgerPath]
       });
       if (restored.manifest.metadata.releaseSha !== manifest.metadata.releaseSha) {
         throw new Error('Restored backup release identity changed during the drill.');

@@ -1297,6 +1297,21 @@ try {
   assert.equal(chatMessage.text, 'Good luck everyone');
   assert.equal(guestRoom.room.chatMessages[0].id, chatMessage.id);
 
+  const guestChatRevision = socketState(guestSocket).revision + 1;
+  const hostGuestChatPromise = waitForMessage(
+    hostSocket,
+    (message) => publicSnapshotFrame(message)
+      && message.revision === guestChatRevision
+      && message.room.chatMessages?.some((candidate) => candidate.playerId === guestJoined.playerId),
+    'host sees guest chat'
+  );
+  await sendCommand(
+    guestSocket,
+    { type: 'send-chat-message', text: 'See you next round' },
+    'guest room chat'
+  );
+  await hostGuestChatPromise;
+
   reconnectSocket = await openSocket(baseUrl, hostAccount.cookie, 'reconnected host');
   const reconnectJoined = await sendAdmission(
     reconnectSocket,
@@ -1367,6 +1382,91 @@ try {
   assert.equal(hostStats.self.multiplayerGames >= 1, true, 'host multiplayer stats are saved');
   assert.equal(hostStats.coPlayers.some((player) => player.userId === guestAccount.user.id), true, 'co-player stats are visible');
 
+  const wrongDeletionMedia = await fetch(fixedOriginUrl(baseUrl, '/api/account'), {
+    method: 'DELETE',
+    headers: {
+      Cookie: guestAccount.cookie,
+      'Content-Type': 'text/plain'
+    },
+    body: JSON.stringify({ currentPassword: 'account-secret-123', confirmation: 'DELETE' })
+  });
+  assert.equal(wrongDeletionMedia.status, 415, 'account deletion requires JSON media');
+  assert.equal((await getJson(baseUrl, guestAccount.cookie, '/api/account/me')).user.id, guestAccount.user.id);
+
+  const deletionBroadcast = waitForMessage(
+    hostSocket,
+    (message) => {
+      if (!publicSnapshotFrame(message)) return false;
+      const deletedPlayer = message.room.players.find((player) => player.id === guestJoined.playerId);
+      return deletedPlayer?.name === 'Deleted player'
+        && deletedPlayer.connected === false
+        && deletedPlayer.controller === 'ai'
+        && message.room.chatMessages.every((candidate) => candidate.playerId !== guestJoined.playerId);
+    },
+    'account deletion room scrub'
+  );
+  const deletedAccount = await accountRequest(
+    baseUrl,
+    guestAccount.cookie,
+    '/api/account',
+    { currentPassword: 'account-secret-123', confirmation: 'DELETE' },
+    'DELETE'
+  );
+  assert.equal(deletedAccount.response.status, 200, 'authenticated account deletion succeeds');
+  assert.deepEqual(deletedAccount.payload, { ok: true });
+  assert.match(deletedAccount.response.headers.get('set-cookie') || '', /Max-Age=0/);
+  const scrubbedRoom = (await deletionBroadcast).room;
+  assert.equal(
+    scrubbedRoom.state.players.find((player) => player.id === guestJoined.playerId)?.name,
+    'Deleted player',
+    'live game snapshots anonymize the deleted account'
+  );
+
+  const deletedSession = await getJson(baseUrl, guestAccount.cookie, '/api/account/me');
+  assert.equal(deletedSession.user, null, 'account deletion revokes the active session');
+  const deletedLogin = await accountRequest(baseUrl, cookie, '/api/account/login', {
+    email: 'grace@example.com',
+    password: 'account-secret-123'
+  });
+  assert.equal(deletedLogin.response.status, 401, 'deleted credentials cannot authenticate again');
+
+  const deletionLedger = JSON.parse(await fs.readFile(path.join(tempDir, 'account-deletions.json'), 'utf8'));
+  assert.deepEqual(
+    deletionLedger.entries.map((entry) => entry.userId),
+    [guestAccount.user.id],
+    'account deletion durably records its external tombstone'
+  );
+  assert.equal(
+    JSON.stringify(deletionLedger).includes('grace@example.com'),
+    false,
+    'account deletion ledger contains no email address'
+  );
+
+  const persistedRooms = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
+  const persistedDeletedRoom = persistedRooms.rooms.find((room) => room.code === roomCode);
+  const persistedDeletedPlayer = persistedDeletedRoom.players.find((player) => player.id === guestJoined.playerId);
+  assert.equal(persistedDeletedPlayer.userId, undefined, 'room persistence removes the deleted user id');
+  assert.equal(persistedDeletedPlayer.name, 'Deleted player', 'room persistence anonymizes the player name');
+  assert.equal(
+    persistedDeletedRoom.chatMessages.some((message) => message.playerId === guestJoined.playerId),
+    false,
+    'room persistence removes the deleted player chat'
+  );
+
+  const retainedHostStats = await getJson(baseUrl, hostAccount.cookie, '/api/stats/summary');
+  assert.equal(
+    retainedHostStats.coPlayers.some((player) => player.userId === guestAccount.user.id),
+    false,
+    'deleted accounts are no longer exposed as identifiable co-players'
+  );
+  assert.equal(
+    retainedHostStats.recentGames.some((game) => game.participants.some(
+      (participant) => participant.userId === null && participant.displayName === 'Deleted player'
+    )),
+    true,
+    'retained multiplayer history is anonymized'
+  );
+
   const retainedServerLogs = serverLogs.join('');
   const retainedState = `${await fs.readFile(roomsFile, 'utf8')}\n${await fs.readFile(dbFile)}`;
   for (const privateValue of [
@@ -1427,7 +1527,7 @@ try {
   assert.match(loginRateLimit.response.headers.get('retry-after') || '', /^\d+$/);
 
   console.log(
-    'chat smoke passed: public AASA, native and browser invite redemption, login redirect, rate-limited accounts, account-gated rooms, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, and multiplayer stats'
+    'chat smoke passed: public AASA, native and browser invite redemption, login redirect, rate-limited accounts, account-gated rooms, push config, presence, solo stats, reset/share rooms, room chat, reconnect history, ready-gated rounds, multiplayer stats, and account deletion anonymization'
   );
 } finally {
   reconnectSocket?.close();

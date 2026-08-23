@@ -240,6 +240,31 @@ describe('APNs server-only configuration and provider token', () => {
 });
 
 describe('APNs payload and provider behavior', () => {
+  it('cancels a snapshotted device when account deletion fences delivery', async () => {
+    const codec = createAPNSTokenCodec(Buffer.alloc(32, 6), { randomBytes: () => Buffer.alloc(12, 8) });
+    const device = {
+      installationId,
+      environment: 'production',
+      ...codec.encrypt(deviceToken),
+      updatedAt: fixedNow
+    };
+    const provider = { send: vi.fn() };
+    await expect(deliverAPNSNotifications({
+      devices: [device],
+      event,
+      tokenCodec: codec,
+      provider,
+      deleteDevice: vi.fn(),
+      shouldDeliver: vi.fn().mockResolvedValue(false)
+    })).resolves.toEqual([{
+      delivered: false,
+      deleted: false,
+      cleanupFailed: false,
+      cancelled: true
+    }]);
+    expect(provider.send).not.toHaveBeenCalled();
+  });
+
   it('uses generic visible copy and only the approved routing fields', () => {
     for (const kind of ['turn', 'round-ended', 'game-ended'] as const) {
       const payload = createAPNSPayload({ kind, roomCode: 'ABCDE' });

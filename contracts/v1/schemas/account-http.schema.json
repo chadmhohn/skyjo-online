@@ -10,7 +10,8 @@
     { "$ref": "#/$defs/loginRequest" },
     { "$ref": "#/$defs/signupRequest" },
     { "$ref": "#/$defs/profileRequest" },
-    { "$ref": "#/$defs/passwordRequest" }
+    { "$ref": "#/$defs/passwordRequest" },
+    { "$ref": "#/$defs/accountDeletionRequest" }
   ],
   "$defs": {
     "accountUser": {
@@ -86,6 +87,15 @@
         "currentPassword": { "type": "string", "minLength": 1, "maxLength": 1024 },
         "password": { "type": "string", "minLength": 8, "maxLength": 1024 },
         "confirmPassword": { "type": "string", "minLength": 8, "maxLength": 1024 }
+      }
+    },
+    "accountDeletionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["currentPassword", "confirmation"],
+      "properties": {
+        "currentPassword": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "confirmation": { "const": "DELETE" }
       }
     }
   }
