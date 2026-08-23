@@ -1,11 +1,16 @@
 import type { Card, GameState, Player } from './types';
-import { sanitizeLegacySoloAiNames } from './legacyAiBranding';
 import {
   createSoloGameSetup,
   isResolvedSoloGameSetup,
   resolveSoloGameSetup,
   type SoloGameSetup
 } from './soloAiSetup';
+
+type LegacyAiNameSanitizer = (state: GameState) => GameState;
+
+async function loadLegacyAiNameSanitizer(): Promise<LegacyAiNameSanitizer> {
+  return (await import('./legacyAiBranding')).sanitizeLegacySoloAiNames;
+}
 
 export { createSoloGameSetup } from './soloAiSetup';
 export type { SoloAiDifficulty, SoloAiDifficultySelection, SoloGameSetup } from './soloAiSetup';
@@ -516,7 +521,10 @@ function normalizeSoloGameSetup(
   }
 }
 
-function normalizeSoloSessionRecord(value: unknown): SoloSessionRecord | null {
+function normalizeSoloSessionRecord(
+  value: unknown,
+  sanitizeLegacySoloAiNames: LegacyAiNameSanitizer
+): SoloSessionRecord | null {
   if (
     !isRecord(value) ||
     value.schemaVersion !== recordSchemaVersion ||
@@ -549,7 +557,10 @@ function normalizeSoloSessionRecord(value: unknown): SoloSessionRecord | null {
   };
 }
 
-function normalizeStatsOutboxRecord(value: unknown): StatsOutboxRecord | null {
+function normalizeStatsOutboxRecord(
+  value: unknown,
+  sanitizeLegacySoloAiNames: LegacyAiNameSanitizer
+): StatsOutboxRecord | null {
   if (
     !isRecord(value) ||
     value.schemaVersion !== recordSchemaVersion ||
@@ -692,6 +703,7 @@ async function deleteStatsOutboxForOwner(ownerKey: SoloOwnerKey): Promise<void> 
 
 export async function loadSoloSession(ownerKey: SoloOwnerKey): Promise<SoloSessionLoadResult> {
   try {
+    const sanitizeLegacySoloAiNames = await loadLegacyAiNameSanitizer();
     if (ownerKey === 'guest') await deleteStatsOutboxForOwner(ownerKey).catch(() => undefined);
     return await withStore(soloSessionStoreName, 'readwrite', async (store) => {
       const index = store.index('byOwner');
@@ -710,7 +722,7 @@ export async function loadSoloSession(ownerKey: SoloOwnerKey): Promise<SoloSessi
 
       let recovered = false;
       for (const { value: candidate, primaryKey } of records) {
-        const normalized = normalizeSoloSessionRecord(candidate);
+        const normalized = normalizeSoloSessionRecord(candidate, sanitizeLegacySoloAiNames);
         if (normalized && normalized.ownerKey === ownerKey && normalized.state.phase !== 'game-over') {
           if (normalized.state !== (candidate as SoloSessionRecord).state) {
             await requestResult(store.put({ ...(candidate as Record<string, unknown>), ...normalized }));
@@ -741,6 +753,7 @@ export async function saveSoloSession(
   now = Date.now
 ): Promise<SoloPersistenceWarning | null> {
   try {
+    const sanitizeLegacySoloAiNames = await loadLegacyAiNameSanitizer();
     const sanitizedState = sanitizeLegacySoloAiNames(state);
     const setup =
       typeof setupInput === 'number'
@@ -789,6 +802,7 @@ export async function replaceSoloSession(
   now = Date.now
 ): Promise<SoloPersistenceWarning | null> {
   try {
+    const sanitizeLegacySoloAiNames = await loadLegacyAiNameSanitizer();
     const sanitizedState = sanitizeLegacySoloAiNames(state);
     const normalizedSetup = normalizeSoloGameSetup(sanitizedState, setup.aiOpponentCount, setup);
     if (
@@ -847,6 +861,7 @@ export async function enqueueCompletedGame(
   now = Date.now
 ): Promise<SoloPersistenceWarning | null> {
   try {
+    const sanitizeLegacySoloAiNames = await loadLegacyAiNameSanitizer();
     const sanitizedState = sanitizeLegacySoloAiNames(state);
     if (!isUuid(gameId) || !isCompatibleSoloGameState(sanitizedState) || sanitizedState.phase !== 'game-over') {
       throw new Error('Only completed solo games can be queued.');
@@ -858,7 +873,7 @@ export async function enqueueCompletedGame(
       }
       const key = [ownerKey, gameId];
       const existing = await requestResult(store.get(key));
-      const normalizedExisting = normalizeStatsOutboxRecord(existing);
+      const normalizedExisting = normalizeStatsOutboxRecord(existing, sanitizeLegacySoloAiNames);
       if (normalizedExisting?.ownerKey === ownerKey && normalizedExisting.gameId === gameId) {
         if (normalizedExisting.state !== (existing as StatsOutboxRecord).state) {
           await requestResult(store.put(normalizedExisting));
@@ -887,6 +902,7 @@ export async function enqueueCompletedGame(
 }
 
 export async function listStatsOutbox(ownerKey: SoloOwnerKey): Promise<StatsOutboxRecord[]> {
+  const sanitizeLegacySoloAiNames = await loadLegacyAiNameSanitizer();
   const validRecords = await withStore(statsOutboxStoreName, 'readwrite', async (store) => {
     const index = store.index('byOwner');
     const valueRequest = index.getAll(ownerKey);
@@ -895,7 +911,7 @@ export async function listStatsOutbox(ownerKey: SoloOwnerKey): Promise<StatsOutb
     const records = (values as unknown[]).map((value, index) => ({ value, primaryKey: keys[index] }));
     const valid: StatsOutboxRecord[] = [];
     for (const { value: record, primaryKey } of records) {
-      const normalized = normalizeStatsOutboxRecord(record);
+      const normalized = normalizeStatsOutboxRecord(record, sanitizeLegacySoloAiNames);
       if (normalized && normalized.ownerKey === ownerKey) {
         valid.push(normalized);
         if (normalized.state !== (record as StatsOutboxRecord).state) {
