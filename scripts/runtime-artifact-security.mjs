@@ -34,6 +34,7 @@ const RETIRED_WHOLE_STATE_VALIDATION_SYMBOLS = Object.freeze([
 export const RUNTIME_ROOT_FILES = Object.freeze([
   'package-lock.json',
   'package.json',
+  'server-account-deletion-ledger.mjs',
   'server-account-store.mjs',
   'server-apns.mjs',
   'server-apns-rollback-proof.mjs',

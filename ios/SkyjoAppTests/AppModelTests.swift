@@ -682,6 +682,7 @@ struct AppModelTests {
     cleanupFailureModel.accountSettings.deletionPassword = "current-password"
     cleanupFailureModel.accountSettings.deletionConfirmation = "DELETE"
     await cleanupFailureModel.deleteAccount()
+    #expect(cleanupFailureModel.selectedTab == .account)
     #expect(cleanupFailureModel.rootState == .guest)
     #expect(cleanupFailureModel.user == nil)
     #expect(cleanupFailureModel.authentication.errorMessage.contains("reinstall Skyjo"))

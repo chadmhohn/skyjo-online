@@ -33,7 +33,7 @@ node scripts/restore-state.mjs \
   --destination /var/tmp/skyjo-restore-check-YYYYMMDDTHHMMSSZ
 ```
 
-The restore command refuses live data locations, non-empty destinations, symlinks/junctions, nested or escaping paths, and any backup that fails verification. It never writes to `SKYJO_DB_FILE` or `SKYJO_ROOMS_FILE` and has no force/overwrite option.
+The restore command refuses live data locations, non-empty destinations, symlinks/junctions, nested or escaping paths, and any backup that fails verification. It never writes to `SKYJO_DB_FILE` or `SKYJO_ROOMS_FILE` and has no force/overwrite option. After checksum verification, it automatically reapplies the external `SKYJO_ACCOUNT_DELETION_LEDGER_FILE` (defaulting to `account-deletions.json` beside the live database) to the isolated SQLite and room copies. The runtime materializes an empty ledger on first startup, and the ledger is deliberately excluded from rollback payloads and backups; an operator restore fails closed if that expected file is missing, unreadable, or invalid.
 
 Start a canary against the isolated copies and run `npm run smoke:deployed` before considering the backup usable. Delete the isolated test directory only after the canary has stopped.
 

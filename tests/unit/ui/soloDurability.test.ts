@@ -14,6 +14,7 @@ import {
   closeSoloDatabaseForTests,
   createSoloGameSetup,
   createStatsOutboxCoordinator,
+  deleteSoloAccountData,
   enqueueCompletedGame,
   flushStatsOutbox,
   isCompatibleSoloGameState,
@@ -455,6 +456,24 @@ describe('solo snapshot compatibility', () => {
 });
 
 describe('solo IndexedDB durability', () => {
+  it('atomically purges only a deleted account solo session and outbox partition', async () => {
+    const deletedOwner = soloOwnerKey('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    const retainedOwner = soloOwnerKey('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    await saveSoloSession(deletedOwner, gameA, activeState(), 1, () => 10);
+    await saveSoloSession(retainedOwner, gameB, activeState(), 1, () => 20);
+    await saveSoloSession('guest', gameC, activeState(), 1, () => 30);
+    await enqueueCompletedGame(deletedOwner, gameA, completedState(), () => 40);
+    await enqueueCompletedGame(retainedOwner, gameB, completedState(), () => 50);
+
+    await deleteSoloAccountData('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+
+    expect((await loadSoloSession(deletedOwner)).session).toBeNull();
+    expect(await listStatsOutbox(deletedOwner)).toEqual([]);
+    expect((await loadSoloSession(retainedOwner)).session?.gameId).toBe(gameB);
+    expect((await listStatsOutbox(retainedOwner)).map((record) => record.gameId)).toEqual([gameB]);
+    expect((await loadSoloSession('guest')).session?.gameId).toBe(gameC);
+  });
+
   it('creates the v1 stores with composite owner keys and restores only the active owner', async () => {
     const guestState = activeState();
     const accountState = activeState();

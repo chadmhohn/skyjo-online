@@ -786,6 +786,133 @@ export function serializeRooms(rooms, savedAt = Date.now()) {
   };
 }
 
+const deletedAccountPlayerName = 'Deleted player';
+
+/**
+ * Stage an account scrub in live or restored rooms. The caller can durably
+ * persist the staged state, then commit socket disconnection only after the
+ * account transaction succeeds. A failed persistence or stale authorization
+ * can restore the exact in-memory fields without having disconnected anyone.
+ */
+export function prepareAccountDeletionRoomScrub(rooms, userId, options = {}) {
+  if (!rooms || typeof rooms.values !== 'function' || typeof rooms.set !== 'function') {
+    throw new TypeError('rooms must be a mutable map.');
+  }
+  if (typeof userId !== 'string' || userId.trim() === '') {
+    throw new TypeError('Deleted account identifier is invalid.');
+  }
+  const timestamp = typeof options.now === 'function' ? options.now() : (options.now ?? Date.now());
+  if (!Number.isFinite(timestamp) || timestamp < 0) throw new TypeError('Deletion timestamp is invalid.');
+
+  const snapshots = [];
+  for (const room of [...rooms.values()]) {
+    const deletedPlayers = room.players.filter((player) => player.userId === userId);
+    if (deletedPlayers.length === 0) continue;
+    const deletedPlayerIds = new Set(deletedPlayers.map((player) => player.id));
+    const deletedClients = [...room.clients].filter((client) => deletedPlayerIds.has(client.playerId));
+    snapshots.push({
+      room,
+      wasRemoved: false,
+      players: room.players,
+      chatMessages: room.chatMessages,
+      readyForNextRoundPlayerIds: room.readyForNextRoundPlayerIds,
+      state: room.state,
+      hostId: room.hostId,
+      updatedAt: room.updatedAt,
+      revision: room.revision,
+      deletedClients
+    });
+
+    if (room.status === 'waiting') {
+      room.players = room.players.filter((player) => !deletedPlayerIds.has(player.id));
+      if (room.players.length === 0) {
+        rooms.delete(room.code);
+        snapshots.at(-1).wasRemoved = true;
+        continue;
+      }
+    } else {
+      room.players = room.players.map((player) => deletedPlayerIds.has(player.id)
+        ? {
+            ...player,
+            userId: undefined,
+            name: deletedAccountPlayerName,
+            connected: false,
+            disconnectedAt: timestamp,
+            controller: 'ai'
+          }
+        : player);
+    }
+
+    if (deletedPlayerIds.has(room.hostId)) {
+      room.hostId = room.players.find((player) => !deletedPlayerIds.has(player.id))?.id || room.players[0].id;
+    }
+    room.players = room.players.map((player) => ({ ...player, host: player.id === room.hostId }));
+    room.chatMessages = Array.isArray(room.chatMessages)
+      ? room.chatMessages.filter((message) => !deletedPlayerIds.has(message.playerId))
+      : [];
+    room.readyForNextRoundPlayerIds = Array.isArray(room.readyForNextRoundPlayerIds)
+      ? room.readyForNextRoundPlayerIds.filter((playerId) => !deletedPlayerIds.has(playerId))
+      : [];
+    if (room.state && Array.isArray(room.state.players)) {
+      room.state = {
+        ...room.state,
+        players: room.state.players.map((player) => deletedPlayerIds.has(player.id)
+          ? { ...player, name: deletedAccountPlayerName }
+          : player),
+        roundHistory: Array.isArray(room.state.roundHistory)
+          ? room.state.roundHistory.map((round) => ({
+              ...round,
+              scores: Array.isArray(round?.scores)
+                ? round.scores.map((score) => deletedPlayerIds.has(score.playerId)
+                    ? { ...score, name: deletedAccountPlayerName }
+                    : score)
+                : []
+            }))
+          : [],
+        log: []
+      };
+    }
+    room.updatedAt = timestamp;
+    room.revision = (Number.isSafeInteger(room.revision) ? room.revision : 0) + 1;
+  }
+
+  let settled = false;
+  return Object.freeze({
+    changedRooms: snapshots.filter((snapshot) => !snapshot.wasRemoved).map((snapshot) => snapshot.room),
+    changedRoomCount: snapshots.length,
+    commit() {
+      if (settled) return;
+      settled = true;
+      for (const snapshot of snapshots) {
+        for (const client of snapshot.deletedClients) {
+          snapshot.room.clients.delete(client);
+          try {
+            client.close(1000, 'Account deleted');
+          } catch {
+            // The socket may have raced a peer/network close after persistence
+            // committed. Its room membership is already removed.
+          }
+        }
+      }
+    },
+    rollback() {
+      if (settled) return;
+      settled = true;
+      for (const snapshot of snapshots) {
+        const { room } = snapshot;
+        room.players = snapshot.players;
+        room.chatMessages = snapshot.chatMessages;
+        room.readyForNextRoundPlayerIds = snapshot.readyForNextRoundPlayerIds;
+        room.state = snapshot.state;
+        room.hostId = snapshot.hostId;
+        room.updatedAt = snapshot.updatedAt;
+        room.revision = snapshot.revision;
+        if (snapshot.wasRemoved) rooms.set(room.code, room);
+      }
+    }
+  });
+}
+
 export function isUnsupportedDirectorySyncError(platform, error) {
   return platform === 'win32'
     && error !== null

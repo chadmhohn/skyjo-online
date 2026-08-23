@@ -17,11 +17,11 @@ The server re-verifies the current password immediately before deletion. The fin
 
 ## Data Removed
 
-On success, one SQLite transaction removes the account profile, email, password verifier, every account session, Web Push subscription, APNs device registration, and account-owned solo game history. The native client then removes that account's local solo save and undelivered stats-outbox partition. Guest saves and another account's local partition are not touched.
+On success, one SQLite transaction removes the account profile, email, password verifier, every account session, Web Push subscription, APNs device registration, and account-owned solo game history. The native client and PWA then atomically remove that account's local solo save and undelivered stats-outbox partition. Guest saves and another account's local partition are not touched. Clearing the confirmed owner first aborts in-flight local delivery and broadcasts the owner change to other browser tabs.
 
 `SKYJO_ADMIN_INITIAL_PASSWORD` is an empty-database-only bootstrap. It cannot recreate a deleted bootstrap administrator or promote a later account that reuses the email. The last-active-admin rule ensures deletion cannot leave the database without an administrator.
 
-Active rooms are scrubbed and durably written before the SQLite deletion commits. The deleted seat becomes a disconnected AI seat named `Deleted player`, authored active-room chat messages are removed, notification delivery stops, and the remaining room can continue. A room-persistence failure prevents account deletion from reporting success.
+The server first proves the room store is writable without changing room state, then records the external deletion tombstone as the irreversible commit point. Active rooms are staged and durably written before the SQLite deletion completes. The deleted seat becomes a disconnected AI seat named `Deleted player`; a waiting-room seat is removed instead so waiting rooms never persist AI players. Authored active-room chat messages are removed, notification delivery is blocked and drained, and the remaining room can continue. Sockets are disconnected only after the database commit. A room-persistence or stale-proof failure before the tombstone restores the live room snapshot and leaves the account active; any failure after the tombstone is completed from that durable record before the request can report success.
 
 ## Retained And Anonymized Data
 
@@ -29,7 +29,7 @@ Completed multiplayer scores are shared history for the remaining players. Those
 
 Active rooms expire under the existing six-hour stale-room policy. Completed anonymized multiplayer results currently have no automatic expiration because they no longer contain an account identity; deleting game history later is a separate product-retention decision.
 
-Production state backups are immutable and are not rewritten in place. Deleted source data can remain in the access-controlled rotating backup set until the existing 30 daily and 12 monthly snapshots expire. Backups are used only for disaster recovery; any isolated restore must reapply deletions made after the selected snapshot before it can be promoted to live traffic. Automatic live restore remains forbidden.
+Production state backups are immutable and are not rewritten in place. Deleted source data can remain in the access-controlled rotating backup set until the existing 30 daily and 12 monthly snapshots expire. Before the database deletion commits, the server durably records the account UUID and deletion timestamp in `account-deletions.json`, an external non-PII ledger that is not part of release rollback or state-backup payloads. Server startup and every isolated restore reapply that ledger to SQLite and room state before the candidate can be used, so a pre-deletion backup cannot resurrect credentials, sessions, push registrations, solo data, chat, or account identity. Automatic live restore remains forbidden.
 
 ## Failure And Recovery
 

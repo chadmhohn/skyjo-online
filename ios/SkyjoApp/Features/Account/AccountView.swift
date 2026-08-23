@@ -123,9 +123,14 @@ struct AccountView: View {
       }
 
       Section("Account deletion") {
-        Label("Permanent account deletion", systemImage: "person.crop.circle.badge.minus")
+        Label {
+          Text("Permanent account deletion")
+            .accessibilityIdentifier("account.deletion-summary")
+        } icon: {
+          Image(systemName: "person.crop.circle.badge.minus")
+            .accessibilityHidden(true)
+        }
           .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("account.deletion-summary")
         Text("Deletes your profile, sessions, notification registrations, on-device account saves, and solo history. Multiplayer scores remain only as Deleted player; messages you authored in active rooms are removed.")
           .font(.footnote)
           .foregroundStyle(.primary)

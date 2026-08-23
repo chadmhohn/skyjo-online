@@ -5,13 +5,20 @@ import path from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import {
   SCHEMA_MIGRATIONS,
+  createAccountStore,
   validateOptionalAPNSDeviceStorageEnvelope
 } from './server-account-store.mjs';
 import {
+  loadAccountDeletionLedger,
+  resolveAccountDeletionLedgerPath
+} from './server-account-deletion-ledger.mjs';
+import {
   normalizeRoomsDocument,
   parseRoomsDocument,
+  prepareAccountDeletionRoomScrub,
   ROOMS_FILE_VERSION,
   ROOMS_PROTOCOL_VERSION,
+  saveRoomsToDisk,
   SUPPORTED_ROOMS_PROTOCOL_VERSIONS
 } from './server-room-persistence.mjs';
 import {
@@ -519,6 +526,54 @@ async function verifyPayloadDirectory(directoryPath, manifest, options = {}) {
   return metadata;
 }
 
+async function validateRestoredPayloadDirectory(directoryPath, options = {}) {
+  await assertExactDirectoryEntries(directoryPath, payloadFileNames);
+  const databaseState = await validateSqliteFile(
+    path.join(directoryPath, STATE_BACKUP_FILES.database),
+    'Restored SQLite database',
+    { validateSchema: options.validateSchema, requireCurrentSchema: false }
+  );
+  const roomsState = await validateJsonFile(
+    path.join(directoryPath, STATE_BACKUP_FILES.rooms),
+    'Restored room state',
+    options.validateRooms || validateRoomsBackupDocument
+  );
+  const releaseState = await validateJsonFile(
+    path.join(directoryPath, STATE_BACKUP_FILES.release),
+    'Restored release identity',
+    options.validateRelease || validateReleaseBackupDocument
+  );
+  return semanticMetadata(databaseState, roomsState.document, releaseState.document);
+}
+
+async function reconcileRestoredAccountDeletions(directoryPath, entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return { databaseAccounts: 0, rooms: 0 };
+  }
+  const userIds = entries.map((entry) => entry.userId);
+  const databasePath = path.join(directoryPath, STATE_BACKUP_FILES.database);
+  const store = await createAccountStore({ filePath: databasePath });
+  let databaseAccounts;
+  try {
+    databaseAccounts = store.reconcileDeletedAccounts(userIds);
+  } finally {
+    store.close();
+  }
+
+  const roomsPath = path.join(directoryPath, STATE_BACKUP_FILES.rooms);
+  const { parsed } = await readBoundedJson(roomsPath, 'Restored room state');
+  const normalized = normalizeRoomsDocument(parsed, { pruneStale: false });
+  const rooms = new Map(normalized.rooms.map((room) => [room.code, room]));
+  let changedRooms = 0;
+  for (const entry of entries) {
+    const scrub = prepareAccountDeletionRoomScrub(rooms, entry.userId, { now: entry.deletedAt });
+    changedRooms += scrub.changedRoomCount;
+    scrub.commit();
+  }
+  if (changedRooms > 0) await saveRoomsToDisk(rooms, roomsPath);
+  return { databaseAccounts, rooms: changedRooms };
+}
+
 export function resolveStateSourcePaths(env = process.env) {
   const roomsPath = path.resolve(String(env.SKYJO_ROOMS_FILE || '').trim() || path.join('.data', 'rooms.json'));
   const databasePath = path.resolve(
@@ -677,13 +732,14 @@ export async function createStateBackup(options = {}) {
 }
 
 function defaultLivePaths(env) {
-  return Object.values(resolveStateSourcePaths(env));
+  return [...Object.values(resolveStateSourcePaths(env)), resolveAccountDeletionLedgerPath(env)];
 }
 
 export async function restoreStateBackup(backupDirectory, options = {}) {
   const resolvedBackupDirectory = resolvedPath(backupDirectory, 'Backup directory');
   const destinationDirectory = resolvedPath(options.destinationDirectory, 'Restore destination directory');
-  const livePaths = options.livePaths || defaultLivePaths(options.env);
+  const deletionLedgerPath = options.deletionLedgerPath || resolveAccountDeletionLedgerPath(options.env);
+  const livePaths = options.livePaths || [...new Set([...defaultLivePaths(options.env), deletionLedgerPath])];
 
   if (!Array.isArray(livePaths)) throw errorWithCode('Restore live-path allowlist must be an array.');
   if (pathsOverlap(resolvedBackupDirectory, destinationDirectory)) {
@@ -709,14 +765,22 @@ export async function restoreStateBackup(backupDirectory, options = {}) {
       );
     }
     await verifyPayloadDirectory(stagingDirectory, manifest, options);
+    const deletionEntries = await loadAccountDeletionLedger(deletionLedgerPath, {
+      // Legacy library callers that do not supply a ledger retain the old
+      // isolated-verification behavior. Operator and scheduled restore paths
+      // always pass the resolved live ledger and therefore fail if it vanished.
+      allowMissing: !Object.hasOwn(options, 'deletionLedgerPath')
+    });
+    const reconciledAccountDeletions = await reconcileRestoredAccountDeletions(stagingDirectory, deletionEntries);
     await finalizeStagingDirectory(stagingDirectory, destinationDirectory, existingEmptyDestination);
-    await verifyPayloadDirectory(destinationDirectory, manifest, options);
+    await validateRestoredPayloadDirectory(destinationDirectory, options);
     return {
       destinationDirectory,
       databasePath: path.join(destinationDirectory, STATE_BACKUP_FILES.database),
       roomsPath: path.join(destinationDirectory, STATE_BACKUP_FILES.rooms),
       releasePath: path.join(destinationDirectory, STATE_BACKUP_FILES.release),
-      manifest
+      manifest,
+      reconciledAccountDeletions
     };
   } catch (error) {
     await fs.rm(stagingDirectory, { recursive: true, force: true });

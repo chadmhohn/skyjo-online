@@ -608,6 +608,45 @@ export function soloOwnerKey(userId?: string | null): SoloOwnerKey {
   return userId ? `account:${userId}` : 'guest';
 }
 
+/**
+ * Remove one deleted account's browser-owned solo state without touching the
+ * guest partition or another signed-in account. Both stores share one
+ * IndexedDB transaction so a storage failure cannot leave a partial purge.
+ */
+export async function deleteSoloAccountData(userId: string): Promise<void> {
+  if (!isUuid(userId)) throw new Error('Invalid deleted account identifier.');
+  const ownerKey = soloOwnerKey(userId);
+  const database = await openDatabase();
+  const transaction = database.transaction(
+    [soloSessionStoreName, statsOutboxStoreName],
+    'readwrite'
+  );
+  const completion = transactionComplete(transaction);
+  try {
+    const stores = [
+      transaction.objectStore(soloSessionStoreName),
+      transaction.objectStore(statsOutboxStoreName)
+    ];
+    const keysByStore = await Promise.all(
+      stores.map((store) => requestResult(store.index('byOwner').getAllKeys(ownerKey)))
+    );
+    for (let storeIndex = 0; storeIndex < stores.length; storeIndex += 1) {
+      for (const key of keysByStore[storeIndex] as IDBValidKey[]) {
+        await requestResult(stores[storeIndex].delete(key));
+      }
+    }
+    await completion;
+  } catch (error) {
+    try {
+      transaction.abort();
+    } catch {
+      // A failed request may already have aborted the transaction.
+    }
+    await completion.catch(() => undefined);
+    throw error;
+  }
+}
+
 export function createSoloGameId(): string {
   return crypto.randomUUID();
 }

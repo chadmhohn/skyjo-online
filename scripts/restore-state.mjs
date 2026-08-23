@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveStateSourcePaths, restoreStateBackup } from '../server-state-backup.mjs';
+import { resolveAccountDeletionLedgerPath } from '../server-account-deletion-ledger.mjs';
 
 function usage() {
-  return 'Usage: node scripts/restore-state.mjs --backup <directory> --destination <fresh-directory>';
+  return 'Usage: node scripts/restore-state.mjs --backup <directory> --destination <fresh-directory> [--deletion-ledger <file>]';
 }
 
 function parseArguments(argv) {
@@ -11,7 +12,7 @@ function parseArguments(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (!['--backup', '--destination'].includes(argument)) throw new Error(`Unknown argument: ${argument}`);
+    if (!['--backup', '--destination', '--deletion-ledger'].includes(argument)) throw new Error(`Unknown argument: ${argument}`);
     const value = argv[index + 1];
     if (!value || value.startsWith('--')) throw new Error(`Missing value for ${argument}.`);
     if (values.has(argument)) throw new Error(`Duplicate argument: ${argument}`);
@@ -21,7 +22,8 @@ function parseArguments(argv) {
   if (!values.has('--backup') || !values.has('--destination')) throw new Error(usage());
   return {
     backupDirectory: values.get('--backup'),
-    destinationDirectory: values.get('--destination')
+    destinationDirectory: values.get('--destination'),
+    deletionLedgerPath: values.get('--deletion-ledger')
   };
 }
 
@@ -31,9 +33,11 @@ export async function runRestoreStateCli(argv = process.argv.slice(2)) {
     process.stdout.write(`${usage()}\n`);
     return;
   }
-  const livePaths = Object.values(resolveStateSourcePaths());
+  const deletionLedgerPath = parsed.deletionLedgerPath || resolveAccountDeletionLedgerPath();
+  const livePaths = [...Object.values(resolveStateSourcePaths()), deletionLedgerPath];
   const result = await restoreStateBackup(parsed.backupDirectory, {
     destinationDirectory: parsed.destinationDirectory,
+    deletionLedgerPath,
     livePaths
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);

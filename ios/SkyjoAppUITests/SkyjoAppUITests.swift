@@ -911,7 +911,7 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElement(app.staticTexts["account.admin-web-only"], in: app)
     XCTAssertTrue(app.staticTexts["account.admin-web-only"].exists)
     XCTAssertTrue(element(in: app, identifier: "account.admin-link").exists)
-    let deletionSummary = element(in: app, identifier: "account.deletion-summary")
+    let deletionSummary = app.staticTexts["account.deletion-summary"]
     scrollToElement(deletionSummary, in: app)
     XCTAssertTrue(deletionSummary.exists)
     let deleteAccount = app.buttons["account.delete"]
@@ -968,7 +968,7 @@ final class SkyjoAppUITests: XCTestCase {
     scrollToElement(dynamicAdminBoundary, in: dynamicTypeApp)
     XCTAssertTrue(dynamicAdminBoundary.exists)
     XCTAssertEqual(dynamicAdminBoundary.label, "Native admin tools are intentionally out of scope for v0.1.0.")
-    let dynamicDeletionBoundary = element(in: dynamicTypeApp, identifier: "account.deletion-summary")
+    let dynamicDeletionBoundary = dynamicTypeApp.staticTexts["account.deletion-summary"]
     scrollToElement(dynamicDeletionBoundary, in: dynamicTypeApp)
     XCTAssertTrue(dynamicDeletionBoundary.exists)
     XCTAssertEqual(dynamicDeletionBoundary.label, "Permanent account deletion")

@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import { deleteSoloAccountData } from './soloDurability';
 import type { GameState } from './types';
 
 export interface AccountUser {
@@ -220,11 +221,22 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       },
       async deleteAccount(currentPassword, confirmation) {
         setError('');
+        const deletedOwnerId = user?.id ?? localSoloOwnerId;
         await apiJson<{ ok: boolean }>('/api/account', {
           method: 'DELETE',
           body: JSON.stringify({ currentPassword, confirmation })
         });
+        // Clear the live owner first. This aborts the current tab's stats
+        // coordinator and broadcasts the identity change to other tabs before
+        // the shared IndexedDB partition is purged.
         applyConfirmedUser(null);
+        if (deletedOwnerId) {
+          try {
+            await deleteSoloAccountData(deletedOwnerId);
+          } catch {
+            throw new Error('Account deleted online, but this browser could not remove its saved account game data. Clear this site\'s storage to finish local cleanup.');
+          }
+        }
       },
       async changePassword(currentPassword, password, confirmPassword) {
         setError('');

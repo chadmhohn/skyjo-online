@@ -588,6 +588,71 @@ function anonymizeCompletedState(rawState, playerIds) {
   return JSON.stringify(state);
 }
 
+function deleteAccountRows(database, userId) {
+  const participantRows = database
+    .prepare(
+      `SELECT game_id, player_id
+       FROM game_participants
+       WHERE user_id = ?`
+    )
+    .all(userId);
+  const playerIdsByGame = new Map();
+  for (const participant of participantRows) {
+    const ids = playerIdsByGame.get(participant.game_id) || new Set();
+    ids.add(participant.player_id);
+    playerIdsByGame.set(participant.game_id, ids);
+  }
+
+  const soloGameIds = database
+    .prepare(
+      `SELECT DISTINCT games.id
+       FROM games
+       LEFT JOIN game_participants ON game_participants.game_id = games.id
+       WHERE games.mode = 'single'
+         AND (games.created_by_user_id = ? OR game_participants.user_id = ?)`
+    )
+    .all(userId, userId)
+    .map((game) => game.id);
+  if (soloGameIds.length > 0) {
+    database.prepare(`DELETE FROM games WHERE id IN (${placeholders(soloGameIds)})`).run(...soloGameIds);
+  }
+
+  let anonymizedMultiplayerGames = 0;
+  for (const [gameId, playerIds] of playerIdsByGame.entries()) {
+    if (soloGameIds.includes(gameId)) continue;
+    const game = database
+      .prepare('SELECT mode, final_state_json, winner_player_id FROM games WHERE id = ?')
+      .get(gameId);
+    if (!game || game.mode !== 'multi') continue;
+    const anonymizedState = anonymizeCompletedState(game.final_state_json, playerIds);
+    database
+      .prepare(
+        `UPDATE games
+         SET source_key = NULL,
+             room_code = NULL,
+             winner_name = CASE WHEN winner_player_id IN (${placeholders([...playerIds])}) THEN ? ELSE winner_name END,
+             final_state_json = ?
+         WHERE id = ?`
+      )
+      .run(...playerIds, deletedPlayerName, anonymizedState, gameId);
+    anonymizedMultiplayerGames += 1;
+  }
+
+  database
+    .prepare('UPDATE game_participants SET user_id = NULL, display_name = ? WHERE user_id = ?')
+    .run(deletedPlayerName, userId);
+  database
+    .prepare('UPDATE game_round_scores SET user_id = NULL, display_name = ? WHERE user_id = ?')
+    .run(deletedPlayerName, userId);
+
+  const deleted = database.prepare('DELETE FROM users WHERE id = ?').run(userId).changes;
+  if (deleted !== 1) throw new PublicApiError('ACCOUNT_DELETION_STALE');
+  return {
+    deletedSoloGames: soloGameIds.length,
+    anonymizedMultiplayerGames
+  };
+}
+
 function normalizeBool(value) {
   return value === true || value === 1 ? 1 : 0;
 }
@@ -887,90 +952,53 @@ export class AccountStore {
     });
   }
 
-  deleteAccount(authorization) {
+  assertAccountDeletionAuthorization(authorization) {
     const userId = typeof authorization?.userId === 'string' ? authorization.userId : '';
     const passwordHash = typeof authorization?.passwordHash === 'string' ? authorization.passwordHash : '';
     const passwordSalt = typeof authorization?.passwordSalt === 'string' ? authorization.passwordSalt : '';
     if (!userId || !passwordHash || !passwordSalt) throw new TypeError('Account deletion authorization is invalid.');
+    const row = this.getUserRowById(userId);
+    if (!row || row.disabled === 1 || row.password_hash !== passwordHash || row.password_salt !== passwordSalt) {
+      throw new PublicApiError('ACCOUNT_DELETION_STALE');
+    }
+    if (row.role === 'admin') {
+      const activeAdmins = Number(
+        this.db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0").get()?.count || 0
+      );
+      if (activeAdmins <= 1) throw new PublicApiError('LAST_ADMIN');
+    }
+    return userId;
+  }
+
+  deleteAccount(authorization) {
+    const userId = this.assertAccountDeletionAuthorization(authorization);
 
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const row = this.getUserRowById(userId);
-      if (!row || row.disabled === 1 || row.password_hash !== passwordHash || row.password_salt !== passwordSalt) {
-        throw new PublicApiError('ACCOUNT_DELETION_STALE');
-      }
-      if (row.role === 'admin') {
-        const activeAdmins = Number(
-          this.db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0").get()?.count || 0
-        );
-        if (activeAdmins <= 1) throw new PublicApiError('LAST_ADMIN');
-      }
-
-      const participantRows = this.db
-        .prepare(
-          `SELECT game_id, player_id
-           FROM game_participants
-           WHERE user_id = ?`
-        )
-        .all(userId);
-      const playerIdsByGame = new Map();
-      for (const participant of participantRows) {
-        const ids = playerIdsByGame.get(participant.game_id) || new Set();
-        ids.add(participant.player_id);
-        playerIdsByGame.set(participant.game_id, ids);
-      }
-
-      const soloGameIds = this.db
-        .prepare(
-          `SELECT DISTINCT games.id
-           FROM games
-           LEFT JOIN game_participants ON game_participants.game_id = games.id
-           WHERE games.mode = 'single'
-             AND (games.created_by_user_id = ? OR game_participants.user_id = ?)`
-        )
-        .all(userId, userId)
-        .map((game) => game.id);
-      if (soloGameIds.length > 0) {
-        this.db
-          .prepare(`DELETE FROM games WHERE id IN (${placeholders(soloGameIds)})`)
-          .run(...soloGameIds);
-      }
-
-      let anonymizedMultiplayerGames = 0;
-      for (const [gameId, playerIds] of playerIdsByGame.entries()) {
-        if (soloGameIds.includes(gameId)) continue;
-        const game = this.db
-          .prepare('SELECT mode, final_state_json, winner_player_id FROM games WHERE id = ?')
-          .get(gameId);
-        if (!game || game.mode !== 'multi') continue;
-        const anonymizedState = anonymizeCompletedState(game.final_state_json, playerIds);
-        this.db
-          .prepare(
-            `UPDATE games
-             SET source_key = NULL,
-                 room_code = NULL,
-                 winner_name = CASE WHEN winner_player_id IN (${placeholders([...playerIds])}) THEN ? ELSE winner_name END,
-                 final_state_json = ?
-             WHERE id = ?`
-          )
-          .run(...playerIds, deletedPlayerName, anonymizedState, gameId);
-        anonymizedMultiplayerGames += 1;
-      }
-
-      this.db
-        .prepare('UPDATE game_participants SET user_id = NULL, display_name = ? WHERE user_id = ?')
-        .run(deletedPlayerName, userId);
-      this.db
-        .prepare('UPDATE game_round_scores SET user_id = NULL, display_name = ? WHERE user_id = ?')
-        .run(deletedPlayerName, userId);
-
-      const deleted = this.db.prepare('DELETE FROM users WHERE id = ?').run(userId).changes;
-      if (deleted !== 1) throw new PublicApiError('ACCOUNT_DELETION_STALE');
+      // Recheck again inside the write transaction after acquiring the lock.
+      this.assertAccountDeletionAuthorization(authorization);
+      const result = deleteAccountRows(this.db, userId);
       this.db.exec('COMMIT');
-      return {
-        deletedSoloGames: soloGameIds.length,
-        anonymizedMultiplayerGames
-      };
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  reconcileDeletedAccounts(userIds) {
+    const uniqueIds = [...new Set((Array.isArray(userIds) ? userIds : []).filter(Boolean).map(String))];
+    if (uniqueIds.length === 0) return 0;
+    let reconciled = 0;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const userId of uniqueIds) {
+        if (!this.getUserRowById(userId)) continue;
+        deleteAccountRows(this.db, userId);
+        reconciled += 1;
+      }
+      this.db.exec('COMMIT');
+      return reconciled;
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
@@ -1159,6 +1187,20 @@ export class AccountStore {
     });
   }
 
+  isPushSubscriptionCurrent({ userId, endpoint }) {
+    if (!userId || !endpoint) return false;
+    return Boolean(this.db
+      .prepare(
+        `SELECT 1 AS current
+         FROM push_subscriptions
+         JOIN users ON users.id = push_subscriptions.user_id
+         WHERE push_subscriptions.user_id = ?
+           AND push_subscriptions.endpoint = ?
+           AND users.disabled = 0`
+      )
+      .get(String(userId), String(endpoint))?.current);
+  }
+
   pruneAPNSDevices({ retentionMs = APNS_DEVICE_RETENTION_MS } = {}) {
     if (!Number.isSafeInteger(retentionMs) || retentionMs < 1) throw new TypeError('APNs device retention is invalid.');
     return this.db
@@ -1301,6 +1343,7 @@ export class AccountStore {
       )
       .all(cutoff, ...uniqueIds)
       .map((row) => ({
+        userId: row.user_id,
         installationId: row.installation_id,
         environment: row.environment,
         tokenCiphertext: Buffer.from(row.token_ciphertext),
@@ -1309,6 +1352,23 @@ export class AccountStore {
         tokenFingerprint: Buffer.from(row.token_fingerprint),
         updatedAt: Number(row.updated_at)
       }));
+  }
+
+  isAPNSDeviceCurrent({ userId, installationId, environment, tokenFingerprint, updatedAt }) {
+    if (!userId || !installationId) return false;
+    return Boolean(this.db
+      .prepare(
+        `SELECT 1 AS current
+         FROM apns_devices
+         JOIN users ON users.id = apns_devices.user_id
+         WHERE apns_devices.user_id = ?
+           AND apns_devices.installation_id = ?
+           AND apns_devices.environment = ?
+           AND apns_devices.token_fingerprint = ?
+           AND apns_devices.updated_at = ?
+           AND users.disabled = 0`
+      )
+      .get(userId, installationId, environment, tokenFingerprint, updatedAt)?.current);
   }
 
   deleteAPNSDeviceIfCurrent({ installationId, environment, tokenFingerprint, updatedAt }) {

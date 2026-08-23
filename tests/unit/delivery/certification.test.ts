@@ -1242,7 +1242,7 @@ describe('v0.3.6 workflow governance', () => {
     expect(apnsRollbackProof).not.toMatch(/console\.(?:error|log)\(logs\)/);
     expect(serverEntrypoint).not.toContain('server-apns-rollback-proof');
     expect(serverEntrypoint).toMatch(
-      /candidate = await createAccountStore\(\{ filePath: accountDatabaseFile \}\);\s+candidate\.pruneAPNSDevices\(\);/
+      /candidate = await createAccountStore\(\{ filePath: accountDatabaseFile \}\);\s+candidate\.reconcileDeletedAccounts\(accountDeletionLedger\.entries\(\)\.map\(\(entry\) => entry\.userId\)\);\s+candidate\.pruneAPNSDevices\(\);/
     );
     expect(serverEntrypoint).toContain('accountStore?.pruneAPNSDevices();');
     expect(serverEntrypoint).toContain(

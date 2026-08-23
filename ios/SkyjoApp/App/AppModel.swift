@@ -689,7 +689,7 @@ final class AppModel {
         ? "Account deleted online. This device could not remove its saved account game data; reinstall Skyjo to finish local cleanup."
         : "Account deleted. Retained multiplayer results now identify you only as Deleted player."
       preferences?.confirmSignedOut()
-      selectedTab = .home
+      selectedTab = localCleanupFailed ? .account : .home
       rootState = .guest
     } catch {
       guard

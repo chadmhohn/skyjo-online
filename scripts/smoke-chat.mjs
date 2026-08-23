@@ -1382,6 +1382,17 @@ try {
   assert.equal(hostStats.self.multiplayerGames >= 1, true, 'host multiplayer stats are saved');
   assert.equal(hostStats.coPlayers.some((player) => player.userId === guestAccount.user.id), true, 'co-player stats are visible');
 
+  const wrongDeletionMedia = await fetch(fixedOriginUrl(baseUrl, '/api/account'), {
+    method: 'DELETE',
+    headers: {
+      Cookie: guestAccount.cookie,
+      'Content-Type': 'text/plain'
+    },
+    body: JSON.stringify({ currentPassword: 'account-secret-123', confirmation: 'DELETE' })
+  });
+  assert.equal(wrongDeletionMedia.status, 415, 'account deletion requires JSON media');
+  assert.equal((await getJson(baseUrl, guestAccount.cookie, '/api/account/me')).user.id, guestAccount.user.id);
+
   const deletionBroadcast = waitForMessage(
     hostSocket,
     (message) => {
@@ -1418,6 +1429,18 @@ try {
     password: 'account-secret-123'
   });
   assert.equal(deletedLogin.response.status, 401, 'deleted credentials cannot authenticate again');
+
+  const deletionLedger = JSON.parse(await fs.readFile(path.join(tempDir, 'account-deletions.json'), 'utf8'));
+  assert.deepEqual(
+    deletionLedger.entries.map((entry) => entry.userId),
+    [guestAccount.user.id],
+    'account deletion durably records its external tombstone'
+  );
+  assert.equal(
+    JSON.stringify(deletionLedger).includes('grace@example.com'),
+    false,
+    'account deletion ledger contains no email address'
+  );
 
   const persistedRooms = JSON.parse(await fs.readFile(roomsFile, 'utf8'));
   const persistedDeletedRoom = persistedRooms.rooms.find((room) => room.code === roomCode);

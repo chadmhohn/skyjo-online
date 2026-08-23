@@ -10,6 +10,7 @@ import {
   createAccountStore,
   SCHEMA_MIGRATIONS
 } from '../../../server-account-store.mjs';
+import { createAccountDeletionLedger } from '../../../server-account-deletion-ledger.mjs';
 import { CURRENT_PROTOCOL_VERSION, writeReleaseIdentity } from '../../../server-release.mjs';
 import {
   createStateBackup,
@@ -710,6 +711,53 @@ describe('verified state backups', () => {
     expect(JSON.parse(await fs.readFile(result.releasePath, 'utf8'))).toEqual(releaseIdentity());
   });
 
+  it('reapplies external deletion tombstones to restored accounts and room seats', async () => {
+    const deletedUserId = '30000000-0000-4000-8000-000000000001';
+    const database = new DatabaseSync(databasePath);
+    database.exec('DROP TABLE children; DROP TABLE parents;');
+    database.prepare(`
+      INSERT INTO users (
+        id, email, display_name, password_hash, password_salt, role, disabled, created_at, updated_at, last_login_at
+      ) VALUES (?, ?, ?, ?, ?, 'player', 0, ?, ?, NULL)
+    `).run(
+      deletedUserId,
+      'restore-deleted@example.test',
+      'Restore Deleted',
+      'unused-hash',
+      'unused-salt',
+      Date.parse(fixedTimestamp),
+      Date.parse(fixedTimestamp)
+    );
+    database.close();
+    const rooms = roomState();
+    rooms.rooms[0].players[0].userId = deletedUserId;
+    await fs.writeFile(roomsPath, `${JSON.stringify(rooms)}\n`, { mode: 0o600 });
+    const backup = await createBackup('pre-deletion-backup');
+    const deletionLedgerPath = path.join(sourceDirectory, 'account-deletions.json');
+    const ledger = await createAccountDeletionLedger({ filePath: deletionLedgerPath, now: () => 123 });
+    await ledger.recordDeletion(deletedUserId);
+
+    const restored = await restoreStateBackup(backup.backupDirectory, {
+      destinationDirectory: path.join(tempDirectory, 'reconciled-restore'),
+      deletionLedgerPath,
+      env: {
+        SKYJO_DB_FILE: databasePath,
+        SKYJO_ROOMS_FILE: roomsPath,
+        SKYJO_RELEASE_FILE: releasePath,
+        SKYJO_ACCOUNT_DELETION_LEDGER_FILE: deletionLedgerPath
+      }
+    });
+
+    expect(restored.reconciledAccountDeletions).toEqual({ databaseAccounts: 1, rooms: 1 });
+    const restoredDatabase = new DatabaseSync(restored.databasePath, { readOnly: true });
+    expect(restoredDatabase.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ?').get(deletedUserId)?.count).toBe(0);
+    restoredDatabase.close();
+    const restoredRooms = JSON.parse(await fs.readFile(restored.roomsPath, 'utf8'));
+    expect(restoredRooms.rooms[0].players).toEqual([
+      expect.objectContaining({ id: 'player-2', host: true })
+    ]);
+  });
+
   it('accepts an existing empty restore directory but rejects nonempty, same, live, and linked targets', async () => {
     const backupResult = await createBackup();
     const emptyDestination = path.join(tempDirectory, 'empty-destination');
@@ -819,12 +867,16 @@ describe('verified state backups', () => {
     expect(JSON.parse((await execFileAsync(process.execPath, [verifyScript, '--backup', cliBackup])).stdout).formatVersion).toBe(1);
 
     const cliRestore = path.join(tempDirectory, 'cli-restore');
+    const deletionLedgerPath = path.join(tempDirectory, 'account-deletions.json');
+    await createAccountDeletionLedger({ filePath: deletionLedgerPath });
     const restoreRun = await execFileAsync(process.execPath, [
       restoreScript,
       '--backup',
       cliBackup,
       '--destination',
-      cliRestore
+      cliRestore,
+      '--deletion-ledger',
+      deletionLedgerPath
     ]);
     expect(JSON.parse(restoreRun.stdout).destinationDirectory).toBe(cliRestore);
   });
