@@ -4,7 +4,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { wellFormedUTF16Prefix } from './server-unicode.mjs';
-import { legacyAiNameMap, sanitizeLegacySoloAiNames } from './server-legacy-ai-branding.mjs';
+import { replacementForLegacyAiName, sanitizeLegacySoloAiNames } from './server-legacy-ai-branding.mjs';
 
 const scryptAsync = promisify(crypto.scrypt);
 const defaultDbFile = path.join('.data', 'skyjo.sqlite');
@@ -90,7 +90,7 @@ function normalizeLegacySoloGameRows(db) {
     if (sanitized !== state) updateState.run(JSON.stringify(sanitized), game.id);
 
     for (const participant of participants.all(game.id)) {
-      const replacement = legacyAiNameMap.get(participant.display_name);
+      const replacement = replacementForLegacyAiName(participant.display_name);
       if (!replacement) continue;
       updateParticipant.run(replacement, game.id, participant.player_id);
       updateRoundScores.run(replacement, game.id, participant.player_id);
