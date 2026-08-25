@@ -19,6 +19,9 @@ describe('deployed smoke protocol contract', () => {
     expect(library).not.toMatch(/expectedProtocolVersion = 1/);
     expect(entrypoint).toContain('resolveAppleApplicationIdentifier');
     expect(entrypoint).toContain('expectedAppleApplicationIdentifier:');
+    expect(entrypoint).toContain("accountSetup === 'signup'");
+    expect(library).toContain('/api/account/signup');
+    expect(library).toContain('createAccount = false');
     expect(library).toContain('/.well-known/apple-app-site-association');
     expect(library).toContain('/api/rooms/invite/redeem');
     expect(library).toContain('INVITE_INVALID_OR_EXPIRED');

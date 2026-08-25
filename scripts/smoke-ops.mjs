@@ -43,7 +43,10 @@ async function waitForResponse(url, predicate, timeoutMs = 8000) {
   throw lastError || new Error(`Timed out waiting for ${new URL(url).pathname}.`);
 }
 
-async function startServer(dataDir) {
+async function startServer(dataDir, {
+  bootstrapEmail = adminEmail,
+  bootstrapPassword = adminPassword
+} = {}) {
   const port = await getOpenPort();
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd: repoRoot,
@@ -53,8 +56,8 @@ async function startServer(dataDir) {
       HOST: '127.0.0.1',
       PORT: String(port),
       SKYJO_APPLE_APPLICATION_IDENTIFIER: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
-      SKYJO_ADMIN_EMAIL: adminEmail,
-      SKYJO_ADMIN_INITIAL_PASSWORD: adminPassword,
+      SKYJO_ADMIN_EMAIL: bootstrapEmail,
+      SKYJO_ADMIN_INITIAL_PASSWORD: bootstrapPassword,
       SKYJO_DATABASE_RETRY_MS: '100',
       SKYJO_DB_FILE: path.join(dataDir, 'skyjo.sqlite'),
       SKYJO_INVITE_SECRET: 'ops-smoke-invite-secret',
@@ -115,6 +118,24 @@ try {
   });
   const roomsAfterSocket = await fs.readFile(path.join(healthyDir, 'rooms.json'), 'utf8');
   assert.equal(roomsAfterSocket, initialRooms, 'non-mutating WebSocket proof must not change room state');
+  await stopServer(server);
+  server = undefined;
+
+  const isolatedEmail = 'isolated-canary-smoke@example.invalid';
+  const isolatedPassword = 'isolated-canary-smoke-password';
+  server = await startServer(healthyDir, {
+    bootstrapEmail: isolatedEmail,
+    bootstrapPassword: isolatedPassword
+  });
+  await runDeployedSmoke({
+    baseUrl: server.baseUrl,
+    accountEmail: isolatedEmail,
+    accountPassword: isolatedPassword,
+    createAccount: true,
+    expectedAppleApplicationIdentifier: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
+    expectedAPNSNotificationsEnabled: false,
+    expectedProtocolVersion: CURRENT_PROTOCOL_VERSION
+  });
   await stopServer(server);
   server = undefined;
 
@@ -194,7 +215,7 @@ try {
   );
   await stopServer(server, { allowFailure: true });
   server = undefined;
-  console.log('operations smoke passed: release metadata, sanitized readiness, open access, account-cookie auth, non-mutating WebSocket, database recovery, and rejected-room preservation');
+  console.log('operations smoke passed: release metadata, sanitized readiness, open access, existing and isolated account auth, non-mutating WebSocket, database recovery, and rejected-room preservation');
 } finally {
   if (server) await stopServer(server);
   await fs.rm(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

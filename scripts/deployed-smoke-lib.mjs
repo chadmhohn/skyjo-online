@@ -73,6 +73,7 @@ export async function runDeployedSmoke({
   baseUrl,
   accountEmail,
   accountPassword,
+  createAccount = false,
   expectedAppleApplicationIdentifier,
   expectedAPNSNotificationsEnabled,
   expectedReleaseSha,
@@ -80,6 +81,7 @@ export async function runDeployedSmoke({
 }) {
   assert.ok(baseUrl, 'A deployed base URL is required.');
   assert.ok(accountEmail && accountPassword, 'A non-destructive smoke account is required.');
+  assert.equal(typeof createAccount, 'boolean', 'Smoke account creation mode must be explicit.');
   assert.equal(typeof expectedAPNSNotificationsEnabled, 'boolean', 'Expected APNs availability must be explicit.');
   const expectedAppleAssociation = createAppleAppSiteAssociation(expectedAppleApplicationIdentifier);
   const parsedBaseUrl = new URL(baseUrl);
@@ -188,6 +190,27 @@ export async function runDeployedSmoke({
   const appShell = await appResponse.text();
   assert.match(appShell, /<div id="root"><\/div>/, 'app shell root is missing');
   assert.match(appShell, /<script[^>]+src="\/assets\//, 'app shell build asset is missing');
+
+  if (createAccount) {
+    const accountSignup = await fetch(`${root}/api/account/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: accountEmail,
+        displayName: 'Canary Smoke',
+        password: accountPassword,
+        confirmPassword: accountPassword
+      }),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(5000)
+    });
+    assert.equal(accountSignup.status, 201, 'isolated smoke account signup failed');
+    assert.equal(accountSignup.headers.get('location'), null, 'isolated smoke account signup must not redirect');
+    assertNoStore(accountSignup, 'isolated smoke account signup');
+    const signedUpAccount = await accountSignup.json();
+    assert.equal(signedUpAccount.user?.email, accountEmail.trim().toLowerCase(), 'isolated smoke account identity did not match');
+    assert.equal(signedUpAccount.user?.displayName, 'Canary Smoke', 'isolated smoke account display name did not match');
+  }
 
   const accountLogin = await fetch(`${root}/api/account/login`, {
     method: 'POST',
