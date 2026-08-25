@@ -1,7 +1,52 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
 import { createAppleAppSiteAssociation } from '../server-room-invites.mjs';
+
+const stagedReleasePattern = /^\/var\/tmp\/skyjo-deploy\/[1-9][0-9]{0,19}-[1-9][0-9]{0,5}-(?:canary|production)\/release$/;
+const installedReleasePattern = /^\/srv\/skyjo-online\/releases\/[a-f0-9]{40}$/;
+
+export function resolveDeployedSmokeAccount({
+  releaseDirectory,
+  runtimeDirectory,
+  configuredSetup,
+  configuredEmail,
+  configuredPassword,
+  randomBytes = crypto.randomBytes
+}) {
+  // The immutable runtime can be exercised by an older separately bootstrapped
+  // controller, so derive isolated-canary behavior from the exact runtime path.
+  assert.equal(releaseDirectory, runtimeDirectory, 'Deployed smoke release directory does not match its runtime.');
+  const staged = stagedReleasePattern.test(releaseDirectory);
+  const installed = installedReleasePattern.test(releaseDirectory);
+  assert.equal(staged || installed, true, 'Deployed smoke release directory is outside the trusted runtime roots.');
+
+  const setup = String(configuredSetup || '').trim();
+  assert.equal(setup === '' || setup === 'existing' || setup === 'signup', true, 'Invalid deployed smoke account setup mode.');
+
+  if (staged) {
+    assert.notEqual(setup, 'existing', 'An isolated staged canary cannot use a pre-existing account.');
+    const emailEntropy = randomBytes(18);
+    const passwordEntropy = randomBytes(32);
+    assert.ok(Buffer.isBuffer(emailEntropy) && emailEntropy.length === 18, 'Canary account email entropy must be exactly 144 bits.');
+    assert.ok(Buffer.isBuffer(passwordEntropy) && passwordEntropy.length === 32, 'Canary account password entropy must be exactly 256 bits.');
+    return {
+      createAccount: true,
+      email: `canary-${emailEntropy.toString('hex')}@example.invalid`,
+      password: passwordEntropy.toString('base64url')
+    };
+  }
+
+  assert.notEqual(setup, 'signup', 'Production smoke cannot create an account.');
+  assert.ok(configuredEmail, 'A non-destructive production smoke account email is required.');
+  assert.ok(configuredPassword, 'A non-destructive production smoke account password is required.');
+  return {
+    createAccount: false,
+    email: configuredEmail,
+    password: configuredPassword
+  };
+}
 
 function cookieFromResponse(response, label) {
   const setCookie = response.headers.get('set-cookie');

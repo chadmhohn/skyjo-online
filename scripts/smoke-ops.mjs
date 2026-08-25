@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createAccountStore } from '../server-account-store.mjs';
 import { CURRENT_PROTOCOL_VERSION } from '../server-release.mjs';
 import { SYNTHETIC_APPLE_APPLICATION_IDENTIFIER } from '../server-room-invites.mjs';
-import { runDeployedSmoke } from './deployed-smoke-lib.mjs';
+import { resolveDeployedSmokeAccount, runDeployedSmoke } from './deployed-smoke-lib.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const adminEmail = 'ops-smoke@example.com';
@@ -121,17 +121,23 @@ try {
   await stopServer(server);
   server = undefined;
 
-  const isolatedEmail = 'isolated-canary-smoke@example.invalid';
-  const isolatedPassword = 'isolated-canary-smoke-password';
+  const stagedRelease = '/var/tmp/skyjo-deploy/1-1-canary/release';
+  const isolatedAccount = resolveDeployedSmokeAccount({
+    releaseDirectory: stagedRelease,
+    runtimeDirectory: stagedRelease,
+    configuredEmail: 'legacy-controller-run-id@example.invalid',
+    configuredPassword: 'legacy-controller-password',
+    randomBytes: (size) => Buffer.alloc(size, size === 18 ? 0x12 : 0x34)
+  });
   server = await startServer(healthyDir, {
-    bootstrapEmail: isolatedEmail,
-    bootstrapPassword: isolatedPassword
+    bootstrapEmail: isolatedAccount.email,
+    bootstrapPassword: isolatedAccount.password
   });
   await runDeployedSmoke({
     baseUrl: server.baseUrl,
-    accountEmail: isolatedEmail,
-    accountPassword: isolatedPassword,
-    createAccount: true,
+    accountEmail: isolatedAccount.email,
+    accountPassword: isolatedAccount.password,
+    createAccount: isolatedAccount.createAccount,
     expectedAppleApplicationIdentifier: SYNTHETIC_APPLE_APPLICATION_IDENTIFIER,
     expectedAPNSNotificationsEnabled: false,
     expectedProtocolVersion: CURRENT_PROTOCOL_VERSION

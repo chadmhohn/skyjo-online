@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -19,6 +20,34 @@ import {
 } from './runtime-artifact-lib.mjs';
 
 const execFileAsync = promisify(execFile);
+
+async function createIsolatedStagingRoot() {
+  const stageRoot = '/var/tmp/skyjo-deploy';
+  let createdStageRoot = false;
+  try {
+    await fs.mkdir(stageRoot, { mode: 0o700 });
+    createdStageRoot = true;
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+    const stat = await fs.lstat(stageRoot);
+    const mode = stat.mode & 0o7777;
+    assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'Integration staging root must be a real directory.');
+    assert.equal(stat.uid, process.getuid(), 'Integration staging root must belong to the test identity.');
+    assert.equal(mode, 0o700, 'Integration staging root has an unexpected mode.');
+  }
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const runId = `${Date.now()}-${crypto.randomInt(1, 1_000_000)}-canary`;
+    const runDirectory = path.join(stageRoot, runId);
+    try {
+      await fs.mkdir(runDirectory, { mode: 0o700 });
+      return { createdStageRoot, runDirectory, stageRoot };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
+  throw new Error('Could not reserve an isolated integration staging directory.');
+}
 
 async function availablePort() {
   const socket = net.createServer();
@@ -90,9 +119,10 @@ assert.equal(releaseIdentity.releaseSha, releaseSha, 'Downloaded build identity 
 assert.equal(releaseIdentity.buildTimestamp, new Date(sourceDateEpoch * 1000).toISOString(), 'Downloaded build identity differs from SOURCE_DATE_EPOCH.');
 
 const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skyjo-runtime-integration-'));
+const integrationStage = await createIsolatedStagingRoot();
 const firstDirectory = path.join(temporaryRoot, 'first');
 const secondDirectory = path.join(temporaryRoot, 'second');
-const extractedDirectory = path.join(temporaryRoot, 'extracted');
+const extractedDirectory = path.join(integrationStage.runDirectory, 'release');
 const stateDirectory = path.join(temporaryRoot, 'state');
 let server = null;
 let logs = '';
@@ -228,6 +258,7 @@ try {
     SKYJO_SECURE_COOKIES: 'false',
     SKYJO_ADMIN_EMAIL: accountEmail,
     SKYJO_ADMIN_INITIAL_PASSWORD: accountPassword,
+    SKYJO_CANARY_RELEASE_DIR: extractedDirectory,
     SKYJO_ROOMS_FILE: path.join(stateDirectory, 'rooms.json'),
     SKYJO_DB_FILE: path.join(stateDirectory, 'skyjo.sqlite'),
     SKYJO_VAPID_PUBLIC_KEY: '',
@@ -251,8 +282,8 @@ try {
       ...environment,
       SKYJO_SMOKE_BASE_URL: baseUrl,
       SKYJO_SMOKE_ACCESS_PASSWORD: accessPassword,
-      SKYJO_SMOKE_ACCOUNT_EMAIL: accountEmail,
-      SKYJO_SMOKE_ACCOUNT_PASSWORD: accountPassword,
+      SKYJO_DEPLOY_SMOKE_ACCOUNT_EMAIL: accountEmail,
+      SKYJO_DEPLOY_SMOKE_ACCOUNT_PASSWORD: accountPassword,
       SKYJO_EXPECTED_RELEASE_SHA: releaseSha,
       SKYJO_EXPECTED_PROTOCOL_VERSION: String(releaseIdentity.protocolVersion)
     },
@@ -272,4 +303,6 @@ try {
 } finally {
   if (server) await stopChild(server);
   await fs.rm(temporaryRoot, { recursive: true, force: true });
+  await fs.rm(integrationStage.runDirectory, { recursive: true, force: true });
+  if (integrationStage.createdStageRoot) await fs.rmdir(integrationStage.stageRoot);
 }

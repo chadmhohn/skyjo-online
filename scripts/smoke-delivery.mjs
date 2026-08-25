@@ -128,10 +128,11 @@ async function testPublicSmoke() {
 }
 
 async function testWorkflowContract() {
-  const [workflow, releaseController, deployedSmoke] = await Promise.all([
+  const [workflow, releaseController, deployedSmoke, deployedSmokeLibrary] = await Promise.all([
     fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
     fs.readFile(path.join(root, 'deploy', 'release-controller.mjs'), 'utf8'),
-    fs.readFile(path.join(root, 'scripts', 'smoke-deployed.mjs'), 'utf8')
+    fs.readFile(path.join(root, 'scripts', 'smoke-deployed.mjs'), 'utf8'),
+    fs.readFile(path.join(root, 'scripts', 'deployed-smoke-lib.mjs'), 'utf8')
   ]);
   assert.match(releaseController, /'SKYJO_SMOKE_ACCOUNT_SETUP=signup'/,
     'isolated canaries must provision their disposable account through the public signup contract');
@@ -143,8 +144,16 @@ async function testWorkflowContract() {
     'public workflow identity must not predict the isolated canary account');
   assert.match(releaseController, /async function smokeProduction[\s\S]*?'SKYJO_SMOKE_ACCOUNT_SETUP=existing'/,
     'production smoke must override ambient configuration and remain login-only');
-  assert.match(deployedSmoke, /createAccount: accountSetup === 'signup'/,
-    'the deployed smoke entrypoint must honor the isolated signup mode');
+  assert.match(deployedSmoke, /resolveDeployedSmokeAccount/,
+    'the deployed smoke entrypoint must resolve account mode from its exact runtime context');
+  assert.ok(deployedSmokeLibrary.includes('const stagedReleasePattern = /^\\/var\\/tmp\\/skyjo-deploy\\/'),
+    'the runtime fallback must recognize only the isolated staging root');
+  assert.match(deployedSmokeLibrary, /randomBytes\(18\)/,
+    'the runtime fallback must generate an unpredictable canary email');
+  assert.match(deployedSmokeLibrary, /randomBytes\(32\)/,
+    'the runtime fallback must generate an independent canary password');
+  assert.match(deployedSmokeLibrary, /Production smoke cannot create an account/,
+    'installed production smoke must remain login-only');
   assert.match(workflow, /tags:\s*\n\s*- ["']v\*["']/);
   const dispatch = workflow.match(/\n  workflow_dispatch:[\s\S]*?\npermissions:/)?.[0] || '';
   assert.match(dispatch, /\n\s+ios_ui_mode:/,
