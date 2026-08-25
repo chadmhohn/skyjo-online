@@ -882,7 +882,7 @@ async function canary(releaseDirectory, identity, snapshotDirectory, runId) {
   await run('/usr/bin/chmod', ['0711', PATHS.canaryEnv]);
   const envPath = resolveWithin(PATHS.canaryEnv, `${runId}.env`);
   const canaryPassword = crypto.randomBytes(32).toString('base64url');
-  const canaryEmail = `canary-${runId}@example.invalid`;
+  const canaryEmail = `canary-${crypto.randomBytes(18).toString('hex')}@example.invalid`;
   const env = [
     `SKYJO_CANARY_RELEASE_DIR=${releaseDirectory}`,
     `SKYJO_DB_FILE=${resolveWithin(stateDirectory, 'skyjo.sqlite')}`,
@@ -1004,6 +1004,7 @@ async function smokeProduction(releaseDirectory, identity, runId) {
     `SKYJO_CANARY_RELEASE_DIR=${releaseDirectory}`,
     `SKYJO_EXPECTED_RELEASE_SHA=${identity.releaseSha}`,
     `SKYJO_EXPECTED_PROTOCOL_VERSION=${identity.protocolVersion}`,
+    'SKYJO_SMOKE_ACCOUNT_SETUP=existing',
     'SKYJO_SMOKE_BASE_URL=http://127.0.0.1:4180'
   ].join('\n') + '\n', { mode: 0o640, flag: 'wx' });
   await run('/usr/bin/chown', ['root:skyjo', envPath]);
