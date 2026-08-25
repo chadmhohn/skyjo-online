@@ -137,6 +137,12 @@ async function testWorkflowContract() {
     'isolated canaries must provision their disposable account through the public signup contract');
   assert.doesNotMatch(releaseController, /SKYJO_ADMIN_EMAIL=\$\{canaryEmail\}/,
     'isolated canaries must not depend on the empty-database admin bootstrap');
+  assert.match(releaseController, /canary-\$\{crypto\.randomBytes\(18\)\.toString\('hex'\)\}@example\.invalid/,
+    'isolated canary account identity must be unpredictable until its protected environment is created');
+  assert.doesNotMatch(releaseController, /canary-\$\{runId\}@example\.invalid/,
+    'public workflow identity must not predict the isolated canary account');
+  assert.match(releaseController, /async function smokeProduction[\s\S]*?'SKYJO_SMOKE_ACCOUNT_SETUP=existing'/,
+    'production smoke must override ambient configuration and remain login-only');
   assert.match(deployedSmoke, /createAccount: accountSetup === 'signup'/,
     'the deployed smoke entrypoint must honor the isolated signup mode');
   assert.match(workflow, /tags:\s*\n\s*- ["']v\*["']/);
