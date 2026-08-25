@@ -103,6 +103,10 @@ export default function Home() {
               <summary className="skyjo-button skyjo-button-disclosure px-3 py-2">Sound</summary>
               <AudioSettingsPanel />
             </details>
+            <nav aria-label="Legal and support" className="flex flex-wrap gap-4 text-sm font-bold">
+              <Link className="skyjo-legal-nav-link text-[#f5e6c8]/64 hover:text-[#f5e6c8]" to="/privacy">Privacy</Link>
+              <Link className="skyjo-legal-nav-link text-[#f5e6c8]/64 hover:text-[#f5e6c8]" to="/support">Support</Link>
+            </nav>
           </div>
         </div>
       </section>

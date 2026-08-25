@@ -1341,6 +1341,47 @@ html.skyjo-test-text-scale-200 {
     box-shadow: 0 0 32px rgba(245, 230, 200, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
+  .skyjo-legal-page section {
+    margin-top: 1.75rem;
+  }
+
+  .skyjo-legal-nav-link {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .skyjo-legal-page h2 {
+    margin-bottom: 0.55rem;
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 1.35rem;
+    font-weight: 800;
+    color: #f5e6c8;
+  }
+
+  .skyjo-legal-page p,
+  .skyjo-legal-page li {
+    line-height: 1.75;
+    color: rgba(245, 230, 200, 0.76);
+  }
+
+  .skyjo-legal-page p + p {
+    margin-top: 0.75rem;
+  }
+
+  .skyjo-legal-page ul {
+    display: grid;
+    margin: 0.7rem 0;
+    padding-left: 1.25rem;
+    list-style: disc;
+    gap: 0.55rem;
+  }
+
+  .skyjo-legal-page a {
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+  }
+
   .skyjo-table-glow {
     border-radius: 16px;
     background: radial-gradient(ellipse at center, rgba(245, 230, 200, 0.04) 0%, transparent 70%);

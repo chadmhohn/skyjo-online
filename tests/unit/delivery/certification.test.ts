@@ -309,7 +309,7 @@ describe('recovery RPO measurement', () => {
   });
 });
 
-describe('v0.3.6 certification evidence', () => {
+describe('v0.3.7 certification evidence', () => {
   it('records propagation arrivals without retaining or cloning diagnostic frame history', async () => {
     const commandId = '00000000-0000-4000-8000-000000000001';
     const sentCommand = (action: GameCommand, expectedRevision: number, nextCommandId = commandId) => ({
@@ -710,14 +710,14 @@ describe('v0.3.6 certification evidence', () => {
   });
 });
 
-describe('v0.3.6 immutable tag identity', () => {
+describe('v0.3.7 immutable tag identity', () => {
   const metadata = {
-    tagRef: 'refs/tags/v0.3.6',
-    tagName: 'v0.3.6',
-    packageVersion: '0.3.6',
-    packageLockVersion: '0.3.6',
-    packageLockRootVersion: '0.3.6',
-    certificationVersion: '0.3.6'
+    tagRef: 'refs/tags/v0.3.7',
+    tagName: 'v0.3.7',
+    packageVersion: '0.3.7',
+    packageLockVersion: '0.3.7',
+    packageLockRootVersion: '0.3.7',
+    certificationVersion: '0.3.7'
   };
   const packageDocument = { version: metadata.packageVersion };
   const packageLock = {
@@ -741,8 +741,8 @@ describe('v0.3.6 immutable tag identity', () => {
 
   function tagIdentityGit(tagContents: string, checkoutCommit = commit) {
     const responses = new Map([
-      ['cat-file -t refs/tags/v0.3.6', 'tag\n'],
-      ['rev-parse --verify refs/tags/v0.3.6^{tag}', `${tagObject}\n`],
+      ['cat-file -t refs/tags/v0.3.7', 'tag\n'],
+      ['rev-parse --verify refs/tags/v0.3.7^{tag}', `${tagObject}\n`],
       ['rev-parse --verify HEAD^{commit}', `${checkoutCommit}\n`],
       [`cat-file tag ${tagObject}`, tagContents]
     ]);
@@ -761,10 +761,10 @@ describe('v0.3.6 immutable tag identity', () => {
   }
 
   it('binds the full tag ref, package, lockfile, and certification versions exactly', () => {
-    expect(validateReleaseTagMetadata(metadata)).toBe('v0.3.6');
+    expect(validateReleaseTagMetadata(metadata)).toBe('v0.3.7');
     for (const changed of [
       { tagRef: 'refs/tags/v0.3.2', tagName: 'v0.3.2' },
-      { tagRef: 'refs/tags/v0.3.6-extra' },
+      { tagRef: 'refs/tags/v0.3.7-extra' },
       { tagName: 'v0.3.2' },
       { packageVersion: '0.3.2' },
       { packageLockVersion: '0.3.2' },
@@ -778,16 +778,16 @@ describe('v0.3.6 immutable tag identity', () => {
   it('accepts only an annotated tag object directly naming the checked-out commit', async () => {
     const runGit = tagIdentityGit(annotatedTagContents());
     await expect(verifyTag(runGit)).resolves.toEqual({
-      expectedTag: 'v0.3.6',
+      expectedTag: 'v0.3.7',
       tagObject,
       taggedCommit: commit
     });
-    expect(runGit).toHaveBeenCalledWith(['rev-parse', '--verify', 'refs/tags/v0.3.6^{tag}']);
+    expect(runGit).toHaveBeenCalledWith(['rev-parse', '--verify', 'refs/tags/v0.3.7^{tag}']);
     expect(runGit).toHaveBeenCalledWith(['cat-file', 'tag', tagObject]);
     expect(runGit).not.toHaveBeenCalledWith([
       'rev-parse',
       '--verify',
-      'refs/tags/v0.3.6^{commit}'
+      'refs/tags/v0.3.7^{commit}'
     ]);
   });
 
@@ -820,13 +820,13 @@ describe('v0.3.6 immutable tag identity', () => {
         error: /duplicate object header/i
       },
       {
-        contents: annotatedTagContents().replace('tag v0.3.6\n', 'type commit\ntag v0.3.6\n'),
+        contents: annotatedTagContents().replace('tag v0.3.7\n', 'type commit\ntag v0.3.7\n'),
         error: /duplicate type header/i
       },
       {
         contents: annotatedTagContents().replace(
           'tagger Release Bot',
-          'tag v0.3.6\ntagger Release Bot'
+          'tag v0.3.7\ntagger Release Bot'
         ),
         error: /duplicate tag header/i
       },
@@ -853,12 +853,12 @@ describe('v0.3.6 immutable tag identity', () => {
     expect(runGit).not.toHaveBeenCalledWith([
       'rev-parse',
       '--verify',
-      'refs/tags/v0.3.6^{commit}'
+      'refs/tags/v0.3.7^{commit}'
     ]);
   });
 });
 
-describe('v0.3.6 workflow governance', () => {
+describe('v0.3.7 workflow governance', () => {
   it('enumerates common text and JSON renderings of sensitive binary storage', () => {
     expect(sensitiveBinaryLogRepresentations('0001ff')).toEqual([
       '0001ff',
@@ -1018,8 +1018,8 @@ describe('v0.3.6 workflow governance', () => {
       fs.readFile(path.join(root, 'package.json'), 'utf8'),
       fs.readFile(path.join(root, 'package-lock.json'), 'utf8'),
       fs.readFile(path.join(root, 'CHANGELOG.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.6-certification.md'), 'utf8'),
-      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.6-security.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.7-certification.md'), 'utf8'),
+      fs.readFile(path.join(root, 'docs', 'releases', 'v0.3.7-security.md'), 'utf8'),
       fs.readFile(path.join(root, 'docs', 'deployment-smoke-checklist.md'), 'utf8'),
       fs.readFile(path.join(root, 'docs', 'immutable-deployment.md'), 'utf8')
     ]);
@@ -1170,11 +1170,11 @@ describe('v0.3.6 workflow governance', () => {
     expect(verifier).toMatch(/assertRecoveryTraceMatchesCertification\(evidence, recoveryEvidence\)/);
     expect(verifier).toMatch(/merge-base',\s*'--is-ancestor',\s*APNS_ROLLBACK_ENVELOPE_SOURCE_SHA/);
     expect(verifier).toContain("packageLock.packages?.['']?.version");
-    expect(CERTIFICATION_RELEASE_VERSION).toBe('0.3.6');
-    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-08-21');
+    expect(CERTIFICATION_RELEASE_VERSION).toBe('0.3.7');
+    expect(CERTIFICATION_RELEASE_DATE).toBe('2026-08-24');
     expect(APNS_ROLLBACK_ENVELOPE_SOURCE_SHA).toBe('f842937e7515e4f5d854644e5f7929bde5da5312');
     const packageJson = JSON.parse(packageDocument);
-    expect(packageJson.version).toBe('0.3.6');
+    expect(packageJson.version).toBe('0.3.7');
     expect(packageJson.scripts['test:e2e:certification']).toContain('release-identity.spec.ts');
     expect(packageJson.scripts['test:e2e:certification']).toContain('--retries=0');
     expect(packageJson.scripts['smoke:apns-rollback']).toBe(
@@ -1279,20 +1279,20 @@ describe('v0.3.6 workflow governance', () => {
     expect(promotedMetadataTagAssignment).toBeGreaterThan(-1);
     expect(promotedMetadataWrite).toBeGreaterThan(promotedMetadataTagAssignment);
     expect(promotedTreeNormalization).toBeGreaterThan(promotedMetadataWrite);
-    expect(JSON.parse(packageLock).version).toBe('0.3.6');
-    expect(JSON.parse(packageLock).packages[''].version).toBe('0.3.6');
-    expect(changelog).toMatch(/^## 0\.3\.6 - 2026-08-21$/m);
-    expect(changelog).toContain('Removed the shared site-password gate');
-    expect(changelog).toContain('already-installed native clients');
-    expect(changelog).toContain('trusted-proxy-aware signup/login rate limits');
+    expect(JSON.parse(packageLock).version).toBe('0.3.7');
+    expect(JSON.parse(packageLock).packages[''].version).toBe('0.3.7');
+    expect(changelog).toMatch(/^## 0\.3\.7 - 2026-08-24$/m);
+    expect(changelog).toContain('Added public Flipvale privacy and support pages');
+    expect(changelog).toContain('usable without authentication');
+    expect(changelog).toContain('outside the initial game bundle');
     expect(ci).toContain('Verify pinned live v0.3.2 PWA wire compatibility');
     expect(certificationAddendum).toContain('Keeps production dependencies');
     expect(certificationAddendum).toContain('public migration ledger and readiness schema at version 2');
-    expect(certificationAddendum).toContain('four-role UI/accessibility matrix');
-    expect(certificationAddendum).toContain('explicit approval in the current conversation naming both exact annotated tag `v0.3.6` and exact `CERT_SHA`');
-    expect(certificationAddendum).toContain('v0.3.5 is healthy production `current`');
+    expect(certificationAddendum).toContain('documented no-native-change placeholders');
+    expect(certificationAddendum).toContain('explicit approval in the current conversation naming both exact annotated tag `v0.3.7` and exact `CERT_SHA`');
+    expect(certificationAddendum).toContain('v0.3.6 is healthy production `current`');
     expect(certificationAddendum).toContain('v0.3.3 is the permanent minimum code-rollback target');
-    expect(certificationAddendum).toContain('issue #228');
+    expect(certificationAddendum).toContain('issue #191');
     expect(certificationAddendum).toContain('CodeQL does not run automatically on tag pushes');
     expect(certificationAddendum).toContain('--name "skyjo-build-$CERT_SHA"');
     expect(certificationAddendum).toContain(
@@ -1304,13 +1304,13 @@ describe('v0.3.6 workflow governance', () => {
     expect(certificationAddendum).toMatch(
       /--name "certification-\$CERT_SHA-\$TAG_RUN_ID-\$TAG_RUN_ATTEMPT" \\\n\s+--dir test-results/
     );
-    expect(certificationAddendum).toContain('--tag v0.3.6');
+    expect(certificationAddendum).toContain('--tag v0.3.7');
     expect(certificationAddendum).toContain('--production-base-url https://skyjo.groundworkrevops.com');
     expect(certificationAddendum).toContain('published release back through GitHub');
     expect(certificationAddendum).toContain('every SHA-256 sidecar');
     expect(certificationAddendum).toContain('{"enabled":true}');
-    expect(certificationAddendum).toContain('Native physical-device and TestFlight validation remains in #190');
-    expect(certificationAddendum).toContain('exact immutable v0.3.5');
+    expect(certificationAddendum).toContain('live policy URL unblocks the native in-app policy link and external TestFlight review');
+    expect(certificationAddendum).toContain('exact immutable v0.3.6');
     expect(certificationAddendum).toContain('no older than v0.3.3');
     expect(securityAddendum).toContain('Production dependencies remain unchanged');
     expect(securityAddendum).toContain('exact descriptor already shipped by the v0.3.3 rollback envelope');
