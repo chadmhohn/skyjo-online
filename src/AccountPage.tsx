@@ -188,6 +188,10 @@ export default function AccountPage() {
           )}
           {message ? <div className="skyjo-success-note mt-4">{message}</div> : null}
           {error ? <div className="skyjo-error-note mt-4">{error}</div> : null}
+          <nav aria-label="Legal and support" className="mt-5 flex flex-wrap gap-4 text-sm font-bold">
+            <Link className="skyjo-legal-nav-link text-[#f5e6c8]/64 hover:text-[#f5e6c8]" to="/privacy">Privacy Policy</Link>
+            <Link className="skyjo-legal-nav-link text-[#f5e6c8]/64 hover:text-[#f5e6c8]" to="/support">Support</Link>
+          </nav>
         </div>
       </section>
     </main>

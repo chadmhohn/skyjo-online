@@ -187,6 +187,8 @@ describe('application routes and solo controls', () => {
     const view = renderRoute('/');
     expect(await screen.findByRole('heading', { name: 'Flipvale' })).toBeInTheDocument();
     expect(await screen.findByText(/Sign in to save stats/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute('href', '/privacy');
+    expect(screen.getByRole('link', { name: 'Support' })).toHaveAttribute('href', '/support');
 
     await actor.click(screen.getByRole('checkbox', { name: /Game sounds/ }));
     expect(screen.queryByRole('checkbox', { name: /Ambience/ })).not.toBeInTheDocument();
@@ -199,6 +201,21 @@ describe('application routes and solo controls', () => {
     renderRoute('/');
     expect(await screen.findByText('Signed in as Admin One')).toBeInTheDocument();
     expect(await screen.findByRole('link', { name: 'Admin' })).toBeInTheDocument();
+  });
+
+  it('serves public privacy and support pages without an account', async () => {
+    const view = renderRoute('/privacy');
+    expect(await screen.findByRole('heading', { name: 'Privacy Policy' })).toBeInTheDocument();
+    expect(screen.getByText(/do not sell personal information/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'chad.hohn@groundworkrevops.com' })).toHaveAttribute(
+      'href',
+      'mailto:chad.hohn@groundworkrevops.com'
+    );
+    view.unmount();
+
+    renderRoute('/support');
+    expect(await screen.findByRole('heading', { name: 'Support' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Flipvale Privacy Policy' })).toHaveAttribute('href', '/privacy');
   });
 
   it('submits login and signup forms and validates a safe return path', async () => {

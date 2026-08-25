@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.7 - 2026-08-24
+
+- Added public Flipvale privacy and support pages grounded in the repository-owned data, deletion, retention, and notification inventory.
+- Linked privacy and support from the public home and account surfaces so the external TestFlight review URLs are usable without authentication.
+- Kept the legal-page code outside the initial game bundle and preserved production dependencies, schema 2, protocol 2, and existing account/game behavior.
+
 ## 0.3.6 - 2026-08-21
 
 - Removed the shared site-password gate so browser and native clients open directly to guest play and ordinary account signup/sign-in, while multiplayer, stats, profile, push, and account state remain account-authenticated.

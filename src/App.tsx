@@ -163,6 +163,12 @@ const GameSettingsButton = lazy(() => import('./GameSettingsButton').catch(() =>
 ));
 const Home = lazy(() => import('./Home').catch(() => ({ default: RouteLoadFailure })));
 const AccountPage = lazy(() => import('./AccountPage').catch(() => ({ default: RouteLoadFailure })));
+const PrivacyPolicyPage = lazy(() => import('./LegalPages').then((module) => ({ default: module.PrivacyPolicyPage })).catch(() => ({
+  default: RouteLoadFailure
+})));
+const SupportPage = lazy(() => import('./LegalPages').then((module) => ({ default: module.SupportPage })).catch(() => ({
+  default: RouteLoadFailure
+})));
 const SoloLauncher = lazy(() => import('./SoloSetupFlow').then((module) => ({ default: module.SoloLauncher })).catch(() => ({
   default: RouteLoadFailure
 })));
@@ -2512,6 +2518,8 @@ function App() {
         <Routes>
           <Route element={<Suspense fallback={<RouteLoadFallback />}><Home /></Suspense>} path="/" />
           <Route element={<Suspense fallback={<RouteLoadFallback />}><AccountPage /></Suspense>} path="/account" />
+          <Route element={<Suspense fallback={<RouteLoadFallback />}><PrivacyPolicyPage /></Suspense>} path="/privacy" />
+          <Route element={<Suspense fallback={<RouteLoadFallback />}><SupportPage /></Suspense>} path="/support" />
           <Route element={<StatsPage />} path="/stats" />
           <Route element={<GameDetailPage />} path="/stats/games/:gameId" />
           <Route element={<PlayerStatsPage />} path="/stats/players/:playerId" />
