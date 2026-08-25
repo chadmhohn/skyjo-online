@@ -2,8 +2,9 @@
 
 ## 0.3.7 - 2026-08-24
 
-- Added public Flipvale privacy and support pages grounded in the repository-owned data, deletion, retention, and notification inventory.
+- Added public Flipvale privacy and support pages grounded in the repository-owned data, deletion, retention, and separate browser Web Push/native APNs lifecycles.
 - Linked privacy and support from the public home and account surfaces so the external TestFlight review URLs are usable without authentication.
+- Aligned the credentialless post-promotion PWA cache audit with Flipvale's approved original WAV flip cue while retaining the exact MP3 pickup/place allowlist.
 - Kept the legal-page code outside the initial game bundle and preserved production dependencies, schema 2, protocol 2, and existing account/game behavior.
 
 ## 0.3.6 - 2026-08-21
