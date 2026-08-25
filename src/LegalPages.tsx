@@ -40,7 +40,7 @@ export function PrivacyPolicyPage() {
         <ul>
           <li><strong>Account information:</strong> email address, display name, account identifier, password hash, and successful sign-in timestamps.</li>
           <li><strong>Game information:</strong> solo saves submitted to account stats, multiplayer room state, results, history, and messages sent in room chat.</li>
-          <li><strong>Notification information:</strong> a random installation identifier, Apple Push Notification token, notification environment, app version, and locale when you enable turn notifications.</li>
+          <li><strong>Notification information:</strong> browser push subscription endpoint, public encryption keys, and browser user agent for Web Push; or a random installation identifier, encrypted Apple Push Notification token, notification environment, app version, and locale for the native app, when you enable turn notifications.</li>
           <li><strong>Deletion records:</strong> account identifier and deletion timestamp retained to prevent a deleted account from being restored from an older backup.</li>
         </ul>
         <p>
@@ -63,25 +63,30 @@ export function PrivacyPolicyPage() {
         <p>
           Information is used for account access, saved games and stats, multiplayer synchronization,
           room chat, notifications, security, and support. It is processed through the first-party
-          Flipvale service and its hosting and network providers. Apple processes device tokens and
-          notification delivery when you enable notifications. We may disclose information when
-          required by law or necessary to protect the service and its users.
+          Flipvale service and its hosting and network providers. Apple or your browser&apos;s push
+          service processes notification registration and delivery when you enable notifications.
+          We may disclose information when required by law or necessary to protect the service and
+          its users.
         </p>
       </section>
 
       <section>
         <h2>Retention and deletion</h2>
         <p>
-          Active rooms expire after six hours. Notification registrations are removed when you turn
-          notifications off, sign out, delete your account, or when Apple reports that a token is no
-          longer valid.
+          Active rooms expire after six hours without activity. Browser Web Push registrations are
+          removed when you turn notifications off, the push service permanently rejects them, or you
+          delete your account; signing out alone does not disable a browser&apos;s enabled subscription.
+          Native Apple notification registrations are removed when you turn notifications off, the
+          app signs that installation out, Apple permanently rejects the token, or you delete your
+          account. Native registrations that are not refreshed expire after 180 days.
         </p>
         <p>
           You can permanently delete your account from the Account screen in the app or on the web.
           Deletion removes the account profile, email, password verifier, sessions, notification
           registrations, account-owned solo history, and messages you authored in active rooms.
           Completed multiplayer scores remain only in anonymized form with the account identifier
-          removed and the player name replaced by “Deleted player.”
+          removed and the player name replaced by “Deleted player.” These anonymized shared results
+          currently have no automatic expiration.
         </p>
         <p>
           Restricted backups containing account source data are retained for no more than 12 months.

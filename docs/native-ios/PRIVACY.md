@@ -1,6 +1,6 @@
 # Native Privacy Inventory
 
-This file is the repository-owned draft for the native app privacy manifest and App Store Connect privacy answers. It describes Flipvale v0.1.0 behavior; it is not a substitute for the public privacy policy required before a public App Store listing.
+This file is the repository-owned draft for the native app privacy manifest and App Store Connect privacy answers. It describes Flipvale v0.1.0 behavior and the first-party server boundaries shared with the web app; it is not a substitute for the public privacy policy required before a public App Store listing.
 
 ## Collected Data
 
@@ -19,6 +19,8 @@ The native app and first-party Flipvale server use the following data only for a
 
 Passwords are transmitted only to authenticate or change credentials and are stored by the server as password hashes. Session cookies, invite tokens, APNs device tokens, and encrypted notification registration fields are security credentials, not analytics identifiers; they must remain absent from logs and artifacts.
 
+The web app separately supplies its browser push subscription endpoint, public encryption keys, and browser user agent when a signed-in player enables Web Push. Those registrations are linked to the account and used only for app-functionality notifications; the native app does not create them.
+
 ## Data Not Collected
 
 Flipvale v0.1.0 contains no advertising, third-party analytics, crash-reporting SDK, location, contacts, photos, audio recording, health, financial, purchase, browsing, or search collection. It does not use App Tracking Transparency because it does not track users across companies' apps, sites, or offline properties.
@@ -34,8 +36,8 @@ Flipvale v0.1.0 contains no advertising, third-party analytics, crash-reporting 
 - Logs and evidence redact email addresses, cookies, passwords, invitation tokens, APNs tokens/fingerprints, provider credentials, room frames, hidden cards, and non-viewer drawn cards.
 - Account, multiplayer, chat, game-history, and APNs retention are server-owned. Guest solo saves remain local and are not included in the App Store collection disclosure unless later delivered under an authenticated account.
 - A player can permanently delete an account in the native app or web app without contacting support. Deletion removes the profile, email, password verifier, sessions, push registrations, account-owned solo history, and that account's native or browser solo/outbox partition. Active-room messages authored by the account are removed.
-- Completed multiplayer scores shared with other players are retained only after the account ID is removed and the copied display name is replaced with `Deleted player`. Any production backup containing account source data has a 12-month maximum retention; the 30-daily/12-monthly scheduler prunes its namespaces, while privileged recovery copies outside those namespaces require manual inventory and destruction by the same deadline. The external deletion-safety ledger retains only account UUIDs and deletion timestamps for the life of the service with no automatic expiration, and every disaster-recovery restore must reapply it before use. See [`ACCOUNT_DELETION.md`](ACCOUNT_DELETION.md).
-- APNs registrations are deleted on opt-out/logout and safely retired after permanent provider rejection. Account deletion also fences queued Web Push and APNs work before the server commits deletion.
+- Active rooms expire after six hours without activity. Completed multiplayer scores shared with other players are retained with no automatic expiration only after the account ID is removed and the copied display name is replaced with `Deleted player`. Any production backup containing account source data has a 12-month maximum retention; the 30-daily/12-monthly scheduler prunes its namespaces, while privileged recovery copies outside those namespaces require manual inventory and destruction by the same deadline. The external deletion-safety ledger retains only account UUIDs and deletion timestamps for the life of the service with no automatic expiration, and every disaster-recovery restore must reapply it before use. See [`ACCOUNT_DELETION.md`](ACCOUNT_DELETION.md).
+- Browser Web Push registrations are deleted on opt-out, permanent push-service rejection, or account deletion; ordinary account sign-out alone does not remove an enabled browser subscription. APNs registrations are deleted on opt-out/logout, pruned after 180 days without refresh, or safely retired after permanent provider rejection. Account deletion also fences queued Web Push and APNs work before the server commits deletion.
 
 ## App Store Connect Answer Draft
 
