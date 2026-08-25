@@ -128,7 +128,17 @@ async function testPublicSmoke() {
 }
 
 async function testWorkflowContract() {
-  const workflow = await fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const [workflow, releaseController, deployedSmoke] = await Promise.all([
+    fs.readFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8'),
+    fs.readFile(path.join(root, 'deploy', 'release-controller.mjs'), 'utf8'),
+    fs.readFile(path.join(root, 'scripts', 'smoke-deployed.mjs'), 'utf8')
+  ]);
+  assert.match(releaseController, /'SKYJO_SMOKE_ACCOUNT_SETUP=signup'/,
+    'isolated canaries must provision their disposable account through the public signup contract');
+  assert.doesNotMatch(releaseController, /SKYJO_ADMIN_EMAIL=\$\{canaryEmail\}/,
+    'isolated canaries must not depend on the empty-database admin bootstrap');
+  assert.match(deployedSmoke, /createAccount: accountSetup === 'signup'/,
+    'the deployed smoke entrypoint must honor the isolated signup mode');
   assert.match(workflow, /tags:\s*\n\s*- ["']v\*["']/);
   const dispatch = workflow.match(/\n  workflow_dispatch:[\s\S]*?\npermissions:/)?.[0] || '';
   assert.match(dispatch, /\n\s+ios_ui_mode:/,
