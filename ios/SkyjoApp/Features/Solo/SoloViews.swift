@@ -1416,11 +1416,11 @@ struct PlayerBoardView: View {
     }
     .padding(isCompact ? 1 : 10)
     .background(
-      Color(uiColor: .secondarySystemGroupedBackground),
+      FlipvaleTheme.panelStrong,
       in: RoundedRectangle(cornerRadius: 12)
     )
     .overlay {
-      RoundedRectangle(cornerRadius: 12).stroke(.secondary, lineWidth: 1)
+      RoundedRectangle(cornerRadius: 12).stroke(FlipvaleTheme.hairline, lineWidth: 1)
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel(isLocal ? "Your board" : "\(player.name)'s board")
@@ -1900,10 +1900,7 @@ private struct SoloPileCardThumbnail: View {
         .stroke(FlipvaleTheme.ivory.opacity(0.72), lineWidth: 1)
       switch face {
       case .faceDown:
-        Text("FV")
-          .font(.system(.caption2, design: .serif, weight: .black))
-          .italic()
-          .foregroundStyle(FlipvaleTheme.ivory)
+        FlipvaleCardBackMark(isDense: true)
       case .faceUp(let value):
         Text(value.formatted())
           .font(.caption2.monospacedDigit().weight(.black))

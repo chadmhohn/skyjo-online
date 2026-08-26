@@ -455,7 +455,7 @@ private struct RoomTableView: View {
     .padding(.bottom, 6)
     .accessibilityIdentifier("rooms.table.layout.standard")
     .overlay(alignment: .topTrailing) {
-      chatButton(topPadding: 8)
+      chatButton(topPadding: 72)
     }
   }
 
@@ -511,7 +511,7 @@ private struct RoomTableView: View {
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("rooms.table.accessible-layout")
     .overlay(alignment: .topTrailing) {
-      chatButton(topPadding: 8)
+      chatButton(topPadding: 72)
     }
   }
 

@@ -112,6 +112,8 @@ public struct FlipvalePrimaryButtonStyle: ButtonStyle {
   public func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(.headline.weight(.bold))
+      .frame(minWidth: 44, minHeight: 44)
+      .contentShape(Rectangle())
       .foregroundStyle(isEnabled ? FlipvaleTheme.canvas : FlipvaleTheme.mutedIvory)
       .background(
         isEnabled ? FlipvaleTheme.ivory : FlipvaleTheme.panelStrong,
@@ -213,19 +215,8 @@ public struct SkyjoCardView: View {
   private var cardContent: some View {
     switch face {
     case .faceDown:
-      if usesDenseAccessibilityGlyphs {
-        Image(systemName: "square.stack.3d.up.fill")
-          .resizable()
-          .scaledToFit()
-          .frame(width: 24, height: 24)
-          .foregroundStyle(FlipvaleTheme.ivory)
-          .accessibilityHidden(true)
-      } else {
-        Image(systemName: "square.stack.3d.up.fill")
-          .font(.title3.bold())
-          .foregroundStyle(FlipvaleTheme.ivory)
-          .accessibilityHidden(true)
-      }
+      FlipvaleCardBackMark(isDense: usesDenseAccessibilityGlyphs)
+        .accessibilityHidden(true)
     case .faceUp(let value):
       // Card values are user-facing text, including in the compact accessibility
       // table. Keep one relative system style at every content-size category so
@@ -331,7 +322,7 @@ public struct SkyjoActionSlot<Content: View>: View {
     content
       .frame(maxWidth: .infinity, minHeight: 72, maxHeight: .infinity)
       .background(
-        Color(uiColor: .secondarySystemGroupedBackground),
+        FlipvaleTheme.panelStrong,
         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
       )
       .overlay {
@@ -341,5 +332,41 @@ public struct SkyjoActionSlot<Content: View>: View {
       .opacity(isOccupied ? 1 : 0)
       .allowsHitTesting(isOccupied)
       .accessibilityHidden(!isOccupied)
+  }
+}
+
+@available(iOS 18.0, macOS 15.0, *)
+public struct FlipvaleCardBackMark: View {
+  private let isDense: Bool
+
+  public init(isDense: Bool = false) {
+    self.isDense = isDense
+  }
+
+  public var body: some View {
+    ZStack {
+      RoundedRectangle(cornerRadius: isDense ? 3 : 4, style: .continuous)
+        .fill(FlipvaleTheme.ivory.opacity(0.18))
+        .overlay {
+          RoundedRectangle(cornerRadius: isDense ? 3 : 4, style: .continuous)
+            .stroke(FlipvaleTheme.ivory.opacity(0.68), lineWidth: 1)
+        }
+        .offset(x: isDense ? -3 : -4, y: isDense ? -2 : -3)
+
+      RoundedRectangle(cornerRadius: isDense ? 3 : 4, style: .continuous)
+        .fill(FlipvaleTheme.ivory.opacity(0.92))
+        .overlay {
+          RoundedRectangle(cornerRadius: isDense ? 3 : 4, style: .continuous)
+            .stroke(FlipvaleTheme.ivory, lineWidth: 1.25)
+        }
+        .offset(x: isDense ? 3 : 4, y: isDense ? 2 : 3)
+
+      Text("FV")
+        .font(.system(size: isDense ? 7 : 9, weight: .black, design: .rounded))
+        .tracking(-0.6)
+        .foregroundStyle(FlipvaleTheme.canvas)
+        .offset(x: isDense ? 3 : 4, y: isDense ? 2 : 3)
+    }
+    .frame(width: isDense ? 24 : 30, height: isDense ? 28 : 34)
   }
 }
