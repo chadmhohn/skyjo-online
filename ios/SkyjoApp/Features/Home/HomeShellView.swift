@@ -27,9 +27,10 @@ struct HomeShellView: View {
           )
           .navigationDestination(isPresented: $rooms.isRoomPresented) {
             if model.hasConfirmedAccountSession,
-               let user,
-               let roomHost = rooms.sessionHost,
-               roomHost.model.account.id == user.id {
+              let user,
+              let roomHost = rooms.sessionHost,
+              roomHost.model.account.id == user.id
+            {
               RoomRootView(model: roomHost.model)
                 .id(ObjectIdentifier(roomHost.model))
             } else {
@@ -48,7 +49,8 @@ struct HomeShellView: View {
             OfflineAccountFeatureView(
               title: "Stats unavailable offline",
               navigationTitle: "Stats",
-              message: "Reconnect before refreshing stats for \(user.email). Account-owned solo results remain on this device until the session is confirmed.",
+              message:
+                "Reconnect before refreshing stats for \(user.email). Account-owned solo results remain on this device until the session is confirmed.",
               accessibilityIdentifier: "stats.offline-account",
               retryAccessibilityIdentifier: "stats.offline-account.retry",
               model: model
@@ -75,6 +77,11 @@ struct HomeShellView: View {
         }
       }
     }
+    .groupBoxStyle(FlipvaleGroupBoxStyle())
+    .toolbarBackground(FlipvaleTheme.canvas.opacity(0.94), for: .tabBar)
+    .toolbarBackground(.visible, for: .tabBar)
+    .toolbarColorScheme(.dark, for: .tabBar)
+    .flipvaleScreen()
     .accessibilityIdentifier("shell.tabs")
   }
 
@@ -99,131 +106,171 @@ private struct HomeView: View {
   @Bindable var rooms: RoomAppCoordinator
   let offlineMessage: String?
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
   private var columns: [GridItem] {
-    if dynamicTypeSize.isAccessibilitySize {
+    if dynamicTypeSize.isAccessibilitySize || horizontalSizeClass == .compact {
       return [GridItem(.flexible(), spacing: 12)]
     }
-    return [GridItem(.adaptive(minimum: 145), spacing: 12)]
+    return [
+      GridItem(.flexible(), spacing: 14),
+      GridItem(.flexible(), spacing: 14),
+    ]
   }
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 24) {
-        VStack(alignment: .leading, spacing: 6) {
-          Text(user.map { "Welcome, \($0.displayName)" } ?? "Welcome to Flipvale")
-            .font(.largeTitle.bold())
-            .accessibilityIdentifier("home.welcome")
-          Text(homeSubtitle)
-            .foregroundStyle(.primary)
-        }
-
-        if let offlineMessage {
-          VStack(alignment: .leading, spacing: 10) {
-            SkyjoStatusBanner(
-              title: "Offline solo is available",
-              message: offlineMessage,
-              systemImage: "wifi.slash"
-            )
-            .accessibilityIdentifier("home.offline-banner")
-            Button {
-              Task { await model.bootstrap() }
-            } label: {
-              Text("Check Connection")
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
+    GeometryReader { proxy in
+      ScrollView {
+        VStack(alignment: .leading, spacing: 22) {
+          HStack(alignment: .center, spacing: 14) {
+            ZStack {
+              RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(FlipvaleTheme.ivory)
+              Text("FV")
+                .font(.system(.headline, design: .serif, weight: .black))
+                .italic()
+                .foregroundStyle(FlipvaleTheme.canvas)
             }
-            .buttonStyle(.borderedProminent)
-            .accessibilityIdentifier("home.offline-retry")
-          }
-        }
+            .frame(width: 54, height: 54)
+            .accessibilityHidden(true)
 
-        LazyVGrid(columns: columns, spacing: 12) {
-          NavigationLink {
-            SoloRootView(model: solo, preferences: preferences)
-          } label: {
-            FeatureCardLabel(
-              title: "Single Player",
-              detail: solo.savedGameSummary == nil
-                ? "Start a native offline game with 1–7 bots."
-                : (solo.activeSessionIsPersistent
-                  ? "Continue your saved round or review a new setup."
-                  : "Continue this temporary round before closing Flipvale."),
-              systemImage: "person.fill"
-            )
-          }
-          .buttonStyle(AccessibleBorderedButtonStyle(addsContentPadding: false))
-          .accessibilityIdentifier("home.solo")
-          .accessibilityValue(
-            solo.outboxStatus.blockedHeadKind == nil
-              ? ""
-              : "Stats delivery needs attention"
-          )
-          .accessibilityHint("Opens the native single-player table")
-          FeatureCard(
-            title: "Multiplayer",
-            detail: multiplayerDetail,
-            systemImage: "person.3.fill",
-            accessibilityIdentifier: model.hasConfirmedAccountSession
-              ? "home.rooms"
-              : "home.rooms-disabled",
-            isEnabled: model.hasConfirmedAccountSession,
-            accessibilityHint: model.hasConfirmedAccountSession
-              ? "Opens the native multiplayer room screen"
-              : "Sign in online before opening multiplayer"
-          ) {
-            guard model.hasConfirmedAccountSession, let user else { return }
-            Task { await rooms.presentRooms(for: user) }
-          }
-        }
-
-        GroupBox(accountSnapshotTitle) {
-          VStack(alignment: .leading, spacing: 12) {
-            if user == nil, solo.owner.accountID == nil {
-              Text(
-                solo.sessionStorageIsPersistent
-                  ? (solo.savedGameSummary == nil
-                    ? "Guest solo games save on this device while in progress. Completed guest games are not uploaded to account stats."
-                    : "Your active guest save restores on this device. Completed guest games are not uploaded to account stats.")
-                  : "Guest games exist only while Flipvale remains open because device storage is unavailable. They are not uploaded to account stats."
-              )
-                .foregroundStyle(.secondary)
-            } else if user == nil {
-              Text(
-                solo.sessionStorageIsPersistent
-                  ? (solo.savedGameSummary == nil
-                    ? "Account-owned solo games remain available offline. Completed results wait on this device until the account is confirmed online."
-                    : "This account-owned solo save remains available offline. Completed results stay on this device until the account is confirmed online.")
-                  : "Account-owned games exist only while Flipvale remains open. Pending results cannot survive termination until device storage recovers."
-              )
-                .foregroundStyle(.secondary)
-            } else if let summary = model.statsSummary {
-              HStack {
-                StatValue(label: "Games", value: "\(summary.`self`.gamesPlayed)")
-                Spacer()
-                StatValue(label: "Wins", value: "\(summary.`self`.wins)")
-                Spacer()
-                StatValue(label: "Win rate", value: summary.`self`.winRate.formatted(.number.precision(.fractionLength(0))) + "%")
-              }
-            } else if model.statsState == .loading {
-              ProgressView("Loading account stats")
-            } else {
-              Text("Stats will appear after a successful refresh.")
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+              Text("FLIPVALE")
+                .font(.caption.weight(.bold))
+                .tracking(3)
+                .foregroundStyle(FlipvaleTheme.mutedIvory)
+              Text(user.map { "Welcome, \($0.displayName)" } ?? "Your table awaits")
+                .font(.system(.title, design: .serif, weight: .black))
+                .italic()
+                .accessibilityIdentifier("home.welcome")
+              Text(homeSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(FlipvaleTheme.mutedIvory)
             }
-
-            Button(user == nil ? "Sign In" : "View Stats") {
-              model.selectedTab = user == nil ? .account : .stats
-            }
-            .accessibilityIdentifier("home.view-stats")
           }
+          .padding(18)
           .frame(maxWidth: .infinity, alignment: .leading)
+          .flipvalePanel(isCurrent: true, cornerRadius: 20)
+
+          if let offlineMessage {
+            VStack(alignment: .leading, spacing: 10) {
+              SkyjoStatusBanner(
+                title: "Offline solo is available",
+                message: offlineMessage,
+                systemImage: "wifi.slash"
+              )
+              .accessibilityIdentifier("home.offline-banner")
+              Button {
+                Task { await model.bootstrap() }
+              } label: {
+                Text("Check Connection")
+                  .frame(minHeight: 44)
+                  .contentShape(Rectangle())
+              }
+              .buttonStyle(FlipvalePrimaryButtonStyle())
+              .accessibilityIdentifier("home.offline-retry")
+            }
+          }
+
+          LazyVGrid(columns: columns, spacing: 12) {
+            NavigationLink {
+              SoloRootView(model: solo, preferences: preferences)
+            } label: {
+              FeatureCardLabel(
+                title: "Single Player",
+                detail: solo.savedGameSummary == nil
+                  ? "Start a native offline game with 1–7 bots."
+                  : (solo.activeSessionIsPersistent
+                    ? "Continue your saved round or review a new setup."
+                    : "Continue this temporary round before closing Flipvale."),
+                systemImage: "person.fill"
+              )
+            }
+            .buttonStyle(AccessibleBorderedButtonStyle(addsContentPadding: false))
+            .accessibilityIdentifier("home.solo")
+            .accessibilityValue(
+              solo.outboxStatus.blockedHeadKind == nil
+                ? ""
+                : "Stats delivery needs attention"
+            )
+            .accessibilityHint("Opens the native single-player table")
+            FeatureCard(
+              title: "Multiplayer",
+              detail: multiplayerDetail,
+              systemImage: "person.3.fill",
+              accessibilityIdentifier: model.hasConfirmedAccountSession
+                ? "home.rooms"
+                : "home.rooms-disabled",
+              isEnabled: model.hasConfirmedAccountSession,
+              accessibilityHint: model.hasConfirmedAccountSession
+                ? "Opens the native multiplayer room screen"
+                : "Sign in online before opening multiplayer"
+            ) {
+              guard model.hasConfirmedAccountSession, let user else { return }
+              Task { await rooms.presentRooms(for: user) }
+            }
+          }
+
+          GroupBox(accountSnapshotTitle) {
+            VStack(alignment: .leading, spacing: 12) {
+              if user == nil, solo.owner.accountID == nil {
+                Text(
+                  solo.sessionStorageIsPersistent
+                    ? (solo.savedGameSummary == nil
+                      ? "Guest solo games save on this device while in progress. Completed guest games are not uploaded to account stats."
+                      : "Your active guest save restores on this device. Completed guest games are not uploaded to account stats.")
+                    : "Guest games exist only while Flipvale remains open because device storage is unavailable. They are not uploaded to account stats."
+                )
+                .foregroundStyle(.secondary)
+              } else if user == nil {
+                Text(
+                  solo.sessionStorageIsPersistent
+                    ? (solo.savedGameSummary == nil
+                      ? "Account-owned solo games remain available offline. Completed results wait on this device until the account is confirmed online."
+                      : "This account-owned solo save remains available offline. Completed results stay on this device until the account is confirmed online.")
+                    : "Account-owned games exist only while Flipvale remains open. Pending results cannot survive termination until device storage recovers."
+                )
+                .foregroundStyle(.secondary)
+              } else if let summary = model.statsSummary {
+                HStack {
+                  StatValue(label: "Games", value: "\(summary.`self`.gamesPlayed)")
+                  Spacer()
+                  StatValue(label: "Wins", value: "\(summary.`self`.wins)")
+                  Spacer()
+                  StatValue(
+                    label: "Win rate",
+                    value: summary.`self`.winRate.formatted(.number.precision(.fractionLength(0)))
+                      + "%")
+                }
+              } else if model.statsState == .loading {
+                ProgressView("Loading account stats")
+              } else {
+                Text("Stats will appear after a successful refresh.")
+                  .foregroundStyle(.secondary)
+              }
+
+              Button(user == nil ? "Sign In" : "View Stats") {
+                model.selectedTab = user == nil ? .account : .stats
+              }
+              .accessibilityIdentifier("home.view-stats")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+          }
         }
+        .frame(maxWidth: 920, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.top, 12)
+        .padding(.bottom, 28)
+        .frame(maxWidth: .infinity)
+        .frame(
+          minHeight: proxy.size.height,
+          alignment: horizontalSizeClass == .regular ? .center : .top
+        )
       }
-      .frame(maxWidth: 760, alignment: .leading)
-      .padding()
+      .scrollContentBackground(.hidden)
     }
-    .navigationTitle("Home")
+    .navigationTitle("Flipvale")
+    .navigationBarTitleDisplayMode(.inline)
     .accessibilityIdentifier("home.screen")
   }
 
@@ -292,17 +339,19 @@ private struct FeatureCardLabel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       Image(systemName: systemImage)
-        .font(.title)
+        .font(.title2.weight(.bold))
+        .foregroundStyle(FlipvaleTheme.gold)
       Text(title)
-        .font(.headline)
+        .font(.system(.title3, design: .serif, weight: .bold))
         .fixedSize(horizontal: false, vertical: true)
       Text(detail)
         .font(.subheadline)
+        .foregroundStyle(FlipvaleTheme.mutedIvory)
         .multilineTextAlignment(.leading)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .frame(maxWidth: .infinity, minHeight: 130, alignment: .leading)
-    .padding()
+    .frame(maxWidth: .infinity, minHeight: 124, alignment: .leading)
+    .padding(18)
   }
 }
 
@@ -319,7 +368,7 @@ private struct SignedOutFeatureView: View {
       Text(message)
     } actions: {
       Button("Open Account") { model.selectedTab = .account }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(FlipvalePrimaryButtonStyle())
         .frame(minHeight: 44)
     }
     .navigationTitle("Stats")
@@ -362,7 +411,7 @@ private struct OfflineAccountFeatureView: View {
             .frame(maxWidth: .infinity, minHeight: 44)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(FlipvalePrimaryButtonStyle())
         .frame(maxWidth: 360)
         .accessibilityIdentifier(retryAccessibilityIdentifier)
       }
@@ -396,7 +445,8 @@ private struct OfflineAccountView: View {
       Section {
         SkyjoStatusBanner(
           title: "Account controls are offline",
-          message: "This cached identity keeps its local solo save available, but profile, password, stats, and sign-out actions require a confirmed online account session.",
+          message:
+            "This cached identity keeps its local solo save available, but profile, password, stats, and sign-out actions require a confirmed online account session.",
           systemImage: "wifi.slash"
         )
         Button {
@@ -406,7 +456,7 @@ private struct OfflineAccountView: View {
             .frame(maxWidth: .infinity, minHeight: 44)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(FlipvalePrimaryButtonStyle())
         .accessibilityIdentifier("account.offline.retry")
       }
     }
@@ -431,13 +481,23 @@ struct AccessibleBorderedButtonStyle: ButtonStyle {
           : EdgeInsets()
       )
       .frame(minWidth: 44, minHeight: 44)
-      .foregroundStyle(isEnabled ? Color.accentColor : Color.primary)
-      .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+      .foregroundStyle(isEnabled ? FlipvaleTheme.ivory : FlipvaleTheme.mutedIvory)
+      .background(
+        LinearGradient(
+          colors: [FlipvaleTheme.ivory.opacity(0.09), FlipvaleTheme.panel],
+          startPoint: .topLeading,
+          endPoint: .bottomTrailing
+        ),
+        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+      )
       .overlay {
-        RoundedRectangle(cornerRadius: 10)
-          .stroke(isEnabled ? Color.accentColor : Color.primary, lineWidth: 1)
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(
+            isEnabled ? FlipvaleTheme.ivory.opacity(0.34) : FlipvaleTheme.hairline, lineWidth: 1)
       }
-      .opacity(configuration.isPressed ? 0.72 : 1)
+      .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
+      .scaleEffect(configuration.isPressed ? 0.985 : 1)
+      .opacity(isEnabled ? (configuration.isPressed ? 0.78 : 1) : 0.66)
   }
 }
 
@@ -448,10 +508,10 @@ struct StatValue: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(value)
-        .font(.title2.bold())
+        .font(.system(.title2, design: .serif, weight: .black))
       Text(label)
         .font(.caption)
-        .foregroundStyle(.primary)
+        .foregroundStyle(FlipvaleTheme.mutedIvory)
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(label)

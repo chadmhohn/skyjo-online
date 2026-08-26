@@ -28,6 +28,8 @@ struct SoloRootView: View {
         }
       }
     }
+    .groupBoxStyle(FlipvaleGroupBoxStyle())
+    .flipvaleScreen()
     .navigationTitle(
       !model.sessionReconciliationRequired && model.screen == .table
         ? "Solo Table"
@@ -76,7 +78,7 @@ private struct SoloSessionReconciliationView: View {
               .contentShape(Rectangle())
           }
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(FlipvalePrimaryButtonStyle())
         .disabled(model.isWorking)
         .accessibilityIdentifier("solo.reconciliation.reload")
       }
@@ -129,7 +131,7 @@ private struct SoloLauncherView: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(FlipvalePrimaryButtonStyle())
             .accessibilityIdentifier("solo.continue")
 
             Button {
@@ -200,6 +202,10 @@ private struct SoloSetupView: View {
       }
 
       Section {
+        Text("Opponents")
+          .font(.caption.weight(.black))
+          .foregroundStyle(FlipvaleTheme.ivory)
+          .accessibilityIdentifier("solo.setup.opponents-header")
         Stepper(value: $model.setupOpponentCount, in: GameEngine.singlePlayerAIOpponentRange) {
           LabeledContent("Bots", value: model.setupOpponentCount.formatted())
         }
@@ -207,14 +213,13 @@ private struct SoloSetupView: View {
         Text("Choose from 1 to 7 computer opponents. More opponents create a busier table and a longer round.")
           .font(.footnote)
           .foregroundStyle(.primary)
-      } header: {
-        Text("Opponents")
-          .font(.caption.weight(.black))
-          .foregroundStyle(Color.primary)
-          .accessibilityIdentifier("solo.setup.opponents-header")
       }
 
       Section {
+        Text("Difficulty")
+          .font(.caption.weight(.black))
+          .foregroundStyle(FlipvaleTheme.ivory)
+          .accessibilityIdentifier("solo.setup.difficulty-header")
         Picker("Bot difficulty", selection: $model.setupDifficulty) {
           ForEach(SoloAIDifficultySelection.allCases, id: \.self) { difficulty in
             Text(difficulty.displayName)
@@ -230,18 +235,18 @@ private struct SoloSetupView: View {
           .foregroundStyle(.primary)
           .accessibilityElement(children: .combine)
           .accessibilityIdentifier("solo.setup.difficulty-explanation")
-      } header: {
-        Text("Difficulty")
-          .font(.caption.weight(.black))
-          .foregroundStyle(Color.primary)
-          .accessibilityIdentifier("solo.setup.difficulty-header")
       }
 
       Section {
-        Button(model.hasDurableActiveSession ? "Review New Game" : "Start Game") {
+        Button {
           Task { await model.reviewNewGame() }
+        } label: {
+          Text(model.hasDurableActiveSession ? "Review New Game" : "Start Game")
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.borderedProminent)
+        .tint(Color(red: 118 / 255, green: 82 / 255, blue: 10 / 255))
         .disabled(model.isWorking || model.hasUncommittedTerminalCompletion)
         .frame(maxWidth: .infinity, minHeight: 44)
         .accessibilityIdentifier("solo.setup.start")
@@ -276,6 +281,7 @@ private struct SoloSetupView: View {
           .foregroundStyle(.primary)
       }
     }
+    .scrollContentBackground(.hidden)
     .accessibilityIdentifier("solo.setup")
   }
 }
@@ -368,6 +374,8 @@ private struct SoloReplacementReviewView: View {
           }
         }
       }
+      .scrollContentBackground(.hidden)
+      .background(Color.clear)
       .navigationTitle("Review Replacement")
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -380,6 +388,7 @@ private struct SoloReplacementReviewView: View {
           .accessibilityIdentifier("solo.replace.cancel")
         }
       }
+      .flipvaleScreen()
     }
     .interactiveDismissDisabled(model.isWorking)
     .onAppear { errorFocused = model.lastActionError != nil }
@@ -435,7 +444,7 @@ private struct SoloGameView: View {
       }
       .frame(width: size.width, height: size.height)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-      .background(Color(uiColor: .systemGroupedBackground))
+      .background { FlipvaleFeltBackground() }
     }
     .toolbar {
       ToolbarItemGroup(placement: .topBarTrailing) {
@@ -556,6 +565,7 @@ private struct SoloGameView: View {
         .frame(maxWidth: 680, alignment: .leading)
         .padding()
       }
+      .flipvaleScreen()
       .navigationTitle("Table Status")
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
@@ -588,7 +598,10 @@ private struct SoloGameView: View {
     if isShortPortrait {
       localBoardHeight = 195
     } else if wide {
-      localBoardHeight = min(max(size.height * 0.44, 270), 340)
+      // Four regular-width card columns need their natural height on iPad.
+      // Compressing this board makes the grid draw beyond its frame and under
+      // the tab bar; the opponent region already owns vertical scrolling.
+      localBoardHeight = min(max(size.height * 0.49, 330), 340)
     } else {
       localBoardHeight = min(max(size.height * 0.42, 270), 300)
     }
@@ -816,7 +829,13 @@ private struct SoloGameView: View {
   private var gameRoundLabel: some View {
     Text("Round \(model.game?.round ?? 1)")
       .font(.caption.weight(.black))
-      .foregroundStyle(Color.primary)
+      .foregroundStyle(FlipvaleTheme.ivory)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 2)
+      .background(FlipvaleTheme.panelStrong, in: Capsule())
+      .overlay {
+        Capsule().stroke(FlipvaleTheme.hairline, lineWidth: 1)
+      }
       .lineLimit(usesUnscaledTextLayout ? 1 : nil)
       .fixedSize(horizontal: usesUnscaledTextLayout, vertical: true)
       .accessibilityIdentifier("solo.table.round")
@@ -824,8 +843,11 @@ private struct SoloGameView: View {
 
   private var gameTurnStateLabel: some View {
     Text(model.tableStatus)
-      .font(.caption2)
-      .foregroundStyle(.primary)
+      .font(.caption2.weight(.semibold))
+      .foregroundStyle(FlipvaleTheme.ivory)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 2)
+      .background(FlipvaleTheme.panelStrong, in: Capsule())
       .lineLimit(usesUnscaledTextLayout ? 1 : nil)
       .fixedSize(horizontal: usesUnscaledTextLayout, vertical: true)
       .accessibilityIdentifier("solo.table.turn-state")
@@ -999,7 +1021,8 @@ private struct SoloGameView: View {
       } label: {
         VStack(spacing: 4) {
           if !usesUnscaledTextLayout {
-            Image(systemName: "rectangle.stack.fill")
+            SoloPileCardThumbnail(face: .faceDown)
+              .frame(width: 24, height: 34)
           }
           Text("Deck")
             .font(.caption2.weight(.semibold))
@@ -1041,8 +1064,9 @@ private struct SoloGameView: View {
         }
       } label: {
         VStack(spacing: 4) {
-          if !usesUnscaledTextLayout {
-            Image(systemName: "rectangle.portrait.fill")
+          if !usesUnscaledTextLayout, let value = model.game?.discardPile.first?.value {
+            SoloPileCardThumbnail(face: .faceUp(value))
+              .frame(width: 24, height: 34)
           }
           Text("Discard")
             .font(.caption2.weight(.semibold))
@@ -1075,37 +1099,47 @@ private struct SoloGameView: View {
     usesDenseAccessibilityPresentation: Bool
   ) -> some View {
     let isOccupied = model.isHumanTurn && model.game?.drawnCard != nil
-    SkyjoActionSlot(isOccupied: isOccupied) {
-      // Keep the complete decision control in the layout even while hidden. Its intrinsic
-      // height reserves the Accessibility XXXL Grid row before a draw, so revealing the
-      // picker cannot move the action band or local board.
-      Menu {
-        ForEach(SoloDrawChoice.allCases) { choice in
-          Button(choice.rawValue) { model.selectDrawChoice(choice) }
-        }
-      } label: {
-        VStack(spacing: 4) {
-          Text("Drawn")
-            .font(.caption2.weight(.semibold))
-            .fixedSize(horizontal: true, vertical: true)
-          HStack(spacing: 6) {
-            Text(isOccupied ? (model.game?.drawnCard?.value.formatted() ?? "—") : "—")
-              .font(.caption2.monospacedDigit().bold())
-              .fixedSize(horizontal: true, vertical: true)
-            Text(accessibilityLandscapeDrawChoice.capitalized)
-              .font(.caption2.weight(.semibold))
-              .fixedSize(horizontal: true, vertical: true)
+    Group {
+      if !isOccupied
+          && !usesDenseAccessibilityPresentation
+          && !usesAccessibilityLandscapeDensity {
+        Color.clear
+          .frame(maxWidth: .infinity, minHeight: 72, maxHeight: .infinity)
+          .accessibilityHidden(true)
+      } else {
+        SkyjoActionSlot(isOccupied: isOccupied) {
+          // Dense accessibility layouts retain the complete hidden control so its
+          // intrinsic height reserves the row before a draw. Standard layouts need
+          // only the fixed slot and should not expose invisible text to AXRuntime.
+          Menu {
+            ForEach(SoloDrawChoice.allCases) { choice in
+              Button(choice.rawValue) { model.selectDrawChoice(choice) }
+            }
+          } label: {
+            VStack(spacing: 4) {
+              Text("Drawn")
+                .font(.caption2.weight(.semibold))
+                .fixedSize(horizontal: true, vertical: true)
+              HStack(spacing: 6) {
+                Text(isOccupied ? (model.game?.drawnCard?.value.formatted() ?? "—") : "—")
+                  .font(.caption2.monospacedDigit().bold())
+                  .fixedSize(horizontal: true, vertical: true)
+                Text(accessibilityLandscapeDrawChoice.capitalized)
+                  .font(.caption2.weight(.semibold))
+                  .fixedSize(horizontal: true, vertical: true)
+              }
+            }
+            .frame(minWidth: 44, minHeight: 44)
           }
+          .accessibilityLabel("Drawn card action")
+          .accessibilityValue(
+            "Visible card: \(model.game?.drawnCard.map { spokenValue($0.value) } ?? "unavailable"); visible action: \(model.drawChoice.rawValue)"
+          )
+          .accessibilityFocused($drawnDecisionFocused)
+          .accessibilityIdentifier("solo.action.drawn-choice")
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 44, minHeight: 44)
       }
-      .accessibilityLabel("Drawn card action")
-      .accessibilityValue(
-        "Visible card: \(model.game?.drawnCard.map { spokenValue($0.value) } ?? "unavailable"); visible action: \(model.drawChoice.rawValue)"
-      )
-      .accessibilityFocused($drawnDecisionFocused)
-      .accessibilityIdentifier("solo.action.drawn-choice")
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .accessibilitySortPriority(2)
   }
@@ -1125,7 +1159,7 @@ private struct SoloGameView: View {
           } label: {
             Text(visibleGuidance)
               .font(.caption2.weight(.semibold))
-              .foregroundStyle(.primary)
+              .foregroundStyle(FlipvaleTheme.ivory)
               .multilineTextAlignment(.center)
               .fixedSize(horizontal: false, vertical: true)
               .layoutPriority(1)
@@ -1149,7 +1183,7 @@ private struct SoloGameView: View {
               .accessibilityHidden(true)
             Text(visibleGuidance)
               .font(.footnote)
-              .foregroundStyle(.primary)
+              .foregroundStyle(FlipvaleTheme.ivory)
               .multilineTextAlignment(.center)
               .lineLimit(usesCompactCopy ? nil : 4)
               .fixedSize(horizontal: false, vertical: true)
@@ -1387,9 +1421,12 @@ struct PlayerBoardView: View {
       .environment(\.layoutDirection, .leftToRight)
     }
     .padding(isCompact ? 1 : 10)
-    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+    .background(
+      FlipvaleTheme.panelStrong,
+      in: RoundedRectangle(cornerRadius: 12)
+    )
     .overlay {
-      RoundedRectangle(cornerRadius: 12).stroke(.secondary, lineWidth: 1)
+      RoundedRectangle(cornerRadius: 12).stroke(FlipvaleTheme.hairline, lineWidth: 1)
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel(isLocal ? "Your board" : "\(player.name)'s board")
@@ -1522,7 +1559,7 @@ private struct SoloScoreSummaryView: View {
                   .font(.title3.monospacedDigit().bold())
               }
               .padding()
-              .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+              .flipvalePanel(cornerRadius: 12)
               .accessibilityElement(children: .combine)
             }
           }
@@ -1542,7 +1579,7 @@ private struct SoloScoreSummaryView: View {
                 }
               }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(FlipvalePrimaryButtonStyle())
             .disabled(model.isWorking)
             .frame(minHeight: 44)
             .accessibilityIdentifier(
@@ -1573,7 +1610,7 @@ private struct SoloScoreSummaryView: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(FlipvalePrimaryButtonStyle())
             .accessibilityIdentifier("solo.summary.next-round")
           } else if model.completionCommitted {
             Button {
@@ -1583,7 +1620,7 @@ private struct SoloScoreSummaryView: View {
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(FlipvalePrimaryButtonStyle())
             .disabled(model.isWorking)
             .accessibilityIdentifier("solo.summary.replay")
             Button { model.changeSetup() } label: {
@@ -1598,6 +1635,7 @@ private struct SoloScoreSummaryView: View {
         }
         .padding()
       }
+      .flipvaleScreen()
       .navigationTitle("Scores")
     }
     .onAppear { headingFocused = true }
@@ -1746,6 +1784,8 @@ private struct SoloSettingsView: View {
           SoloRecoveryView(model: model)
         }
       }
+      .scrollContentBackground(.hidden)
+      .background(Color.clear)
       .navigationTitle("Game Settings")
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
@@ -1761,6 +1801,7 @@ private struct SoloSettingsView: View {
           .accessibilityIdentifier("solo.settings.done")
         }
       }
+      .flipvaleScreen()
       .task { await model.refreshOutboxStatus() }
     }
   }
@@ -1825,10 +1866,7 @@ private struct SoloRecoveryView: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(12)
-      .background(
-        Color(uiColor: .secondarySystemGroupedBackground),
-        in: RoundedRectangle(cornerRadius: 12)
-      )
+      .flipvalePanel(cornerRadius: 12)
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("solo.outbox.recovery")
       .confirmationDialog(
@@ -1857,6 +1895,48 @@ private struct SoloRecoveryView: View {
   }
 }
 
+private struct SoloPileCardThumbnail: View {
+  let face: SkyjoCardFace
+
+  var body: some View {
+    ZStack {
+      RoundedRectangle(cornerRadius: 5, style: .continuous)
+        .fill(backgroundColor)
+      RoundedRectangle(cornerRadius: 5, style: .continuous)
+        .stroke(FlipvaleTheme.ivory.opacity(0.72), lineWidth: 1)
+      switch face {
+      case .faceDown:
+        FlipvaleCardBackMark(isDense: true)
+      case .faceUp(let value):
+        Text(value.formatted())
+          .font(.caption2.monospacedDigit().weight(.black))
+          .foregroundStyle(FlipvaleTheme.canvas)
+      case .removed:
+        Image(systemName: "rectangle.dashed")
+          .font(.caption2)
+          .foregroundStyle(FlipvaleTheme.mutedIvory)
+      }
+    }
+    .accessibilityHidden(true)
+  }
+
+  private var backgroundColor: Color {
+    switch face {
+    case .faceDown:
+      Color(red: 58 / 255, green: 68 / 255, blue: 145 / 255)
+    case .faceUp(let value):
+      switch value {
+      case ...0: Color(red: 181 / 255, green: 232 / 255, blue: 238 / 255)
+      case 1...4: Color(red: 199 / 255, green: 232 / 255, blue: 202 / 255)
+      case 5...8: Color(red: 246 / 255, green: 225 / 255, blue: 148 / 255)
+      default: Color(red: 244 / 255, green: 190 / 255, blue: 181 / 255)
+      }
+    case .removed:
+      FlipvaleTheme.panelStrong
+    }
+  }
+}
+
 private struct SoloSecondaryButtonStyle: ButtonStyle {
   @Environment(\.isEnabled) private var isEnabled
 
@@ -1864,15 +1944,15 @@ private struct SoloSecondaryButtonStyle: ButtonStyle {
     configuration.label
       .frame(maxWidth: .infinity, minHeight: 44)
       .padding(.horizontal, 12)
-      .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
+      .foregroundStyle(isEnabled ? FlipvaleTheme.ivory : FlipvaleTheme.mutedIvory)
       .background(
-        Color(uiColor: .secondarySystemBackground),
+        FlipvaleTheme.panelStrong,
         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
       )
       .overlay {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .stroke(
-            isEnabled ? Color.primary.opacity(0.72) : Color.secondary.opacity(0.4),
+            isEnabled ? FlipvaleTheme.ivory.opacity(0.46) : FlipvaleTheme.hairline,
             lineWidth: 1.5
           )
       }
@@ -1885,13 +1965,13 @@ private struct SoloSourceButtonStyle: ButtonStyle {
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .foregroundStyle(Color.primary)
+      .foregroundStyle(FlipvaleTheme.ivory)
       .contentShape(Rectangle())
       .overlay(alignment: .topTrailing) {
         if !isEnabled {
           Image(systemName: "lock.fill")
             .font(.caption2.weight(.bold))
-            .foregroundStyle(Color.primary)
+            .foregroundStyle(FlipvaleTheme.mutedIvory)
             .padding(6)
             .accessibilityHidden(true)
         }
@@ -1907,15 +1987,15 @@ private struct SoloDestructiveButtonStyle: ButtonStyle {
     configuration.label
       .frame(maxWidth: .infinity, minHeight: 44)
       .padding(.horizontal, 12)
-      .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
+      .foregroundStyle(isEnabled ? FlipvaleTheme.danger : FlipvaleTheme.mutedIvory)
       .background(
-        Color(uiColor: .secondarySystemBackground),
+        isEnabled ? FlipvaleTheme.danger.opacity(0.12) : FlipvaleTheme.panelStrong,
         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
       )
       .overlay {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .stroke(
-            isEnabled ? Color.primary.opacity(0.85) : Color.secondary.opacity(0.4),
+            isEnabled ? FlipvaleTheme.danger.opacity(0.9) : FlipvaleTheme.hairline,
             lineWidth: 2
           )
       }

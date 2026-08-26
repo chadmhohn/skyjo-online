@@ -61,6 +61,8 @@ struct BootstrapHomeView: View {
       }
     }
     .tint(Color("AccentColor"))
+    .groupBoxStyle(FlipvaleGroupBoxStyle())
+    .flipvaleScreen()
     .onOpenURL { url in
       guard let model, let dependencies else { return }
       Task {
@@ -124,7 +126,7 @@ private struct NativeRootView: View {
             accessibilityIdentifier: "state.upgrade-required"
           ) {
             Button("Retry") { Task { await model.bootstrap() } }
-              .buttonStyle(.borderedProminent)
+              .buttonStyle(FlipvalePrimaryButtonStyle())
               .accessibilityIdentifier("state.retry")
           }
           .navigationTitle("Flipvale")
@@ -160,7 +162,7 @@ private struct NativeRootView: View {
             accessibilityIdentifier: "state.offline"
           ) {
             Button("Retry") { Task { await model.bootstrap() } }
-              .buttonStyle(.borderedProminent)
+              .buttonStyle(FlipvalePrimaryButtonStyle())
               .accessibilityIdentifier("state.retry")
           }
           .navigationTitle("Flipvale")
@@ -184,7 +186,7 @@ private struct NativeRootView: View {
             accessibilityIdentifier: "state.not-ready"
           ) {
             Button("Try Again") { Task { await model.bootstrap() } }
-              .buttonStyle(.borderedProminent)
+              .buttonStyle(FlipvalePrimaryButtonStyle())
               .accessibilityIdentifier("state.retry")
           }
           .navigationTitle("Flipvale")
@@ -198,7 +200,7 @@ private struct NativeRootView: View {
             accessibilityIdentifier: "state.upgrade-required"
           ) {
             Button("Try Again") { Task { await model.bootstrap() } }
-              .buttonStyle(.borderedProminent)
+              .buttonStyle(FlipvalePrimaryButtonStyle())
               .accessibilityIdentifier("state.retry")
           }
           .navigationTitle("Flipvale")
@@ -214,7 +216,7 @@ private struct NativeRootView: View {
             Button("Continue to Sign In") {
               model.rootState = .accountRequired
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(FlipvalePrimaryButtonStyle())
             .accessibilityIdentifier("state.continue-sign-in")
           }
           .navigationTitle("Flipvale")
@@ -228,13 +230,18 @@ private struct NativeRootView: View {
             accessibilityIdentifier: "state.failed"
           ) {
             Button("Retry") { Task { await model.bootstrap() } }
-              .buttonStyle(.borderedProminent)
+              .buttonStyle(FlipvalePrimaryButtonStyle())
               .accessibilityIdentifier("state.retry")
           }
           .navigationTitle("Flipvale")
         }
       }
     }
+    .groupBoxStyle(FlipvaleGroupBoxStyle())
+    .toolbarBackground(FlipvaleTheme.canvas.opacity(0.92), for: .navigationBar)
+    .toolbarBackground(.visible, for: .navigationBar)
+    .toolbarColorScheme(.dark, for: .navigationBar)
+    .flipvaleScreen()
     .task {
 #if DEBUG
       let arguments = ProcessInfo.processInfo.arguments
@@ -432,6 +439,9 @@ struct StateMessageView<Actions: View>: View {
     } actions: {
       actions
     }
+    .foregroundStyle(FlipvaleTheme.ivory)
+    .frame(maxWidth: 620)
+    .flipvalePanel(cornerRadius: 20)
     .accessibilityIdentifier(accessibilityIdentifier)
     .padding(24)
   }
