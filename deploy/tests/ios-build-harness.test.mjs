@@ -715,7 +715,8 @@ test('contrast audit snapshots app state and never exempts disabled controls', a
   );
   assert.ok(sourceButtonStyle, 'missing contrast-safe source button style');
   assert.match(sourceButtonStyle[0], /@Environment\(\\\.isEnabled\)/);
-  assert.match(sourceButtonStyle[0], /\.foregroundStyle\(Color\.primary\)/);
+  assert.match(sourceButtonStyle[0], /\.foregroundStyle\(FlipvaleTheme\.ivory\)/);
+  assert.match(sourceButtonStyle[0], /\.foregroundStyle\(FlipvaleTheme\.mutedIvory\)/);
   assert.match(sourceButtonStyle[0], /Image\(systemName: "lock\.fill"\)/);
   assert.match(sourceButtonStyle[0], /\.accessibilityHidden\(true\)/);
   assert.doesNotMatch(sourceButtonStyle[0], /\.environment\(\\\.isEnabled,/);
