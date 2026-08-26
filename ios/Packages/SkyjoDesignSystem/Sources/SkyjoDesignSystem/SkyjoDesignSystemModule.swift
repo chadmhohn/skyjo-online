@@ -17,6 +17,7 @@ public enum FlipvaleTheme {
   public static let mutedIvory = ivory.opacity(0.72)
   public static let gold = Color(red: 251 / 255, green: 191 / 255, blue: 36 / 255)
   public static let green = Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255)
+  public static let danger = Color(red: 248 / 255, green: 113 / 255, blue: 113 / 255)
   public static let hairline = ivory.opacity(0.14)
 }
 

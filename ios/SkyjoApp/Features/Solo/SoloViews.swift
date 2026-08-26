@@ -829,7 +829,7 @@ private struct SoloGameView: View {
   private var gameRoundLabel: some View {
     Text("Round \(model.game?.round ?? 1)")
       .font(.caption.weight(.black))
-      .foregroundStyle(Color.primary)
+      .foregroundStyle(FlipvaleTheme.ivory)
       .lineLimit(usesUnscaledTextLayout ? 1 : nil)
       .fixedSize(horizontal: usesUnscaledTextLayout, vertical: true)
       .accessibilityIdentifier("solo.table.round")
@@ -1965,7 +1965,7 @@ private struct SoloSourceButtonStyle: ButtonStyle {
         if !isEnabled {
           Image(systemName: "lock.fill")
             .font(.caption2.weight(.bold))
-            .foregroundStyle(Color.primary)
+            .foregroundStyle(FlipvaleTheme.mutedIvory)
             .padding(6)
             .accessibilityHidden(true)
         }
@@ -1981,15 +1981,15 @@ private struct SoloDestructiveButtonStyle: ButtonStyle {
     configuration.label
       .frame(maxWidth: .infinity, minHeight: 44)
       .padding(.horizontal, 12)
-      .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
+      .foregroundStyle(isEnabled ? FlipvaleTheme.danger : FlipvaleTheme.mutedIvory)
       .background(
-        Color(uiColor: .secondarySystemBackground),
+        isEnabled ? FlipvaleTheme.danger.opacity(0.12) : FlipvaleTheme.panelStrong,
         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
       )
       .overlay {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .stroke(
-            isEnabled ? Color.primary.opacity(0.85) : Color.secondary.opacity(0.4),
+            isEnabled ? FlipvaleTheme.danger.opacity(0.9) : FlipvaleTheme.hairline,
             lineWidth: 2
           )
       }
