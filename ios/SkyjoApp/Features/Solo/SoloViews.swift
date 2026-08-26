@@ -830,6 +830,12 @@ private struct SoloGameView: View {
     Text("Round \(model.game?.round ?? 1)")
       .font(.caption.weight(.black))
       .foregroundStyle(FlipvaleTheme.ivory)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 2)
+      .background(FlipvaleTheme.panelStrong, in: Capsule())
+      .overlay {
+        Capsule().stroke(FlipvaleTheme.hairline, lineWidth: 1)
+      }
       .lineLimit(usesUnscaledTextLayout ? 1 : nil)
       .fixedSize(horizontal: usesUnscaledTextLayout, vertical: true)
       .accessibilityIdentifier("solo.table.round")

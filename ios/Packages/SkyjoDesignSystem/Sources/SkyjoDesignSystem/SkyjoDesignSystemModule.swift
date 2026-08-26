@@ -355,7 +355,7 @@ public struct FlipvaleCardBackMark: View {
         .offset(x: isDense ? -3 : -4, y: isDense ? -2 : -3)
 
       RoundedRectangle(cornerRadius: isDense ? 3 : 4, style: .continuous)
-        .fill(FlipvaleTheme.ivory.opacity(0.92))
+        .fill(FlipvaleTheme.ivory)
         .overlay {
           RoundedRectangle(cornerRadius: isDense ? 3 : 4, style: .continuous)
             .stroke(FlipvaleTheme.ivory, lineWidth: 1.25)
@@ -363,9 +363,9 @@ public struct FlipvaleCardBackMark: View {
         .offset(x: isDense ? 3 : 4, y: isDense ? 2 : 3)
 
       Text("FV")
-        .font(.system(size: isDense ? 7 : 9, weight: .black, design: .rounded))
+        .font(.system(size: isDense ? 9 : 11, weight: .black, design: .rounded))
         .tracking(-0.6)
-        .foregroundStyle(FlipvaleTheme.canvas)
+        .foregroundStyle(.black)
         .offset(x: isDense ? 3 : 4, y: isDense ? 2 : 3)
     }
     .frame(width: isDense ? 24 : 30, height: isDense ? 28 : 34)
