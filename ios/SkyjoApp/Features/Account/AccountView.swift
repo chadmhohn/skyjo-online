@@ -1,3 +1,4 @@
+import SkyjoDesignSystem
 import SkyjoNetworking
 import SwiftUI
 
@@ -159,6 +160,8 @@ struct AccountView: View {
       }
     }
     .contentMargins(.bottom, 96, for: .scrollContent)
+    .scrollContentBackground(.hidden)
+    .background(Color.clear)
     .navigationTitle("Account")
     .accessibilityIdentifier("account.screen")
     .confirmationDialog(
@@ -195,6 +198,8 @@ struct AccountView: View {
             }
           }
         }
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
         .navigationTitle("Delete Account")
         .interactiveDismissDisabled(settings.isDeletingAccount)
         .toolbar {
@@ -216,6 +221,7 @@ struct AccountView: View {
           }
         }
       }
+      .flipvaleScreen()
       .presentationDetents([.large])
       .accessibilityIdentifier("account.delete-sheet")
     }

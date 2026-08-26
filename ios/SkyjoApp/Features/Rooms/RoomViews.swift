@@ -147,6 +147,8 @@ struct RoomRootView: View {
         RoomTableView(model: model)
       }
     }
+    .groupBoxStyle(FlipvaleGroupBoxStyle())
+    .flipvaleScreen()
     .navigationTitle(model.room.map { "Room \($0.code)" } ?? "Multiplayer")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -283,7 +285,7 @@ private struct RoomJoinView: View {
               Text("Join Room")
                 .frame(maxWidth: .infinity, minHeight: 44)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(FlipvalePrimaryButtonStyle())
             .disabled(model.joinCode.count != 5 || connectionRequestDisabled)
             .accessibilityIdentifier("rooms.join")
           }
@@ -356,7 +358,7 @@ private struct RoomWaitingView: View {
               Text("Start Game")
                 .frame(maxWidth: .infinity, minHeight: 44)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(FlipvalePrimaryButtonStyle())
             .disabled(!model.canStartWaitingRoom)
             .accessibilityHint(
               model.connectedHumanCount < 2
@@ -398,7 +400,7 @@ private struct RoomTableView: View {
           .frame(height: safeHeight, alignment: .top)
       }
     }
-    .background(Color(uiColor: .systemGroupedBackground))
+    .background { FlipvaleFeltBackground().ignoresSafeArea() }
     .overlay(alignment: .top) {
       VStack(spacing: 6) {
         RoomConnectionBanner(model: model, alwaysVisible: false)
@@ -453,7 +455,7 @@ private struct RoomTableView: View {
     .padding(.bottom, 6)
     .accessibilityIdentifier("rooms.table.layout.standard")
     .overlay(alignment: .topTrailing) {
-      chatButton(topPadding: 72)
+      chatButton(topPadding: 8)
     }
   }
 
@@ -509,7 +511,7 @@ private struct RoomTableView: View {
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("rooms.table.accessible-layout")
     .overlay(alignment: .topTrailing) {
-      chatButton(topPadding: 72)
+      chatButton(topPadding: 8)
     }
   }
 
@@ -648,11 +650,7 @@ private struct PublicRoomPlayerBoard: View {
       }
     }
     .padding(isCompact ? 4 : 9)
-    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
-    .overlay {
-      RoundedRectangle(cornerRadius: 12)
-        .stroke(isActive ? Color.accentColor : Color.secondary, lineWidth: isActive ? 2 : 1)
-    }
+    .flipvalePanel(isCurrent: isActive, cornerRadius: 12)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("rooms.board.\(boardIdentifier)")
   }
@@ -702,7 +700,9 @@ private struct RoomTableBand: View {
           Task { await model.drawBlind() }
         } label: {
           VStack(spacing: 4) {
-            Image(systemName: "rectangle.stack.fill")
+            SkyjoCardView(face: .faceDown, label: "")
+              .frame(width: 34)
+              .accessibilityHidden(true)
             Text("Deck")
               .font(.caption.bold())
             Text("\(model.game?.drawPileCount ?? 0)")
@@ -725,8 +725,9 @@ private struct RoomTableBand: View {
             Text("Discard")
               .font(.caption.bold())
             if let value = model.game?.discardPile.top?.value {
-              Text(value.formatted())
-                .font(.title2.monospacedDigit().bold())
+              SkyjoCardView(face: .faceUp(value), label: "")
+                .frame(width: 34)
+                .accessibilityHidden(true)
             } else {
               Image(systemName: "rectangle.dashed")
             }
@@ -749,8 +750,9 @@ private struct RoomTableBand: View {
           VStack(spacing: 3) {
             Text("Drawn")
               .font(.caption.bold())
-            Text(drawnValue.formatted())
-              .font(.title2.monospacedDigit().bold())
+            SkyjoCardView(face: .faceUp(drawnValue), label: "")
+              .frame(width: 34)
+              .accessibilityHidden(true)
             Picker("Drawn card action", selection: $model.drawChoice) {
               ForEach(RoomDrawChoice.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -1085,7 +1087,7 @@ private struct RoomChatButton: View {
       .frame(width: 52, height: 52)
       .contentShape(Circle())
     }
-    .buttonStyle(.borderedProminent)
+    .buttonStyle(FlipvalePrimaryButtonStyle())
     .clipShape(Circle())
     .shadow(radius: 4)
     .accessibilityLabel(
@@ -1130,11 +1132,9 @@ private struct RoomChatView: View {
                     .textSelection(.disabled)
                 }
                 .padding(10)
-                .background(
-                  message.playerId == model.playerID
-                    ? Color.accentColor.opacity(0.12)
-                    : Color.secondary.opacity(0.1),
-                  in: RoundedRectangle(cornerRadius: 10)
+                .flipvalePanel(
+                  isCurrent: message.playerId == model.playerID,
+                  cornerRadius: 10
                 )
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(
@@ -1181,12 +1181,13 @@ private struct RoomChatView: View {
             Text("Send")
               .frame(minWidth: 44, minHeight: 44)
           }
-          .buttonStyle(.borderedProminent)
+          .buttonStyle(FlipvalePrimaryButtonStyle())
           .disabled(!model.commandsEnabled || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
           .accessibilityIdentifier("rooms.chat.send")
         }
         .padding()
       }
+      .flipvaleScreen()
       .navigationTitle("Table Chat")
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
@@ -1264,12 +1265,15 @@ private struct RoomOptionsView: View {
           }
         }
       }
+      .scrollContentBackground(.hidden)
+      .background(Color.clear)
       .navigationTitle("Room Options")
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
           Button("Done") { dismiss() }
         }
       }
+      .flipvaleScreen()
       .alert(item: $confirmation) { value in
         switch value {
         case .leave:
@@ -1334,7 +1338,7 @@ private struct RoomScoreView: View {
                   .font(.headline.monospacedDigit())
               }
               .padding()
-              .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+              .flipvalePanel(cornerRadius: 12)
               .accessibilityElement(children: .combine)
             }
           }
@@ -1349,7 +1353,7 @@ private struct RoomScoreView: View {
             Text(model.localIsReady ? "Mark Not Ready" : "I'm Ready")
               .frame(maxWidth: .infinity, minHeight: 44)
           }
-          .buttonStyle(.borderedProminent)
+          .buttonStyle(FlipvalePrimaryButtonStyle())
           .disabled(!model.commandsEnabled)
           .accessibilityIdentifier("rooms.score.ready")
 
@@ -1368,6 +1372,7 @@ private struct RoomScoreView: View {
         }
         .padding()
       }
+      .flipvaleScreen()
       .navigationTitle("Scores")
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
@@ -1427,7 +1432,7 @@ private struct RoomInviteReviewView: View {
             )
               .frame(maxWidth: .infinity, minHeight: 44)
           }
-          .buttonStyle(.borderedProminent)
+          .buttonStyle(FlipvalePrimaryButtonStyle())
           .disabled(
             invite.isExpired(at: Int64(Date().timeIntervalSince1970 * 1_000))
               || (
@@ -1441,6 +1446,7 @@ private struct RoomInviteReviewView: View {
         Spacer()
       }
       .padding()
+      .flipvaleScreen()
       .navigationTitle("Review Invite")
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -1478,12 +1484,13 @@ private struct RoomShareView: View {
             Label("Share Invite", systemImage: "square.and.arrow.up")
               .frame(maxWidth: .infinity, minHeight: 44)
           }
-          .buttonStyle(.borderedProminent)
+          .buttonStyle(FlipvalePrimaryButtonStyle())
           .accessibilityIdentifier("rooms.share.system")
         }
         Spacer()
       }
       .padding()
+      .flipvaleScreen()
       .navigationTitle("Share Room")
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {

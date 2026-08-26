@@ -1,3 +1,4 @@
+import SkyjoDesignSystem
 import SwiftUI
 
 @MainActor
@@ -100,6 +101,9 @@ struct AuthenticationView: View {
           }
         }
     }
+    .scrollContentBackground(.hidden)
+    .background(Color.clear)
+    .flipvaleScreen()
     .navigationTitle("Your Account")
     .disabled(model.authentication.isSubmitting)
   }

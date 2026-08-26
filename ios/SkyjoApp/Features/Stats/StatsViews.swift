@@ -1,3 +1,4 @@
+import SkyjoDesignSystem
 import SkyjoNetworking
 import SwiftUI
 
@@ -29,9 +30,13 @@ struct StatsView: View {
               message: "Completed signed-in games will appear here.",
               accessibilityIdentifier: "stats.empty"
             ) {
-              Button("Refresh") { Task { await model.loadStats() } }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("stats.retry")
+              Button {
+                Task { await model.loadStats() }
+              } label: {
+                Text("Refresh").frame(minWidth: 140, minHeight: 44)
+              }
+              .buttonStyle(FlipvalePrimaryButtonStyle())
+              .accessibilityIdentifier("stats.retry")
             }
           }
           .padding()
@@ -43,9 +48,13 @@ struct StatsView: View {
           message: message,
           accessibilityIdentifier: "stats.offline"
         ) {
-          Button("Retry") { Task { await model.loadStats() } }
-            .buttonStyle(.borderedProminent)
-            .accessibilityIdentifier("stats.retry")
+          Button {
+            Task { await model.loadStats() }
+          } label: {
+            Text("Retry").frame(minWidth: 140, minHeight: 44)
+          }
+          .buttonStyle(FlipvalePrimaryButtonStyle())
+          .accessibilityIdentifier("stats.retry")
         }
       case .failed(let message):
         StateMessageView(
@@ -54,14 +63,19 @@ struct StatsView: View {
           message: message,
           accessibilityIdentifier: "stats.failed"
         ) {
-          Button("Retry") { Task { await model.loadStats() } }
-            .buttonStyle(.borderedProminent)
-            .accessibilityIdentifier("stats.retry")
+          Button {
+            Task { await model.loadStats() }
+          } label: {
+            Text("Retry").frame(minWidth: 140, minHeight: 44)
+          }
+          .buttonStyle(FlipvalePrimaryButtonStyle())
+          .accessibilityIdentifier("stats.retry")
         }
       case .loaded:
         StatsLoadedView(model: model)
       }
     }
+    .flipvaleScreen()
     .navigationTitle("Stats")
     .toolbar {
       ToolbarItem(placement: .topBarTrailing) {
@@ -118,6 +132,8 @@ private struct StatsLoadedView: View {
         }
       }
     }
+    .scrollContentBackground(.hidden)
+    .background(Color.clear)
     .refreshable { await model.loadStats() }
     .accessibilityIdentifier("stats.loaded")
   }
@@ -231,6 +247,8 @@ private struct GameDetailView: View {
               }
             }
           }
+          .scrollContentBackground(.hidden)
+          .background(Color.clear)
           .accessibilityIdentifier("stats.game-detail.loaded")
         } else {
           ProgressView("Loading game")
@@ -294,6 +312,8 @@ private struct PlayerHistoryView: View {
               }
             }
           }
+          .scrollContentBackground(.hidden)
+          .background(Color.clear)
           .accessibilityIdentifier("stats.player-history.loaded")
         } else {
           ProgressView("Loading player history")
